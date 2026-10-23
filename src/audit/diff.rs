@@ -74,8 +74,12 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
 
     o.sets(
         "listeners",
-        &set(sa.listeners.as_ref(), |l| format!("{:<4} {}", l.proto, l.key)),
-        &set(sb.listeners.as_ref(), |l| format!("{:<4} {}", l.proto, l.key)),
+        &set(sa.listeners.as_ref(), |l| {
+            format!("{:<4} {}", l.proto, l.key)
+        }),
+        &set(sb.listeners.as_ref(), |l| {
+            format!("{:<4} {}", l.proto, l.key)
+        }),
     );
 
     // flatpak apps: added / removed / permission flags changed
@@ -99,11 +103,7 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             None => o.push(Kind::Add, format!("+ {id:<40} {origin}")),
             Some((_, old)) if old != flags => o.push(
                 Kind::Change,
-                format!(
-                    "~ {id:<40} {} → {}",
-                    show(old),
-                    show(flags)
-                ),
+                format!("~ {id:<40} {} → {}", show(old), show(flags)),
             ),
             Some(_) => continue,
         }
@@ -134,9 +134,17 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .map(|o| f(o).iter().cloned().collect())
             .unwrap_or_default()
     };
-    o.sets("layered packages", &os(a, |o| &o.layered), &os(b, |o| &o.layered));
+    o.sets(
+        "layered packages",
+        &os(a, |o| &o.layered),
+        &os(b, |o| &o.layered),
+    );
     o.sets("local packages", &os(a, |o| &o.local), &os(b, |o| &o.local));
-    o.sets("base removals", &os(a, |o| &o.removals), &os(b, |o| &o.removals));
+    o.sets(
+        "base removals",
+        &os(a, |o| &o.removals),
+        &os(b, |o| &o.removals),
+    );
 
     let repos = |r: &Report| {
         set(r.sections.repos.as_ref(), |x| {
@@ -151,7 +159,11 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
     let only_third = |s: BTreeSet<String>| -> BTreeSet<String> {
         s.into_iter().filter(|x| !x.starts_with("fedora")).collect()
     };
-    o.sets("repos (third-party)", &only_third(repos(a)), &only_third(repos(b)));
+    o.sets(
+        "repos (third-party)",
+        &only_third(repos(a)),
+        &only_third(repos(b)),
+    );
 
     let units = |r: &Report, user: bool| -> BTreeSet<String> {
         r.sections
@@ -170,7 +182,11 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .unwrap_or_default()
     };
     o.sets("units (user, enabled)", &units(a, true), &units(b, true));
-    o.sets("units (system, enabled)", &units(a, false), &units(b, false));
+    o.sets(
+        "units (system, enabled)",
+        &units(a, false),
+        &units(b, false),
+    );
     let failed = |r: &Report| {
         r.sections
             .units
@@ -190,13 +206,21 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
 
     o.sets(
         "containers",
-        &set(sa.containers.as_ref(), |c| format!("{} ({})", c.name, c.kind)),
-        &set(sb.containers.as_ref(), |c| format!("{} ({})", c.name, c.kind)),
+        &set(sa.containers.as_ref(), |c| {
+            format!("{} ({})", c.name, c.kind)
+        }),
+        &set(sb.containers.as_ref(), |c| {
+            format!("{} ({})", c.name, c.kind)
+        }),
     );
     o.sets(
         "shell rc",
-        &set(Some(&sa.shell), |h| format!("~/{}: {}", h.file, h.text.trim())),
-        &set(Some(&sb.shell), |h| format!("~/{}: {}", h.file, h.text.trim())),
+        &set(Some(&sa.shell), |h| {
+            format!("~/{}: {}", h.file, h.text.trim())
+        }),
+        &set(Some(&sb.shell), |h| {
+            format!("~/{}: {}", h.file, h.text.trim())
+        }),
     );
 
     // kargs: order-insensitive; the ostree/root args change every deployment.
@@ -303,16 +327,16 @@ mod tests {
         let d = diff(&a, &b);
         let txt: Vec<&str> = d.iter().map(|l| l.text.as_str()).collect();
         assert!(txt.contains(&"+ tcp  0.0.0.0:22000/syncthing"), "{txt:#?}");
-        assert!(txt.iter().any(|t| t.starts_with("~ a.App") && t.ends_with("home → host")));
+        assert!(
+            txt.iter()
+                .any(|t| t.starts_with("~ a.App") && t.ends_with("home → host"))
+        );
         assert!(txt.iter().any(|t| t.starts_with("+ new.App")));
         assert!(txt.iter().any(|t| t.starts_with("- gone.App")));
         assert!(txt.contains(&"  ghostty  (unchanged)"));
         assert!(txt.contains(&"- quiet"));
         assert!(txt.contains(&"+ rd.driver.blacklist=nouveau"));
-        assert_eq!(
-            summary(&d),
-            "1 listeners · 3 flatpak · 2 kargs"
-        );
+        assert_eq!(summary(&d), "1 listeners · 3 flatpak · 2 kargs");
         assert_eq!(summary(&diff(&a, &a)), "no changes");
     }
 }

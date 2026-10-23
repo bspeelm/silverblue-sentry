@@ -279,7 +279,10 @@ fn audit_reports() -> Vec<crate::audit::store::Stored> {
     a.taken_at = jiff::Timestamp::from_second(NOW - 30 * 86400).unwrap();
     let mut b = a.clone();
     b.taken_at = jiff::Timestamp::from_second(NOW).unwrap();
-    b.sections.listeners = Some(vec![listen("0.0.0.0:22/?"), listen("0.0.0.0:22000/syncthing")]);
+    b.sections.listeners = Some(vec![
+        listen("0.0.0.0:22/?"),
+        listen("0.0.0.0:22000/syncthing"),
+    ]);
     b.sections.flatpak = Some(FlatpakSec {
         apps: vec![
             app("com.visualstudio.code", &["host"]),
@@ -328,4 +331,122 @@ fn audit_screen() {
     assert!(s.contains("Nothing to compare against yet"), "{s}");
     let s = render_to_string(&mut a, 80, 24);
     assert!(s.contains("Findings"), "{s}");
+}
+
+#[test]
+fn jobs_and_cleanup_screens() {
+    use crate::exec::Cmd;
+    use crate::jobs::JobId;
+    use crate::jobs::plan::{Act, Item, Plan};
+    use crate::jobs::state::{Run, Runs};
+    let mut d = store();
+    let at =
+        |days_ago: i64| jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * days_ago);
+    let mut runs = Runs::new();
+    for (name, days, ok) in [
+        ("audit", 3, true),
+        ("cleanup-podman", 41, true),
+        ("update-check", 1, false),
+    ] {
+        runs.insert(
+            name.into(),
+            Run {
+                at: at(days),
+                ok,
+                summary: if ok {
+                    "2 item(s) done".into()
+                } else {
+                    "rpm-ostree: timeout".into()
+                },
+            },
+        );
+    }
+    d.job_runs.set(Ok(runs));
+    let item = |job, key: &str, label: &str, bytes: Option<u64>, run: bool, on: bool| Item {
+        job,
+        key: key.into(),
+        label: label.into(),
+        bytes,
+        preview: vec![format!("would remove {label}")],
+        act: if run {
+            Act::Run(Cmd::host("true"))
+        } else {
+            Act::ListOnly
+        },
+        default_on: on,
+    };
+    d.cleanup.set(Ok(vec![
+        Plan {
+            items: vec![
+                item(
+                    JobId::CleanupOstree,
+                    "repomd",
+                    "rpm-ostree cleanup -m",
+                    Some(214 << 20),
+                    true,
+                    true,
+                ),
+                item(
+                    JobId::CleanupOstree,
+                    "base",
+                    "rpm-ostree cleanup -b",
+                    None,
+                    true,
+                    false,
+                ),
+            ],
+            notes: vec![],
+        },
+        Plan {
+            items: vec![item(
+                JobId::CleanupFlatpak,
+                "gl:x",
+                "old GL.nvidia-610-57-04",
+                Some(855 << 20),
+                true,
+                true,
+            )],
+            notes: vec![],
+        },
+        Plan {
+            items: vec![item(
+                JobId::CleanupCache,
+                "report",
+                "~/.cache (opted-in: none)",
+                None,
+                false,
+                false,
+            )],
+            notes: vec![],
+        },
+    ]));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Jobs);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("8 Jobs 3"),
+        "due badge: never-run + overdue jobs: {s}"
+    );
+    for want in [
+        "cleanup-podman",
+        "DUE",
+        "failed",
+        "11d over",
+        "Cadence is a reminder",
+    ] {
+        assert!(s.contains(want), "{want}: {s}");
+    }
+    key(&mut a, KeyCode::Char('9'));
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("cleanup_158x41", body(&s));
+    // Toggle the opt-in item: the total grows by nothing (no estimate) but it's now checked.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("[x] rpm-ostree cleanup -b"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Confirm cleanup") && s.contains("run 2 job(s)"),
+        "{s}"
+    );
 }

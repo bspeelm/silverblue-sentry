@@ -49,6 +49,19 @@ pub fn list_in(d: &Path) -> Vec<Stored> {
     v
 }
 
+/// The newest report by mtime, parsing only that one file.
+pub fn latest() -> Option<Report> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir())
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    v.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    let text = std::fs::read_to_string(v.last()?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// Latest report carrying `tag`.
 pub fn find_tag<'a>(all: &'a [Stored], tag: &str) -> Option<&'a Stored> {
     all.iter()
@@ -200,7 +213,10 @@ mod tests {
         let p1 = save_in(&d, &a, None).unwrap();
         let p2 = save_in(&d, &a, None).unwrap();
         assert_ne!(p1, p2);
-        assert!(p1.to_string_lossy().ends_with("-pre-rebase-45.json"), "{p1:?}");
+        assert!(
+            p1.to_string_lossy().ends_with("-pre-rebase-45.json"),
+            "{p1:?}"
+        );
         assert!(p2.to_string_lossy().ends_with("-pre-rebase-45-2.json"));
         let md = std::fs::read_to_string(p1.with_extension("md")).unwrap();
         assert!(md.contains("| **high** | shell | a \\| b |"), "{md}");

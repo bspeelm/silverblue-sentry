@@ -2,9 +2,11 @@
 //! `DataStore`. They return `Effect`s instead of doing I/O.
 
 mod audit;
+mod cleanup;
 mod containers;
 mod dashboard;
 mod flatpaks;
+pub mod jobs;
 mod network;
 mod placeholder;
 mod processes;
@@ -41,6 +43,16 @@ impl View<'_> {
 }
 
 pub type Hints = Vec<(&'static str, &'static str)>;
+
+/// This binary as a streamable command (`sentry job …`), so TUI and headless runs match.
+pub fn sentry_cmd(args: &[&str]) -> crate::exec::Cmd {
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "sentry".into());
+    crate::exec::Cmd::local(&exe)
+        .args(args.iter().copied())
+        .timeout(None)
+}
 
 /// List cursor shared by every table screen.
 #[derive(Debug, Default, Clone, Copy)]
@@ -84,6 +96,8 @@ pub struct Screens {
     cont: containers::Containers,
     flat: flatpaks::Flatpaks,
     audit: audit::Audit,
+    jobs: jobs::Jobs,
+    clean: cleanup::Cleanup,
 }
 
 impl Screens {
@@ -93,6 +107,8 @@ impl Screens {
             ScreenId::Cont => containers::on_enter(v),
             ScreenId::Flat => flatpaks::on_enter(v),
             ScreenId::Audit => audit::on_enter(v),
+            ScreenId::Jobs => jobs::on_enter(v),
+            ScreenId::Clean => cleanup::on_enter(v),
             _ => Vec::new(),
         }
     }
@@ -106,6 +122,8 @@ impl Screens {
             ScreenId::Cont => self.cont.handle(a, v),
             ScreenId::Flat => self.flat.handle(a, v),
             ScreenId::Audit => self.audit.handle(a, v),
+            ScreenId::Jobs => self.jobs.handle(a, v),
+            ScreenId::Clean => self.clean.handle(a, v),
             _ => placeholder::handle(id, a),
         }
     }
@@ -119,6 +137,8 @@ impl Screens {
             ScreenId::Cont => self.cont.render(f, area, v),
             ScreenId::Flat => self.flat.render(f, area, v),
             ScreenId::Audit => self.audit.render(f, area, v),
+            ScreenId::Jobs => self.jobs.render(f, area, v),
+            ScreenId::Clean => self.clean.render(f, area, v),
             _ => placeholder::render(id, f, area, v),
         }
     }
@@ -132,6 +152,8 @@ impl Screens {
             ScreenId::Cont => containers::hints(),
             ScreenId::Flat => flatpaks::hints(),
             ScreenId::Audit => audit::hints(v),
+            ScreenId::Jobs => jobs::hints(),
+            ScreenId::Clean => cleanup::hints(),
             _ => placeholder::hints(id),
         }
     }
@@ -143,6 +165,8 @@ impl Screens {
             ScreenId::Cont => self.cont.cur.sel = 0,
             ScreenId::Flat => self.flat.cur.sel = 0,
             ScreenId::Audit => self.audit.cur.sel = 0,
+            ScreenId::Jobs => self.jobs.cur.sel = 0,
+            ScreenId::Clean => self.clean.cur.sel = 0,
             _ => {}
         }
     }

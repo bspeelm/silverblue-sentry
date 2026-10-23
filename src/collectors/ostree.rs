@@ -181,6 +181,32 @@ fn parse_update(cu: &Value) -> Option<Update> {
     })
 }
 
+/// What an upgrade should do (Updates `u`, job update-apply), given the booted deployment and pending update.
+#[derive(Debug, PartialEq)]
+pub enum UpgradePlan {
+    NoUpdate,
+    Routine,
+    /// Kernel changes: stage the upgrade dropping exactly this kmod (cheatsheet §2 step 1).
+    Ritual(String),
+    /// Kernel changes but not exactly one layered kmod-nvidia: stop (cheatsheet).
+    Ambiguous(Vec<String>),
+}
+
+pub fn upgrade_plan(o: &Ostree) -> UpgradePlan {
+    let Some(u) = &o.update else {
+        return UpgradePlan::NoUpdate;
+    };
+    if !u.kernel_changed {
+        return UpgradePlan::Routine;
+    }
+    match o.kmods().as_slice() {
+        [one] => UpgradePlan::Ritual(one.to_string()),
+        // No layered kmod at all: nothing to drop, a plain upgrade is right.
+        [] => UpgradePlan::Routine,
+        many => UpgradePlan::Ambiguous(many.iter().map(|s| s.to_string()).collect()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -43,6 +43,9 @@ enum Command {
         /// Skip the confirmation prompt (the TUI passes this after its own confirm modal).
         #[arg(long, short)]
         yes: bool,
+        /// Run only these plan items (comma-separated keys from --dry-run).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
     },
     /// Built-in checks used by workflows (exit 0/1 + one-line reason).
     Check {
@@ -145,6 +148,7 @@ fn main() -> ExitCode {
             tag,
             diff_against,
             yes,
+            only,
         }) => {
             let (cfg, warnings) = config::Config::load();
             warnings.iter().for_each(|w| eprintln!("{w}"));
@@ -156,6 +160,7 @@ fn main() -> ExitCode {
                     yes,
                     tag,
                     diff_against,
+                    only,
                 },
                 &ctx,
             ))

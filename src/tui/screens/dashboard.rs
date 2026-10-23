@@ -587,7 +587,19 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
             String::new(),
         )),
     }
-    rows.push(("jobs due", "—".into(), t.dim, "milestone 4".into()));
+    match v.d.job_runs.get() {
+        Some(runs) => {
+            let due = crate::jobs::state::due_jobs(v.cfg, runs, now);
+            let names: Vec<&str> = due.iter().map(|j| j.name()).collect();
+            rows.push((
+                "jobs due",
+                due.len().to_string(),
+                if due.is_empty() { t.fg } else { t.yellow },
+                names.join(", "),
+            ));
+        }
+        None => rows.push(("jobs due", "—".into(), t.dim, String::new())),
+    }
     let wf = crate::resume::in_progress();
     rows.push((
         "workflow",

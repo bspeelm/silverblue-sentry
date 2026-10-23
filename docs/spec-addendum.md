@@ -60,3 +60,11 @@ Permissions are computed by parsing the app `metadata` keyfiles and applying ove
 
 ## A10. rpm-ostree has no dry-run for upgrade/rebase
 On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` offers nothing. Only `install`/`uninstall` take `-n/--dry-run`. The spec's "`--dry-run` sibling" therefore means: `--preview` for upgrade, `--dry-run` for install/uninstall, and none for rebase (the card says so; `rpm-ostree cleanup -p` undoes a staged deployment). The seeded `release-rebase.toml` step `rebase-dry` used a nonexistent flag. It now validates that the target ref exists instead.
+
+## A11. Jobs (milestone 4)
+- Every job is `sentry job <name>`. The TUI streams that same command (with `--yes`, after its own confirm modal), so output, reports and last-run records are identical either way. Headless runs prompt `[y/N]` on a terminal. With no terminal and no `--yes` they refuse, exit 1, and record nothing.
+- `--only k1,k2` runs selected plan items (Cleanup screen). Without it, a run does only the default items. Opt-ins such as `rpm-ostree cleanup -b` always need `--only`.
+- Last runs live in `~/.local/share/sentry/jobs.json`. Cadence is resolved as `~/.config/sentry/cadence.toml` (written by `e`), then `config.toml [jobs]`, then the spec default. A job that has never run counts as due. `c` in the TUI counts as an update-check run.
+- `cleanup-podman` never prunes toolbox/distrobox containers; they're listed for manual removal. `cleanup-flatpak` also offers stale `GL.nvidia-*`/`GL32.nvidia-*` extensions, which `--unused` keeps. `cleanup-cache` deletes only `[cleanup.cache].delete_dirs` entries that are plain child names of `~/.cache`.
+- `update-apply` refuses an upgrade that changes the kernel (kmod ritual): that path is the `quick-update` workflow.
+- Flatpak has no dry-run. The "unused" preview pipes `n` into `flatpak uninstall --unused`, which prints the transaction and changes nothing.

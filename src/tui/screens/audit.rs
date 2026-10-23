@@ -6,12 +6,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
-use super::{Cursor, Hints, View};
+use super::{Cursor, Hints, View, sentry_cmd};
 use crate::audit::diff::{self, Kind};
 use crate::audit::findings::is_expected;
 use crate::audit::store::Stored;
 use crate::audit::{Finding, Sev};
-use crate::exec::Cmd;
 use crate::tui::app::{BaselineEdit, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
@@ -54,13 +53,11 @@ pub fn hints(v: &View) -> Hints {
 
 /// `sentry job audit`, streamed. Same binary, so headless and TUI runs are identical.
 pub fn audit_run() -> Effect {
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "sentry".into());
     Effect::Run(RunSpec {
         title: "sentry job audit".into(),
-        cmd: Cmd::local(&exe).args(["job", "audit"]).timeout(None),
-        then: vec![Fetch::Reports],
+        cmd: sentry_cmd(&["job", "audit"]),
+        queue: Vec::new(),
+        then: vec![Fetch::Reports, Fetch::Jobs],
         ok_toast: "audit complete".into(),
     })
 }
@@ -83,17 +80,29 @@ pub fn pattern_for(f: &Finding) -> Option<(BaselineEdit, String)> {
     let (p, what) = match kind {
         "flatpak-perm" => {
             let app = rest.split(':').next()?;
-            (format!("flatpak-perm:{app}:*"), format!("every flagged permission of {app}"))
+            (
+                format!("flatpak-perm:{app}:*"),
+                format!("every flagged permission of {app}"),
+            )
         }
         "repo" => {
             let stem = rest.split(['-', '.']).next()?;
-            (format!("repo:{stem}*"), format!("every repo file starting with {stem}"))
+            (
+                format!("repo:{stem}*"),
+                format!("every repo file starting with {stem}"),
+            )
         }
         "unit-failed" => {
             let scope = rest.split(':').next()?;
-            (format!("unit-failed:{scope}:*"), format!("every failed {scope} unit"))
+            (
+                format!("unit-failed:{scope}:*"),
+                format!("every failed {scope} unit"),
+            )
         }
-        "flatpak-gl-stale" => ("flatpak-gl-stale:*".into(), "every stale GL extension".into()),
+        "flatpak-gl-stale" => (
+            "flatpak-gl-stale:*".into(),
+            "every stale GL extension".into(),
+        ),
         _ => return None,
     };
     Some((BaselineEdit::Finding(p), what))
@@ -192,10 +201,7 @@ impl Audit {
                             color: t.yellow,
                             lines: vec![
                                 Line::styled(format!("Treat {what} as expected?"), t.fg()),
-                                Line::styled(
-                                    format!("baseline.toml ← {}", edit.value()),
-                                    t.dim(),
-                                ),
+                                Line::styled(format!("baseline.toml ← {}", edit.value()), t.dim()),
                                 Line::styled(
                                     "Future audits suppress matching findings. Edit the file to undo.",
                                     t.dim(),
@@ -221,7 +227,14 @@ impl Audit {
                 area,
                 t,
                 &[
-                    (if loading { "loading reports…" } else { "No audit yet." }, t.fg()),
+                    (
+                        if loading {
+                            "loading reports…"
+                        } else {
+                            "No audit yet."
+                        },
+                        t.fg(),
+                    ),
                     ("", t.dim()),
                     (
                         "Press Enter to run one. It's read-only and takes about a second.",
@@ -316,7 +329,10 @@ impl Audit {
             );
         }
         let mut sum = vec![
-            Span::styled(format!("{} high", c.high), t.s(if c.high > 0 { t.red } else { t.dim })),
+            Span::styled(
+                format!("{} high", c.high),
+                t.s(if c.high > 0 { t.red } else { t.dim }),
+            ),
             Span::styled(" · ", t.dim()),
             Span::styled(
                 format!("{} medium", c.medium),

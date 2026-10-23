@@ -368,7 +368,12 @@ mod tests {
             ]),
             ..Default::default()
         });
-        let f = derive(&r, None, &base(&["0.0.0.0:22/sshd"], &[]), &Config::default());
+        let f = derive(
+            &r,
+            None,
+            &base(&["0.0.0.0:22/sshd"], &[]),
+            &Config::default(),
+        );
         assert_eq!(
             ids(&f),
             vec![
@@ -409,7 +414,11 @@ mod tests {
             ids(&f),
             vec![
                 ("flatpak-perm:com.visualstudio.code:host", Sev::High, false),
-                ("flatpak-perm:com.valvesoftware.Steam:home", Sev::Medium, false),
+                (
+                    "flatpak-perm:com.valvesoftware.Steam:home",
+                    Sev::Medium,
+                    false
+                ),
                 (
                     "flatpak-gl-stale:org.freedesktop.Platform.GL.nvidia-610-57-04",
                     Sev::Low,
@@ -421,7 +430,10 @@ mod tests {
         // First report: nothing was "gained".
         let first = derive(&cur, None, &base(&[], &[]), &Config::default());
         assert_eq!(first[0].severity, Sev::Medium);
-        assert_eq!(first[1].message, "com.visualstudio.code has filesystem=host");
+        assert_eq!(
+            first[1].message,
+            "com.visualstudio.code has filesystem=host"
+        );
     }
 
     #[test]
@@ -436,7 +448,10 @@ mod tests {
         };
         let cur = report(Sections {
             repos: Some(vec![
-                repo("_copr:copr.fedorainfracloud.org:someuser:project.repo", true),
+                repo(
+                    "_copr:copr.fedorainfracloud.org:someuser:project.repo",
+                    true,
+                ),
                 repo("updates-master.repo", false),
             ]),
             ..Default::default()
@@ -448,7 +463,10 @@ mod tests {
         let f = derive(&cur, Some(&empty), &base(&[], &[]), &Config::default());
         assert_eq!(f[0].severity, Sev::High);
         assert!(f[0].message.starts_with("New COPR"));
-        assert_eq!(f[1].message, "Third-party repo enabled: updates-master.repo");
+        assert_eq!(
+            f[1].message,
+            "Third-party repo enabled: updates-master.repo"
+        );
         let again = derive(&cur, Some(&cur), &base(&[], &[]), &Config::default());
         assert_eq!(again[0].severity, Sev::Medium);
         let first = derive(&cur, None, &base(&[], &[]), &Config::default());
@@ -492,11 +510,19 @@ mod tests {
                 ("container-stale-home:arch", Sev::Medium, false),
                 ("unit-failed:user:a.service", Sev::Medium, false),
                 ("cache-size", Sev::Low, false),
-                ("unit-failed:system:systemd-remount-fs.service", Sev::Medium, true),
+                (
+                    "unit-failed:system:systemd-remount-fs.service",
+                    Sev::Medium,
+                    true
+                ),
             ]
         );
         assert_eq!(f[0].message, "arch: stopped 64d, mounts $HOME");
-        assert_eq!(cur.counts(&base(&[], &[])).medium, 0, "counts use stored findings");
+        assert_eq!(
+            cur.counts(&base(&[], &[])).medium,
+            0,
+            "counts use stored findings"
+        );
     }
 
     #[test]

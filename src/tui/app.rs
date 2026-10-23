@@ -37,7 +37,22 @@ pub enum Effect {
     Kill(u32, String),
     /// Append to `baseline.toml` (listener key or finding id/pattern).
     Baseline(BaselineEdit),
+    /// Ask for a line of input in the key bar (initial text).
+    Prompt(Prompt, String),
     Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Prompt {
+    Cadence(crate::jobs::JobId),
+}
+
+impl Prompt {
+    fn label(self) -> String {
+        match self {
+            Prompt::Cadence(j) => format!("cadence for {} (e.g. 30d, 7d, off): ", j.name()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +74,8 @@ impl BaselineEdit {
 pub struct RunSpec {
     pub title: String,
     pub cmd: Cmd,
+    /// Run after `cmd`, in order, while each one succeeds.
+    pub queue: Vec<Cmd>,
     /// Collectors to refresh once the command exits.
     pub then: Vec<Fetch>,
     pub ok_toast: String,
@@ -84,6 +101,7 @@ struct RunPane {
     then: Vec<Fetch>,
     ok_toast: String,
     scroll: usize,
+    queue: VecDeque<Cmd>,
 }
 
 const RUN_LINES: usize = 2000;
@@ -92,6 +110,7 @@ enum Input {
     None,
     Filter(String),
     Command(String),
+    Prompt(Prompt, String),
 }
 
 struct Sched {
@@ -206,6 +225,7 @@ impl App {
     pub fn start(&mut self, now: Instant) {
         // State files only (cheap): the dashboard Status panel and tab badges need them.
         self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
+        self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
         self.enter(self.screen, now);
     }
 
@@ -352,12 +372,24 @@ impl App {
                 if let Err(e) = &r
                     && matches!(
                         f,
-                        Fetch::OstreeCheck | Fetch::FlatpakUpdates | Fetch::Breakdown | Fetch::Reports
+                        Fetch::OstreeCheck
+                            | Fetch::FlatpakUpdates
+                            | Fetch::Breakdown
+                            | Fetch::Reports
+                            | Fetch::Plan(_)
+                            | Fetch::Cleanup
                     )
                 {
                     self.toast(e.text());
                 }
                 self.data.apply(f, r);
+                if let Fetch::Plan(job) = f
+                    && let Some(p) = self.data.plan.take()
+                    && self.modal.is_none()
+                    && self.run.is_none()
+                {
+                    self.modal = Some(super::screens::jobs::plan_modal(&self.theme, job, &p));
+                }
                 self.dirty = true;
             }
             Event::Run(id, msg) => self.on_run_msg(id, msg),
@@ -377,7 +409,31 @@ impl App {
                 run.lines.push_back((text, stderr));
             }
             StreamMsg::Exit { code, elapsed } => {
-                run.done = Some((code, elapsed));
+                if code == 0
+                    && let Some(next) = run.queue.pop_front()
+                {
+                    run.lines.push_back((String::new(), false));
+                    run.lines
+                        .push_back((format!("$ {}", next.display()), false));
+                    let tx = self.tx.clone();
+                    match next.stream(move |m| {
+                        let _ = tx.send(Event::Run(id, m));
+                    }) {
+                        Ok(pid) => {
+                            run.pid = Some(pid);
+                            run.cmd = next.display();
+                            self.dirty = true;
+                            return;
+                        }
+                        Err(e) => {
+                            run.lines.push_back((e.to_string(), true));
+                            run.done = Some((127, elapsed));
+                        }
+                    }
+                } else {
+                    run.done = Some((code, elapsed));
+                }
+                let code = run.done.map_or(code, |d| d.0);
                 run.pid = None;
                 let then = std::mem::take(&mut run.then);
                 let msg = if code == 0 {
@@ -466,7 +522,7 @@ impl App {
 
     fn input_key(&mut self, k: KeyEvent, now: Instant) {
         let buf = match &mut self.input {
-            Input::Filter(s) | Input::Command(s) => s,
+            Input::Filter(s) | Input::Command(s) | Input::Prompt(_, s) => s,
             Input::None => return,
         };
         match k.code {
@@ -485,8 +541,10 @@ impl App {
             }
             KeyCode::Enter => {
                 let input = std::mem::replace(&mut self.input, Input::None);
-                if let Input::Command(c) = input {
-                    self.command(c.trim(), now);
+                match input {
+                    Input::Command(c) => self.command(c.trim(), now),
+                    Input::Prompt(p, text) => self.submit(p, text.trim()),
+                    _ => {}
                 }
                 return;
             }
@@ -498,13 +556,42 @@ impl App {
         }
     }
 
+    fn submit(&mut self, p: Prompt, text: &str) {
+        match p {
+            Prompt::Cadence(job) => {
+                use crate::jobs::state::{Every, set_every};
+                match Every::parse(text) {
+                    Ok(e) => match set_every(job, e) {
+                        Ok(()) => {
+                            self.toast(format!(
+                                "{} every {} (cadence.toml)",
+                                job.name(),
+                                e.label()
+                            ));
+                            self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
+                        }
+                        Err(e) => self.toast(format!("cadence.toml: {e}")),
+                    },
+                    Err(e) => self.toast(e),
+                }
+            }
+        }
+    }
+
     fn command(&mut self, c: &str, now: Instant) {
         let mut parts = c.split_whitespace();
         match (parts.next(), parts.next()) {
             (Some("q" | "q!" | "quit" | "qa"), _) => self.quit = true,
             (Some("refresh" | "r"), _) => self.on_key(KeyEvent::from(KeyCode::Char('r')), now),
             (Some("help" | "h"), _) => self.modal = Some(help_modal(&self.theme)),
-            (Some("job"), _) => self.toast("jobs arrive in milestone 4 — :job is not wired yet"),
+            (Some("job"), Some(name)) => match crate::jobs::JobId::from_name(name) {
+                Some(j) => {
+                    self.enter(ScreenId::Jobs, now);
+                    self.data.fetch(Fetch::Plan(j), &self.cfg, &self.tx);
+                }
+                None => self.toast(format!("unknown job {name}")),
+            },
+            (Some("job"), None) => self.enter(ScreenId::Jobs, now),
             (Some("workflow"), _) => {
                 self.toast("workflows arrive in milestone 5 — :workflow is not wired yet")
             }
@@ -580,6 +667,7 @@ impl App {
                         Err(e) => self.toast(format!("baseline.toml: {e}")),
                     }
                 }
+                Effect::Prompt(p, init) => self.input = Input::Prompt(p, init),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -601,6 +689,7 @@ impl App {
             then: spec.then,
             ok_toast: spec.ok_toast,
             scroll: 0,
+            queue: spec.queue.into(),
         };
         match spec.cmd.stream(move |m| {
             let _ = tx.send(Event::Run(id, m));
@@ -793,6 +882,11 @@ impl App {
                 let c = r.report.counts(&self.data.baseline);
                 (c.high > 0).then(|| (format!(" !{}", c.high), t.red))
             }
+            ScreenId::Jobs => {
+                let runs = self.data.job_runs.get()?;
+                let n = crate::jobs::state::due_jobs(&self.cfg, runs, jiff::Timestamp::now()).len();
+                (n > 0).then(|| (format!(" {n}"), t.yellow))
+            }
             ScreenId::Upgrade => self.resume.as_ref().map(|_| (" ●".into(), t.yellow)),
             _ => None,
         }
@@ -855,6 +949,12 @@ impl App {
             Input::Command(s) => {
                 spans.push(Span::styled(format!(":{s}"), t.fg()));
                 spans.push(Span::styled("▏", t.s(t.cyan)));
+            }
+            Input::Prompt(p, s) => {
+                spans.push(Span::styled(p.label(), t.dim()));
+                spans.push(Span::styled(s.clone(), t.fg()));
+                spans.push(Span::styled("▏", t.s(t.cyan)));
+                spans.push(Span::styled("   Enter save · Esc cancel", t.dim()));
             }
             Input::None => {
                 let hints: Vec<(&str, &str)> = if self.run.is_some() {
@@ -1045,4 +1145,54 @@ pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::data::DataStore;
+
+    fn sh(script: &str) -> Cmd {
+        Cmd::local("sh").args(["-c", script]).timeout(None)
+    }
+
+    /// Run `spec` to completion, pumping stream events through the app.
+    fn run(spec: RunSpec) -> (Vec<String>, Option<(i32, Duration)>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::for_test(
+            Config::default(),
+            DataStore::blank(String::new(), String::new()),
+            ScreenId::Dash,
+        );
+        a.tx = tx;
+        a.apply(vec![Effect::Run(spec)], Instant::now());
+        while a.run.as_ref().is_some_and(|r| r.done.is_none()) {
+            let ev = rx.recv_timeout(Duration::from_secs(5)).expect("event");
+            a.on_event(ev, Instant::now());
+        }
+        let r = a.run.take().unwrap();
+        (r.lines.into_iter().map(|(l, _)| l).collect(), r.done)
+    }
+
+    #[test]
+    fn queue_runs_in_order_and_stops_on_failure() {
+        let spec = |first: &str| RunSpec {
+            title: "t".into(),
+            cmd: sh(first),
+            queue: vec![sh("echo two"), sh("echo three")],
+            then: vec![],
+            ok_toast: "ok".into(),
+        };
+        let (lines, done) = run(spec("echo one"));
+        let text = lines.join("|");
+        assert!(text.starts_with("one|"), "{text}");
+        assert!(
+            text.contains("$ echo two|two") && text.ends_with("three"),
+            "{text}"
+        );
+        assert_eq!(done.map(|d| d.0), Some(0));
+        let (lines, done) = run(spec("echo bad; exit 3"));
+        assert_eq!(lines, vec!["bad"]);
+        assert_eq!(done.map(|d| d.0), Some(3));
+    }
 }

@@ -69,4 +69,3 @@ pub fn parse_os_version(text: &str) -> String {
         .or_else(|| get("VERSION_ID="))
         .unwrap_or_default()
 }
-

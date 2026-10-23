@@ -140,6 +140,7 @@ impl Containers {
                     yes: Some((
                         "stop".into(),
                         vec![Effect::Run(RunSpec {
+                            queue: Vec::new(),
                             title: format!("podman stop {}", c.name),
                             cmd,
                             then,
@@ -174,6 +175,7 @@ impl Containers {
                     yes: Some((
                         "remove".into(),
                         vec![Effect::Run(RunSpec {
+                            queue: Vec::new(),
                             title: format!("podman rm {}", c.name),
                             cmd,
                             then,

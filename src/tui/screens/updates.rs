@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row};
 
 use super::{Hints, View};
-use crate::collectors::ostree::Ostree;
+use crate::collectors::ostree::{Ostree, UpgradePlan, upgrade_plan};
 use crate::exec::Cmd;
 use crate::fmt;
 use crate::tui::app::{Effect, Modal, RunSpec};
@@ -37,32 +37,6 @@ pub fn hints(_v: &View) -> Hints {
         ("R", "rollback"),
         ("r", "refresh"),
     ]
-}
-
-/// What `u` should do, given the booted deployment and pending update.
-#[derive(Debug, PartialEq)]
-pub enum UpgradePlan {
-    NoUpdate,
-    Routine,
-    /// Kernel changes: stage the upgrade dropping exactly this kmod (cheatsheet §2 step 1).
-    Ritual(String),
-    /// Kernel changes but not exactly one layered kmod-nvidia: stop (cheatsheet).
-    Ambiguous(Vec<String>),
-}
-
-pub fn upgrade_plan(o: &Ostree) -> UpgradePlan {
-    let Some(u) = &o.update else {
-        return UpgradePlan::NoUpdate;
-    };
-    if !u.kernel_changed {
-        return UpgradePlan::Routine;
-    }
-    match o.kmods().as_slice() {
-        [one] => UpgradePlan::Ritual(one.to_string()),
-        // No layered kmod at all: nothing to drop, a plain upgrade is right.
-        [] => UpgradePlan::Routine,
-        many => UpgradePlan::Ambiguous(many.iter().map(|s| s.to_string()).collect()),
-    }
 }
 
 fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
@@ -96,6 +70,7 @@ fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
                 yes: Some((
                     "stage upgrade".into(),
                     vec![Effect::Run(RunSpec {
+                        queue: Vec::new(),
                         title: "rpm-ostree upgrade".into(),
                         cmd,
                         then,
@@ -134,6 +109,7 @@ fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
                 yes: Some((
                     "stage upgrade".into(),
                     vec![Effect::Run(RunSpec {
+                        queue: Vec::new(),
                         title: "rpm-ostree upgrade (kmod ritual step 1)".into(),
                         cmd,
                         then,
@@ -210,6 +186,7 @@ fn flatpak_effects(v: &View) -> Vec<Effect> {
         yes: Some((
             "update".into(),
             vec![Effect::Run(RunSpec {
+                queue: Vec::new(),
                 title: "flatpak update".into(),
                 cmd,
                 then: vec![Fetch::Flatpak, Fetch::FlatpakUpdates],
@@ -242,6 +219,7 @@ fn rollback_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
         yes: Some((
             "roll back".into(),
             vec![Effect::Run(RunSpec {
+                queue: Vec::new(),
                 title: "rpm-ostree rollback".into(),
                 cmd,
                 then: vec![Fetch::Ostree],

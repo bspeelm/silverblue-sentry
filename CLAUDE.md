@@ -6,11 +6,12 @@ Visual target: `docs/design/sentry-tui.dc.html` (read the source; don't render i
 Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/workflows/*.toml`.
 
 ## Commands
-- Build/test: `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings`
+- Build/test: `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
 - Snapshot tests: `cargo insta review` (or `INSTA_UPDATE=always cargo test` and then inspect `git diff`)
 - Re-capture fixtures: `scripts/capture-fixtures.sh` (scrubs the username and IPs; journal fixtures are synthetic, never captured)
 - Install: `install -Dm755 target/release/sentry ~/.local/bin/sentry`
-- Try a collector: `cargo run -q -- collect ostree`
+- Try a collector: `cargo run -q -- collect ostree`; a job plan: `cargo run -q -- job cleanup-flatpak --dry-run`
+- Manual TUI tests: point `XDG_DATA_HOME`/`XDG_CONFIG_HOME` at a scratch dir so reports, jobs.json and baseline.toml stay out of the real ones
 
 ## Notes
 - `XDG_CACHE_HOME` may be set (e.g. bothy shells): caches then live there, not `~/.cache/sentry`.
@@ -32,4 +33,6 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - [x] M2 collectors + Dashboard/Processes/Network/Updates/Containers/Flatpaks
   (measured on host: 0.7% of one core incl. children at 1 Hz dashboard, 8 MB RSS)
 - [x] M3 audit (`src/audit/`, `sentry job audit`, Audit screen)
-- [ ] M4 jobs · [ ] M5 workflows · [ ] M6 recorder · [ ] M7 polish
+- [x] M4 jobs (`src/jobs/`: plans, `sentry job`, Jobs + Cleanup screens, cadence)
+- [ ] M5 workflows
+- [ ] M6 recorder · [ ] M7 polish

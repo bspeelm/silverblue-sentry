@@ -1,7 +1,6 @@
 //! Last-run records (`~/.local/share/sentry/jobs.json`, written by the job process) and cadence:
 //! config `[jobs]` overridden by `~/.config/sentry/cadence.toml` (machine-written by the TUI `e`).
 //! Cadence is a reminder, never a trigger.
-#![allow(dead_code)] // cadence is wired into the Jobs screen in milestone 4
 
 use std::collections::BTreeMap;
 
@@ -43,7 +42,13 @@ pub fn record(job: JobId, ok: bool, summary: &str) -> anyhow::Result<()> {
         Run {
             at: Timestamp::now(),
             ok,
-            summary: summary.lines().next().unwrap_or("").chars().take(200).collect(),
+            summary: summary
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect(),
         },
     );
     paths::write_atomic(&runs_path(), &serde_json::to_vec_pretty(&r)?)?;
@@ -92,7 +97,11 @@ pub fn every_with(job: JobId, cfg: &Config, ov: &BTreeMap<String, String>) -> Ev
     let s = ov
         .get(job.name())
         .cloned()
-        .or_else(|| cfg.jobs.get(job.name()).and_then(|j| j.suggested_every.clone()))
+        .or_else(|| {
+            cfg.jobs
+                .get(job.name())
+                .and_then(|j| j.suggested_every.clone())
+        })
         .or_else(|| job.default_every().map(str::to_string));
     match s {
         None => Every::Never,
@@ -158,7 +167,10 @@ mod tests {
     fn cadence_precedence_and_due() {
         let (mut cfg, _) = Config::parse("[jobs]\naudit.suggested_every = \"7d\"\n").unwrap();
         let mut ov = BTreeMap::new();
-        assert_eq!(every_with(JobId::Audit, &cfg, &ov), Every::Interval(Dur::secs(7 * 86400)));
+        assert_eq!(
+            every_with(JobId::Audit, &cfg, &ov),
+            Every::Interval(Dur::secs(7 * 86400))
+        );
         ov.insert("audit".into(), "off".into());
         assert_eq!(every_with(JobId::Audit, &cfg, &ov), Every::Off);
         assert_eq!(every_with(JobId::UpdateApply, &cfg, &ov), Every::Never);

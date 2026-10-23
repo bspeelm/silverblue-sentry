@@ -310,7 +310,11 @@ mod tests {
         assert_eq!(st("22000"), ListenStatus::New);
         assert_eq!(st("8384"), ListenStatus::Local);
         assert_eq!(st("5353"), ListenStatus::Local);
-        assert_eq!(st("35905"), ListenStatus::Ephemeral, "udp on an ephemeral port");
+        assert_eq!(
+            st("35905"),
+            ListenStatus::Ephemeral,
+            "udp on an ephemeral port"
+        );
     }
 
     #[test]

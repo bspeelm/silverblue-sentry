@@ -185,7 +185,9 @@ pub struct Counts {
 
 impl Report {
     pub fn open<'a>(&'a self, b: &'a Baseline) -> impl Iterator<Item = &'a Finding> + 'a {
-        self.findings.iter().filter(|f| !findings::is_expected(f, b))
+        self.findings
+            .iter()
+            .filter(|f| !findings::is_expected(f, b))
     }
 
     pub fn counts(&self, b: &Baseline) -> Counts {
@@ -405,7 +407,10 @@ pub fn run(
     let path = store::save(&r, prev.as_ref())?;
     let pruned = store::prune(ctx.cfg.audit.retention_months, ctx.now);
     if pruned > 0 {
-        progress(format!("pruned {pruned} report(s) older than {} months", ctx.cfg.audit.retention_months));
+        progress(format!(
+            "pruned {pruned} report(s) older than {} months",
+            ctx.cfg.audit.retention_months
+        ));
     }
     Ok((r, path, prev))
 }

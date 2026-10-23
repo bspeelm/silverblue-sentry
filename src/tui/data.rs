@@ -24,7 +24,9 @@ use crate::collectors::system::{Sampler, SystemSnap};
 use crate::collectors::units::{self, Units};
 use crate::collectors::{CollectError, Ctx};
 use crate::config::Config;
-use crate::exec::Cmd;
+use crate::jobs::JobId;
+use crate::jobs::plan::Plan;
+use crate::jobs::state::Runs;
 
 /// Background work the UI can request. At most one of each kind is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,6 +44,12 @@ pub enum Fetch {
     Units,
     /// Stored audit reports (`reports/*.json`).
     Reports,
+    /// `jobs.json` last-run records.
+    Jobs,
+    /// Plans of the four cleanup jobs (Cleanup screen).
+    Cleanup,
+    /// One job's plan, for its confirm modal.
+    Plan(JobId),
 }
 
 pub enum Payload {
@@ -56,6 +64,9 @@ pub enum Payload {
     Podman(Podman),
     Units(Units),
     Reports(Vec<Stored>),
+    Jobs(Runs),
+    Cleanup(Vec<Plan>),
+    Plan(Plan),
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +177,10 @@ pub struct DataStore {
     pub podman: Slot<Podman>,
     pub units: Slot<Units>,
     pub reports: Slot<Vec<Stored>>,
+    pub job_runs: Slot<Runs>,
+    pub cleanup: Slot<Vec<Plan>>,
+    /// The most recent single-job plan (consumed by the app to open a modal).
+    pub plan: Option<Plan>,
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
 
@@ -212,6 +227,9 @@ impl DataStore {
             podman: Slot::default(),
             units: Slot::default(),
             reports: Slot::default(),
+            job_runs: Slot::default(),
+            cleanup: Slot::default(),
+            plan: None,
             baseline: Baseline::default(),
             inflight: HashSet::new(),
             os_version,
@@ -272,6 +290,14 @@ impl DataStore {
             Fetch::Podman => put!(podman, Payload::Podman),
             Fetch::Units => put!(units, Payload::Units),
             Fetch::Reports => put!(reports, Payload::Reports),
+            Fetch::Jobs => put!(job_runs, Payload::Jobs),
+            Fetch::Cleanup => put!(cleanup, Payload::Cleanup),
+            Fetch::Plan(_) => {
+                self.plan = match r {
+                    Ok(Payload::Plan(p)) => Some(p),
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -311,39 +337,34 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         Fetch::Net => Payload::Net(net::collect(ctx)?),
         Fetch::Ostree => Payload::Ostree(ostree::collect()?),
         Fetch::OstreeCheck => {
-            let out = Cmd::host("rpm-ostree")
-                .args(["upgrade", "--preview"])
-                .timeout(Some(std::time::Duration::from_secs(600)))
-                .run()
-                .map_err(CollectError::from)?;
-            // Exit 77 means "no updates" for --check; --preview returns 0 either way.
-            if out.code != 0 && out.code != 77 {
-                return Err(FetchErr::Failed(format!(
-                    "rpm-ostree upgrade --preview: {}",
-                    out.stderr.trim()
-                )));
-            }
-            let at = stored(
-                cache::OSTREE_CHECK,
-                cache::store(cache::OSTREE_CHECK, &serde_json::json!({})),
-            )?;
-            Payload::OstreeChecked(ostree::collect()?, at)
+            let o = crate::jobs::check_ostree()?;
+            let at = cache::load::<serde_json::Value>(cache::OSTREE_CHECK)
+                .map_or_else(Timestamp::now, |c| c.fetched_at);
+            // `c` is the update-check job, so its cadence resets.
+            let n = o
+                .update
+                .as_ref()
+                .map_or(0, |u| u.upgraded.len() + u.added.len());
+            let _ = crate::jobs::state::record(
+                crate::jobs::JobId::UpdateCheck,
+                true,
+                &format!("{n} ostree (from the TUI)"),
+            );
+            Payload::OstreeChecked(o, at)
         }
         Fetch::Flatpak => Payload::Flatpak(flatpak::collect(ctx)?),
-        Fetch::FlatpakUpdates => {
-            let u = flatpak::collect_updates()?;
-            let at = stored(
-                cache::FLATPAK_UPDATES,
-                cache::store(cache::FLATPAK_UPDATES, &u),
-            )?;
-            Payload::FlatpakUpdates(Cached {
-                fetched_at: at,
-                data: u,
-            })
-        }
+        Fetch::FlatpakUpdates => Payload::FlatpakUpdates(crate::jobs::check_flatpak()?),
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
         Fetch::Reports => Payload::Reports(crate::audit::store::list()),
+        Fetch::Jobs => Payload::Jobs(crate::jobs::state::load()),
+        Fetch::Cleanup => Payload::Cleanup(
+            JobId::CLEANUP
+                .iter()
+                .map(|j| crate::jobs::plan::plan(*j, ctx))
+                .collect(),
+        ),
+        Fetch::Plan(j) => Payload::Plan(crate::jobs::plan::plan(j, ctx)),
     })
 }
 
