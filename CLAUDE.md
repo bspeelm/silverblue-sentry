@@ -14,7 +14,7 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - Manual TUI tests: point `XDG_DATA_HOME`/`XDG_CONFIG_HOME` at a scratch dir so reports, jobs.json and baseline.toml stay out of the real ones
 
 ## Notes
-- `XDG_CACHE_HOME` may be set (e.g. bothy shells): caches then live there, not `~/.cache/sentry`.
+- `XDG_CACHE_HOME` may be set (some dev shells set it): caches then live there, not `~/.cache/sentry`.
 - Render tests: `src/tui/screens/tests.rs` builds a `DataStore` from fixtures; snapshots in `src/tui/screens/snapshots/`.
 - `assets/workflows/*.toml` are embedded and seeded to `~/.config/sentry/workflows/` when missing; `release-rebase` is `draft = true` (no cheatsheet covers a rebase).
 - Workflow tests: put a harmless TOML in a scratch `XDG_CONFIG_HOME`, run with `SENTRY_NO_REBOOT=1`, fake a reboot by editing `boot_id` in `state.json`.

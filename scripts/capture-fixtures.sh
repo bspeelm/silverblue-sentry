@@ -10,7 +10,9 @@ R=/; [[ -f /run/.containerenv ]] && R=/run/host/
 USER_NAME=$(id -un)
 
 scrub() {
-  # username -> user; every IPv4 except loopback/wildcard/multicast -> stable TEST-NET address
+  # username -> user; every IPv4 except loopback/wildcard/multicast -> stable TEST-NET address;
+  # IPv6 -> documentation/link-local placeholders; VPN interface names -> tun0.
+  # Review container, unit and repo names by hand: project names can leak through them.
   python3 -I -c '
 import re,sys
 user=sys.argv[1]; seen={}
@@ -22,9 +24,23 @@ def ip(m):
         n=len(seen)+1
         seen[a]=("192.0.2.%d" if int(o[0]) in (10,192,172) else "198.51.100.%d")%n
     return seen[a]
+six={}
+def ip6(m):
+    # Link-local, ULA and global IPv6 identify the machine or its VPN: map to 2001:db8::/32
+    # (fe80:: stays link-local). Loopback, wildcard and multicast stay as they are.
+    a=m.group(0); low=a.lower()
+    if low in ("::","::1") or low.startswith("ff") or ":" not in a.strip(":"): return a
+    if a not in six:
+        n=len(six)+1
+        six[a]=("fe80::%x" if low.startswith("fe80") else "2001:db8::%x")%n
+    return six[a]
 t=sys.stdin.read().replace(user,"user")
 if sys.argv[2]!="ip": sys.stdout.write(t); sys.exit()
-sys.stdout.write(re.sub(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",ip,t))
+t=re.sub(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])",ip,t)
+t=re.sub(r"(?<=\[)[0-9a-fA-F:]+(?=[]%])",ip6,t)
+# Interface names other than lo/enp*/eth*/wl* (VPN tunnels name their server): -> tun0
+t=re.sub(r"%(?!lo\b|enp|eth|wl)[A-Za-z0-9_.-]+",r"%tun0",t)
+sys.stdout.write(t)
 ' "$USER_NAME" "${1:-}"
 }
 cap() { local out=$1; shift; mkdir -p "$(dirname "$F/$out")"; local mode=""; [[ $out == net/* ]] && mode=ip; "$@" 2>/dev/null | scrub $mode > "$F/$out" || true; }

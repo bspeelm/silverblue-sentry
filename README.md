@@ -1,15 +1,61 @@
-# sentry
+# silverblue-sentry
 
-A daemon-free monitor and maintenance TUI for Fedora Silverblue (Rust + ratatui). It runs only while you have it open. Nothing is installed as a service, timer or autostart entry. When it exits, the only things left behind are files under `~/.config/sentry`, `~/.local/share/sentry` and `~/.cache/sentry` (or the `XDG_*_HOME` locations if those are set).
+A daemon-free monitor and maintenance TUI for **Fedora Silverblue**: live system health, security audits with month-over-month diffs, dry-run-first cleanup, and resumable multi-reboot upgrade workflows that know about the NVIDIA kmod dance. The binary is called `sentry`.
+
+```
+ sentry   silverblue 44.20261002.0  up 3d 04:12  ● live 1 Hz   Fri 23 Oct 16:04
+ 1 Dashboard   2   3 12   4 !   5   6   7   8   9   0
+────────────────────────────────────────────────────────────────────────────────
+┌ CPU · i9-14900K · 24c/32t ───────────────────────────────────────────────────┐
+│ total  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  34%   load 0.95 1.02 0.91 │
+│ ▃▁▁▂▄▅▆▆▆▅▄▂ ▂▃▅▆▆▆▆▅▃▁▁▃▄▅▆▆▆▅▄▂ ▂▃▅▆▆▆▆▄▃▁▁▃▄▆▆▆▆▅▄▂ ▂▄▅▆▆▆▆▄▃▁▁▃▄▆▆▆▆▅▄▂  │
+│ cores  ▁▁▂▂▃▃▄▄▅▅▆▆▇▇█▁▂▂▃▃▄▄▅▅▆▆▇▇█▁▂▂                                      │
+│ temp   cpu 53°C   gpu 36°C   nvme 44°C                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Memory ──────────────────────────────┐ ┌ Status ─────────────────────────────┐
+│ mem   20.0 / 64.0 GiB                │ │ updates       216 os · 5 fp  2h ago │
+│ █████████░░░░░░░░░░░░░░░░░░░░░  31%  │ │               kernel changes  kmod… │
+│                                      │ │ findings      0 high · 2 med · 1 low│
+└──────────────────────────────────────┘ └─────────────────────────────────────┘
+ 1-0  screens   c  check updates   r  measure disks   ?  help   q  quit
+```
+
+## Who it's for
+
+People running Fedora Silverblue (or another rpm-ostree desktop) who want one place to see what the system is doing and to do routine maintenance carefully. It's most useful if you run **NVIDIA through RPM Fusion akmods with the built `kmod-nvidia` layered as a local package** (needed with Secure Boot): `quick-update` encodes the drop-old-kmod → reboot → build/layer-new-kmod → reboot ritual so you can't skip a step. Without NVIDIA, the GPU parts simply hide and the routine upgrade path is a single step.
+
+It is opinionated about one kind of setup, and the procedures it encodes come from the cheatsheets in `docs/cheatsheets/`. Read them before trusting a workflow on your machine.
+
+## Status and safety
+
+**v0.1.0, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine, but some paths have only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree upgrade`/`rollback`/`cleanup`, reboots, `akmods`, `flatpak uninstall`, `podman` prune/remove.
+
+- Nothing runs in the background: no services, timers or autostart. The recorder is a foreground process you start and stop.
+- Every destructive action shows a preview, waits for your confirmation, and streams its output. Reboots never happen on their own.
+- `release-rebase` ships as a **draft** and refuses to start until you've reviewed it and removed `draft = true`.
+- Workflow steps that need `sudo` must run from a host terminal, not from inside a toolbox.
+- Never root: privileged operations go through `rpm-ostree` (polkit) or `sudo` prompts in your terminal.
 
 ## Install
+
+From the [latest release](https://github.com/bspeelm/silverblue-sentry/releases/latest) (x86_64; built on Fedora 44 and linked only against glibc):
+
+```sh
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.0/silverblue-sentry-0.1.0-x86_64-linux-gnu.tar.gz
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.0/silverblue-sentry-0.1.0-x86_64-linux-gnu.tar.gz.sha256
+sha256sum -c silverblue-sentry-0.1.0-x86_64-linux-gnu.tar.gz.sha256
+tar xf silverblue-sentry-0.1.0-x86_64-linux-gnu.tar.gz
+install -Dm755 silverblue-sentry-0.1.0/sentry ~/.local/bin/sentry
+```
+
+From source (a toolbox with `cargo` works fine; Rust 1.85+):
 
 ```sh
 cargo build --release
 install -Dm755 target/release/sentry ~/.local/bin/sentry
 ```
 
-You can build inside a toolbox. The binary links only against glibc, so it runs on the host as-is. Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reached through `flatpak-spawn --host`. Run it from a **host** terminal when a workflow step needs `sudo`: a toolbox can't give sudo a terminal to prompt on.
+Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reached through `flatpak-spawn --host`, so `sentry` works from either side. It leaves files only under `~/.config/sentry`, `~/.local/share/sentry` and `~/.cache/sentry` (or the `XDG_*_HOME` locations).
 
 ## Commands
 
@@ -77,6 +123,10 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 - `baseline.toml`: listeners and findings marked expected.
 - `cadence.toml`: job cadences set with `e`.
 
+## Development
+
+`cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); screens have insta snapshot tests. `CLAUDE.md` holds the working notes the project was built with.
+
 ## Docs
 
 - `docs/spec.md`: the build spec.
@@ -84,3 +134,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 - `docs/design/m3-m7.md`: design for the audit, jobs, workflows and recorder.
 - `docs/design/sentry-tui.dc.html`: the visual target.
 - `docs/cheatsheets/`: the upgrade procedures the workflows encode.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
