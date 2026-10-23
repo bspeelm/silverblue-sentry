@@ -105,3 +105,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A check is `podman exec <name> sh -c 'dnf -q check-update; rpm -qa …'`. Exit 100 means updates, 0 means none, and a container without dnf shows `n/a`. Stopped containers are started for the check and stopped again.
 - Starting a container moves podman's exit time to now, which would hide staleness. When sentry stops a container it started, it records podman's new exit time and the original one in `~/.local/share/sentry/container-stops.json`. The podman collector reports the original for as long as the exit time is still sentry's.
 - Upgrades (`u`/`U`, the `update-apply` toolboxes item, `quick-update`) run `podman exec --user root <name> dnf -y upgrade`. Running as root through podman needs no sudo, so no terminal either. A stopped container is started for the upgrade and stopped again; an upgrade counts as use, so its exit time isn't preserved.
+
+## A16. release-rebase revisions (reviewed with the user)
+- **RPM Fusion:** the swap moved to a one-time `rpmfusion-migrate` workflow, run on the current release. It does `rpm-ostree install --uninstall <exact local release RPMs> rpmfusion-free-release rpmfusion-nonfree-release`, then a reboot. `install`, unlike `update`, doesn't pull a pending base upgrade. release-rebase stops if the release packages are still pinned (`rpmfusion-pinned --expect unpinned`).
+- **New checks:**
+  - `repos-ready --target N`: fetches each enabled third-party repo's `repomd.xml` or metalink with `$releasever=N`.
+  - `booted-pinned`.
+  - `nothing-staged`.
+  - preflight now reports whether a current-release update is pending, or how old the last update check is.
+- **Rollback:** today's deployment is pinned (`sudo ostree admin pin booted`) before the rebase, and its version is frozen as `{{ booted_version }}`. `rpm-ostree rollback` isn't offered any more, because after the rebase and kmod deployments it points at "target without kmod". The rollback step finds the pinned deployment's index in `ostree admin status` and runs `ostree admin set-default`. An optional final step unpins it.
+- **Toolboxes:** each toolbox's `dnf repoquery --userinstalled` is saved to `<run>/toolboxes/<name>.txt`. Then an optional `dnf --releasever=N distro-sync` runs as root via podman.
+- **Seeding:** `.seeded.json` records the hash of every seed sentry writes. A workflow file is upgraded only while it still matches what sentry wrote, or one of the historical versions listed in `SHIPPED` (copies from before the record existed). New seeds don't need entries in `SHIPPED`.

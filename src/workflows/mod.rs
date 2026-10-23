@@ -132,6 +132,8 @@ pub const BUILTINS: &[&str] = &[
     "pending_kernel",
     "old_kmod",
     "home",
+    "booted_version",
+    "rpmfusion_uninstall",
 ];
 
 /// The automatic dry-run sibling for an rpm-ostree command, if it has one (addendum A10).
@@ -167,18 +169,66 @@ pub const SEEDS: &[(&str, &str)] = &[
         "release-rebase",
         include_str!("../../assets/workflows/release-rebase.toml"),
     ),
+    (
+        "rpmfusion-migrate",
+        include_str!("../../assets/workflows/rpmfusion-migrate.toml"),
+    ),
 ];
 
-/// Write the shipped workflows where they're missing; never touches existing files.
-pub fn seed() -> std::io::Result<()> {
-    let d = dir();
+/// FNV-1a: only used to recognise files we wrote, not for security.
+fn fnv(b: &[u8]) -> u64 {
+    b.iter().fold(0xcbf29ce484222325u64, |h, x| {
+        (h ^ *x as u64).wrapping_mul(0x100000001b3)
+    })
+}
+
+/// Every version of a seed that has shipped before (computed from git history), so an
+/// unedited old copy written before `.seeded.json` existed is still recognised.
+const SHIPPED: &[(&str, u64)] = &[
+    ("quick-update", 0x7f63b533fa286d4a),
+    ("quick-update", 0x62c1578a44eea6ad),
+    ("quick-update", 0xde8871690062d69b),
+    ("quick-update", 0x2d312982ded1964f),
+    ("release-rebase", 0x88a4b4c8c169a61b),
+    ("release-rebase", 0xacf631c5205f1724),
+    ("release-rebase", 0x66f7dd06dad74b07),
+    ("release-rebase", 0x198de706696c120d),
+];
+
+/// Write the shipped workflows where they're missing, and upgrade copies that are an
+/// unmodified earlier version (by recorded hash). A file the user has edited is never touched.
+pub fn seed() -> std::io::Result<Vec<String>> {
+    seed_in(&dir())
+}
+
+pub fn seed_in(d: &Path) -> std::io::Result<Vec<String>> {
+    let rec_path = d.join(".seeded.json");
+    let mut rec: BTreeMap<String, u64> = std::fs::read_to_string(&rec_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let mut upgraded = Vec::new();
     for (name, body) in SEEDS {
         let p = d.join(format!("{name}.toml"));
-        if !p.exists() {
-            paths::write_atomic(&p, body.as_bytes())?;
+        let new = fnv(body.as_bytes());
+        match std::fs::read(&p) {
+            Err(_) => paths::write_atomic(&p, body.as_bytes())?,
+            Ok(cur) => {
+                let h = fnv(&cur);
+                if h == new {
+                    // Up to date.
+                } else if rec.get(*name) == Some(&h) || SHIPPED.contains(&(*name, h)) {
+                    paths::write_atomic(&p, body.as_bytes())?;
+                    upgraded.push(name.to_string());
+                } else {
+                    continue; // edited by the user: leave it, and don't claim it
+                }
+            }
         }
+        rec.insert(name.to_string(), new);
     }
-    Ok(())
+    paths::write_atomic(&rec_path, &serde_json::to_vec_pretty(&rec)?)?;
+    Ok(upgraded)
 }
 
 pub fn parse(text: &str) -> Result<Workflow, String> {
@@ -406,6 +456,42 @@ mod tests {
         }
         let rr = parse(SEEDS[1].1).unwrap();
         assert!(rr.draft);
+    }
+
+    #[test]
+    fn seeding_upgrades_only_unedited_copies() {
+        let d = std::env::temp_dir().join(format!("sentry-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(
+            seed_in(&d).unwrap().is_empty(),
+            "fresh install writes, doesn't upgrade"
+        );
+        // Simulate an older seed we wrote, and a user edit.
+        std::fs::write(
+            d.join("quick-update.toml"),
+            "name = \"quick-update\"\n# old\nsteps = []\n",
+        )
+        .unwrap();
+        let mut rec: BTreeMap<String, u64> =
+            serde_json::from_str(&std::fs::read_to_string(d.join(".seeded.json")).unwrap())
+                .unwrap();
+        rec.insert(
+            "quick-update".into(),
+            fnv(b"name = \"quick-update\"\n# old\nsteps = []\n"),
+        );
+        std::fs::write(d.join(".seeded.json"), serde_json::to_vec(&rec).unwrap()).unwrap();
+        std::fs::write(d.join("release-rebase.toml"), "# mine\n").unwrap();
+        assert_eq!(seed_in(&d).unwrap(), vec!["quick-update"]);
+        assert_eq!(
+            std::fs::read_to_string(d.join("quick-update.toml")).unwrap(),
+            SEEDS[0].1
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("release-rebase.toml")).unwrap(),
+            "# mine\n"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

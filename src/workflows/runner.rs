@@ -321,6 +321,8 @@ mod tests {
                 "current_version" => "44".into(),
                 "booted_kernel" => "7.2.8-200.fc44.x86_64".into(),
                 "home" => "/var/home/user".into(),
+                "booted_version" => "44.20261002.0".into(),
+                "rpmfusion_uninstall" => "--uninstall rpmfusion-free-release-44-3.noarch --uninstall rpmfusion-nonfree-release-44-3.noarch".into(),
                 n => return Err(format!("no {n}")),
             })
         }
@@ -482,6 +484,63 @@ mod tests {
         start(&mut st, i, "boot-b".into());
         recover(&mut st, &wf);
         assert_eq!(st.steps[i].status, StepStatus::Failed);
+    }
+
+    #[test]
+    fn release_rebase_sequence_and_frozen_pin() {
+        let wf = parse(SEEDS[1].1).unwrap();
+        let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+        let mut vars = BTreeMap::new();
+        vars.insert("target".to_string(), "45".to_string());
+        let mut st = RunState::new("release-rebase", &ids, vars);
+        let env = Fake {
+            kernel_changed: false,
+            boot: RefCell::new("boot-a".into()),
+            cond_calls: Cell::new(0),
+        };
+        let seen = drive(&wf, &mut st, &env);
+        let order: Vec<&str> = seen.iter().map(|s| s.split(':').next().unwrap()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "preflight",
+                "repos-ready",
+                "rpmfusion-tracked",
+                "target-ref",
+                "kmod-guard",
+                "snapshot",
+                "pin-current",
+                "pin-verify",
+                "rebase",
+                "reboot-1",
+                "verify-boot",
+                "akmods",
+                "kmod-built",
+                "layer-kmod",
+                "reboot-2",
+                "final-verify",
+                "flatpak-idle",
+                "flatpak-gl",
+                "toolbox-lists",
+                "toolbox-upgrade",
+                "post-snapshot",
+                "cleanup",
+                "unpin-old",
+                "done"
+            ],
+            "rollback only runs from abandon"
+        );
+        assert_eq!(
+            st.vars["booted_version"], "44.20261002.0",
+            "frozen before the reboots"
+        );
+        let rb = ids.iter().position(|i| i == "rollback").unwrap();
+        assert_eq!(st.steps[rb].status, StepStatus::Skipped);
+        let cmd = render(&mut st, &env, wf.steps[rb].run.as_ref().unwrap()).unwrap();
+        assert!(
+            cmd.contains("v='44.20261002.0'") && cmd.contains("set-default"),
+            "{cmd}"
+        );
     }
 
     #[test]

@@ -1,8 +1,11 @@
 name = "release-rebase"
 description = "Rebase Silverblue to a new Fedora release with the NVIDIA kmod ritual"
-# DRAFT: a release rebase with locally layered rpmfusion release RPMs hasn't been run end to end.
-# Sentry refuses to start a draft. Review every step (rpm-ostree rebase has no dry-run; `rpm-ostree cleanup -p`
-# undoes a staged rebase), then delete this line.
+# DRAFT: not yet run end to end. Sentry refuses to start a draft. Read every step, then delete
+# the `draft` line. Notes:
+#   - rpm-ostree rebase has no dry run; `rpm-ostree cleanup -p` undoes a staged rebase.
+#   - Today's deployment is pinned first, so a current Fedora N stays in the boot menu even
+#     after the two new deployments this creates; `rollback` (from abandon) boots it again.
+#   - Needs the rpmfusion-migrate workflow first (release packages tracked from the repo).
 draft = true
 
 [vars]
@@ -13,12 +16,28 @@ id = "preflight"
 title = "Pre-flight checks"
 run = "sentry check preflight --target {{ target }}"
 gate = "auto"
+on_fail = "stop"
 
 [[steps]]
-id = "snapshot"
-title = "Record pre-upgrade state"
-run = "sentry job audit --tag pre-rebase-{{ target }}"
+id = "repos-ready"
+title = "Every enabled third-party repo has Fedora {{ target }} metadata"
+run = "sentry check repos-ready --target {{ target }}"
 gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "rpmfusion-tracked"
+title = "RPM Fusion release packages tracked from the repo (rpmfusion-migrate done)"
+run = "sentry check rpmfusion-pinned --expect unpinned"
+gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "target-ref"
+title = "Target ref fedora/{{ target }}/x86_64/silverblue exists"
+run = "ostree remote refs fedora | grep -x 'fedora:fedora/{{ target }}/x86_64/silverblue'"
+gate = "auto"
+on_fail = "stop"
 
 [[steps]]
 id = "kmod-guard"
@@ -28,20 +47,43 @@ gate = "auto"
 on_fail = "stop"
 
 [[steps]]
-id = "rebase-dry"
-title = "Target ref fedora/{{ target }}/x86_64/silverblue exists (rpm-ostree rebase has no dry-run)"
-run = "ostree remote refs fedora | grep -x 'fedora:fedora/{{ target }}/x86_64/silverblue'"
+id = "snapshot"
+title = "Record pre-upgrade state"
+run = "sentry job audit --tag pre-rebase-{{ target }}"
+gate = "auto"
+
+[[steps]]
+id = "pin-current"
+title = "Pin today's {{ booted_version }} so it stays in the boot menu"
+run = "sudo ostree admin pin booted && echo 'pinned {{ booted_version }}'"
 gate = "confirm"
+
+[[steps]]
+id = "pin-verify"
+title = "Booted deployment is pinned"
+run = "sentry check booted-pinned"
+gate = "auto"
 on_fail = "stop"
-dry_run = false
 
 [[steps]]
 id = "rebase"
-title = "Rebase to Fedora {{ target }}"
-run = "rpm-ostree rebase fedora:fedora/{{ target }}/x86_64/silverblue --uninstall {{ old_kmod }} --uninstall rpmfusion-free-release --uninstall rpmfusion-nonfree-release --install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{{ target }}.noarch.rpm --install https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-{{ target }}.noarch.rpm"
+title = "Rebase to Fedora {{ target }}, dropping {{ old_kmod }}"
+run = "rpm-ostree rebase fedora:fedora/{{ target }}/x86_64/silverblue --uninstall {{ old_kmod }}"
 gate = "confirm"
 timeout = "60m"
-dry_run = false
+on_fail = "manual"
+manual = """
+A wall of `openssl-devel` / `kernel-devel` depsolve errors usually means your mirror lags
+behind the new base. Wait a few hours, or add a repo pointing at the master mirror and retry:
+  /etc/yum.repos.d/updates-master.repo:
+    [updates-master]
+    name=Fedora $releasever - $basearch - Updates (master mirror)
+    baseurl=https://dl.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/
+    enabled=1
+    gpgcheck=1
+    gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch
+A missing package from a third-party repo means it has no Fedora {{ target }} build yet.
+Nothing is staged when the rebase fails, so retrying is safe."""
 
 [[steps]]
 id = "reboot-1"
@@ -92,6 +134,16 @@ run = "sentry check nvidia-loaded && sentry check booted-version --expect {{ tar
 gate = "auto"
 
 [[steps]]
+id = "flatpak-idle"
+title = "Make sure Steam is not running"
+run = "sentry check flatpak-idle --app com.valvesoftware.Steam"
+gate = "auto"
+on_fail = "manual"
+manual = """
+Fully quit Steam (closing the window is not enough): `flatpak ps` must not list it.
+A sandbox started before `flatpak update` keeps the old runtime."""
+
+[[steps]]
 id = "flatpak-gl"
 title = "Flatpak GL.nvidia and GL32.nvidia match the host driver"
 run = "flatpak update -y && sentry check flatpak-gl-nvidia"
@@ -103,22 +155,44 @@ Run `flatpak update`, check `flatpak list --runtime | grep nvidia`, then fully q
 relaunch Steam: a sandbox started before the update keeps the old runtime."""
 
 [[steps]]
+id = "toolbox-lists"
+title = "Save each toolbox's user-installed package list"
+run = '''mkdir -p "$SENTRY_WORKFLOW_RUN/toolboxes"; for c in $(podman ps -a --filter label=com.github.containers.toolbox=true --format '{{ "{{" }}.Names{{ "}}" }}'); do st=$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$c"); [ "$st" = running ] || podman start "$c" >/dev/null; podman exec "$c" dnf -q repoquery --userinstalled > "$SENTRY_WORKFLOW_RUN/toolboxes/$c.txt"; echo "$c: $(wc -l < "$SENTRY_WORKFLOW_RUN/toolboxes/$c.txt") packages"; [ "$st" = running ] || podman stop -t 5 "$c" >/dev/null; done'''
+gate = "auto"
+
+[[steps]]
+id = "toolbox-upgrade"
+title = "Upgrade every toolbox to Fedora {{ target }} in place"
+# As root through podman: no sudo, so no terminal needed. Lists saved by the previous step
+# let you rebuild a toolbox from fedora-toolbox:{{ target }} if a distro-sync goes wrong.
+run = '''for c in $(podman ps -a --filter label=com.github.containers.toolbox=true --format '{{ "{{" }}.Names{{ "}}" }}'); do echo "=== $c ==="; st=$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$c"); [ "$st" = running ] || podman start "$c" >/dev/null; podman exec --user root "$c" dnf -y --releasever={{ target }} distro-sync; rc=$?; [ "$st" = running ] || podman stop -t 5 "$c" >/dev/null; [ $rc -eq 0 ] || exit $rc; done'''
+gate = "confirm"
+optional = true
+
+[[steps]]
 id = "post-snapshot"
 title = "Record post-upgrade state and diff"
 run = "sentry job audit --tag post-rebase-{{ target }} --diff-against pre-rebase-{{ target }}"
 gate = "auto"
 
 [[steps]]
-id = "rollback"
-title = "Roll back to the previous deployment"
-run = "rpm-ostree rollback"
+id = "cleanup"
+title = "Remove the intermediate deployment (optional)"
+run = "rpm-ostree cleanup -r"
 gate = "confirm"
-rollback = true
 optional = true
 
 [[steps]]
-id = "cleanup"
-title = "Remove old deployment (optional)"
-run = "rpm-ostree cleanup -r"
+id = "unpin-old"
+title = "Unpin {{ booted_version }} once Fedora {{ target }} has proven itself (optional)"
+run = '''i=$(ostree admin status | awk -v v='{{ booted_version }}' '{ for (k = 1; k <= NF; k++) if (length($k) > 60 && $k ~ /^[0-9a-f]+\.[0-9]+$/) { i++; break } } $1 == "Version:" && $2 == v { print i - 1; exit }'); [ -n "$i" ] || { echo "{{ booted_version }} is no longer deployed"; exit 0; }; sudo ostree admin pin --unpin "$i" && echo "unpinned {{ booted_version }} (deployment $i)"'''
 gate = "confirm"
+optional = true
+
+[[steps]]
+id = "rollback"
+title = "Boot the pinned {{ booted_version }} again"
+run = '''i=$(ostree admin status | awk -v v='{{ booted_version }}' '{ for (k = 1; k <= NF; k++) if (length($k) > 60 && $k ~ /^[0-9a-f]+\.[0-9]+$/) { i++; break } } $1 == "Version:" && $2 == v { print i - 1; exit }'); [ -n "$i" ] || { echo "{{ booted_version }} is not deployed any more; pick an entry in the boot menu (Esc at boot)"; exit 1; }; sudo ostree admin set-default "$i" && echo "next boot: {{ booted_version }} · reboot when ready"'''
+gate = "confirm"
+rollback = true
 optional = true

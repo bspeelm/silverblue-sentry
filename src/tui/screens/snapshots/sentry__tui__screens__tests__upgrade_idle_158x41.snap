@@ -11,16 +11,16 @@ expression: body(&s)
 │ when the kernel changes                                  │  │ quick-update has never run.                                                                  │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│ release-rebase  16 steps  draft                          │  │                                                                                              │
+│ release-rebase  24 steps  draft                          │  │                                                                                              │
 │ Rebase Silverblue to a new Fedora release with the       │  │                                                                                              │
 │ NVIDIA kmod ritual                                       │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│ rpmfusion-migrate  5 steps                               │  │                                                                                              │
+│ One time: track the RPM Fusion release packages from the │  │                                                                                              │
+│ repo instead of as pinned local RPMs (needed before      │  │                                                                                              │
+│ release-rebase)                                          │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │

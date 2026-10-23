@@ -44,6 +44,9 @@ pub const NAMES: &[&str] = &[
     "flatpak-gl-nvidia",
     "flatpak-idle",
     "master-repo-present",
+    "repos-ready",
+    "booted-pinned",
+    "nothing-staged",
 ];
 
 /// `when` condition names (`kernel_changed`) map onto check names (`kernel-changed`).
@@ -167,10 +170,18 @@ pub fn run(name: &str, args: &[String]) -> Result<Outcome, String> {
                         .collect()
                 })
                 .unwrap_or_default();
-            if local.is_empty() {
-                fail("rpmfusion release packages are not version-pinned local packages")
-            } else {
-                pass(format!("pinned: {}", join(&local)))
+            // `--expect unpinned` inverts it: rpmfusion-migrate's verification.
+            let want_unpinned = flag(args, "--expect") == Some("unpinned");
+            match (local.is_empty(), want_unpinned) {
+                (true, false) => {
+                    fail("rpmfusion release packages are not version-pinned local packages")
+                }
+                (true, true) => pass("rpmfusion release packages are tracked from the repo"),
+                (false, true) => fail(format!(
+                    "still pinned as local packages: {} (run the rpmfusion-migrate workflow)",
+                    join(&local)
+                )),
+                (false, false) => pass(format!("pinned: {}", join(&local))),
             }
         }
         "kargs" => {
@@ -273,6 +284,28 @@ pub fn run(name: &str, args: &[String]) -> Result<Outcome, String> {
                 fail(format!("running: {} (quit fully first)", join(&hit)))
             }
         }
+        "repos-ready" => {
+            let target = flag(args, "--target").ok_or("usage: repos-ready --target N")?;
+            repos_ready(target)
+        }
+        "nothing-staged" => {
+            let o = ostree::collect().map_err(|e| e.to_string())?;
+            match o.deployments.iter().find(|d| d.staged) {
+                Some(d) => fail(format!(
+                    "{} is staged and waiting for a reboot: reboot first, or undo it with rpm-ostree cleanup -p",
+                    d.version
+                )),
+                None => pass("no staged deployment"),
+            }
+        }
+        "booted-pinned" => {
+            let o = ostree::collect().map_err(|e| e.to_string())?;
+            match o.booted() {
+                Some(d) if d.pinned => pass(format!("booted {} is pinned", d.version)),
+                Some(d) => fail(format!("booted {} is not pinned", d.version)),
+                None => Err("no booted deployment in rpm-ostree status".into()),
+            }
+        }
         "master-repo-present" => {
             if paths::host("/etc/yum.repos.d/updates-master.repo").exists() {
                 pass("/etc/yum.repos.d/updates-master.repo is present")
@@ -351,6 +384,31 @@ fn preflight(args: &[String]) -> Result<Outcome, String> {
         ),
         Err(e) => note(false, format!("rpm-ostree: {e}")),
     }
+    if flag(args, "--target").is_some()
+        && let Ok(o) = ostree::collect()
+    {
+        match &o.update {
+            Some(u) => note(
+                false,
+                format!(
+                    "an update for Fedora {cur} is pending ({} packages): run quick-update first",
+                    u.upgraded.len() + u.added.len()
+                ),
+            ),
+            // rpm-ostree only knows about updates after a check; say how old ours is.
+            None => {
+                let age = crate::cache::load::<serde_json::Value>(crate::cache::OSTREE_CHECK)
+                    .map(|c| crate::fmt::ago(c.age_secs(jiff::Timestamp::now())));
+                note(
+                    true,
+                    format!(
+                        "no pending Fedora {cur} update known (last check: {})",
+                        age.unwrap_or_else(|| "never; `sentry job update-check` to be sure".into())
+                    ),
+                );
+            }
+        }
+    }
     note(power_ok(), "AC power or battery > 50%".into());
     note(network_ok(), "network (dl.fedoraproject.org:443)".into());
     let own = std::env::var("SENTRY_WORKFLOW_RUN").ok();
@@ -369,6 +427,63 @@ fn preflight(args: &[String]) -> Result<Outcome, String> {
         lines.join("\n")
     );
     if ok { pass(reason) } else { fail(reason) }
+}
+
+/// `$releasever`/`$basearch` substituted for a target release.
+pub fn repo_url_for(url: &str, target: &str) -> String {
+    url.replace("$releasever", target)
+        .replace("$basearch", std::env::consts::ARCH)
+}
+
+/// A metalink answer that actually lists a repo (unknown repos get an error page or nothing).
+pub fn metalink_lists_repo(body: &str) -> bool {
+    body.contains("<metalink") && body.contains("repomd.xml")
+}
+
+/// Every enabled third-party repo has metadata for `target` (a COPR without a chroot for the
+/// new release, or a vendor repo that hasn't branched yet, would fail the rebase depsolve).
+fn repos_ready(target: &str) -> Result<Outcome, String> {
+    let repos = crate::collectors::repos::collect().map_err(|e| e.to_string())?;
+    let mut missing = Vec::new();
+    let mut checked = 0;
+    for r in repos
+        .iter()
+        .filter(|r| r.enabled && r.third_party && !r.url.is_empty())
+    {
+        // Debug/source repos are disabled by default; anything enabled matters.
+        let url = repo_url_for(r.url.split_whitespace().next().unwrap_or(""), target);
+        let meta = url.contains("metalink") || url.contains("mirrorlist");
+        let fetch = if meta {
+            url.clone()
+        } else {
+            format!("{}/repodata/repomd.xml", url.trim_end_matches('/'))
+        };
+        checked += 1;
+        let out = Cmd::host("curl")
+            .args(["-fsSL", "--max-time", "10", &fetch])
+            .timeout(Some(std::time::Duration::from_secs(15)))
+            .run();
+        let ok = match out {
+            Ok(o) if o.code == 0 => {
+                !meta || metalink_lists_repo(&o.stdout) || o.stdout.contains("http")
+            }
+            Ok(_) => false,
+            Err(e) => return Err(format!("curl: {e}")),
+        };
+        if !ok {
+            missing.push(format!("{} [{}]", r.file, r.section));
+        }
+    }
+    if missing.is_empty() {
+        pass(format!(
+            "{checked} enabled third-party repo(s) have Fedora {target} metadata"
+        ))
+    } else {
+        fail(format!(
+            "no Fedora {target} metadata yet for: {} (wait for the vendor/COPR, or disable the repo and drop its packages)",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn power_ok() -> bool {
@@ -441,6 +556,24 @@ mod tests {
             v,
             vec!["kmod-nvidia-7.2.11-200.fc44.x86_64-615.71.09-3.fc44.x86_64.rpm"]
         );
+    }
+
+    #[test]
+    fn repo_urls_for_target() {
+        assert_eq!(
+            repo_url_for(
+                "https://download.copr.fedorainfracloud.org/results/scottames/ghostty/fedora-$releasever-$basearch/",
+                "45"
+            ),
+            format!(
+                "https://download.copr.fedorainfracloud.org/results/scottames/ghostty/fedora-45-{}/",
+                std::env::consts::ARCH
+            )
+        );
+        assert!(metalink_lists_repo(
+            "<?xml?><metalink><files><file name=\"repomd.xml\">"
+        ));
+        assert!(!metalink_lists_repo("# repo not found"));
     }
 
     #[test]

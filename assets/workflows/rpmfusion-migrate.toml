@@ -1,0 +1,45 @@
+name = "rpmfusion-migrate"
+description = "One time: track the RPM Fusion release packages from the repo instead of as pinned local RPMs (needed before release-rebase)"
+# Installed from a URL, rpmfusion-{free,nonfree}-release are "local packages" pinned to one
+# Fedora version, so every release rebase has to swap them by hand. Installed from the repo
+# instead, they upgrade with the system like any other package.
+
+[[steps]]
+id = "pinned"
+title = "RPM Fusion release packages are pinned local packages"
+run = "sentry check rpmfusion-pinned"
+gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "idle"
+title = "No staged deployment waiting for a reboot"
+run = "sentry check nothing-staged"
+gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "swap"
+title = "Replace the pinned release RPMs with the repo-tracked packages"
+# `install` keeps the current base (unlike `update`, which would also pull a pending upgrade).
+# The dry run shown first prints the transaction: if it also changes xorg-x11-drv-nvidia or
+# akmod-nvidia, do this together with the next quick-update instead.
+run = "rpm-ostree install {{ rpmfusion_uninstall }} rpmfusion-free-release rpmfusion-nonfree-release"
+gate = "confirm"
+on_fail = "manual"
+manual = """
+The swap didn't go through. If rpm-ostree says the packages are already requested, run
+`rpm-ostree status` and check LocalPackages / LayeredPackages by eye.
+Nothing is changed until a transaction succeeds, so retrying is safe."""
+
+[[steps]]
+id = "reboot"
+title = "Reboot into the deployment with repo-tracked RPM Fusion"
+kind = "reboot"
+
+[[steps]]
+id = "verify"
+title = "RPM Fusion release packages now come from the repo"
+run = "sentry check rpmfusion-pinned --expect unpinned"
+gate = "auto"
+on_fail = "stop"

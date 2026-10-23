@@ -39,6 +39,33 @@ impl Env for RealEnv {
                     )),
                 }
             }
+            "booted_version" => ostree::collect()
+                .map_err(|e| e.to_string())?
+                .booted()
+                .map(|d| d.version.clone())
+                .ok_or_else(|| "no booted deployment".into()),
+            // `--uninstall <exact local package>` for each pinned rpmfusion release RPM.
+            "rpmfusion_uninstall" => {
+                let o = ostree::collect().map_err(|e| e.to_string())?;
+                let local: Vec<String> = o
+                    .booted()
+                    .map(|d| {
+                        d.local
+                            .iter()
+                            .filter(|p| p.starts_with("rpmfusion-") && p.contains("-release-"))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if local.is_empty() {
+                    return Err("no pinned rpmfusion release packages (already migrated?)".into());
+                }
+                Ok(local
+                    .iter()
+                    .map(|p| format!("--uninstall {p}"))
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            }
             n => Err(format!("unknown built-in {n}")),
         }
     }

@@ -101,9 +101,14 @@ Measured on the host: the open dashboard uses about 0.8% of one core including c
 
 ## Workflows
 
-Workflows are TOML files in `~/.config/sentry/workflows/`. `quick-update` and `release-rebase` are written there the first time you open Upgrade, and your edits are never overwritten.
+Workflows are TOML files in `~/.config/sentry/workflows/`. The shipped ones are written there the first time you open Upgrade. A copy you haven't edited is upgraded when a new version ships; a copy you have edited is never touched.
 - `quick-update`: A routine upgrade is one step. When the kernel changes, it runs the NVIDIA kmod ritual: drop the exact layered kmod, reboot, build or layer the new kmod, reboot, then verify the driver and Flatpak GL.
-- `release-rebase` ships with `draft = true`. Sentry won't start it until you've reviewed the steps and deleted that line. It hasn't been run end to end with locally layered RPM Fusion release packages.
+- `rpmfusion-migrate` (one time): RPM Fusion's release packages, installed from a URL, are pinned local packages tied to one Fedora version. This swaps them for the repo-tracked packages (one reboot), so they move with the system and a release rebase needs no swap.
+- `release-rebase` ships with `draft = true`: sentry won't start it until you've read it and deleted that line. Before anything is staged, it checks:
+  - that every enabled third-party repo (COPRs, RPM Fusion, vendor repos) already has metadata for the target release;
+  - that `rpmfusion-migrate` is done.
+
+  Then it pins today's deployment, so a current Fedora N stays in the boot menu after the two new deployments, and does the rebase with the kmod ritual. Optionally it then distro-syncs your toolboxes, after saving each one's package list. Abandoning offers `rollback`, which makes the pinned deployment the next boot.
 
 Each run lives in `~/.local/share/sentry/workflows/<name>/run-<time>/`, holding `state.json`, a copy of the TOML, and `steps/<id>.log`.
 
