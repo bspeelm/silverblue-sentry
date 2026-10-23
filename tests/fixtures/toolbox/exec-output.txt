@@ -1,0 +1,11 @@
+systemd-shared.x86_64              259.10-1.fc44             updates
+tmux.x86_64                        3.8-2.fc44                updates
+vim-minimal.x86_64                 2:9.2.1202-1.fc44         updates
+Obsoleting packages
+grub2-tools-efi.x86_64             1:2.12-40.fc44            updates
+    grub2-tools-efi.x86_64         1:2.12-38.fc44            @System
+__RC=100
+systemd-shared.x86_64 0:259.8-1.fc44
+tmux.x86_64 0:3.8-1.fc44
+vim-minimal.x86_64 2:9.2.1100-1.fc44
+bash.x86_64 0:5.3.3-1.fc44

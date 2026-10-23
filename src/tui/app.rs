@@ -436,6 +436,7 @@ impl App {
                         f,
                         Fetch::OstreeCheck
                             | Fetch::FlatpakUpdates
+                            | Fetch::ToolboxUpdates
                             | Fetch::Breakdown
                             | Fetch::Reports
                             | Fetch::Plan(_)
@@ -1246,6 +1247,10 @@ impl App {
                     None if fp > 0 => Some((format!(" {fp}"), t.yellow)),
                     None => None,
                 }
+            }
+            ScreenId::Cont => {
+                let n = crate::collectors::toolbox::total(&self.data.tbx_updates.get()?.data);
+                (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
             ScreenId::Net => {
                 let n = self.data.net.get().map_or(0, |n| {

@@ -82,7 +82,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `2` | Processes | `C`/`M` sort, `x` SIGTERM (confirmed) |
 | `3` | Network | listeners as `baseline` / `local` / `client` / `NEW`; `e` marks one expected |
 | `4` | Updates | deployments, cached rpm-ostree and Flatpak updates. `c` checks, `u` upgrades (kmod ritual aware), `f` updates Flatpaks, `R` rolls back |
-| `5` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags. `Enter` opens a shell, `s` stops, `d` removes |
+| `5` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags, and pending dnf updates inside each toolbox (`old → new`). `c` checks (stopped toolboxes are started, then stopped again), `u`/`U` upgrade one/all, `Enter` opens a shell, `s` stops, `d` removes |
 | `6` | Flatpaks | permission flags from metadata + overrides, GL.nvidia pair check, `o` opens Flatseal |
 | `7` | Audit | findings + evidence, diff against the previous report. `Enter` audits, `b`/`B` baseline, `[`/`]` browse reports |
 | `8` | Jobs | last run, cadence, due status. `Enter` shows the plan, then runs; `e` edits the cadence |

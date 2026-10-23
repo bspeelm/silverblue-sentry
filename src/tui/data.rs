@@ -23,6 +23,7 @@ use crate::collectors::ostree::{self, Ostree};
 use crate::collectors::podman::{self, Podman};
 use crate::collectors::processes::{Proc, ProcSampler};
 use crate::collectors::system::{Sampler, SystemSnap};
+use crate::collectors::toolbox::ToolboxUpdates;
 use crate::collectors::units::{self, Units};
 use crate::collectors::{CollectError, Ctx};
 use crate::config::Config;
@@ -42,6 +43,8 @@ pub enum Fetch {
     OstreeCheck,
     Flatpak,
     FlatpakUpdates,
+    /// `dnf check-update` in every toolbox/distrobox (starts stopped ones briefly).
+    ToolboxUpdates,
     Podman,
     Units,
     /// Stored audit reports (`reports/*.json`).
@@ -67,6 +70,7 @@ pub enum Payload {
     OstreeChecked(Ostree, Timestamp),
     Flatpak(Flatpak),
     FlatpakUpdates(Cached<Vec<FpUpdate>>),
+    ToolboxUpdates(Cached<ToolboxUpdates>),
     Podman(Podman),
     Units(Units),
     Reports(Vec<Stored>),
@@ -182,6 +186,7 @@ pub struct DataStore {
     pub ostree_checked: Option<Timestamp>,
     pub flatpak: Slot<Flatpak>,
     pub fp_updates: Slot<Cached<Vec<FpUpdate>>>,
+    pub tbx_updates: Slot<Cached<ToolboxUpdates>>,
     pub podman: Slot<Podman>,
     pub units: Slot<Units>,
     pub reports: Slot<Vec<Stored>>,
@@ -211,6 +216,9 @@ impl DataStore {
         if let Some(c) = cache::load(cache::FLATPAK_UPDATES) {
             d.fp_updates.set(Ok(c));
         }
+        if let Some(c) = cache::load(cache::TOOLBOX_UPDATES) {
+            d.tbx_updates.set(Ok(c));
+        }
         if let Some(c) = cache::load(cache::DISK_BREAKDOWN) {
             d.breakdown.set(Ok(c));
         }
@@ -238,6 +246,7 @@ impl DataStore {
             ostree_checked: None,
             flatpak: Slot::default(),
             fp_updates: Slot::default(),
+            tbx_updates: Slot::default(),
             podman: Slot::default(),
             units: Slot::default(),
             reports: Slot::default(),
@@ -322,6 +331,7 @@ impl DataStore {
             },
             Fetch::Flatpak => put!(flatpak, Payload::Flatpak),
             Fetch::FlatpakUpdates => put!(fp_updates, Payload::FlatpakUpdates),
+            Fetch::ToolboxUpdates => put!(tbx_updates, Payload::ToolboxUpdates),
             Fetch::Podman => put!(podman, Payload::Podman),
             Fetch::Units => put!(units, Payload::Units),
             Fetch::Reports => put!(reports, Payload::Reports),
@@ -391,6 +401,7 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         }
         Fetch::Flatpak => Payload::Flatpak(flatpak::collect(ctx)?),
         Fetch::FlatpakUpdates => Payload::FlatpakUpdates(crate::jobs::check_flatpak()?),
+        Fetch::ToolboxUpdates => Payload::ToolboxUpdates(crate::jobs::check_toolboxes(ctx)?),
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
         Fetch::Reports => Payload::Reports(crate::audit::store::list()),

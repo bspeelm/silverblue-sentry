@@ -1,5 +1,6 @@
-//! Containers: toolbox / distrobox / podman with stale and $HOME-mount flags.
-//! `Enter` opens a shell in a new terminal window, `s` stops, `d` removes (confirmed).
+//! Containers: toolbox / distrobox / podman with stale and $HOME-mount flags, plus pending
+//! package updates inside toolboxes. `Enter` opens a shell in a new terminal window, `s` stops,
+//! `d` removes, `c` checks toolbox updates, `u`/`U` upgrade one/all (all confirmed).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -8,6 +9,7 @@ use ratatui::widgets::{Cell, Paragraph, Row};
 
 use super::{Cursor, Hints, View};
 use crate::collectors::podman::{Ctr, Kind};
+use crate::collectors::toolbox::{self, BoxUpdates};
 use crate::exec::Cmd;
 use crate::fmt;
 use crate::tui::app::{Effect, Modal, RunSpec};
@@ -28,10 +30,30 @@ pub fn hints() -> Hints {
     vec![
         ("j/k", "select"),
         ("Enter", "enter"),
+        ("c", "check updates"),
+        ("u/U", "upgrade one/all"),
         ("s", "stop"),
         ("d", "remove"),
-        ("r", "refresh"),
     ]
+}
+
+fn box_updates<'a>(v: &View<'a>, name: &str) -> Option<&'a BoxUpdates> {
+    v.d.tbx_updates.get()?.data.get(name)
+}
+
+/// Run spec that upgrades `targets` in order and re-checks afterwards.
+fn upgrade_run(targets: &[&Ctr], title: String) -> Option<Effect> {
+    let mut cmds = targets
+        .iter()
+        .map(|c| toolbox::upgrade_cmd(&c.name, c.running()));
+    let first = cmds.next()?;
+    Some(Effect::Run(RunSpec {
+        title,
+        cmd: first,
+        queue: cmds.collect(),
+        then: vec![Fetch::Podman, Fetch::ToolboxUpdates],
+        ok_toast: "toolbox upgrade done · re-checking".into(),
+    }))
 }
 
 /// Shell command that enters the container.
@@ -102,10 +124,51 @@ impl Containers {
         if a == Action::Refresh {
             return vec![Effect::Fetch(Fetch::Podman)];
         }
+        let t = v.t;
+        if a == Action::Check {
+            let n = rows.iter().filter(|c| c.kind != Kind::Podman).count();
+            return vec![
+                Effect::Fetch(Fetch::ToolboxUpdates),
+                Effect::Toast(format!(
+                    "checking {n} toolbox(es) · stopped ones are started, then stopped again"
+                )),
+            ];
+        }
+        if a == Action::Char('U') {
+            let pending: Vec<&Ctr> = rows
+                .iter()
+                .copied()
+                .filter(|c| box_updates(v, &c.name).is_some_and(|b| !b.updates.is_empty()))
+                .collect();
+            if pending.is_empty() {
+                return vec![Effect::Toast(
+                    "no toolbox has pending updates (c checks)".into(),
+                )];
+            }
+            let mut lines: Vec<Line> = pending
+                .iter()
+                .map(|c| {
+                    let n = box_updates(v, &c.name).map_or(0, |b| b.updates.len());
+                    Line::styled(format!("• {:<24} {n} package(s)", c.name), t.fg())
+                })
+                .collect();
+            lines.push(Line::styled(
+                "$ podman exec --user root <name> dnf -y upgrade   (stopped ones: start, upgrade, stop)",
+                t.dim(),
+            ));
+            let Some(run) = upgrade_run(&pending, "upgrade toolboxes".into()) else {
+                return Vec::new();
+            };
+            return vec![Effect::Confirm(Modal {
+                title: "Upgrade all toolboxes".into(),
+                color: t.yellow,
+                lines,
+                yes: Some((format!("upgrade {}", pending.len()), vec![run])),
+            })];
+        }
         let Some(c) = rows.get(self.cur.clamp(rows.len())) else {
             return Vec::new();
         };
-        let t = v.t;
         let then = vec![Fetch::Podman];
         match a {
             Action::Enter => {
@@ -125,6 +188,49 @@ impl Containers {
                     )],
                 }
             }
+            Action::Char('u') if c.kind == Kind::Podman => vec![Effect::Toast(format!(
+                "{} is a plain podman container: update it by pulling a new image",
+                c.name
+            ))],
+            Action::Char('u') => match box_updates(v, &c.name) {
+                None => vec![Effect::Toast(format!(
+                    "{} not checked yet · press c",
+                    c.name
+                ))],
+                Some(b) if b.error.is_some() => vec![Effect::Toast(format!(
+                    "{}: {}",
+                    c.name,
+                    b.error.as_deref().unwrap_or("")
+                ))],
+                Some(b) if b.updates.is_empty() => {
+                    vec![Effect::Toast(format!("{} is up to date", c.name))]
+                }
+                Some(b) => {
+                    let cmd = toolbox::upgrade_cmd(&c.name, c.running());
+                    let mut lines = vec![
+                        Line::styled(
+                            format!("Upgrade {} package(s) in {}?", b.updates.len(), c.name),
+                            t.fg(),
+                        ),
+                        Line::styled(format!("$ {}", cmd.display()), t.dim()),
+                    ];
+                    if !c.running() {
+                        lines.push(Line::styled(
+                            "It's stopped: started for the upgrade, stopped again after.",
+                            t.dim(),
+                        ));
+                    }
+                    let Some(run) = upgrade_run(&[c], format!("dnf upgrade · {}", c.name)) else {
+                        return Vec::new();
+                    };
+                    vec![Effect::Confirm(Modal {
+                        title: "Upgrade toolbox".into(),
+                        color: t.yellow,
+                        lines,
+                        yes: Some(("upgrade".into(), vec![run])),
+                    })]
+                }
+            },
             Action::Char('s') if !c.running() => {
                 vec![Effect::Toast(format!("{} is already stopped", c.name))]
             }
@@ -190,7 +296,12 @@ impl Containers {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
         let t = v.t;
-        let [list, _, foot] = Layout::vertical([
+        // The table gets what it needs; the selected toolbox's updates fill the rest.
+        let n_rows = self.rows(v).len() as u16;
+        let table_h = (n_rows + 2).clamp(4, area.height / 2);
+        let [list, _, pane, _, foot] = Layout::vertical([
+            Constraint::Length(table_h),
+            Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -220,6 +331,14 @@ impl Containers {
                     (true, false) => t.yellow,
                     _ => t.dim,
                 };
+                let (upd, uc) = match (c.kind, box_updates(v, &c.name)) {
+                    (Kind::Podman, _) => ("image".to_string(), t.dim),
+                    (_, None) => ("—".into(), t.dim),
+                    (_, Some(b)) if b.error.as_deref() == Some("not dnf") => ("n/a".into(), t.dim),
+                    (_, Some(b)) if b.error.is_some() => ("✗".into(), t.red),
+                    (_, Some(b)) if b.updates.is_empty() => ("0".into(), t.dim),
+                    (_, Some(b)) => (format!("{} ↑", b.updates.len()), t.yellow),
+                };
                 Row::new(vec![
                     Cell::from(c.name.clone()),
                     Cell::from(c.kind.as_str()).style(t.dim()),
@@ -230,6 +349,7 @@ impl Containers {
                     })),
                     Cell::from(age).style(t.s(if c.stale { t.yellow } else { t.dim })),
                     Cell::from(home).style(t.s(home_c)),
+                    Cell::from(upd).style(t.s(uc)),
                     Cell::from(c.image.clone()).style(t.dim()),
                 ])
             })
@@ -239,13 +359,14 @@ impl Containers {
             list,
             t,
             TableSpec {
-                header: vec!["NAME", "KIND", "STATUS", "AGE", "$HOME", "IMAGE"],
+                header: vec!["NAME", "KIND", "STATUS", "AGE", "$HOME", "UPDATES", "IMAGE"],
                 widths: vec![
                     Constraint::Length(24),
                     Constraint::Length(10),
                     Constraint::Length(9),
                     Constraint::Length(10),
                     Constraint::Length(6),
+                    Constraint::Length(8),
                     Constraint::Fill(1),
                 ],
                 rows: body,
@@ -265,5 +386,76 @@ impl Containers {
             t.dim(),
         )]);
         f.render_widget(Paragraph::new(summary), foot);
+        if let Some(c) = rows.get(sel) {
+            self.render_updates(f, pane, v, c);
+        }
+    }
+
+    fn render_updates(&self, f: &mut Frame, area: Rect, v: &View, c: &Ctr) {
+        let t = v.t;
+        let checking = v.d.loading(Fetch::ToolboxUpdates);
+        let cached = v.d.tbx_updates.get();
+        let b = cached.and_then(|x| x.data.get(&c.name));
+        let detail = match (b, checking) {
+            (_, true) => "checking…".to_string(),
+            (Some(b), false) => {
+                let age = (jiff::Timestamp::now().as_second() - b.checked_at.as_second()).max(0);
+                format!("{} pending · checked {}", b.updates.len(), fmt::ago(age))
+            }
+            (None, false) => "never checked · press c".into(),
+        };
+        let block = crate::tui::widgets::panel(t, "Updates", format!("{} · {detail}", c.name));
+        let r = crate::tui::widgets::inner(&block, area);
+        f.render_widget(block, area);
+        let msg = |s: &str| Paragraph::new(Span::styled(s.to_string(), t.dim()));
+        if c.kind == Kind::Podman {
+            f.render_widget(
+                msg("Plain podman containers update by pulling a newer image; nothing to check inside."),
+                r,
+            );
+            return;
+        }
+        let Some(b) = b else {
+            f.render_widget(
+                msg("Press c to run dnf check-update in every toolbox (stopped ones are started, then stopped)."),
+                r,
+            );
+            return;
+        };
+        if let Some(e) = &b.error {
+            f.render_widget(msg(&format!("✗ {e}")), r);
+            return;
+        }
+        if b.updates.is_empty() {
+            f.render_widget(msg("Up to date."), r);
+            return;
+        }
+        let w = r.width as usize;
+        let body: Vec<Row> = b
+            .updates
+            .iter()
+            .map(|u| {
+                Row::new(vec![
+                    Cell::from(u.name.clone()),
+                    Cell::from(format!("{} → {}", u.old.as_deref().unwrap_or("?"), u.new)),
+                    Cell::from(u.repo.clone()).style(t.dim()),
+                ])
+            })
+            .collect();
+        table(
+            f,
+            r,
+            t,
+            TableSpec {
+                header: vec!["PACKAGE", "VERSION", "REPO"],
+                widths: vec![
+                    Constraint::Length((w / 3).min(40) as u16),
+                    Constraint::Fill(1),
+                    Constraint::Length(14),
+                ],
+                rows: body,
+                selected: None,
+            },
+        );
     }
 }

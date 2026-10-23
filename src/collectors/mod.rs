@@ -20,6 +20,7 @@ pub mod processes;
 pub mod repos;
 pub mod shell;
 pub mod system;
+pub mod toolbox;
 pub mod units;
 
 pub struct Ctx {
@@ -81,6 +82,7 @@ pub const NAMES: &[&str] = &[
     "ostree",
     "flatpak",
     "flatpak-updates",
+    "toolbox-updates",
     "podman",
     "units",
     "repos",
@@ -104,6 +106,7 @@ pub fn collect_json(name: &str, ctx: &Ctx) -> CResult<serde_json::Value> {
         "ostree" => json(ostree::collect()),
         "flatpak" => json(flatpak::collect(ctx)),
         "flatpak-updates" => json(flatpak::collect_updates()),
+        "toolbox-updates" => json(toolbox::collect(ctx)),
         "podman" => json(podman::collect(ctx)),
         "units" => json(units::collect(ctx)),
         "repos" => json(repos::collect()),

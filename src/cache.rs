@@ -40,4 +40,5 @@ pub fn store<T: Serialize>(key: &str, data: &T) -> anyhow::Result<Timestamp> {
 
 pub const OSTREE_CHECK: &str = "ostree-check";
 pub const FLATPAK_UPDATES: &str = "flatpak-updates";
+pub const TOOLBOX_UPDATES: &str = "toolbox-updates";
 pub const DISK_BREAKDOWN: &str = "disk-breakdown";

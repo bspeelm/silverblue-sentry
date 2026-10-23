@@ -31,7 +31,8 @@ impl Dashboard {
             Action::Check => vec![
                 Effect::Fetch(Fetch::OstreeCheck),
                 Effect::Fetch(Fetch::FlatpakUpdates),
-                Effect::Toast("checking rpm-ostree and flatpak updates…".into()),
+                Effect::Fetch(Fetch::ToolboxUpdates),
+                Effect::Toast("checking rpm-ostree, flatpak and toolbox updates…".into()),
             ],
             Action::Refresh => {
                 let mut e = vec![Effect::Fetch(Fetch::Disks), Effect::Fetch(Fetch::Units)];
@@ -515,22 +516,25 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
             .map_or(0, |u| u.upgraded.len() + u.added.len())
     });
     let fp = v.d.fp_updates.get().map(|c| c.data.len());
-    let checking = v.d.loading(Fetch::OstreeCheck) || v.d.loading(Fetch::FlatpakUpdates);
+    let tb =
+        v.d.tbx_updates
+            .get()
+            .map(|c| crate::collectors::toolbox::total(&c.data));
+    let checking = v.d.loading(Fetch::OstreeCheck)
+        || v.d.loading(Fetch::FlatpakUpdates)
+        || v.d.loading(Fetch::ToolboxUpdates);
     let age =
         v.d.ostree_checked
             .map(|ts| (now.as_second() - ts.as_second()).max(0));
     let stale = age.is_none_or(|a| a as u64 > v.cfg.cache.update_check_max_age.0.as_secs());
-    let (os_l, fp_l) = if r.width < 50 {
-        ("os", "fp")
+    let (os_l, fp_l, tb_l) = if r.width < 56 {
+        ("os", "fp", "tb")
     } else {
-        ("ostree", "flatpak")
+        ("ostree", "flatpak", "tbx")
     };
-    let upd_text = format!(
-        "{} {os_l} · {} {fp_l}",
-        os.map_or("?".into(), |n| n.to_string()),
-        fp.map_or("?".into(), |n| n.to_string())
-    );
-    let any = os.unwrap_or(0) + fp.unwrap_or(0) > 0;
+    let n = |x: Option<usize>| x.map_or("?".into(), |n| n.to_string());
+    let upd_text = format!("{} {os_l} · {} {fp_l} · {} {tb_l}", n(os), n(fp), n(tb));
+    let any = os.unwrap_or(0) + fp.unwrap_or(0) + tb.unwrap_or(0) > 0;
     let note = match (checking, age) {
         (true, _) => "checking…".to_string(),
         (false, None) => "never · press c".into(),

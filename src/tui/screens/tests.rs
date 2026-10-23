@@ -577,3 +577,73 @@ fn history_screen() {
     assert!(render_to_string(&mut a, 158, 41).contains("until"));
     assert!(render_to_string(&mut a, 80, 24).contains("History"));
 }
+
+#[test]
+fn containers_toolbox_updates() {
+    use crate::collectors::toolbox::{BoxUpdates, PkgUpdate, parse_exec};
+    let mut d = store();
+    let (updates, _) = parse_exec(&fixture("toolbox/exec-output.txt"));
+    let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2);
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "devbox-one".to_string(),
+        BoxUpdates {
+            checked_at: at,
+            updates,
+            error: None,
+        },
+    );
+    let names: Vec<String> = d
+        .podman
+        .get()
+        .unwrap()
+        .containers
+        .iter()
+        .filter(|c| c.kind != crate::collectors::podman::Kind::Podman && c.name != "devbox-one")
+        .map(|c| c.name.clone())
+        .collect();
+    for n in names {
+        m.insert(
+            n,
+            BoxUpdates {
+                checked_at: at,
+                updates: vec![PkgUpdate {
+                    name: "bash.x86_64".into(),
+                    old: Some("5.3.3-1.fc44".into()),
+                    new: "5.3.4-1.fc44".into(),
+                    repo: "updates".into(),
+                }],
+                error: None,
+            },
+        );
+    }
+    d.tbx_updates.set(Ok(crate::cache::Cached {
+        fetched_at: at,
+        data: m,
+    }));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Cont);
+    // Select the toolbox with the fixture's updates.
+    key(&mut a, KeyCode::Char('/'));
+    for c in "devbox".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("containers_updates_158x41", body(&s));
+    assert!(s.contains("3 ↑"), "{s}");
+    assert!(s.contains("259.8-1.fc44 → 259.10-1.fc44"), "{s}");
+    assert!(s.contains("checked 2h ago"), "{s}");
+    key(&mut a, KeyCode::Char('u'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Upgrade 3 package(s) in devbox-one?"), "{s}");
+    assert!(
+        s.contains("podman exec --user root devbox-one dnf -y upgrade"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('U'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Upgrade all toolboxes"), "{s}");
+    assert!(render_to_string(&mut a, 80, 24).contains("Containers"));
+}

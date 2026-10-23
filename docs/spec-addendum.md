@@ -99,3 +99,9 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Missing tools: collectors return `unavailable` (exit 3 from `collect`). A screen shows `— <tool> not found`. A job plan lists the job as unavailable instead of offering a command, and a check exits 2.
 - A dry run never writes a last-run record, even if printing fails (`| head`).
 - Footprint re-measured on the host after M3–M6: TUI dashboard at 1 Hz uses 0.77% of one core including children, 8.3 MB RSS. Recorder: 0.07%, 9.8 MB.
+
+## A15. Toolbox package updates
+- Containers shows pending `dnf` updates inside every toolbox/distrobox: an UPDATES column plus a pane for the selected one (`old → new`, repo). Checks run on `c` (here or on the dashboard) and in `update-check`, and are cached in `toolbox-updates.json`.
+- A check is `podman exec <name> sh -c 'dnf -q check-update; rpm -qa …'`. Exit 100 means updates, 0 means none, and a container without dnf shows `n/a`. Stopped containers are started for the check and stopped again.
+- Starting a container moves podman's exit time to now, which would hide staleness. When sentry stops a container it started, it records podman's new exit time and the original one in `~/.local/share/sentry/container-stops.json`. The podman collector reports the original for as long as the exit time is still sentry's.
+- Upgrades (`u`/`U`, the `update-apply` toolboxes item, `quick-update`) run `podman exec --user root <name> dnf -y upgrade`. Running as root through podman needs no sudo, so no terminal either. A stopped container is started for the upgrade and stopped again; an upgrade counts as use, so its exit time isn't preserved.

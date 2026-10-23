@@ -234,6 +234,63 @@ fn update_apply(p: &mut Plan) -> Result<(), CollectError> {
         ),
         default_on: true,
     });
+    // Toolboxes with pending packages, from the last check (update-check or `c`).
+    let tb = crate::cache::load::<crate::collectors::toolbox::ToolboxUpdates>(
+        crate::cache::TOOLBOX_UPDATES,
+    );
+    let pending: Vec<(String, usize)> = tb
+        .as_ref()
+        .map(|c| {
+            c.data
+                .iter()
+                .filter(|(_, b)| !b.updates.is_empty())
+                .map(|(n, b)| (n.clone(), b.updates.len()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let running: std::collections::HashSet<String> =
+        crate::collectors::podman::collect(&Ctx::new(crate::config::Config::default()))
+            .map(|p| {
+                p.containers
+                    .iter()
+                    .filter(|c| c.running())
+                    .map(|c| c.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+    let script: Vec<String> = pending
+        .iter()
+        .map(|(n, _)| {
+            let c = crate::collectors::toolbox::upgrade_cmd(n, running.contains(n));
+            format!("echo '=== {n} ==='; {}", c.display())
+        })
+        .collect();
+    p.items.push(Item {
+        job,
+        key: "toolboxes".into(),
+        label: "dnf upgrade in toolboxes".into(),
+        bytes: None,
+        preview: match &tb {
+            None => vec!["never checked (update-check, or c on Containers)".into()],
+            Some(_) if pending.is_empty() => {
+                vec!["all toolboxes up to date at the last check".into()]
+            }
+            Some(c) => pending
+                .iter()
+                .map(|(n, k)| format!("{n}: {k} package(s)"))
+                .chain([format!(
+                    "last check {}",
+                    fmt::ago(c.age_secs(jiff::Timestamp::now()))
+                )])
+                .collect(),
+        },
+        act: Act::opt((!script.is_empty()).then(|| {
+            Cmd::host("sh")
+                .args(["-c", &format!("set -e; {}", script.join("; "))])
+                .timeout(None)
+        })),
+        default_on: true,
+    });
     Ok(())
 }
 

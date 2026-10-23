@@ -111,17 +111,85 @@ pub fn collect(ctx: &Ctx) -> CResult<Podman> {
         .args(["volume", "ls", "--format", "json"])
         .output()?;
     let home = ctx.home.to_string_lossy();
+    let mut containers = parse_ps(
+        &ps,
+        &home,
+        ctx.now.as_second(),
+        ctx.cfg.audit.stale_container_days,
+    )?;
+    apply_own_stops(
+        &mut containers,
+        &load_own_stops(),
+        ctx.now.as_second(),
+        ctx.cfg.audit.stale_container_days,
+    );
     Ok(Podman {
-        containers: parse_ps(
-            &ps,
-            &home,
-            ctx.now.as_second(),
-            ctx.cfg.audit.stale_container_days,
-        )?,
+        containers,
         images: parse_images(&images)?,
         dangling: parse_images(&dangling)?,
         volumes: parse_len(&volumes)?,
     })
+}
+
+/// When sentry starts a stopped toolbox just to look inside it (update checks), podman's exit
+/// time moves to "now" and the container would stop looking stale. We remember the exit time
+/// podman reports after *our* stop, and the original one, and report the original while the
+/// container hasn't been used since.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OwnStop {
+    pub ours: i64,
+    pub original: i64,
+}
+
+fn own_stops_path() -> std::path::PathBuf {
+    crate::paths::data_dir().join("container-stops.json")
+}
+
+pub fn load_own_stops() -> std::collections::BTreeMap<String, OwnStop> {
+    std::fs::read_to_string(own_stops_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Record that sentry stopped `name` (whose real last exit was `original`).
+pub fn remember_own_stop(name: &str, original: i64) {
+    let Ok(ours) = Cmd::host("podman")
+        .args(["inspect", "--format", "{{.State.FinishedAt.Unix}}", name])
+        .output()
+    else {
+        return;
+    };
+    let Ok(ours) = ours.trim().parse::<i64>() else {
+        return;
+    };
+    let mut m = load_own_stops();
+    // An earlier record means the original exit is older still: keep it.
+    let original = m.get(name).map_or(original, |o| o.original.min(original));
+    m.insert(name.to_string(), OwnStop { ours, original });
+    if let Ok(b) = serde_json::to_vec_pretty(&m) {
+        let _ = crate::paths::write_atomic(&own_stops_path(), &b);
+    }
+}
+
+pub fn apply_own_stops(
+    ctrs: &mut [Ctr],
+    stops: &std::collections::BTreeMap<String, OwnStop>,
+    now: i64,
+    stale_days: u32,
+) {
+    for c in ctrs.iter_mut() {
+        let Some(o) = stops.get(&c.name) else {
+            continue;
+        };
+        // Only while podman's exit time is still the one our stop produced.
+        if c.running() || c.exited_at.is_none_or(|t| (t - o.ours).abs() > 5) {
+            continue;
+        }
+        c.exited_at = Some(o.original);
+        c.age_s = now - o.original;
+        c.stale = now - o.original > stale_days as i64 * 86400;
+    }
 }
 
 fn json_or_empty(s: &str) -> &str {
@@ -192,6 +260,52 @@ pub fn parse_len(json: &str) -> anyhow::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_stops_keep_real_exit_time() {
+        let now = 100 * 86400;
+        let mut c = parse_ps(
+            &crate::collectors::fixture("podman/ps.json"),
+            "/var/home/user",
+            now,
+            30,
+        )
+        .unwrap();
+        let i = c
+            .iter()
+            .position(|x| !x.running() && x.exited_at.is_some())
+            .unwrap();
+        let name = c[i].name.clone();
+        let ours = c[i].exited_at.unwrap();
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            name.clone(),
+            OwnStop {
+                ours,
+                original: now - 64 * 86400,
+            },
+        );
+        apply_own_stops(&mut c, &m, now, 30);
+        assert_eq!(c[i].age_s, 64 * 86400);
+        assert!(c[i].stale);
+        // Used since (exit time moved again): the record no longer applies.
+        let mut c2 = parse_ps(
+            &crate::collectors::fixture("podman/ps.json"),
+            "/var/home/user",
+            now,
+            30,
+        )
+        .unwrap();
+        m.insert(
+            name,
+            OwnStop {
+                ours: ours - 1000,
+                original: 0,
+            },
+        );
+        apply_own_stops(&mut c2, &m, now, 30);
+        assert_eq!(c2[i].exited_at, Some(ours));
+    }
     use crate::collectors::fixture;
 
     #[test]

@@ -106,7 +106,7 @@ pub fn run_cli(name: &str, o: Opts, ctx: &Ctx) -> u8 {
     let dry = o.dry_run;
     let r = match job {
         JobId::Audit => audit(o, ctx, out),
-        JobId::UpdateCheck if !o.dry_run => update_check(out),
+        JobId::UpdateCheck if !o.dry_run => update_check(ctx, out),
         _ => run_plan(job, &o, ctx, out),
     };
     match r {
@@ -232,7 +232,7 @@ fn run_plan(
 
 /// `rpm-ostree upgrade --preview` (refreshes cached-update) and `flatpak remote-ls --updates`
 /// (cached). Also what the TUI's `c` does.
-fn update_check(out: &mut dyn Write) -> anyhow::Result<Option<String>> {
+fn update_check(ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<Option<String>> {
     writeln!(out, "$ rpm-ostree upgrade --preview")?;
     out.flush()?;
     let o = check_ostree()?;
@@ -259,7 +259,27 @@ fn update_check(out: &mut dyn Write) -> anyhow::Result<Option<String>> {
     out.flush()?;
     let fp = check_flatpak()?;
     writeln!(out, "flatpak: {} update(s)", fp.data.len())?;
-    Ok(Some(format!("{n} ostree · {} flatpak", fp.data.len())))
+    writeln!(
+        out,
+        "$ podman exec <toolbox> dnf check-update   (stopped ones are started, then stopped)"
+    )?;
+    out.flush()?;
+    let tb = match check_toolboxes(ctx) {
+        Ok(c) => c.data,
+        Err(CollectError::Unavailable(_)) => Default::default(),
+        Err(e) => return Err(e.into()),
+    };
+    for (name, b) in &tb {
+        match &b.error {
+            Some(e) => writeln!(out, "  {name}: {e}")?,
+            None => writeln!(out, "  {name}: {} update(s)", b.updates.len())?,
+        }
+    }
+    let tbx = crate::collectors::toolbox::total(&tb);
+    Ok(Some(format!(
+        "{n} ostree · {} flatpak · {tbx} toolbox",
+        fp.data.len()
+    )))
 }
 
 pub fn check_ostree() -> Result<crate::collectors::ostree::Ostree, CollectError> {
@@ -276,6 +296,17 @@ pub fn check_ostree() -> Result<crate::collectors::ostree::Ostree, CollectError>
     }
     cache::store(cache::OSTREE_CHECK, &serde_json::json!({}))?;
     crate::collectors::ostree::collect()
+}
+
+pub fn check_toolboxes(
+    ctx: &Ctx,
+) -> Result<cache::Cached<crate::collectors::toolbox::ToolboxUpdates>, CollectError> {
+    let u = crate::collectors::toolbox::collect(ctx)?;
+    let at = cache::store(cache::TOOLBOX_UPDATES, &u)?;
+    Ok(cache::Cached {
+        fetched_at: at,
+        data: u,
+    })
 }
 
 pub fn check_flatpak()
