@@ -34,6 +34,17 @@ impl BaselineFile {
         Ok(())
     }
 
+    /// Append a finding id; returns false if it was already present.
+    pub fn add_finding(id: &str) -> anyhow::Result<bool> {
+        let mut b = Self::load();
+        if b.findings.iter().any(|f| f == id) {
+            return Ok(false);
+        }
+        b.findings.push(id.to_string());
+        b.save()?;
+        Ok(true)
+    }
+
     /// Append a listener key; returns false if it was already present.
     pub fn add_listener(key: &str) -> anyhow::Result<bool> {
         let mut b = Self::load();
@@ -49,17 +60,26 @@ impl BaselineFile {
 #[derive(Debug, Clone, Default)]
 pub struct Baseline {
     pub listeners: Vec<String>,
+    /// Finding ids (globs allowed), see `audit::findings`.
+    pub findings: Vec<String>,
 }
 
 impl Baseline {
     pub fn effective(cfg: &Config) -> Self {
-        let mut listeners = cfg.baseline.listeners.clone();
-        for l in BaselineFile::load().listeners {
-            if !listeners.contains(&l) {
-                listeners.push(l);
+        let file = BaselineFile::load();
+        let union = |a: &[String], b: Vec<String>| {
+            let mut v = a.to_vec();
+            for x in b {
+                if !v.contains(&x) {
+                    v.push(x);
+                }
             }
+            v
+        };
+        Self {
+            listeners: union(&cfg.baseline.listeners, file.listeners),
+            findings: union(&cfg.baseline.findings, file.findings),
         }
-        Self { listeners }
     }
 
     /// `key` is `addr:port/process`. Root-owned sockets have no visible process (`/?`); those
@@ -105,6 +125,7 @@ mod tests {
     fn unknown_process_matches_addr() {
         let b = Baseline {
             listeners: vec!["127.0.0.1:631/cupsd".into()],
+            findings: vec![],
         };
         assert!(b.has_listener("127.0.0.1:631/?"));
         assert!(b.has_listener("127.0.0.1:631/cupsd"));

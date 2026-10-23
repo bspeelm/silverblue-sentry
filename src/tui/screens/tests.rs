@@ -51,6 +51,7 @@ fn store() -> DataStore {
         &mut ls,
         &crate::baseline::Baseline {
             listeners: vec!["127.0.0.1:631/cupsd".into()],
+            findings: vec![],
         },
     );
     d.net.set(Ok(net::Net {
@@ -172,7 +173,7 @@ fn other_screens_snapshot() {
         (ScreenId::Net, "network"),
         (ScreenId::Cont, "containers"),
         (ScreenId::Flat, "flatpaks"),
-        (ScreenId::Audit, "audit_placeholder"),
+        (ScreenId::Audit, "audit_empty"),
     ] {
         let s = render_to_string(&mut app(id), 158, 41);
         insta::assert_snapshot!(format!("{name}_158x41"), body(&s));
@@ -244,4 +245,87 @@ fn command_line() {
     key(&mut a, KeyCode::Char('q'));
     key(&mut a, KeyCode::Enter);
     assert!(a.quit);
+}
+
+fn audit_reports() -> Vec<crate::audit::store::Stored> {
+    use crate::audit::*;
+    let listen = |key: &str| ListenSec {
+        proto: "tcp".into(),
+        key: key.into(),
+        local: false,
+    };
+    let app = |id: &str, flags: &[&str]| FpApp {
+        id: id.into(),
+        origin: "flathub".into(),
+        installation: "system".into(),
+        flags: flags.iter().map(|s| s.to_string()).collect(),
+        filesystems: flags.iter().map(|s| s.to_string()).collect(),
+        unverified: false,
+    };
+    let mut a = test_report(Sections {
+        listeners: Some(vec![listen("0.0.0.0:22/?")]),
+        flatpak: Some(FlatpakSec {
+            apps: vec![app("com.visualstudio.code", &["home"])],
+            ..Default::default()
+        }),
+        ostree: Some(OstreeSec {
+            layered: vec!["ghostty".into()],
+            local: vec!["kmod-nvidia-7.2.8-200.fc44.x86_64".into()],
+            kargs: Some("rhgb quiet nvidia-drm.modeset=1".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    a.taken_at = jiff::Timestamp::from_second(NOW - 30 * 86400).unwrap();
+    let mut b = a.clone();
+    b.taken_at = jiff::Timestamp::from_second(NOW).unwrap();
+    b.sections.listeners = Some(vec![listen("0.0.0.0:22/?"), listen("0.0.0.0:22000/syncthing")]);
+    b.sections.flatpak = Some(FlatpakSec {
+        apps: vec![
+            app("com.visualstudio.code", &["host"]),
+            app("org.gnome.Boxes", &[]),
+        ],
+        gl_nvidia: vec![("GL".into(), "610-57-04".into())],
+        ..Default::default()
+    });
+    b.sections.units = Some(UnitsSec {
+        failed: vec!["system:systemd-remount-fs.service".into()],
+        ..Default::default()
+    });
+    let base = crate::baseline::Baseline {
+        listeners: vec!["0.0.0.0:22/sshd".into()],
+        findings: vec![],
+    };
+    a.findings = findings::derive(&a, None, &base, &Config::default());
+    b.findings = findings::derive(&b, Some(&a), &base, &Config::default());
+    vec![
+        store::Stored {
+            path: "/r/2026-09-23.json".into(),
+            report: a,
+        },
+        store::Stored {
+            path: "/r/2026-10-23.json".into(),
+            report: b,
+        },
+    ]
+}
+
+#[test]
+fn audit_screen() {
+    let mut a = app(ScreenId::Audit);
+    let empty = render_to_string(&mut a, 158, 41);
+    assert!(empty.contains("No audit yet."), "{empty}");
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
+    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("audit_158x41", body(&s));
+    assert!(s.contains("7 Audit !2"), "badge counts open highs: {s}");
+    // Browse to the first report: no diff yet.
+    key(&mut a, KeyCode::Char('['));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Nothing to compare against yet"), "{s}");
+    let s = render_to_string(&mut a, 80, 24);
+    assert!(s.contains("Findings"), "{s}");
 }

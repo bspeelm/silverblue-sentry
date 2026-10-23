@@ -1,0 +1,9 @@
+These runtimes in installation 'system' are pinned and won't be removed; see flatpak-pin(1):
+  runtime/org.fedoraproject.Platform/x86_64/f44
+
+
+        ID                                                  Branch          Op
+ 1.     org.gnome.Platform                                  47              r
+ 2.     org.freedesktop.Platform.GL.nvidia-570-153-02       1.4             r
+
+Proceed with these changes to the system installation? [Y/n]: n

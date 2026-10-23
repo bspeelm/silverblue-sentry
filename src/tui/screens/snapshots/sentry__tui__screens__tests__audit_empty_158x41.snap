@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -20,10 +20,10 @@ expression: body(&s)
 
 
 
+                                                                         No audit yet.
 
-                                                                 Audit arrives in milestone 3
-
-                                       Security audit snapshots, findings by severity, month-over-month diff, baseline.
+                                               Press Enter to run one. It's read-only and takes about a second.
+                                                Reports are kept in ~/.local/share/sentry/reports/ (json + md).
 
 
 
@@ -41,4 +41,4 @@ expression: body(&s)
 
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-0  screens   ?  help   q  quit
+ Enter  run audit   ?  help   q  quit

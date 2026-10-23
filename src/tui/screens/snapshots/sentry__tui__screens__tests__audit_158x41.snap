@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit !2   8 Jobs   9 Cleanup   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Findings · 2026-10-23.json (2/2) ────────────────────────────────────────────┐  ┌ Diff · 2026-09-23 → 2026-10-23 ──────────────────────────────────────────┐
+│ SEV     CATEGORY   FINDING                                                   │  │ listeners                                                                │
+│ high    flatpak    com.visualstudio.code gained filesystem=host              │  │ + tcp  0.0.0.0:22000/syncthing                                           │
+│ high    listener   New listener 0.0.0.0:22000 (syncthing)                    │  │                                                                          │
+│ medium  units      Failed system unit systemd-remount-fs.service             │  │ flatpak                                                                  │
+│ low     flatpak    Old GL.nvidia-610-57-04 extension (driver is 615.71.09)   │  │ ~ com.visualstudio.code                    home → host                   │
+│ —       listener   New listener 0.0.0.0:22 (?)  (expected)                   │  │ + org.gnome.Boxes                          flathub                       │
+│                                                                              │  │                                                                          │
+│                                                                              │  │ layered packages                                                         │
+│                                                                              │  │   ghostty  (unchanged)                                                   │
+│                                                                              │  │                                                                          │
+│                                                                              │  │ local packages                                                           │
+│                                                                              │  │   kmod-nvidia-7.2.8-200.fc44.x86_64  (unchanged)                         │
+│                                                                              │  │                                                                          │
+│                                                                              │  │ failed units                                                             │
+│                                                                              │  │ + system:systemd-remount-fs.service                                      │
+│                                                                              │  │                                                                          │
+│                                                                              │  │ kargs                                                                    │
+│                                                                              │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│ 2 high · 1 medium · 1 low                                                    │  │                                                                          │
+│ ──────────────────────────────────────────────────────────────────────────── │  │                                                                          │
+│ evidence                                                                     │  │                                                                          │
+│ metadata + overrides for com.visualstudio.code (system)                      │  │                                                                          │
+│ [Context] filesystems=host;                                                  │  │                                                                          │
+│ prev: filesystems=home;                                                      │  │                                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   b  accept as baseline   B  baseline pattern   Enter  run audit   [ ]  browse reports   C-h/l  focus   ?  help   q  quit

@@ -46,3 +46,17 @@ Permissions are computed by parsing the app `metadata` keyfiles and applying ove
 - Network screen: `ss` every 3 s.
 - Everything else refreshes on screen entry or on `r`.
 - Disk breakdown (directory walk) is cached and refreshed only on `r` from the dashboard.
+
+## A9. Audit (milestone 3)
+- Design: `docs/design/m3-m7.md`. Reports store diffable facts only. Journal **messages are never stored**, only counts (they can contain secrets).
+- Findings have stable ids (`listener:<key>`, `flatpak-perm:<app>:<flag>`, `repo:<file>`, …). `baseline.toml findings` holds ids or `*` globs. `config.toml [baseline] findings` is the user-authored equivalent.
+- "Gained" (high) only applies relative to a previous report. On the first report, Flatpak filesystem flags and COPRs are medium, because nothing was gained.
+- Host-specific additions to spec §7:
+  - medium: enabled third-party repo files (catches a leftover `updates-master.repo`).
+  - low: unused runtimes, a stale `GL.nvidia-*` extension, failed logins.
+- UDP sockets on ephemeral ports (≥ `ip_local_port_range` low) are client sockets: class `client` on the Network screen. They're excluded from reports and findings. TCP listeners on any port stay `NEW`.
+- `B` writes a broader pattern after a confirm modal: `*/proc` for a listener, `flatpak-perm:<app>:*`, `repo:<prefix>*`, `unit-failed:<scope>:*`.
+- `similar` is not used. Kargs are an unordered set, and no free-text sections are stored.
+
+## A10. rpm-ostree has no dry-run for upgrade/rebase
+On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` offers nothing. Only `install`/`uninstall` take `-n/--dry-run`. The spec's "`--dry-run` sibling" therefore means: `--preview` for upgrade, `--dry-run` for install/uninstall, and none for rebase (the card says so; `rpm-ostree cleanup -p` undoes a staged deployment). The seeded `release-rebase.toml` step `rebase-dry` used a nonexistent flag. It now validates that the target ref exists instead.

@@ -540,12 +540,30 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
         rows.push(("", "kernel changes".into(), t.yellow, "kmod ritual".into()));
     }
 
-    rows.push((
-        "findings",
-        "no audit yet".into(),
-        t.dim,
-        "milestone 3".into(),
-    ));
+    match v.d.reports.get().and_then(|r| r.last()) {
+        Some(last) => {
+            let c = last.report.counts(&v.d.baseline);
+            let color = if c.high > 0 {
+                t.red
+            } else if c.medium > 0 {
+                t.yellow
+            } else {
+                t.fg
+            };
+            rows.push((
+                "findings",
+                format!("{} high · {} med · {} low", c.high, c.medium, c.low),
+                color,
+                fmt::ago(now.as_second() - last.report.taken_at.as_second()),
+            ));
+        }
+        None => rows.push((
+            "findings",
+            "no audit yet".into(),
+            t.dim,
+            "Enter on 7".into(),
+        )),
+    }
     match v.d.units.get() {
         Some(u) => {
             let n = u.failed.len();

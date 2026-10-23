@@ -1,6 +1,7 @@
 //! Screens: each owns its UI state (cursor, sort, focus) and renders from the shared
 //! `DataStore`. They return `Effect`s instead of doing I/O.
 
+mod audit;
 mod containers;
 mod dashboard;
 mod flatpaks;
@@ -82,6 +83,7 @@ pub struct Screens {
     upd: updates::Updates,
     cont: containers::Containers,
     flat: flatpaks::Flatpaks,
+    audit: audit::Audit,
 }
 
 impl Screens {
@@ -90,6 +92,7 @@ impl Screens {
             ScreenId::Upd => updates::on_enter(v),
             ScreenId::Cont => containers::on_enter(v),
             ScreenId::Flat => flatpaks::on_enter(v),
+            ScreenId::Audit => audit::on_enter(v),
             _ => Vec::new(),
         }
     }
@@ -102,6 +105,7 @@ impl Screens {
             ScreenId::Upd => self.upd.handle(a, v),
             ScreenId::Cont => self.cont.handle(a, v),
             ScreenId::Flat => self.flat.handle(a, v),
+            ScreenId::Audit => self.audit.handle(a, v),
             _ => placeholder::handle(id, a),
         }
     }
@@ -114,6 +118,7 @@ impl Screens {
             ScreenId::Upd => self.upd.render(f, area, v),
             ScreenId::Cont => self.cont.render(f, area, v),
             ScreenId::Flat => self.flat.render(f, area, v),
+            ScreenId::Audit => self.audit.render(f, area, v),
             _ => placeholder::render(id, f, area, v),
         }
     }
@@ -126,6 +131,7 @@ impl Screens {
             ScreenId::Upd => updates::hints(v),
             ScreenId::Cont => containers::hints(),
             ScreenId::Flat => flatpaks::hints(),
+            ScreenId::Audit => audit::hints(v),
             _ => placeholder::hints(id),
         }
     }
@@ -136,6 +142,7 @@ impl Screens {
             ScreenId::Net => self.net.cur.sel = 0,
             ScreenId::Cont => self.cont.cur.sel = 0,
             ScreenId::Flat => self.flat.cur.sel = 0,
+            ScreenId::Audit => self.audit.cur.sel = 0,
             _ => {}
         }
     }

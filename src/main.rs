@@ -1,11 +1,13 @@
 //! sentry: daemon-free monitor & maintenance TUI for Fedora Silverblue.
 
+mod audit;
 mod baseline;
 mod cache;
 mod collectors;
 mod config;
 mod exec;
 mod fmt;
+mod jobs;
 mod keyfile;
 mod paths;
 mod resume;
@@ -38,6 +40,9 @@ enum Command {
         tag: Option<String>,
         #[arg(long)]
         diff_against: Option<String>,
+        /// Skip the confirmation prompt (the TUI passes this after its own confirm modal).
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Built-in checks used by workflows (exit 0/1 + one-line reason).
     Check {
@@ -134,7 +139,27 @@ fn main() -> ExitCode {
             println!("{}", status::line(short));
             ExitCode::SUCCESS
         }
-        Some(Command::Job { .. }) => not_yet("job", 4),
+        Some(Command::Job {
+            name,
+            dry_run,
+            tag,
+            diff_against,
+            yes,
+        }) => {
+            let (cfg, warnings) = config::Config::load();
+            warnings.iter().for_each(|w| eprintln!("{w}"));
+            let ctx = collectors::Ctx::new(cfg);
+            ExitCode::from(jobs::run_cli(
+                &name,
+                jobs::Opts {
+                    dry_run,
+                    yes,
+                    tag,
+                    diff_against,
+                },
+                &ctx,
+            ))
+        }
         Some(Command::Check { .. }) => not_yet("check", 5),
         Some(Command::Workflow { .. }) => not_yet("workflow", 5),
         Some(Command::Record { .. }) => not_yet("record", 6),

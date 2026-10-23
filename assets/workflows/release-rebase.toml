@@ -1,7 +1,8 @@
 name = "release-rebase"
 description = "Rebase Silverblue to a new Fedora release with the NVIDIA kmod ritual"
 # DRAFT: the cheatsheets do not cover a release rebase with locally layered rpmfusion release RPMs.
-# Lint refuses to start a draft until `rebase-dry` has succeeded once; then delete this line.
+# Sentry refuses to start a draft. Review every step (rpm-ostree rebase has no dry-run; `rpm-ostree cleanup -p`
+# undoes a staged rebase), then delete this line.
 draft = true
 
 [vars]
@@ -28,8 +29,8 @@ on_fail = "stop"
 
 [[steps]]
 id = "rebase-dry"
-title = "Dry-run the rebase"
-run = "rpm-ostree rebase --dry-run fedora:fedora/{{ target }}/x86_64/silverblue --uninstall {{ old_kmod }} --uninstall rpmfusion-free-release --uninstall rpmfusion-nonfree-release --install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{{ target }}.noarch.rpm --install https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-{{ target }}.noarch.rpm"
+title = "Target ref fedora/{{ target }}/x86_64/silverblue exists (rpm-ostree rebase has no dry-run)"
+run = "ostree remote refs fedora | grep -x 'fedora:fedora/{{ target }}/x86_64/silverblue'"
 gate = "confirm"
 on_fail = "stop"
 dry_run = false

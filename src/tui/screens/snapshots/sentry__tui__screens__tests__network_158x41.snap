@@ -2,10 +2,10 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ Listening · ss -tulpn · 44 · 18 new ──────────────────────────────────────────────┐  ┌ Established · 26 ───────────────────────────────────────────────────┐
+┌ Listening · ss -tulpn · 44 · 12 new ──────────────────────────────────────────────┐  ┌ Established · 26 ───────────────────────────────────────────────────┐
 │ PROTO LOCAL                                   PROCESS                    STATUS   │  │ PEER                                             PROCESS            │
 │ tcp   0.0.0.0:27500                           ?                          NEW      │  │ 198.51.100.2:https                               claude             │
 │ tcp   0.0.0.0:5355                            ?                          NEW      │  │ 198.51.100.3:https                               slack              │
@@ -27,13 +27,13 @@ expression: body(&s)
 │ tcp   127.0.0.54:53                           ?                          local    │  │ 198.51.100.7:https                               claude             │
 │ tcp   [::1]:631                               ?                          local    │  │ 198.51.100.7:https                               claude             │
 │ tcp   [::]:5355                               ?                          NEW      │  │ 127.0.0.1:37328                                  pasta.avx2         │
-│ udp   *:34801                                 wsdd (19947)               NEW      │  │ 192.0.2.9:ssh                                    ssh                │
-│ udp   *:35061                                 wsdd (19947)               NEW      │  │ 192.0.2.9:ssh                                    ssh                │
-│ udp   0.0.0.0:35905                           wsdd (19947)               NEW      │  │ 198.51.100.10:https                              brave              │
-│ udp   0.0.0.0:47479                           ?                          NEW      │  │ 198.51.100.11:https                              brave              │
+│ udp   *:34801                                 wsdd (19947)               client   │  │ 192.0.2.9:ssh                                    ssh                │
+│ udp   *:35061                                 wsdd (19947)               client   │  │ 192.0.2.9:ssh                                    ssh                │
+│ udp   0.0.0.0:35905                           wsdd (19947)               client   │  │ 198.51.100.10:https                              brave              │
+│ udp   0.0.0.0:47479                           ?                          client   │  │ 198.51.100.11:https                              brave              │
 │ udp   0.0.0.0:5353                            ?                          NEW      │  │ [2001:0db8:40c:e::1]:https                       pasta.avx2         │
 │ udp   0.0.0.0:5355                            ?                          NEW      │  │ [2001:0db8:8::347]:https                         brave              │
-│ udp   0.0.0.0:53776                           wsdd (19947)               NEW      │  │                                                                     │
+│ udp   0.0.0.0:53776                           wsdd (19947)               client   │  │                                                                     │
 │ udp   127.0.0.1:323                           ?                          local    │  │                                                                     │
 │ udp   127.0.0.1:3389                          pasta.avx2 (127235)        local    │  │                                                                     │
 │ udp   127.0.0.53%lo:53                        ?                          local    │  │                                                                     │

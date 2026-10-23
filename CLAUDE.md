@@ -1,6 +1,7 @@
 # sentry: Silverblue monitor & maintenance TUI (Rust + ratatui)
 
 Spec: `docs/spec.md`. Binding amendments: `docs/spec-addendum.md` (read both before changing behavior).
+Design for M3–M7: `docs/design/m3-m7.md`.
 Visual target: `docs/design/sentry-tui.dc.html` (read the source; don't render it).
 Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/workflows/*.toml`.
 
@@ -30,4 +31,5 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - [x] M1 skeleton: CLI, config, TUI shell, live dashboard
 - [x] M2 collectors + Dashboard/Processes/Network/Updates/Containers/Flatpaks
   (measured on host: 0.7% of one core incl. children at 1 Hz dashboard, 8 MB RSS)
-- [ ] M3 audit · [ ] M4 jobs · [ ] M5 workflows · [ ] M6 recorder · [ ] M7 polish
+- [x] M3 audit (`src/audit/`, `sentry job audit`, Audit screen)
+- [ ] M4 jobs · [ ] M5 workflows · [ ] M6 recorder · [ ] M7 polish

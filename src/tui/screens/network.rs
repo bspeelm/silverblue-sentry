@@ -7,7 +7,7 @@ use ratatui::widgets::{Cell, Paragraph, Row};
 
 use super::{Cursor, Hints, View};
 use crate::collectors::net::{ListenStatus, Listener};
-use crate::tui::app::Effect;
+use crate::tui::app::{BaselineEdit, Effect};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::widgets::{TableSpec, inner, panel, table};
@@ -50,7 +50,7 @@ impl Network {
                         l.key()
                     ))]
                 }
-                Some(l) => vec![Effect::AddListener(l.key())],
+                Some(l) => vec![Effect::Baseline(BaselineEdit::Listener(l.key()))],
                 None => Vec::new(),
             },
             _ => Vec::new(),
@@ -90,6 +90,7 @@ impl Network {
                         ListenStatus::New => ("NEW", t.red),
                         ListenStatus::Baseline => ("baseline", t.dim),
                         ListenStatus::Local => ("local", t.green),
+                        ListenStatus::Ephemeral => ("client", t.dim),
                     };
                     let proc = match (&l.process, l.pid) {
                         (Some(p), Some(pid)) => format!("{p} ({pid})"),

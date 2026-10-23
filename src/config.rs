@@ -140,12 +140,15 @@ impl Default for Recorder {
 #[serde(default)]
 pub struct BaselineCfg {
     pub listeners: Vec<String>,
+    /// Audit finding ids to treat as expected (globs allowed).
+    pub findings: Vec<String>,
 }
 
 impl Default for BaselineCfg {
     fn default() -> Self {
         Self {
             listeners: vec!["127.0.0.1:631/cupsd".into()],
+            findings: Vec::new(),
         }
     }
 }

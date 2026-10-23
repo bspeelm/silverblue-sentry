@@ -148,6 +148,38 @@ pub fn collect_updates() -> CResult<Vec<FpUpdate>> {
     Ok(parse_updates(&out))
 }
 
+/// Refs `flatpak uninstall --unused` would remove, per installation. Flatpak has no dry-run, so
+/// the prompt is answered `n`: the transaction table is printed and nothing changes.
+pub fn collect_unused() -> CResult<Vec<String>> {
+    let mut out = Vec::new();
+    for inst in ["--system", "--user"] {
+        let o = Cmd::host("sh")
+            .args([
+                "-c",
+                &format!("printf 'n\\n' | flatpak uninstall --unused {inst}"),
+            ])
+            .timeout(Some(std::time::Duration::from_secs(60)))
+            .run()?;
+        out.extend(parse_unused(&o.stdout));
+    }
+    Ok(out)
+}
+
+/// Rows of the transaction table: ` 1.     org.gnome.Platform     47     r`.
+pub fn parse_unused(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let n = f.first()?.strip_suffix('.')?;
+            n.parse::<u32>().ok()?;
+            Some(match f.get(2) {
+                Some(branch) => format!("{}//{branch}", f.get(1)?),
+                None => f.get(1)?.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn list_files(d: &Path) -> Vec<String> {
     std::fs::read_dir(d)
         .map(|rd| {
@@ -313,6 +345,19 @@ pub fn flags(p: &Perms, cfg: &FlatpakCfg) -> Vec<Flag> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unused_table() {
+        let t = super::super::fixture("flatpak/uninstall-unused.txt");
+        assert_eq!(
+            parse_unused(&t),
+            vec![
+                "org.gnome.Platform//47",
+                "org.freedesktop.Platform.GL.nvidia-570-153-02//1.4"
+            ]
+        );
+        assert!(parse_unused("Nothing unused to uninstall\n").is_empty());
+    }
     use crate::collectors::fixture;
 
     #[test]

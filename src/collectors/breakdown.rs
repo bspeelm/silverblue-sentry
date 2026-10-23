@@ -47,6 +47,29 @@ pub fn collect(ctx: &Ctx) -> Breakdown {
     b
 }
 
+/// `~/.cache` total plus its children larger than `min`, biggest first.
+pub fn cache_top(home: &std::path::Path, min: u64) -> (u64, Vec<(String, u64)>) {
+    let root = home.join(".cache");
+    let mut seen = HashSet::new();
+    let mut bad = 0;
+    let mut total = 0;
+    let mut top = Vec::new();
+    for e in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let Ok(md) = e.metadata() else { continue };
+        let n = if md.is_dir() {
+            du(&[e.path()], &mut seen, &mut bad) + md.blocks() * 512
+        } else {
+            md.blocks() * 512
+        };
+        total += n;
+        if n >= min {
+            top.push((e.file_name().to_string_lossy().into_owned(), n));
+        }
+    }
+    top.sort_by_key(|e| std::cmp::Reverse(e.1));
+    (total, top)
+}
+
 /// Allocated bytes under `roots`, counting each (dev, inode) once and never crossing into
 /// directories we can't read.
 pub fn du(roots: &[PathBuf], seen: &mut HashSet<(u64, u64)>, unreadable: &mut u64) -> u64 {

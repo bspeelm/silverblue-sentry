@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · i9-14900K · 24c/32t ──────────────────────────────────────────────────────────────────────────┐  ┌ Memory ───────────────────────────────────────────┐
@@ -28,7 +28,7 @@ expression: body(&s)
 ┌ Disks ──────────────────────────────────────────┐  ┌ Network · enp4s0 ────────────────────────────────┐  ┌ Status ─────────────────────────────────────────┐
 │ /sysroot  btrfs                     131G / 463G │  │ ↓ 0 B/s   ↑ 0 B/s                                │  │ updates       216 os · ? fp  never · press c    │
 │ ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  28% │  │                                                  │  │               kernel changes  kmod ritual       │
-│ /boot  ext4                         997M / 1.9G │  │   ▄▆▇██▆▄▁       ▁▄▆██▇▆▃        ▂▅▇██▇▅▂        │  │ findings      no audit yet  milestone 3         │
+│ /boot  ext4                         997M / 1.9G │  │   ▄▆▇██▆▄▁       ▁▄▆██▇▆▃        ▂▅▇██▇▅▂        │  │ findings      no audit yet  Enter on 7          │
 │ ██████████████████████░░░░░░░░░░░░░░░░░░░░  51% │  │ ▅█████████▅▁   ▂▆█████████▄    ▃▇████████▇▃    ▄ │  │ failed units  1  systemd-remount-fs             │
 │ /boot/efi  vfat                    13.2M / 599M │  │ ████████████▄ ▅█████████████▃▂▆████████████▆▂▃██ │  │ jobs due      —  milestone 4                    │
 │ █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   2% │  │ ▁▆█▆   ▅█▇▂  ▄██▄  ▂▇█▅   ▆█▆▁  ▄█▇▃  ▃▇█▄  ▁▆█▆ │  │ workflow      none                              │

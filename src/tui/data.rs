@@ -9,6 +9,8 @@ use std::time::Instant;
 use jiff::Timestamp;
 
 use super::Event;
+use crate::audit::store::Stored;
+use crate::baseline::Baseline;
 use crate::cache::{self, Cached};
 use crate::collectors::breakdown::{self, Breakdown};
 use crate::collectors::disk::{self, Mount};
@@ -38,6 +40,8 @@ pub enum Fetch {
     FlatpakUpdates,
     Podman,
     Units,
+    /// Stored audit reports (`reports/*.json`).
+    Reports,
 }
 
 pub enum Payload {
@@ -51,6 +55,7 @@ pub enum Payload {
     FlatpakUpdates(Cached<Vec<FpUpdate>>),
     Podman(Podman),
     Units(Units),
+    Reports(Vec<Stored>),
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +165,9 @@ pub struct DataStore {
     pub fp_updates: Slot<Cached<Vec<FpUpdate>>>,
     pub podman: Slot<Podman>,
     pub units: Slot<Units>,
+    pub reports: Slot<Vec<Stored>>,
+    /// Effective baseline; reloaded after the TUI writes baseline.toml.
+    pub baseline: Baseline,
 
     pub inflight: HashSet<Fetch>,
     pub os_version: String,
@@ -168,7 +176,8 @@ pub struct DataStore {
 
 impl DataStore {
     pub fn new() -> Self {
-        let mut d = Self::blank(os_version(), ostree::booted_kernel());
+        let mut d = Self::blank(crate::paths::os_version(), ostree::booted_kernel());
+        d.baseline = Baseline::effective(&Config::load().0);
         d.ostree_checked =
             cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
         // Cached results are shown immediately with their age; never refreshed automatically.
@@ -202,6 +211,8 @@ impl DataStore {
             fp_updates: Slot::default(),
             podman: Slot::default(),
             units: Slot::default(),
+            reports: Slot::default(),
+            baseline: Baseline::default(),
             inflight: HashSet::new(),
             os_version,
             kernel,
@@ -260,6 +271,7 @@ impl DataStore {
             Fetch::FlatpakUpdates => put!(fp_updates, Payload::FlatpakUpdates),
             Fetch::Podman => put!(podman, Payload::Podman),
             Fetch::Units => put!(units, Payload::Units),
+            Fetch::Reports => put!(reports, Payload::Reports),
         }
     }
 
@@ -331,25 +343,8 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         }
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
+        Fetch::Reports => Payload::Reports(crate::audit::store::list()),
     })
-}
-
-/// `44.20261002.0` from host os-release `VERSION="44.20261002.0 (Silverblue)"`.
-fn os_version() -> String {
-    let text = std::fs::read_to_string(crate::paths::host("/etc/os-release")).unwrap_or_default();
-    parse_os_version(&text)
-}
-
-pub fn parse_os_version(text: &str) -> String {
-    let get = |k: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(k))
-            .map(|v| v.trim_matches('"').to_string())
-    };
-    get("VERSION=")
-        .map(|v| v.split(' ').next().unwrap_or(&v).to_string())
-        .or_else(|| get("VERSION_ID="))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -357,7 +352,7 @@ mod tests {
     #[test]
     fn os_release() {
         assert_eq!(
-            super::parse_os_version(
+            crate::paths::parse_os_version(
                 "NAME=\"Fedora Linux\"\nVERSION=\"44.20261002.0 (Silverblue)\"\nVERSION_ID=44\n"
             ),
             "44.20261002.0"

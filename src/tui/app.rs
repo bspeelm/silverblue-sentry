@@ -35,8 +35,24 @@ pub enum Effect {
     /// Run in this terminal with the TUI suspended.
     Suspend(Cmd),
     Kill(u32, String),
-    AddListener(String),
+    /// Append to `baseline.toml` (listener key or finding id/pattern).
+    Baseline(BaselineEdit),
     Quit,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BaselineEdit {
+    Listener(String),
+    Finding(String),
+}
+
+impl BaselineEdit {
+    pub fn value(&self) -> String {
+        match self {
+            BaselineEdit::Listener(k) => format!("listeners += {k:?}"),
+            BaselineEdit::Finding(k) => format!("findings += {k:?}"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -188,6 +204,8 @@ impl App {
     }
 
     pub fn start(&mut self, now: Instant) {
+        // State files only (cheap): the dashboard Status panel and tab badges need them.
+        self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
         self.enter(self.screen, now);
     }
 
@@ -334,7 +352,7 @@ impl App {
                 if let Err(e) = &r
                     && matches!(
                         f,
-                        Fetch::OstreeCheck | Fetch::FlatpakUpdates | Fetch::Breakdown
+                        Fetch::OstreeCheck | Fetch::FlatpakUpdates | Fetch::Breakdown | Fetch::Reports
                     )
                 {
                     self.toast(e.text());
@@ -541,15 +559,27 @@ impl App {
                     }
                     Err(e) => self.toast(format!("kill {pid}: {e}")),
                 },
-                Effect::AddListener(key) => match crate::baseline::BaselineFile::add_listener(&key)
-                {
-                    Ok(true) => {
-                        self.toast(format!("{key} added to baseline.toml"));
-                        self.data.fetch(Fetch::Net, &self.cfg, &self.tx);
+                Effect::Baseline(edit) => {
+                    let (r, key) = match &edit {
+                        BaselineEdit::Listener(k) => {
+                            (crate::baseline::BaselineFile::add_listener(k), k)
+                        }
+                        BaselineEdit::Finding(k) => {
+                            (crate::baseline::BaselineFile::add_finding(k), k)
+                        }
+                    };
+                    match r {
+                        Ok(true) => {
+                            self.toast(format!("{key} added to baseline.toml"));
+                            self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
+                            if matches!(edit, BaselineEdit::Listener(_)) {
+                                self.data.fetch(Fetch::Net, &self.cfg, &self.tx);
+                            }
+                        }
+                        Ok(false) => self.toast(format!("{key} is already in the baseline")),
+                        Err(e) => self.toast(format!("baseline.toml: {e}")),
                     }
-                    Ok(false) => self.toast(format!("{key} is already in the baseline")),
-                    Err(e) => self.toast(format!("baseline.toml: {e}")),
-                },
+                }
                 Effect::Quit => self.quit = true,
             }
         }
@@ -757,6 +787,11 @@ impl App {
                         .count()
                 });
                 (n > 0).then(|| (format!(" {n}"), t.red))
+            }
+            ScreenId::Audit => {
+                let r = self.data.reports.get()?.last()?;
+                let c = r.report.counts(&self.data.baseline);
+                (c.high > 0).then(|| (format!(" !{}", c.high), t.red))
             }
             ScreenId::Upgrade => self.resume.as_ref().map(|_| (" ●".into(), t.yellow)),
             _ => None,

@@ -13,6 +13,9 @@ pub enum ListenStatus {
     Baseline,
     /// Loopback or multicast group: not reachable from outside, not a finding.
     Local,
+    /// UDP socket on an ephemeral port (browser WebRTC/QUIC, mDNS clients): a client socket
+    /// rather than a service, not a finding.
+    Ephemeral,
     /// Reachable bind not in the baseline.
     New,
 }
@@ -76,15 +79,31 @@ pub fn collect(ctx: &Ctx) -> CResult<Net> {
 }
 
 pub fn classify(ls: &mut [Listener], b: &Baseline) {
+    let low = ephemeral_low();
     for l in ls {
         l.status = if b.has_listener(&l.key()) {
             ListenStatus::Baseline
         } else if is_local(&l.addr) {
             ListenStatus::Local
+        } else if is_ephemeral(l, low) {
+            ListenStatus::Ephemeral
         } else {
             ListenStatus::New
         };
     }
+}
+
+/// Lower bound of the kernel's ephemeral port range (`ip_local_port_range`, default 32768).
+pub fn ephemeral_low() -> u16 {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse().ok())
+        .unwrap_or(32768)
+}
+
+/// UDP bound to an ephemeral port: a client socket. TCP LISTEN is always deliberate.
+pub fn is_ephemeral(l: &Listener, low: u16) -> bool {
+    l.proto.starts_with("udp") && l.port.parse::<u16>().is_ok_and(|p| p >= low)
 }
 
 pub fn is_local(addr: &str) -> bool {
@@ -276,12 +295,14 @@ mod tests {
             "tcp LISTEN 0 5 127.0.0.1:631 0.0.0.0:* users:((\"cupsd\",pid=1,fd=1))\n\
              tcp LISTEN 0 5 0.0.0.0:22000 0.0.0.0:* users:((\"syncthing\",pid=2,fd=1))\n\
              tcp LISTEN 0 5 127.0.0.1:8384 0.0.0.0:* users:((\"syncthing\",pid=2,fd=1))\n\
-             udp UNCONN 0 0 224.0.0.251:5353 0.0.0.0:* users:((\"brave\",pid=3,fd=1))\n",
+             udp UNCONN 0 0 224.0.0.251:5353 0.0.0.0:* users:((\"brave\",pid=3,fd=1))\n\
+             udp UNCONN 0 0 0.0.0.0:35905 0.0.0.0:* users:((\"wsdd\",pid=4,fd=1))\n",
         );
         classify(
             &mut ls,
             &Baseline {
                 listeners: vec!["127.0.0.1:631/cupsd".into()],
+                findings: vec![],
             },
         );
         let st = |port: &str| ls.iter().find(|l| l.port == port).unwrap().status;
@@ -289,6 +310,7 @@ mod tests {
         assert_eq!(st("22000"), ListenStatus::New);
         assert_eq!(st("8384"), ListenStatus::Local);
         assert_eq!(st("5353"), ListenStatus::Local);
+        assert_eq!(st("35905"), ListenStatus::Ephemeral, "udp on an ephemeral port");
     }
 
     #[test]

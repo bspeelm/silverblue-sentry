@@ -51,3 +51,22 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::write(&tmp, contents)?;
     std::fs::rename(tmp, path)
 }
+
+/// `44.20261002.0` from host os-release `VERSION="44.20261002.0 (Silverblue)"`.
+pub fn os_version() -> String {
+    let text = std::fs::read_to_string(host("/etc/os-release")).unwrap_or_default();
+    parse_os_version(&text)
+}
+
+pub fn parse_os_version(text: &str) -> String {
+    let get = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k))
+            .map(|v| v.trim_matches('"').to_string())
+    };
+    get("VERSION=")
+        .map(|v| v.split(' ').next().unwrap_or(&v).to_string())
+        .or_else(|| get("VERSION_ID="))
+        .unwrap_or_default()
+}
+
