@@ -167,6 +167,10 @@ impl Screens {
         }
     }
 
+    pub fn select_workflow(&mut self, i: usize) {
+        self.upgrade.cur.sel = i;
+    }
+
     pub fn reset_cursor(&mut self, id: ScreenId) {
         match id {
             ScreenId::Proc => self.proc.cur.sel = 0,

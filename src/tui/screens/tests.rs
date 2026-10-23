@@ -361,7 +361,10 @@ fn jobs_and_cleanup_screens() {
             },
         );
     }
-    d.job_runs.set(Ok(runs));
+    d.job_runs.set(Ok(crate::jobs::state::Records {
+        runs,
+        cadence: Default::default(),
+    }));
     let item = |job, key: &str, label: &str, bytes: Option<u64>, run: bool, on: bool| Item {
         job,
         key: key.into(),

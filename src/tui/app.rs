@@ -565,7 +565,7 @@ impl App {
                 };
                 self.enter(tabs[j], now);
             }
-            Action::Help => self.modal = Some(help_modal(&self.theme)),
+            Action::Help => self.show_help(),
             Action::Interrupt
                 if self.screen == ScreenId::Upgrade
                     && self.wf.as_ref().is_some_and(|s| s.live.is_some()) =>
@@ -643,6 +643,38 @@ impl App {
         }
     }
 
+    fn show_help(&mut self) {
+        let hints = self.screens.hints(self.screen, &self.view());
+        self.modal = Some(help_modal(&self.theme, self.screen.name(), &hints));
+    }
+
+    /// `:workflow [name]`: open Upgrade and start `name` the same way Enter does there.
+    fn workflow_command(&mut self, name: Option<&str>, now: Instant) {
+        self.enter(ScreenId::Upgrade, now);
+        let Some(name) = name else { return };
+        if self.wf.as_ref().is_some_and(|s| !s.done()) {
+            self.toast("a workflow is already in progress");
+            return;
+        }
+        // The list loads in the background on entry; this needs it now (a few small files).
+        let infos = super::screens::upgrade::load_infos();
+        let Some(i) = infos.iter().position(|w| w.entry.name == name) else {
+            self.toast(format!("no workflow {name} in ~/.config/sentry/workflows"));
+            return;
+        };
+        self.data.workflows.set(Ok(infos));
+        self.screens.select_workflow(i);
+        let v = View {
+            d: &self.data,
+            cfg: &self.cfg,
+            t: &self.theme,
+            filter: None,
+            wf: self.wf.as_ref(),
+        };
+        let effects = self.screens.handle(ScreenId::Upgrade, Action::Enter, &v);
+        self.apply(effects, now);
+    }
+
     fn submit(&mut self, p: Prompt, text: &str, now: Instant) {
         match p {
             Prompt::WfVar {
@@ -698,7 +730,7 @@ impl App {
         match (parts.next(), parts.next()) {
             (Some("q" | "q!" | "quit" | "qa"), _) => self.quit = true,
             (Some("refresh" | "r"), _) => self.on_key(KeyEvent::from(KeyCode::Char('r')), now),
-            (Some("help" | "h"), _) => self.modal = Some(help_modal(&self.theme)),
+            (Some("help" | "h"), _) => self.show_help(),
             (Some("job"), Some(name)) => match crate::jobs::JobId::from_name(name) {
                 Some(j) => {
                     self.enter(ScreenId::Jobs, now);
@@ -707,9 +739,7 @@ impl App {
                 None => self.toast(format!("unknown job {name}")),
             },
             (Some("job"), None) => self.enter(ScreenId::Jobs, now),
-            (Some("workflow"), _) => {
-                self.toast("workflows arrive in milestone 5 — :workflow is not wired yet")
-            }
+            (Some("workflow" | "wf"), name) => self.workflow_command(name, now),
             (Some(name), None) => match ScreenId::from_name(name) {
                 Some(id) => self.enter(id, now),
                 None => self.toast(format!("unknown command :{c}")),
@@ -1233,7 +1263,7 @@ impl App {
             }
             ScreenId::Jobs => {
                 let runs = self.data.job_runs.get()?;
-                let n = crate::jobs::state::due_jobs(&self.cfg, runs, jiff::Timestamp::now()).len();
+                let n = runs.due_jobs(&self.cfg, jiff::Timestamp::now()).len();
                 (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
             ScreenId::Upgrade => self
@@ -1436,26 +1466,43 @@ fn draw_run(f: &mut Frame, area: Rect, t: &Theme, r: &RunPane) {
     f.render_widget(Paragraph::new(Span::styled(status, t.s(color))), foot);
 }
 
-fn help_modal(t: &Theme) -> Modal {
+fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
     let l = |s: &str| Line::styled(s.to_string(), t.fg());
+    let mut lines = vec![
+        l("1–9 0 H   switch screen        Tab/S-Tab, h/l  next/prev screen"),
+        l("j/k ↑↓    move selection       gg/G  top/bottom   C-d/C-u  page"),
+        l("/         filter (Esc clears)  n/N   next/prev    C-h/C-l  pane focus"),
+        l("r         refresh current      c     check now    C-j/C-k  scroll log/diff"),
+        l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
+        l(":q  :<screen>  :job <name>  :workflow <name>  :refresh"),
+        Line::raw(""),
+        Line::styled(format!("{screen}:"), t.s(t.cyan)),
+    ];
+    let mut row = String::new();
+    for (k, d) in hints {
+        let cell = format!("{k:<7} {d:<22}");
+        if row.chars().count() + cell.chars().count() > 76 {
+            lines.push(l(row.trim_end()));
+            row.clear();
+        }
+        row.push_str(&cell);
+    }
+    if !row.is_empty() {
+        lines.push(l(row.trim_end()));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "Destructive actions: preview → confirm → streamed output.",
+        t.dim(),
+    ));
+    lines.push(Line::styled(
+        "Nothing runs in the background after sentry exits.",
+        t.dim(),
+    ));
     Modal {
         title: "Keys".into(),
         color: t.cyan,
-        lines: vec![
-            l("1–9 0 H   switch screen        Tab/S-Tab, h/l  next/prev screen"),
-            l("j/k ↑↓    move selection       gg/G  top/bottom   C-d/C-u  page"),
-            l("/         filter (Esc clears)  n/N   next/prev    :  command (:q, :net)"),
-            l("r         refresh current      c     check now (network collectors)"),
-            l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
-            Line::styled(
-                "Destructive actions: preview → confirm → streamed output.",
-                t.dim(),
-            ),
-            Line::styled(
-                "Nothing runs in the background after sentry exits.",
-                t.dim(),
-            ),
-        ],
+        lines,
         yes: None,
     }
 }

@@ -89,10 +89,6 @@ fn overrides() -> BTreeMap<String, String> {
 }
 
 /// Effective cadence: cadence.toml > config `[jobs]` > spec default.
-pub fn every(job: JobId, cfg: &Config) -> Every {
-    every_with(job, cfg, &overrides())
-}
-
 pub fn every_with(job: JobId, cfg: &Config, ov: &BTreeMap<String, String>) -> Every {
     let s = ov
         .get(job.name())
@@ -150,13 +146,41 @@ impl Due {
     }
 }
 
-/// Names of jobs that are due now (dashboard, `sentry status`).
+/// Names of jobs that are due now (`sentry status`).
 pub fn due_jobs(cfg: &Config, runs: &Runs, now: Timestamp) -> Vec<JobId> {
-    let ov = overrides();
-    JobId::ALL
-        .into_iter()
-        .filter(|j| due(*j, every_with(*j, cfg, &ov), runs, now).is_due())
-        .collect()
+    Records {
+        runs: runs.clone(),
+        cadence: overrides(),
+    }
+    .due_jobs(cfg, now)
+}
+
+/// Last runs plus cadence overrides, read together so the TUI doesn't re-read
+/// `cadence.toml` every frame.
+#[derive(Debug, Clone, Default)]
+pub struct Records {
+    pub runs: Runs,
+    pub cadence: BTreeMap<String, String>,
+}
+
+impl Records {
+    pub fn load() -> Self {
+        Self {
+            runs: load(),
+            cadence: overrides(),
+        }
+    }
+
+    pub fn every(&self, job: JobId, cfg: &Config) -> Every {
+        every_with(job, cfg, &self.cadence)
+    }
+
+    pub fn due_jobs(&self, cfg: &Config, now: Timestamp) -> Vec<JobId> {
+        JobId::ALL
+            .into_iter()
+            .filter(|j| due(*j, self.every(*j, cfg), &self.runs, now).is_due())
+            .collect()
+    }
 }
 
 #[cfg(test)]

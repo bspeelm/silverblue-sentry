@@ -151,6 +151,10 @@ pub fn collect_updates() -> CResult<Vec<FpUpdate>> {
 /// Refs `flatpak uninstall --unused` would remove, per installation. Flatpak has no dry-run, so
 /// the prompt is answered `n`: the transaction table is printed and nothing changes.
 pub fn collect_unused() -> CResult<Vec<String>> {
+    // The `sh -c` wrapper would hide a missing flatpak as "nothing unused".
+    if !Cmd::host("flatpak").available() {
+        return Err(super::CollectError::Unavailable("flatpak".into()));
+    }
     let mut out = Vec::new();
     for inst in ["--system", "--user"] {
         let o = Cmd::host("sh")

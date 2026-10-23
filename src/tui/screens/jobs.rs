@@ -117,15 +117,16 @@ struct RowData {
 impl Jobs {
     fn rows(&self, v: &View) -> Vec<RowData> {
         let t = v.t;
-        let runs = v.d.job_runs.get().cloned().unwrap_or_default();
+        let rec = v.d.job_runs.get().cloned().unwrap_or_default();
+        let runs = &rec.runs;
         let now = jiff::Timestamp::now();
         JobId::ALL
             .into_iter()
             .filter(|j| v.matches(&[j.name(), j.description()]))
             .map(|job| {
-                let every = state::every(job, v.cfg);
+                let every = rec.every(job, v.cfg);
                 let run = runs.get(job.name());
-                let due = state::due(job, every, &runs, now);
+                let due = state::due(job, every, runs, now);
                 let last = run.map_or("never".into(), |r| {
                     r.at.to_zoned(jiff::tz::TimeZone::system())
                         .strftime("%Y-%m-%d %H:%M")
@@ -190,12 +191,19 @@ impl Jobs {
         ])
         .areas(area);
         self.cur.page = list.height as usize;
+        // Narrow: the date alone, so the action column keeps some room.
+        let narrow = area.width < 120;
         let body: Vec<Row> = rows
             .iter()
             .map(|r| {
+                let last = if narrow {
+                    r.last.chars().take(10).collect()
+                } else {
+                    r.last.clone()
+                };
                 Row::new(vec![
                     Cell::from(r.job.name()),
-                    Cell::from(r.last.clone()).style(t.dim()),
+                    Cell::from(last).style(t.dim()),
                     Cell::from(r.every.label()).style(t.dim()),
                     Cell::from(r.status.0).style(t.s(r.status.1)),
                     Cell::from(r.action.clone()).style(t.dim()),
@@ -209,8 +217,8 @@ impl Jobs {
             TableSpec {
                 header: vec!["JOB", "LAST RUN", "EVERY", "STATUS", "ACTION"],
                 widths: vec![
-                    Constraint::Length(20),
-                    Constraint::Length(18),
+                    Constraint::Length(if narrow { 16 } else { 20 }),
+                    Constraint::Length(if narrow { 10 } else { 18 }),
                     Constraint::Length(8),
                     Constraint::Length(8),
                     Constraint::Fill(1),
@@ -222,7 +230,7 @@ impl Jobs {
         let last = rows.get(sel).and_then(|r| {
             v.d.job_runs
                 .get()
-                .and_then(|runs| runs.get(r.job.name()))
+                .and_then(|rec| rec.runs.get(r.job.name()))
                 .map(|run| (r.job, run.clone()))
         });
         let mut lines = vec![Line::styled(

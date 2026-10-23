@@ -34,8 +34,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run one job headless.
+    /// Run one job headless (plan → confirm → run).
     Job {
+        /// audit, update-check, update-apply, cleanup-flatpak, cleanup-podman, cleanup-ostree,
+        /// cleanup-cache
         name: String,
         #[arg(long)]
         dry_run: bool,
@@ -52,12 +54,16 @@ enum Command {
     },
     /// Built-in checks used by workflows (exit 0/1 + one-line reason).
     Check {
+        /// preflight, booted-version, booted-kernel, kernel-changed, nvidia-module,
+        /// nvidia-loaded, rpmfusion-version, rpmfusion-pinned, kargs, secureboot-mok,
+        /// kmod-local, akmods-built, flatpak-gl-nvidia, flatpak-idle, master-repo-present
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Start/continue a workflow headless, or `workflow lint <name>`.
+    /// Start/continue a workflow headless; also `list`, `lint [name]`, `abandon`.
     Workflow {
+        /// A workflow name, or list | lint | abandon
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

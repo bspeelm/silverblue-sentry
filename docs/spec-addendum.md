@@ -92,3 +92,10 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Alert rules: `cpu|mem|swap|cpu_temp|gpu_temp>N[%][:dur]`, `disk_free<N%`, `new_listener`. Each fires once when its condition has held for `dur`, and re-arms when the condition clears. Alerts go to `notify-send` and `metrics/alerts.log` (the History screen shows the last 3).
 - History graphs show per-bucket means, with gaps left blank. Avg/max stats come from the raw samples, so spikes aren't flattened. The tab appears once `ring.bin` exists.
 - The dashboard pre-fills its CPU and net graphs from the recording at startup, but only when the newest sample is under 5 minutes old.
+
+## A14. Polish (milestone 7)
+- `?` shows the global keys plus the current screen's keys. `:workflow <name>` opens Upgrade and starts that workflow the way `Enter` does. `:job <name>` opens its plan.
+- Below 110 columns, Audit shows one pane at a time (`C-h`/`C-l` switch). Jobs shows the date only in LAST RUN.
+- Missing tools: collectors return `unavailable` (exit 3 from `collect`). A screen shows `— <tool> not found`. A job plan lists the job as unavailable instead of offering a command, and a check exits 2.
+- A dry run never writes a last-run record, even if printing fails (`| head`).
+- Footprint re-measured on the host after M3–M6: TUI dashboard at 1 Hz uses 0.77% of one core including children, 8.3 MB RSS. Recorder: 0.07%, 9.8 MB.

@@ -102,6 +102,9 @@ pub fn plan(job: JobId, ctx: &Ctx) -> Plan {
             JobId::UpdateApply => update_apply(&mut p),
             JobId::CleanupFlatpak => cleanup_flatpak(&mut p),
             JobId::CleanupPodman => cleanup_podman(&mut p, ctx),
+            JobId::CleanupOstree if !Cmd::host("rpm-ostree").available() => {
+                Err(CollectError::Unavailable("rpm-ostree".into()))
+            }
             JobId::CleanupOstree => {
                 let bytes = du(&[crate::paths::host("/var/cache/rpm-ostree")]);
                 p.items.push(Item {

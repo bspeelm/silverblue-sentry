@@ -250,10 +250,19 @@ impl Audit {
         };
         let cur = &all[i];
         let prev = i.checked_sub(1).map(|j| &all[j]);
-        let [left, right] =
-            Layout::horizontal([Constraint::Ratio(52, 100), Constraint::Ratio(48, 100)])
-                .spacing(2)
-                .areas(area);
+        // Narrow terminals show one pane at a time; C-h/C-l switch.
+        let (left, right) = if area.width < 110 {
+            match self.focus {
+                Focus::Findings => (area, Rect { width: 0, ..area }),
+                Focus::Diff => (Rect { width: 0, ..area }, area),
+            }
+        } else {
+            let [l, r] =
+                Layout::horizontal([Constraint::Ratio(52, 100), Constraint::Ratio(48, 100)])
+                    .spacing(2)
+                    .areas(area);
+            (l, r)
+        };
 
         // ---- findings + evidence
         let b = &v.d.baseline;

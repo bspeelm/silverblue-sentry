@@ -374,7 +374,34 @@ impl Upgrade {
         let r = inner(&block, right);
         f.render_widget(block, right);
         let Some(info) = infos.get(sel) else { return };
-        let [log, card] = Layout::vertical([Constraint::Fill(1), Constraint::Length(7)]).areas(r);
+        let chain = info
+            .entry
+            .wf
+            .as_ref()
+            .map(|w| {
+                w.steps
+                    .iter()
+                    .filter(|s| !s.rollback)
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            })
+            .unwrap_or_default();
+        let file = info
+            .entry
+            .path
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let blocked = info.entry.blocked();
+        let mut body = vec![Line::styled(chain, t.fg())];
+        if let Some(why) = &blocked {
+            body.push(Line::styled(why.clone(), t.s(t.yellow)));
+        }
+        let cw = r.width.saturating_sub(4).max(1) as usize;
+        let rows: usize = body.iter().map(|l| l.width().max(1).div_ceil(cw)).sum();
+        let card_h = (rows as u16 + 4).min(r.height.saturating_sub(4));
+        let [log, card] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(card_h)]).areas(r);
         let mut lines = vec![
             Line::styled("No workflow in progress.", t.dim()),
             Line::raw(""),
@@ -396,34 +423,18 @@ impl Upgrade {
             )),
         }
         f.render_widget(Paragraph::new(lines), log);
-        let chain = info
-            .entry
-            .wf
-            .as_ref()
-            .map(|w| {
-                w.steps
-                    .iter()
-                    .filter(|s| !s.rollback)
-                    .map(|s| s.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" → ")
-            })
-            .unwrap_or_default();
-        let lint = match info.entry.blocked() {
+        let lint = match blocked {
             None => Span::styled("lint ✓", t.s(t.green)),
-            Some(why) => Span::styled(
-                trunc(&why, card.width.saturating_sub(40) as usize),
-                t.s(t.yellow),
-            ),
+            Some(_) => Span::styled("can't start", t.s(t.yellow)),
         };
         gate_card(
             f,
             card,
             t.dim,
-            Line::styled(short_home(&info.entry.path), t.dim()),
-            vec![Line::styled(chain, t.fg())],
+            Line::styled(file, t.dim()),
+            body,
             Line::from(vec![
-                Span::styled("[Enter] start   [e] edit in $EDITOR   ", t.dim()),
+                Span::styled("[Enter] start   [e] edit   ", t.dim()),
                 lint,
             ]),
         );

@@ -33,11 +33,11 @@ expression: body(&s)
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
-│                                                          │  │ │ /var/home/user/.config/sentry/workflows/quick-update.toml                                │ │
+│                                                          │  │ │ quick-update.toml                                                                        │ │
 │                                                          │  │ │ preview → flatpak-idle → flatpak → toolboxes → upgrade-routine → reboot-routine →        │ │
 │                                                          │  │ │ kmod-guard → upgrade-ritual → reboot-1 → verify-kernel → akmods → kmod-built →           │ │
 │                                                          │  │ │ layer-kmod → reboot-2 → verify → flatpak-gl → master-repo-cleanup                        │ │
-│                                                          │  │ │ [Enter] start   [e] edit in $EDITOR   lint ✓                                             │ │
+│                                                          │  │ │ [Enter] start   [e] edit   lint ✓                                                        │ │
 │                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

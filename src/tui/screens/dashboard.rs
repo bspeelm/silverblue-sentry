@@ -596,7 +596,7 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
     }
     match v.d.job_runs.get() {
         Some(runs) => {
-            let due = crate::jobs::state::due_jobs(v.cfg, runs, now);
+            let due = runs.due_jobs(v.cfg, now);
             let names: Vec<&str> = due.iter().map(|j| j.name()).collect();
             rows.push((
                 "jobs due",

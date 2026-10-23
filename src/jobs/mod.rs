@@ -103,6 +103,7 @@ pub fn run_cli(name: &str, o: Opts, ctx: &Ctx) -> u8 {
         return 2;
     };
     let out = &mut std::io::stdout();
+    let dry = o.dry_run;
     let r = match job {
         JobId::Audit => audit(o, ctx, out),
         JobId::UpdateCheck if !o.dry_run => update_check(out),
@@ -116,6 +117,11 @@ pub fn run_cli(name: &str, o: Opts, ctx: &Ctx) -> u8 {
         Ok(None) => 0,
         Err(e) if e.is::<Cancelled>() => {
             eprintln!("sentry job {name}: not confirmed (pass --yes to run without a prompt)");
+            1
+        }
+        // A dry run changes nothing, so it never counts as a run (even if printing failed).
+        Err(e) if dry => {
+            eprintln!("sentry job {name}: {e:#}");
             1
         }
         Err(e) => {

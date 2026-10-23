@@ -28,7 +28,7 @@ use crate::collectors::{CollectError, Ctx};
 use crate::config::Config;
 use crate::jobs::JobId;
 use crate::jobs::plan::Plan;
-use crate::jobs::state::Runs;
+use crate::jobs::state::Records;
 
 /// Background work the UI can request. At most one of each kind is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,7 +70,7 @@ pub enum Payload {
     Podman(Podman),
     Units(Units),
     Reports(Vec<Stored>),
-    Jobs(Runs),
+    Jobs(Records),
     Cleanup(Vec<Plan>),
     Plan(Plan),
     Workflows(Vec<WfInfo>),
@@ -185,7 +185,7 @@ pub struct DataStore {
     pub podman: Slot<Podman>,
     pub units: Slot<Units>,
     pub reports: Slot<Vec<Stored>>,
-    pub job_runs: Slot<Runs>,
+    pub job_runs: Slot<Records>,
     pub cleanup: Slot<Vec<Plan>>,
     /// The most recent single-job plan (consumed by the app to open a modal).
     pub plan: Option<Plan>,
@@ -394,7 +394,7 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
         Fetch::Reports => Payload::Reports(crate::audit::store::list()),
-        Fetch::Jobs => Payload::Jobs(crate::jobs::state::load()),
+        Fetch::Jobs => Payload::Jobs(Records::load()),
         Fetch::Cleanup => Payload::Cleanup(
             JobId::CLEANUP
                 .iter()

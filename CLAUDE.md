@@ -37,4 +37,5 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - [x] M4 jobs (`src/jobs/`: plans, `sentry job`, Jobs + Cleanup screens, cadence)
 - [x] M5 workflows (`src/workflows/`, `src/checks.rs`, `src/tui/wf.rs`, Upgrade screen)
 - [x] M6 recorder (`src/recorder/`, `sentry record`, History screen; 0.07% CPU, 9.8 MB on host)
-- [ ] M7 polish
+- [x] M7 polish (per-screen help, `:workflow`, narrow layouts, missing-binary paths, README)
+  (TUI on host: 0.77% of one core incl. children at 1 Hz dashboard, 8.3 MB RSS)
