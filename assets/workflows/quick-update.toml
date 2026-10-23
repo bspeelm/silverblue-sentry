@@ -6,7 +6,8 @@ description = "rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual when the 
 [[steps]]
 id = "preview"
 title = "Preview the upgrade (decides routine vs. kernel ritual)"
-run = "rpm-ostree upgrade --preview"
+# --preview exits 77 when there is nothing to upgrade; that's not a failure.
+run = "rpm-ostree upgrade --preview; rc=$?; [ $rc -eq 77 ] && echo 'no rpm-ostree update available'; [ $rc -eq 0 ] || [ $rc -eq 77 ]"
 gate = "auto"
 dry_run = false
 

@@ -9,6 +9,7 @@ mod data;
 mod keys;
 mod screens;
 mod theme;
+mod wf;
 mod widgets;
 
 use std::io;

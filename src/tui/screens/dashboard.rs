@@ -600,13 +600,20 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
         }
         None => rows.push(("jobs due", "—".into(), t.dim, String::new())),
     }
-    let wf = crate::resume::in_progress();
-    rows.push((
-        "workflow",
-        wf.as_ref().map_or("none".into(), |w| w.workflow.clone()),
-        if wf.is_some() { t.yellow } else { t.dim },
-        String::new(),
-    ));
+    match v.wf.filter(|s| !s.done()) {
+        Some(s) => rows.push((
+            "workflow",
+            format!(
+                "{} {}/{}",
+                s.wf.name,
+                s.next.idx().map_or(s.wf.steps.len(), |i| i + 1),
+                s.wf.steps.len()
+            ),
+            t.yellow,
+            s.state_word().into(),
+        )),
+        None => rows.push(("workflow", "none".into(), t.dim, String::new())),
+    }
     rows.push(("recorder", "off".into(), t.dim, String::new()));
 
     let lines: Vec<Line> = rows

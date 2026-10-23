@@ -450,3 +450,80 @@ fn jobs_and_cleanup_screens() {
         "{s}"
     );
 }
+
+#[test]
+fn upgrade_screen_idle_and_running() {
+    use crate::tui::wf::{LogKind, Session};
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::RunState;
+    use crate::workflows::{SEEDS, lint, parse};
+    let mut d = store();
+    let infos: Vec<crate::tui::screens::upgrade::WfInfo> = SEEDS
+        .iter()
+        .map(|(name, body)| {
+            let wf = parse(body).unwrap();
+            crate::tui::screens::upgrade::WfInfo {
+                entry: crate::workflows::Entry {
+                    name: name.to_string(),
+                    path: format!("/var/home/user/.config/sentry/workflows/{name}.toml").into(),
+                    issues: lint(&wf),
+                    wf: Ok(wf),
+                },
+                last: None,
+            }
+        })
+        .collect();
+    d.workflows.set(Ok(infos));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Upgrade);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("upgrade_idle_158x41", body(&s));
+
+    // Kernel path, waiting at the ritual's confirm gate.
+    let wf = parse(SEEDS[0].1).unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let mut st = RunState::new("quick-update", &ids, Default::default());
+    st.started = jiff::Timestamp::from_second(NOW).unwrap();
+    st.vars
+        .insert("pending_kernel".into(), "7.2.11-200.fc44.x86_64".into());
+    st.vars.insert(
+        "old_kmod".into(),
+        "kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64".into(),
+    );
+    for (i, id) in ids.iter().enumerate() {
+        match id.as_str() {
+            "preview" | "flatpak-idle" | "flatpak" | "kmod-guard" => {
+                runner::finish(&mut st, i, 0, None)
+            }
+            "toolboxes" => runner::skip(&mut st, i, "skipped by user"),
+            "upgrade-routine" | "reboot-routine" => {
+                runner::skip(&mut st, i, "when !kernel_changed is false")
+            }
+            _ => {}
+        }
+    }
+    let ritual = ids.iter().position(|i| i == "upgrade-ritual").unwrap();
+    let mut sess = Session::for_test(wf, st, Next::Confirm(ritual));
+    sess.push(
+        "▶ 5/17 Exactly one layered kmod-nvidia package present",
+        LogKind::Info,
+    );
+    sess.push(
+        "✓ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64",
+        LogKind::Out,
+    );
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    a.set_wf(sess);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("upgrade_running_158x41", body(&s));
+    assert!(s.contains("0 Upgrade ●"), "{s}");
+    // Elsewhere: the banner.
+    key(&mut a, KeyCode::Char('1'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("↻ workflow quick-update · step 8/17 Stage upgrade, dropping kmod-nvidia"),
+        "{s}"
+    );
+    assert!(s.contains("press 0 to continue"));
+    let s = render_to_string(&mut a, 80, 24);
+    assert!(s.contains("workflow"), "{s}");
+}

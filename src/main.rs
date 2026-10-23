@@ -3,6 +3,7 @@
 mod audit;
 mod baseline;
 mod cache;
+mod checks;
 mod collectors;
 mod config;
 mod exec;
@@ -13,6 +14,7 @@ mod paths;
 mod resume;
 mod status;
 mod tui;
+mod workflows;
 
 use std::process::ExitCode;
 
@@ -165,8 +167,10 @@ fn main() -> ExitCode {
                 &ctx,
             ))
         }
-        Some(Command::Check { .. }) => not_yet("check", 5),
-        Some(Command::Workflow { .. }) => not_yet("workflow", 5),
+        Some(Command::Check { name, args }) => ExitCode::from(checks::run_cli(&name, &args)),
+        Some(Command::Workflow { name, args }) => {
+            ExitCode::from(workflows::cli::run_cli(&name, &args))
+        }
         Some(Command::Record { .. }) => not_yet("record", 6),
     }
 }

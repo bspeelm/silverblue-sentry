@@ -50,6 +50,19 @@ pub struct PkgChange {
     pub new: String,
 }
 
+impl Update {
+    /// The new kernel in `uname -r` form (`7.2.11-200.fc44.x86_64`); rpm-diff omits the arch.
+    pub fn pending_kernel(&self) -> Option<String> {
+        let k = self.new_kernel.as_ref()?;
+        let arch = std::env::consts::ARCH;
+        Some(if k.ends_with(arch) {
+            k.clone()
+        } else {
+            format!("{k}.{arch}")
+        })
+    }
+}
+
 impl Ostree {
     pub fn booted(&self) -> Option<&Deploy> {
         self.deployments.iter().find(|d| d.booted)
@@ -245,5 +258,6 @@ mod tests {
         let u = parse(j).unwrap().update.unwrap();
         assert!(u.kernel_changed);
         assert_eq!(u.new_kernel.as_deref(), Some("7.2.9-200.fc44"));
+        assert_eq!(u.pending_kernel().as_deref(), Some("7.2.9-200.fc44.x86_64"));
     }
 }

@@ -9,6 +9,7 @@ use std::time::Instant;
 use jiff::Timestamp;
 
 use super::Event;
+use super::screens::upgrade::WfInfo;
 use crate::audit::store::Stored;
 use crate::baseline::Baseline;
 use crate::cache::{self, Cached};
@@ -50,6 +51,8 @@ pub enum Fetch {
     Cleanup,
     /// One job's plan, for its confirm modal.
     Plan(JobId),
+    /// Workflow files, lint results and last runs (Upgrade screen).
+    Workflows,
 }
 
 pub enum Payload {
@@ -67,6 +70,7 @@ pub enum Payload {
     Jobs(Runs),
     Cleanup(Vec<Plan>),
     Plan(Plan),
+    Workflows(Vec<WfInfo>),
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +185,7 @@ pub struct DataStore {
     pub cleanup: Slot<Vec<Plan>>,
     /// The most recent single-job plan (consumed by the app to open a modal).
     pub plan: Option<Plan>,
+    pub workflows: Slot<Vec<WfInfo>>,
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
 
@@ -230,6 +235,7 @@ impl DataStore {
             job_runs: Slot::default(),
             cleanup: Slot::default(),
             plan: None,
+            workflows: Slot::default(),
             baseline: Baseline::default(),
             inflight: HashSet::new(),
             os_version,
@@ -292,6 +298,7 @@ impl DataStore {
             Fetch::Reports => put!(reports, Payload::Reports),
             Fetch::Jobs => put!(job_runs, Payload::Jobs),
             Fetch::Cleanup => put!(cleanup, Payload::Cleanup),
+            Fetch::Workflows => put!(workflows, Payload::Workflows),
             Fetch::Plan(_) => {
                 self.plan = match r {
                     Ok(Payload::Plan(p)) => Some(p),
@@ -365,6 +372,7 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
                 .collect(),
         ),
         Fetch::Plan(j) => Payload::Plan(crate::jobs::plan::plan(j, ctx)),
+        Fetch::Workflows => Payload::Workflows(super::screens::upgrade::load_infos()),
     })
 }
 

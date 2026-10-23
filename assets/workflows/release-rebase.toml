@@ -68,6 +68,11 @@ title = "Exactly one built kmod RPM for the running kernel"
 run = "sentry check akmods-built --exactly-one"
 gate = "auto"
 on_fail = "manual"
+manual = """
+akmods didn't leave exactly one kmod-nvidia RPM for the running kernel.
+Check `ls /var/cache/akmods/nvidia/` and the *.failed.log next to it; rerun
+`sudo akmods --force --kernels $(uname -r)` if needed. Mark done only when exactly one
+kmod-nvidia-$(uname -r)-*.rpm exists."""
 
 [[steps]]
 id = "layer-kmod"
@@ -92,6 +97,10 @@ title = "Flatpak GL.nvidia and GL32.nvidia match the host driver"
 run = "flatpak update -y && sentry check flatpak-gl-nvidia"
 gate = "confirm"
 on_fail = "manual"
+manual = """
+GL.nvidia-<ver> and GL32.nvidia-<ver> must both match the host driver.
+Run `flatpak update`, check `flatpak list --runtime | grep nvidia`, then fully quit and
+relaunch Steam (cheatsheet §3b)."""
 
 [[steps]]
 id = "post-snapshot"

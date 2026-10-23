@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Workflows · /var/home/user/.config/sentry/workflows ─────┐  ┌ Last result ─────────────────────────────────────────────────────────────────────────────────┐
+│ quick-update  17 steps                                   │  │ No workflow in progress.                                                                     │
+│ rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual  │  │                                                                                              │
+│ when the kernel changes                                  │  │ quick-update has never run.                                                                  │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ release-rebase  16 steps  draft                          │  │                                                                                              │
+│ Rebase Silverblue to a new Fedora release with the       │  │                                                                                              │
+│ NVIDIA kmod ritual                                       │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
+│                                                          │  │ │ /var/home/user/.config/sentry/workflows/quick-update.toml                                │ │
+│                                                          │  │ │ preview → flatpak-idle → flatpak → toolboxes → upgrade-routine → reboot-routine →        │ │
+│                                                          │  │ │ kmod-guard → upgrade-ritual → reboot-1 → verify-kernel → akmods → kmod-built →           │ │
+│                                                          │  │ │ layer-kmod → reboot-2 → verify → flatpak-gl → master-repo-cleanup                        │ │
+│                                                          │  │ │ [Enter] start   [e] edit in $EDITOR   lint ✓                                             │ │
+│                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  start   e  edit toml   r  reload   ?  help   q  quit

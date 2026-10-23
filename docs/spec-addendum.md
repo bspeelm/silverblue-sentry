@@ -68,3 +68,16 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `cleanup-podman` never prunes toolbox/distrobox containers; they're listed for manual removal. `cleanup-flatpak` also offers stale `GL.nvidia-*`/`GL32.nvidia-*` extensions, which `--unused` keeps. `cleanup-cache` deletes only `[cleanup.cache].delete_dirs` entries that are plain child names of `~/.cache`.
 - `update-apply` refuses an upgrade that changes the kernel (kmod ritual): that path is the `quick-update` workflow.
 - Flatpak has no dry-run. The "unused" preview pipes `n` into `flatpak uninstall --unused`, which prints the transaction and changes nothing.
+
+## A12. Workflows (milestone 5)
+- Seeded TOMLs are written to `~/.config/sentry/workflows/` only where missing. A run copies its TOML into the run dir (`workflow.toml`) and uses that copy, so editing a file mid-run can't shift step indices.
+- Extra fields: `manual` (card text, required for `kind = "manual"`, `gate = "manual"` and `on_fail = "manual"`), `draft`, `dry_run`. Unknown fields are lint errors.
+- Templating is hand-rolled (`{{ ident }}`, integers, `"strings"`, `+`/`-`); `minijinja` isn't used.
+- **Freezing.** A `when` condition is evaluated the first time a step needs it, then stored in `state.json`. Built-ins (`current_version`, `pending_kernel`, `old_kmod`) are frozen at first use, and all of them are frozen before any reboot. `booted_kernel` and `home` stay live. This is why `kernel_changed` and `pending_kernel` stay correct after the reboots that make the live checks false.
+- `pending_kernel` is in `uname -r` form (`7.2.11-200.fc44.x86_64`). rpm-ostree's rpm-diff omits the arch.
+- Steps run as `bash -c` on the host with `set -o pipefail`, a `sentry` shell function pointing at this binary, `SENTRY_WORKFLOW_RUN` exported (preflight ignores its own run), and output tee'd to `steps/<id>.log`.
+- Steps containing `sudo` (outside `toolbox run`/`distrobox enter`/`podman exec`) run with the TUI suspended so sudo can prompt. Inside a toolbox, `flatpak-spawn --host` gives the host process no controlling terminal. Such steps therefore refuse to start there, with "run sentry from a host terminal; state is saved".
+- After a resume, auto steps wait until the Upgrade screen is opened (the banner says "press 0 to continue"). A step interrupted by sentry exiting counts as failed.
+- `SENTRY_NO_REBOOT=1` replaces `systemctl reboot` with a message (testing). Simulate a reboot by changing the step's `boot_id` in `state.json`.
+- The `quick-update` `preview` step treats exit 77 ("no update") as success.
+- `sentry workflow list|lint [name]|abandon|<name> [--var k=v]`.

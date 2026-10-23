@@ -16,7 +16,8 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 ## Notes
 - `XDG_CACHE_HOME` may be set (e.g. bothy shells): caches then live there, not `~/.cache/sentry`.
 - Render tests: `src/tui/screens/tests.rs` builds a `DataStore` from fixtures; snapshots in `src/tui/screens/snapshots/`.
-- `assets/workflows/*.toml` are seeded but not loaded until M5; `release-rebase` is `draft = true` (no cheatsheet covers a rebase).
+- `assets/workflows/*.toml` are embedded and seeded to `~/.config/sentry/workflows/` when missing; `release-rebase` is `draft = true` (no cheatsheet covers a rebase).
+- Workflow tests: put a harmless TOML in a scratch `XDG_CONFIG_HOME`, run with `SENTRY_NO_REBOOT=1`, fake a reboot by editing `boot_id` in `state.json`.
 
 ## Rules
 - **No background processes**: no systemd units, timers or autostart. Threads die with the TUI.
@@ -34,5 +35,5 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
   (measured on host: 0.7% of one core incl. children at 1 Hz dashboard, 8 MB RSS)
 - [x] M3 audit (`src/audit/`, `sentry job audit`, Audit screen)
 - [x] M4 jobs (`src/jobs/`: plans, `sentry job`, Jobs + Cleanup screens, cadence)
-- [ ] M5 workflows
+- [x] M5 workflows (`src/workflows/`, `src/checks.rs`, `src/tui/wf.rs`, Upgrade screen)
 - [ ] M6 recorder · [ ] M7 polish

@@ -1,6 +1,6 @@
 //! App state, key routing, effects, scheduling and chrome (top bar, tabs, key bar, overlays).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -17,6 +17,7 @@ use super::data::{DataStore, Fetch};
 use super::keys::{Action, Keymap};
 use super::screens::{Screens, View};
 use super::theme::Theme;
+use super::wf::{Exec, Session};
 use super::widgets::{self, chip};
 use super::{Event, ScreenId};
 use crate::config::Config;
@@ -39,20 +40,56 @@ pub enum Effect {
     Baseline(BaselineEdit),
     /// Ask for a line of input in the key bar (initial text).
     Prompt(Prompt, String),
+    Wf(WfCmd),
     Quit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Prompt {
     Cadence(crate::jobs::JobId),
+    /// One workflow var; `rest` are the vars still to ask, `vars` the values so far.
+    WfVar {
+        workflow: String,
+        key: String,
+        prompt: String,
+        rest: Vec<(String, String, String)>,
+        vars: BTreeMap<String, String>,
+    },
 }
 
 impl Prompt {
-    fn label(self) -> String {
+    fn label(&self) -> String {
         match self {
             Prompt::Cadence(j) => format!("cadence for {} (e.g. 30d, 7d, off): ", j.name()),
+            Prompt::WfVar { prompt, .. } => format!("{prompt}: "),
         }
     }
+}
+
+/// Workflow actions from the Upgrade screen, executed against the app's session.
+#[derive(Clone, Debug)]
+pub enum WfCmd {
+    /// The Upgrade screen is open: auto steps may run.
+    Arm,
+    Begin(String, BTreeMap<String, String>),
+    Go,
+    Skip,
+    Retry,
+    Done,
+    SkipDry,
+    Abandon,
+    Rollback,
+    OpenLog,
+    Edit(std::path::PathBuf),
+    Close,
+    /// Log scroll: positive = up (older), `i32::MIN` = back to the end.
+    Scroll(i32),
+}
+
+/// Which session step a suspended terminal command belongs to.
+enum SuspendFor {
+    Step(usize),
+    Shell(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,7 +178,8 @@ pub struct App {
     tx: Sender<Event>,
     suspend: Option<Cmd>,
     last_minute: i64,
-    resume: Option<crate::resume::InProgress>,
+    wf: Option<Session>,
+    suspend_for: Option<SuspendFor>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -178,12 +216,18 @@ impl App {
             tx,
             suspend: None,
             last_minute: 0,
-            resume: crate::resume::check(),
+            wf: Session::resume(),
+            suspend_for: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
         }
         app
+    }
+
+    #[cfg(test)]
+    pub fn set_wf(&mut self, s: Session) {
+        self.wf = Some(s);
     }
 
     /// Construct without config/terminal side effects (snapshot tests).
@@ -218,7 +262,8 @@ impl App {
             tx,
             suspend: None,
             last_minute: 0,
-            resume: None,
+            wf: None,
+            suspend_for: None,
         }
     }
 
@@ -239,6 +284,7 @@ impl App {
                 .get(&self.screen)
                 .map(String::as_str)
                 .filter(|s| !s.is_empty()),
+            wf: self.wf.as_ref(),
         }
     }
 
@@ -293,6 +339,9 @@ impl App {
         }
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             at(now + Duration::from_secs(1));
+        }
+        if self.wf.as_ref().is_some_and(|s| s.live.is_some()) {
+            at(now + Duration::from_millis(250));
         }
         due.max(now)
     }
@@ -359,6 +408,18 @@ impl App {
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             self.dirty = true;
         }
+        if let Some(s) = self.wf.as_mut()
+            && let Some(l) = s.live.as_mut()
+        {
+            self.dirty = true;
+            if l.deadline.is_some_and(|d| now >= d) {
+                l.deadline = None;
+                if let Some(pid) = l.pid {
+                    let _ = kill(pid);
+                }
+                s.push("✗ timeout: sent SIGTERM", super::wf::LogKind::Err);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- events
@@ -398,6 +459,21 @@ impl App {
     }
 
     fn on_run_msg(&mut self, id: u64, msg: StreamMsg) {
+        if let Some(s) = self.wf.as_mut()
+            && let Some(live) = s.live.as_ref().filter(|l| l.id == id)
+        {
+            let (idx, dry) = (live.idx, live.dry);
+            match msg {
+                StreamMsg::Line { stderr, text } => s.on_line(text, stderr),
+                StreamMsg::Exit { code, .. } => {
+                    s.on_exit(idx, dry, code, None);
+                    self.wf_auto();
+                    self.after_wf_change();
+                }
+            }
+            self.dirty = true;
+            return;
+        }
         let Some(run) = self.run.as_mut().filter(|r| r.id == id) else {
             return;
         };
@@ -489,6 +565,15 @@ impl App {
                 self.enter(tabs[j], now);
             }
             Action::Help => self.modal = Some(help_modal(&self.theme)),
+            Action::Interrupt
+                if self.screen == ScreenId::Upgrade
+                    && self.wf.as_ref().is_some_and(|s| s.live.is_some()) =>
+            {
+                if let Some(pid) = self.wf.as_ref().and_then(|s| s.live.as_ref()?.pid) {
+                    let _ = kill(pid);
+                    self.toast("sent SIGTERM to the step");
+                }
+            }
             Action::Quit | Action::Interrupt => self.modal = Some(quit_modal(&self.theme)),
             Action::Filter => {
                 self.input =
@@ -513,6 +598,7 @@ impl App {
                         .get(&self.screen)
                         .map(String::as_str)
                         .filter(|s| !s.is_empty()),
+                    wf: self.wf.as_ref(),
                 };
                 let effects = self.screens.handle(self.screen, a, &v);
                 self.apply(effects, now);
@@ -543,7 +629,7 @@ impl App {
                 let input = std::mem::replace(&mut self.input, Input::None);
                 match input {
                     Input::Command(c) => self.command(c.trim(), now),
-                    Input::Prompt(p, text) => self.submit(p, text.trim()),
+                    Input::Prompt(p, text) => self.submit(p, text.trim(), now),
                     _ => {}
                 }
                 return;
@@ -556,8 +642,36 @@ impl App {
         }
     }
 
-    fn submit(&mut self, p: Prompt, text: &str) {
+    fn submit(&mut self, p: Prompt, text: &str, now: Instant) {
         match p {
+            Prompt::WfVar {
+                workflow,
+                key,
+                mut rest,
+                mut vars,
+                ..
+            } => {
+                if text.is_empty() {
+                    self.toast(format!("{key} can't be empty"));
+                    return;
+                }
+                vars.insert(key, text.to_string());
+                if rest.is_empty() {
+                    self.wf_cmd(WfCmd::Begin(workflow, vars), now);
+                } else {
+                    let (key, prompt, default) = rest.remove(0);
+                    self.input = Input::Prompt(
+                        Prompt::WfVar {
+                            workflow,
+                            key,
+                            prompt,
+                            rest,
+                            vars,
+                        },
+                        default,
+                    );
+                }
+            }
             Prompt::Cadence(job) => {
                 use crate::jobs::state::{Every, set_every};
                 match Every::parse(text) {
@@ -668,6 +782,7 @@ impl App {
                     }
                 }
                 Effect::Prompt(p, init) => self.input = Input::Prompt(p, init),
+                Effect::Wf(c) => self.wf_cmd(c, now),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -703,11 +818,220 @@ impl App {
         self.run = Some(pane);
     }
 
+    fn wf_cmd(&mut self, c: WfCmd, now: Instant) {
+        let _ = now;
+        let r: Result<Option<Exec>, String> = match c {
+            WfCmd::Arm => {
+                if let Some(s) = self.wf.as_mut() {
+                    s.armed = true;
+                }
+                Ok(self.wf.as_mut().and_then(Session::auto))
+            }
+            WfCmd::Begin(name, vars) => {
+                let Some(entry) = crate::workflows::find(&name) else {
+                    self.toast(format!("no workflow {name}"));
+                    return;
+                };
+                match Session::begin(&entry, vars) {
+                    Ok(s) => {
+                        self.wf = Some(s);
+                        // Entering the screen arms the session and runs the first auto step.
+                        self.enter(ScreenId::Upgrade, now);
+                        Ok(None)
+                    }
+                    Err(e) => Err(format!("{e:#}")),
+                }
+            }
+            WfCmd::Close => {
+                if self.wf.as_ref().is_some_and(Session::done) {
+                    self.wf = None;
+                    self.data.fetch(Fetch::Workflows, &self.cfg, &self.tx);
+                }
+                Ok(None)
+            }
+            WfCmd::Edit(path) => {
+                let editor = std::env::var("VISUAL")
+                    .or_else(|_| std::env::var("EDITOR"))
+                    .unwrap_or_else(|_| "nano".into());
+                let mut parts = editor.split_whitespace();
+                let bin = parts.next().unwrap_or("nano").to_string();
+                let cmd = Cmd::local(&bin)
+                    .args(parts.map(str::to_string))
+                    .arg(path.as_os_str())
+                    .timeout(None);
+                self.suspend = Some(cmd);
+                self.data.fetch(Fetch::Workflows, &self.cfg, &self.tx);
+                Ok(None)
+            }
+            c => {
+                let Some(s) = self.wf.as_mut() else {
+                    return;
+                };
+                match c {
+                    WfCmd::Go => s.go(),
+                    WfCmd::Skip => s.skip().map(|_| None),
+                    WfCmd::Retry => {
+                        if s.error.is_some() {
+                            s.refresh();
+                            Ok(None)
+                        } else {
+                            s.retry().map(|_| None)
+                        }
+                    }
+                    WfCmd::Done => s.mark_done().map(|_| None),
+                    WfCmd::SkipDry => s.skip_dry().map(|_| None),
+                    WfCmd::Abandon => {
+                        s.abandon();
+                        Ok(None)
+                    }
+                    WfCmd::Scroll(d) => {
+                        s.scroll = if d == i32::MIN {
+                            0
+                        } else {
+                            (s.scroll as i64 + d as i64).clamp(0, s.log.len() as i64) as usize
+                        };
+                        Ok(None)
+                    }
+                    WfCmd::OpenLog => {
+                        let id = s
+                            .next
+                            .idx()
+                            .or_else(|| s.wf.steps.len().checked_sub(1))
+                            .map(|i| s.wf.steps[i].id.clone());
+                        let path = id.map(|id| s.run.log_path(&id));
+                        match path.filter(|p| p.exists()) {
+                            Some(p) => {
+                                self.suspend = Some(
+                                    Cmd::local("less")
+                                        .args(["-R", "+G"])
+                                        .arg(p.as_os_str())
+                                        .timeout(None),
+                                );
+                                Ok(None)
+                            }
+                            None => Err("no log for this step yet".into()),
+                        }
+                    }
+                    WfCmd::Rollback => {
+                        let cmds = s.rollback_cmds();
+                        s.abandon();
+                        let mut it = cmds.into_iter().map(|(_, c)| c);
+                        if let Some(first) = it.next() {
+                            self.start_run(RunSpec {
+                                title: "rollback steps".into(),
+                                cmd: first,
+                                queue: it.collect(),
+                                then: vec![Fetch::Ostree, Fetch::Workflows],
+                                ok_toast: "rollback steps done · workflow abandoned".into(),
+                            });
+                        }
+                        Ok(None)
+                    }
+                    WfCmd::Arm | WfCmd::Begin(..) | WfCmd::Close | WfCmd::Edit(_) => Ok(None),
+                }
+            }
+        };
+        match r {
+            Ok(Some(e)) => self.wf_exec(e),
+            Ok(None) => {}
+            Err(e) => self.toast(e),
+        }
+        self.after_wf_change();
+        self.dirty = true;
+    }
+
+    /// Run the next auto step if the session wants one.
+    fn wf_auto(&mut self) {
+        if let Some(e) = self.wf.as_mut().and_then(Session::auto) {
+            self.wf_exec(e);
+        }
+    }
+
+    /// Keep tabs, dashboard and the workflow list in step with the session.
+    fn after_wf_change(&mut self) {
+        if self.wf.as_ref().is_some_and(Session::done) {
+            self.data.fetch(Fetch::Workflows, &self.cfg, &self.tx);
+        }
+    }
+
+    fn wf_exec(&mut self, e: Exec) {
+        match e {
+            Exec::Stream {
+                cmd,
+                idx,
+                dry,
+                timeout,
+            } => {
+                self.run_seq += 1;
+                let id = self.run_seq;
+                let tx = self.tx.clone();
+                let r = cmd.stream(move |m| {
+                    let _ = tx.send(Event::Run(id, m));
+                });
+                let Some(s) = self.wf.as_mut() else { return };
+                match r {
+                    Ok(pid) => {
+                        s.live = Some(super::wf::Live {
+                            id,
+                            idx,
+                            dry,
+                            started: Instant::now(),
+                            deadline: timeout.map(|t| Instant::now() + t),
+                            pid: Some(pid),
+                        })
+                    }
+                    Err(e) => s.on_exit(idx, dry, 127, Some(e.to_string())),
+                }
+            }
+            Exec::Tty { cmd, idx } => {
+                self.suspend = Some(cmd);
+                self.suspend_for = Some(SuspendFor::Step(idx));
+            }
+            Exec::Shell { idx } => {
+                let sh = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+                self.suspend = Some(Cmd::local(&sh).timeout(None));
+                self.suspend_for = Some(SuspendFor::Shell(idx));
+            }
+            Exec::Reboot => {
+                let r = crate::workflows::cli::reboot_cmd().run();
+                let msg = match r {
+                    Ok(o) => format!("{}{}", o.stdout.trim(), o.stderr.trim()),
+                    Err(e) => e.to_string(),
+                };
+                if let Some(s) = self.wf.as_mut() {
+                    s.push(msg.clone(), super::wf::LogKind::Info);
+                    s.refresh();
+                }
+                if !msg.is_empty() {
+                    self.toast(msg);
+                }
+            }
+        }
+    }
+
     pub fn take_suspend(&mut self) -> Option<Cmd> {
         self.suspend.take()
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
+        if let Some(sf) = self.suspend_for.take()
+            && let Some(s) = self.wf.as_mut()
+        {
+            match sf {
+                SuspendFor::Step(idx) => {
+                    let (code, note) = match &status {
+                        Ok(st) => (st.code().unwrap_or(-1), None),
+                        Err(e) => (127, Some(e.to_string())),
+                    };
+                    s.on_exit(idx, false, code, note);
+                }
+                SuspendFor::Shell(idx) => s.after_shell(idx),
+            }
+            self.wf_auto();
+            self.after_wf_change();
+            self.dirty = true;
+            return;
+        }
         match status {
             Ok(s) if s.success() => self.toast("back in sentry"),
             Ok(s) => self.toast(format!("exited with {}", s.code().unwrap_or(-1))),
@@ -745,7 +1069,7 @@ impl App {
             );
             return;
         }
-        let banner = self.resume.is_some() as u16;
+        let banner = (self.wf.is_some() && self.screen != ScreenId::Upgrade) as u16;
         let [top, tabs, rule, ban, body, keyrule, keybar] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -762,13 +1086,36 @@ impl App {
             Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
             rule,
         );
-        if let Some(r) = &self.resume {
+        if let Some(sess) = self
+            .wf
+            .as_ref()
+            .filter(|_| self.screen != ScreenId::Upgrade)
+        {
+            let n = sess.wf.steps.len();
+            let hint = "press 0 to continue";
+            let fixed = format!(
+                " ↻ workflow {} · step 99/{n}  · {}   ",
+                sess.wf.name,
+                sess.state_word()
+            );
+            let room = (ban.width as usize).saturating_sub(fixed.chars().count() + hint.len());
+            let step = sess.next.idx().map_or(String::new(), |i| {
+                format!(
+                    "step {}/{n} {}",
+                    i + 1,
+                    widgets::trunc(&sess.title(i), room)
+                )
+            });
             let line = Line::from(vec![
                 Span::styled(
-                    format!(" ↻ workflow {} in progress   ", r.workflow),
+                    format!(
+                        " ↻ workflow {} · {step} · {}   ",
+                        sess.wf.name,
+                        sess.state_word()
+                    ),
                     t.s(t.yellow),
                 ),
-                Span::styled("resume arrives in milestone 5", t.dim()),
+                Span::styled(hint, t.dim()),
             ]);
             f.render_widget(
                 Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
@@ -789,6 +1136,7 @@ impl App {
                 .get(&self.screen)
                 .map(String::as_str)
                 .filter(|s| !s.is_empty()),
+            wf: self.wf.as_ref(),
         };
         self.screens.render(self.screen, f, body, &v);
         f.render_widget(
@@ -887,7 +1235,11 @@ impl App {
                 let n = crate::jobs::state::due_jobs(&self.cfg, runs, jiff::Timestamp::now()).len();
                 (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
-            ScreenId::Upgrade => self.resume.as_ref().map(|_| (" ●".into(), t.yellow)),
+            ScreenId::Upgrade => self
+                .wf
+                .as_ref()
+                .filter(|s| !s.done())
+                .map(|_| (" ●".into(), t.yellow)),
             _ => None,
         }
     }

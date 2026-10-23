@@ -11,6 +11,7 @@ mod network;
 mod placeholder;
 mod processes;
 mod updates;
+pub mod upgrade;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -27,6 +28,7 @@ pub struct View<'a> {
     pub cfg: &'a Config,
     pub t: &'a Theme,
     pub filter: Option<&'a str>,
+    pub wf: Option<&'a crate::tui::wf::Session>,
 }
 
 impl View<'_> {
@@ -98,6 +100,7 @@ pub struct Screens {
     audit: audit::Audit,
     jobs: jobs::Jobs,
     clean: cleanup::Cleanup,
+    upgrade: upgrade::Upgrade,
 }
 
 impl Screens {
@@ -109,6 +112,7 @@ impl Screens {
             ScreenId::Audit => audit::on_enter(v),
             ScreenId::Jobs => jobs::on_enter(v),
             ScreenId::Clean => cleanup::on_enter(v),
+            ScreenId::Upgrade => upgrade::on_enter(v),
             _ => Vec::new(),
         }
     }
@@ -124,6 +128,7 @@ impl Screens {
             ScreenId::Audit => self.audit.handle(a, v),
             ScreenId::Jobs => self.jobs.handle(a, v),
             ScreenId::Clean => self.clean.handle(a, v),
+            ScreenId::Upgrade => self.upgrade.handle(a, v),
             _ => placeholder::handle(id, a),
         }
     }
@@ -139,6 +144,7 @@ impl Screens {
             ScreenId::Audit => self.audit.render(f, area, v),
             ScreenId::Jobs => self.jobs.render(f, area, v),
             ScreenId::Clean => self.clean.render(f, area, v),
+            ScreenId::Upgrade => self.upgrade.render(f, area, v),
             _ => placeholder::render(id, f, area, v),
         }
     }
@@ -154,6 +160,7 @@ impl Screens {
             ScreenId::Audit => audit::hints(v),
             ScreenId::Jobs => jobs::hints(),
             ScreenId::Clean => cleanup::hints(),
+            ScreenId::Upgrade => upgrade::hints(v),
             _ => placeholder::hints(id),
         }
     }
@@ -167,6 +174,7 @@ impl Screens {
             ScreenId::Audit => self.audit.cur.sel = 0,
             ScreenId::Jobs => self.jobs.cur.sel = 0,
             ScreenId::Clean => self.clean.cur.sel = 0,
+            ScreenId::Upgrade => self.upgrade.cur.sel = 0,
             _ => {}
         }
     }
