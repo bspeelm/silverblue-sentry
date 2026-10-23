@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Listening · ss -tulpn · 44 · 18 new ──────────────────────────────────────────────┐  ┌ Established · 26 ───────────────────────────────────────────────────┐
+│ PROTO LOCAL                                   PROCESS                    STATUS   │  │ PEER                                             PROCESS            │
+│ tcp   0.0.0.0:27500                           ?                          NEW      │  │ 198.51.100.2:https                               claude             │
+│ tcp   0.0.0.0:5355                            ?                          NEW      │  │ 198.51.100.3:https                               slack              │
+│ tcp   127.0.0.1:2222                          pasta.avx2 (127235)        local    │  │ 198.51.100.3:https                               slack              │
+│ tcp   127.0.0.1:3000                          ssh (9682)                 local    │  │ 198.51.100.4:https                               slack              │
+│ tcp   127.0.0.1:3389                          pasta.avx2 (127235)        local    │  │ 127.0.0.1:wpl-analytics                          brave              │
+│ tcp   127.0.0.1:40059                         node (39886)               local    │  │ 198.51.100.5:https                               claude             │
+│ tcp   127.0.0.1:43701                         node (237517)              local    │  │ 198.51.100.6:https                               claude             │
+│ tcp   127.0.0.1:5192                          node (39886)               local    │  │ 198.51.100.6:https                               claude             │
+│ tcp   127.0.0.1:5194                          node (237517)              local    │  │ 198.51.100.6:https                               claude             │
+│ tcp   127.0.0.1:5195                          node (237517)              local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:631                           ?                          baseline │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:8006                          pasta.avx2 (127235)        local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:8081                          ssh (9681)                 local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:8083                          ssh (9681)                 local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:8088                          ssh (9682)                 local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.1:8384                          ssh (9681)                 local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.53%lo:53                        ?                          local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   127.0.0.54:53                           ?                          local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   [::1]:631                               ?                          local    │  │ 198.51.100.7:https                               claude             │
+│ tcp   [::]:5355                               ?                          NEW      │  │ 127.0.0.1:37328                                  pasta.avx2         │
+│ udp   *:34801                                 wsdd (19947)               NEW      │  │ 192.0.2.9:ssh                                    ssh                │
+│ udp   *:35061                                 wsdd (19947)               NEW      │  │ 192.0.2.9:ssh                                    ssh                │
+│ udp   0.0.0.0:35905                           wsdd (19947)               NEW      │  │ 198.51.100.10:https                              brave              │
+│ udp   0.0.0.0:47479                           ?                          NEW      │  │ 198.51.100.11:https                              brave              │
+│ udp   0.0.0.0:5353                            ?                          NEW      │  │ [2001:0db8:40c:e::1]:https                       pasta.avx2         │
+│ udp   0.0.0.0:5355                            ?                          NEW      │  │ [2001:0db8:8::347]:https                         brave              │
+│ udp   0.0.0.0:53776                           wsdd (19947)               NEW      │  │                                                                     │
+│ udp   127.0.0.1:323                           ?                          local    │  │                                                                     │
+│ udp   127.0.0.1:3389                          pasta.avx2 (127235)        local    │  │                                                                     │
+│ udp   127.0.0.53%lo:53                        ?                          local    │  │                                                                     │
+│ udp   127.0.0.54:53                           ?                          local    │  │                                                                     │
+│ udp   192.0.2.1:3702                          wsdd (19947)               NEW      │  │                                                                     │
+└───────────────────────────────────────────────────────────────────────────────────┘  └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   e  mark expected   /  filter   r  refresh   ?  help   q  quit

@@ -55,10 +55,6 @@ impl Ostree {
         self.deployments.iter().find(|d| d.booted)
     }
 
-    pub fn staged(&self) -> Option<&Deploy> {
-        self.deployments.iter().find(|d| d.staged)
-    }
-
     /// The `kmod-nvidia-*` local packages on the booted deployment.
     pub fn kmods(&self) -> Vec<&str> {
         self.booted()
@@ -72,10 +68,6 @@ impl Ostree {
             .unwrap_or_default()
     }
 
-    /// Fedora major version of the booted deployment (`44.20261002.0` → `44`).
-    pub fn major(&self) -> Option<u32> {
-        self.booted()?.version.split('.').next()?.parse().ok()
-    }
 }
 
 pub fn collect() -> CResult<Ostree> {
@@ -204,7 +196,6 @@ mod tests {
         assert_eq!(b.sig_valid, Some(true));
         assert!(b.layered.iter().any(|p| p == "akmods"));
         assert_eq!(o.kmods().len(), 1, "{:?}", b.local);
-        assert_eq!(o.major(), Some(44));
         assert!(o.deployments.iter().any(|d| d.pinned));
         let u = o.update.unwrap();
         assert!(u.kernel_changed);

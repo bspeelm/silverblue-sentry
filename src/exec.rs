@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Site {
     Host,
+    /// Container-local binaries (tests; nothing in the app needs it yet).
+    #[cfg_attr(not(test), allow(dead_code))]
     Local,
 }
 
@@ -82,17 +84,13 @@ impl Cmd {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn local(bin: &str) -> Self {
         Self {
             site: Site::Local,
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
         }
-    }
-
-    /// `sh -c <script>` on the host.
-    pub fn sh(script: &str) -> Self {
-        Self::host("sh").arg("-c").arg(script)
     }
 
     pub fn arg(mut self, a: impl Into<OsString>) -> Self {
@@ -116,10 +114,6 @@ impl Cmd {
 
     pub fn bin(&self) -> String {
         self.argv[0].to_string_lossy().into_owned()
-    }
-
-    pub fn site(&self) -> Site {
-        self.site
     }
 
     /// Shell-ish rendering for logs and confirm modals.
@@ -364,7 +358,6 @@ mod tests {
             .arg("--uninstall")
             .arg("kmod nvidia");
         assert_eq!(c.display(), "rpm-ostree upgrade --uninstall 'kmod nvidia'");
-        assert_eq!(Cmd::sh("ls | wc -l").display(), "ls | wc -l");
     }
 
     #[test]

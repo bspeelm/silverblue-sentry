@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+NAME                     KIND       STATUS    AGE        $HOME  IMAGE
+devbox-one               toolbox    running   53d        yes    registry.fedoraproject.org/fedora-toolbox:44
+gitlab-runner            podman     running   9h         no     docker.io/gitlab/gitlab-runner:latest
+win11                    podman     running   7h         no     ghcr.io/dockur/windows:6.06
+aip                      toolbox    exited    7d         yes    registry.fedoraproject.org/fedora-toolbox:44
+windows_migration        toolbox    exited    7d         yes    registry.fedoraproject.org/fedora-toolbox:44
+confluence-test-app      podman     exited    2d         no     docker.io/atlassian/confluence:9.2.26
+confluence-test-db       podman     exited    2d         no     docker.io/library/postgres:15
+webapp-api               podman     exited    7d         no     localhost/webapp-api:latest
+webapp-frontend          podman     exited    7d         no     localhost/webapp-frontend:latest
+webapp-postgres          podman     exited    7d         no     localhost/webapp-postgres:latest
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+images 30 · 15.9 GiB · 2 dangling (988 MiB)   volumes 3   stale = stopped > 30d
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  enter   s  stop   d  remove   r  refresh   ?  help   q  quit

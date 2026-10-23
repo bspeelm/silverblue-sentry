@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -69,10 +69,6 @@ pub fn du(roots: &[PathBuf], seen: &mut HashSet<(u64, u64)>, unreadable: &mut u6
         }
     }
     total
-}
-
-pub fn exists(p: &Path) -> bool {
-    p.exists()
 }
 
 #[cfg(test)]

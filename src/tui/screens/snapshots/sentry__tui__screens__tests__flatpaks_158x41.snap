@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 18   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+APPLICATION                              ORIGIN     VERSION        FLAGS
+ch.protonmail.protonmail-bridge          flathub    3.27.0         —
+com.blitzfc.qbz                          flathub    2.1.2          devices=all
+com.slack.Slack                          flathub    4.52.182       —
+com.valvesoftware.Steam *                flathub    1.0.0.87       devices=all
+com.yubico.yubioath                      flathub    7.4.1          —
+net.mullvad.MullvadBrowser               flathub    15.0.25        —
+org.fedoraproject.MediaWriter            fedora     5.3.2          —
+org.gnome.Calculator                     fedora     51.0           —
+org.gnome.Calendar                       fedora     51.0           —
+org.gnome.Characters                     fedora     51.0           —
+org.gnome.Connections                    fedora     51.0           —
+org.gnome.Contacts                       fedora     51.0           —
+org.gnome.Extensions                     fedora     51.alpha       —
+org.gnome.Logs                           fedora     50.0           —
+org.gnome.Loupe                          fedora     51.rc          —
+org.gnome.Maps                           fedora     51.1           —
+org.gnome.NautilusPreviewer              fedora     51.2           —
+org.gnome.Papers                         fedora     51.0           —
+org.gnome.Snapshot                       fedora     51.0           —
+org.gnome.TextEditor                     fedora     51.0           —
+org.gnome.Weather                        fedora     50.0           —
+org.gnome.baobab                         fedora     50.0           —
+org.gnome.clocks                         fedora     51.0           —
+org.gnome.font-viewer                    fedora     50.0           —
+
+
+
+
+
+
+
+
+permissions read live from metadata + overrides · overrides: 1 (* marks apps with one)
+host driver 615.71.09 · GL ✓ · GL32 ✓ · old extensions (not removed by --unused): GL.nvidia-610-57-04
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  permissions   o  open in Flatseal   c  rescan perms   ?  help   q  quit
