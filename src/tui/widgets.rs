@@ -6,7 +6,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState,
+};
 
 use super::theme::Theme;
 
@@ -29,14 +31,21 @@ pub fn panel<'a>(t: &Theme, name: &'a str, detail: impl Into<String>) -> Block<'
 /// Inner area of a panel with one column of horizontal padding.
 pub fn inner(block: &Block, area: Rect) -> Rect {
     let r = block.inner(area);
-    Rect { x: r.x + 1, width: r.width.saturating_sub(2), ..r }
+    Rect {
+        x: r.x + 1,
+        width: r.width.saturating_sub(2),
+        ..r
+    }
 }
 
 /// `████░░░░` spans for a percentage over `width` cells.
 pub fn bar(t: &Theme, pct: f64, width: u16, color: Color) -> Vec<Span<'static>> {
     let w = width as usize;
     let n = ((pct.clamp(0.0, 100.0) / 100.0) * w as f64).round() as usize;
-    vec![Span::styled("█".repeat(n.min(w)), t.s(color)), Span::styled("░".repeat(w - n.min(w)), t.s(t.track))]
+    vec![
+        Span::styled("█".repeat(n.min(w)), t.s(color)),
+        Span::styled("░".repeat(w - n.min(w)), t.s(t.track)),
+    ]
 }
 
 const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -100,8 +109,16 @@ pub struct TableSpec<'a> {
 }
 
 pub fn table(f: &mut Frame, area: Rect, t: &Theme, spec: TableSpec) {
-    let header = Row::new(spec.header.into_iter().map(|h| Cell::from(h).style(t.dim())))
-        .style(Style::new().add_modifier(Modifier::UNDERLINED).underline_color(t.rule));
+    let header = Row::new(
+        spec.header
+            .into_iter()
+            .map(|h| Cell::from(h).style(t.dim())),
+    )
+    .style(
+        Style::new()
+            .add_modifier(Modifier::UNDERLINED)
+            .underline_color(t.rule),
+    );
     let table = Table::new(spec.rows, spec.widths)
         .header(header)
         .column_spacing(1)
@@ -114,7 +131,12 @@ pub fn table(f: &mut Frame, area: Rect, t: &Theme, spec: TableSpec) {
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
-    Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 /// Dim everything already drawn in `area` (modal backdrop).
@@ -142,8 +164,15 @@ pub fn overlay(f: &mut Frame, rect: Rect, t: &Theme, title: &str, color: Color) 
 /// Centered dim message for empty states and placeholders.
 pub fn placeholder(f: &mut Frame, area: Rect, t: &Theme, lines: &[(&str, Style)]) {
     let h = lines.len() as u16;
-    let r = Rect { y: area.y + area.height.saturating_sub(h) / 2, height: h.min(area.height), ..area };
-    let text: Vec<Line> = lines.iter().map(|(s, st)| Line::styled(s.to_string(), *st).centered()).collect();
+    let r = Rect {
+        y: area.y + area.height.saturating_sub(h) / 2,
+        height: h.min(area.height),
+        ..area
+    };
+    let text: Vec<Line> = lines
+        .iter()
+        .map(|(s, st)| Line::styled(s.to_string(), *st).centered())
+        .collect();
     let _ = t;
     f.render_widget(Paragraph::new(text), r);
 }
@@ -157,7 +186,11 @@ mod tests {
         let area = Rect::new(0, 0, 3, 2);
         let mut buf = Buffer::empty(area);
         graph(&mut buf, area, &[0.0, 50.0, 100.0], 100.0, Color::Cyan);
-        let row = |y| (0..3).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        let row = |y| {
+            (0..3)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
         assert_eq!(row(1), " ██");
         assert_eq!(row(0), "  █");
     }

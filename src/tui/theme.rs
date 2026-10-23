@@ -26,7 +26,11 @@ pub struct Theme {
 impl Theme {
     pub fn detect() -> Self {
         let truecolor = std::env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit");
-        if truecolor { Self::truecolor() } else { Self::ansi() }
+        if truecolor {
+            Self::truecolor()
+        } else {
+            Self::ansi()
+        }
     }
 
     pub fn truecolor() -> Self {

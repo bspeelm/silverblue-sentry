@@ -18,7 +18,11 @@ use crate::tui::widgets::{bar, graph, inner, panel, trunc};
 pub struct Dashboard;
 
 pub fn hints() -> Hints {
-    vec![("1-0", "screens"), ("c", "check updates"), ("r", "measure disks")]
+    vec![
+        ("1-0", "screens"),
+        ("c", "check updates"),
+        ("r", "measure disks"),
+    ]
 }
 
 impl Dashboard {
@@ -33,7 +37,9 @@ impl Dashboard {
                 let mut e = vec![Effect::Fetch(Fetch::Disks), Effect::Fetch(Fetch::Units)];
                 if !v.d.loading(Fetch::Breakdown) {
                     e.push(Effect::Fetch(Fetch::Breakdown));
-                    e.push(Effect::Toast("measuring containers / flatpak / ~/.cache / ostree…".into()));
+                    e.push(Effect::Toast(
+                        "measuring containers / flatpak / ~/.cache / ostree…".into(),
+                    ));
                 }
                 e
             }
@@ -46,10 +52,18 @@ impl Dashboard {
         let s = v.d.sys.clone().unwrap_or_default();
         if wide {
             let cpu_h = cpu_height(&s, area.width * 2 / 3, area.height);
-            let [r1, _, r2] =
-                Layout::vertical([Constraint::Length(cpu_h), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-            let [cpu, mem] = Layout::horizontal([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)]).spacing(2).areas(r1);
-            let [disks, net, status] = Layout::horizontal([Constraint::Ratio(1, 3); 3]).spacing(2).areas(r2);
+            let [r1, _, r2] = Layout::vertical([
+                Constraint::Length(cpu_h),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
+            let [cpu, mem] = Layout::horizontal([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
+                .spacing(2)
+                .areas(r1);
+            let [disks, net, status] = Layout::horizontal([Constraint::Ratio(1, 3); 3])
+                .spacing(2)
+                .areas(r2);
             draw_cpu(f, cpu, v, &s);
             draw_mem(f, mem, v, &s);
             draw_disks(f, disks, v);
@@ -57,11 +71,23 @@ impl Dashboard {
             draw_status(f, status, v);
         } else {
             // Short terminals: compact CPU (graph + heat strip) so the other panels get rows.
-            let cpu_h = if area.height < 30 { 8 } else { cpu_height(&s, area.width, area.height / 2) };
-            let [r1, r2, r3] =
-                Layout::vertical([Constraint::Length(cpu_h), Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
-            let [mem, status] = Layout::horizontal([Constraint::Ratio(1, 2); 2]).spacing(1).areas(r2);
-            let [disks, net] = Layout::horizontal([Constraint::Ratio(1, 2); 2]).spacing(1).areas(r3);
+            let cpu_h = if area.height < 30 {
+                8
+            } else {
+                cpu_height(&s, area.width, area.height / 2)
+            };
+            let [r1, r2, r3] = Layout::vertical([
+                Constraint::Length(cpu_h),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
+            let [mem, status] = Layout::horizontal([Constraint::Ratio(1, 2); 2])
+                .spacing(1)
+                .areas(r2);
+            let [disks, net] = Layout::horizontal([Constraint::Ratio(1, 2); 2])
+                .spacing(1)
+                .areas(r3);
             draw_cpu(f, r1, v, &s);
             draw_mem(f, mem, v, &s);
             draw_status(f, status, v);
@@ -103,7 +129,13 @@ fn draw_cpu(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
     }
     // total line
     let label_w = 7u16;
-    let tail = format!(" {:>3}%   load {:.2} {:.2} {:.2}", s.cpu_total.round(), s.load[0], s.load[1], s.load[2]);
+    let tail = format!(
+        " {:>3}%   load {:.2} {:.2} {:.2}",
+        s.cpu_total.round(),
+        s.load[0],
+        s.load[1],
+        s.load[2]
+    );
     let bw = r.width.saturating_sub(label_w + tail.len() as u16).max(4);
     let mut spans = vec![Span::styled(format!("{:<7}", "total"), t.dim())];
     spans.extend(bar(t, s.cpu_total as f64, bw, t.cyan));
@@ -119,7 +151,11 @@ fn draw_cpu(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
     let strip = avail < core_rows + 2;
     let core_rows = if strip { 1 } else { core_rows };
     let graph_h = avail.saturating_sub(core_rows + 1).clamp(1, 4);
-    let g = Rect { y: r.y + 2, height: graph_h, ..r };
+    let g = Rect {
+        y: r.y + 2,
+        height: graph_h,
+        ..r
+    };
     graph(f.buffer_mut(), g, &v.d.cpu_hist.vec(), 100.0, t.cyan);
 
     let cores_y = g.bottom() + 1;
@@ -129,9 +165,19 @@ fn draw_cpu(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
         let mut spans = vec![Span::styled("cores  ", t.dim())];
         for pct in s.per_core.iter().take(r.width.saturating_sub(7) as usize) {
             let lv = ((*pct as f64 / 100.0) * 7.0).round().clamp(0.0, 7.0) as usize;
-            spans.push(Span::styled(['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][lv].to_string(), t.s(t.load(*pct as f64))));
+            spans.push(Span::styled(
+                ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][lv].to_string(),
+                t.s(t.load(*pct as f64)),
+            ));
         }
-        f.render_widget(Paragraph::new(Line::from(spans)), Rect { y: cores_y, height: 1, ..r });
+        f.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                y: cores_y,
+                height: 1,
+                ..r
+            },
+        );
     } else if cores_h > 0 && threads > 0 {
         let col_w = r.width / cols as u16;
         for (i, pct) in s.per_core.iter().enumerate() {
@@ -142,20 +188,32 @@ fn draw_cpu(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
             let x = r.x + col as u16 * col_w;
             let name = format!("c{i:<3}");
             let pct_s = format!("{:>4}%", pct.round());
-            let bw = col_w.saturating_sub(name.len() as u16 + pct_s.len() as u16 + 2).max(2);
+            let bw = col_w
+                .saturating_sub(name.len() as u16 + pct_s.len() as u16 + 2)
+                .max(2);
             let mut spans = vec![Span::styled(name, t.dim())];
             spans.extend(bar(t, *pct as f64, bw, t.load(*pct as f64)));
             spans.push(Span::styled(pct_s, t.fg()));
             f.render_widget(
                 Paragraph::new(Line::from(spans)),
-                Rect { x, y: cores_y + row as u16, width: col_w.saturating_sub(1), height: 1 },
+                Rect {
+                    x,
+                    y: cores_y + row as u16,
+                    width: col_w.saturating_sub(1),
+                    height: 1,
+                },
             );
         }
     }
     // temps
     let deg = |v: Option<f32>| v.map_or("—".to_string(), |c| format!("{c:.0}°C"));
     let gpu_t = v.d.gpu.get().and_then(|g| g.as_ref()).map(|g| g.temp);
-    let nvme = s.temps.nvme.iter().copied().fold(None, |m: Option<f32>, x| Some(m.map_or(x, |m| m.max(x))));
+    let nvme = s
+        .temps
+        .nvme
+        .iter()
+        .copied()
+        .fold(None, |m: Option<f32>, x| Some(m.map_or(x, |m| m.max(x))));
     let line = Line::from(vec![
         Span::styled("temp   cpu ", t.dim()),
         Span::styled(deg(s.temps.cpu), t.fg()),
@@ -164,7 +222,14 @@ fn draw_cpu(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
         Span::styled("   nvme ", t.dim()),
         Span::styled(deg(nvme), t.fg()),
     ]);
-    f.render_widget(Paragraph::new(line), Rect { y: r.bottom() - 1, height: 1, ..r });
+    f.render_widget(
+        Paragraph::new(line),
+        Rect {
+            y: r.bottom() - 1,
+            height: 1,
+            ..r
+        },
+    );
 }
 
 fn draw_mem(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
@@ -173,8 +238,16 @@ fn draw_mem(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
     let r = inner(&block, area);
     f.render_widget(block, area);
     let m = &s.mem;
-    let mem_pct = if m.total > 0 { m.used as f64 / m.total as f64 * 100.0 } else { 0.0 };
-    let swap_pct = if s.swap.total > 0 { s.swap.used as f64 / s.swap.total as f64 * 100.0 } else { 0.0 };
+    let mem_pct = if m.total > 0 {
+        m.used as f64 / m.total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let swap_pct = if s.swap.total > 0 {
+        s.swap.used as f64 / s.swap.total as f64 * 100.0
+    } else {
+        0.0
+    };
     let bw = r.width.saturating_sub(6);
     let mut lines = vec![
         Line::from(vec![
@@ -182,37 +255,59 @@ fn draw_mem(f: &mut Frame, area: Rect, v: &View, s: &SystemSnap) {
             Span::styled(format!("{:.1}", fmt::gib(m.used)), t.fg()),
             Span::styled(format!(" / {:.1} GiB", fmt::gib(m.total)), t.dim()),
         ]),
-        Line::from([bar(t, mem_pct, bw, t.mag), vec![Span::styled(format!(" {mem_pct:>3.0}%"), t.fg())]].concat()),
+        Line::from(
+            [
+                bar(t, mem_pct, bw, t.mag),
+                vec![Span::styled(format!(" {mem_pct:>3.0}%"), t.fg())],
+            ]
+            .concat(),
+        ),
         Line::default(),
         Line::from(vec![
             Span::styled("swap  ", t.dim()),
             Span::styled(format!("{:.1}", fmt::gib(s.swap.used)), t.fg()),
-            Span::styled(format!(" / {:.1} GiB {}", fmt::gib(s.swap.total), s.swap.kind), t.dim()),
+            Span::styled(
+                format!(" / {:.1} GiB {}", fmt::gib(s.swap.total), s.swap.kind),
+                t.dim(),
+            ),
         ]),
-        Line::from([bar(t, swap_pct, bw, t.mag), vec![Span::styled(format!(" {swap_pct:>3.0}%"), t.fg())]].concat()),
+        Line::from(
+            [
+                bar(t, swap_pct, bw, t.mag),
+                vec![Span::styled(format!(" {swap_pct:>3.0}%"), t.fg())],
+            ]
+            .concat(),
+        ),
         Line::default(),
-        Line::styled(format!("cache {:.1} GiB · avail {:.1} GiB", fmt::gib(m.cache), fmt::gib(m.avail)), t.dim()),
+        Line::styled(
+            format!(
+                "cache {:.1} GiB · avail {:.1} GiB",
+                fmt::gib(m.cache),
+                fmt::gib(m.avail)
+            ),
+            t.dim(),
+        ),
     ];
-    match v.d.gpu.get() {
-        Some(Some(g)) => {
-            lines.push(Line::styled("─".repeat(r.width as usize), t.s(t.rule)));
-            lines.push(Line::from(vec![
-                Span::styled("GPU  ", t.dim()),
-                Span::styled(g.name.clone(), t.fg()),
-                Span::styled(format!(" · nvidia {}", g.driver), t.dim()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("util ", t.dim()),
-                Span::styled(format!("{:.0}%", g.util), t.fg()),
-                Span::styled("  vram ", t.dim()),
-                Span::styled(format!("{:.1}", g.vram_used_mib as f64 / 1024.0), t.fg()),
-                Span::styled(format!("/{:.0} GiB", g.vram_total_mib as f64 / 1024.0), t.dim()),
-                Span::styled("  temp ", t.dim()),
-                Span::styled(format!("{:.0}°C", g.temp), t.fg()),
-            ]));
-        }
-        // GPU section hides when nvidia-smi is missing or fails (spec §6).
-        Some(None) | None => {}
+    // GPU section hides when nvidia-smi is missing or fails (spec §6).
+    if let Some(Some(g)) = v.d.gpu.get() {
+        lines.push(Line::styled("─".repeat(r.width as usize), t.s(t.rule)));
+        lines.push(Line::from(vec![
+            Span::styled("GPU  ", t.dim()),
+            Span::styled(g.name.clone(), t.fg()),
+            Span::styled(format!(" · nvidia {}", g.driver), t.dim()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("util ", t.dim()),
+            Span::styled(format!("{:.0}%", g.util), t.fg()),
+            Span::styled("  vram ", t.dim()),
+            Span::styled(format!("{:.1}", g.vram_used_mib as f64 / 1024.0), t.fg()),
+            Span::styled(
+                format!("/{:.0} GiB", g.vram_total_mib as f64 / 1024.0),
+                t.dim(),
+            ),
+            Span::styled("  temp ", t.dim()),
+            Span::styled(format!("{:.0}°C", g.temp), t.fg()),
+        ]));
     }
     f.render_widget(Paragraph::new(lines), r);
 }
@@ -226,10 +321,21 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
     match v.d.disks.get() {
         Some(mounts) => {
             // Two lines per mount; leave 2 lines for the breakdown.
-            let fit = if r.height >= 6 { (r.height - 2) / 2 } else { r.height / 2 } as usize;
+            let fit = if r.height >= 6 {
+                (r.height - 2) / 2
+            } else {
+                r.height / 2
+            } as usize;
             for m in mounts.iter().take(fit) {
-                let right = format!("{} / {}", fmt::bytes_short(m.used), fmt::bytes_short(m.size));
-                let left = trunc(&format!("{}  {}", m.target, m.fstype), (r.width as usize).saturating_sub(right.len() + 1));
+                let right = format!(
+                    "{} / {}",
+                    fmt::bytes_short(m.used),
+                    fmt::bytes_short(m.size)
+                );
+                let left = trunc(
+                    &format!("{}  {}", m.target, m.fstype),
+                    (r.width as usize).saturating_sub(right.len() + 1),
+                );
                 let pad = (r.width as usize).saturating_sub(left.chars().count() + right.len());
                 let name_style = if m.removable { t.dim() } else { t.fg() };
                 lines.push(Line::from(vec![
@@ -237,20 +343,38 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
                     Span::raw(" ".repeat(pad)),
                     Span::styled(right, t.dim()),
                 ]));
-                let color = if m.pct() > 90.0 { t.red } else if m.pct() > 80.0 { t.yellow } else { t.blue };
+                let color = if m.pct() > 90.0 {
+                    t.red
+                } else if m.pct() > 80.0 {
+                    t.yellow
+                } else {
+                    t.blue
+                };
                 lines.push(Line::from(
-                    [bar(t, m.pct(), r.width.saturating_sub(5), color), vec![Span::styled(format!(" {:>3.0}%", m.pct()), t.fg())]]
-                        .concat(),
+                    [
+                        bar(t, m.pct(), r.width.saturating_sub(5), color),
+                        vec![Span::styled(format!(" {:>3.0}%", m.pct()), t.fg())],
+                    ]
+                    .concat(),
                 ));
             }
         }
-        None => lines.push(Line::styled(v.d.disks.status(v.d.loading(Fetch::Disks)), t.dim())),
+        None => lines.push(Line::styled(
+            v.d.disks.status(v.d.loading(Fetch::Disks)),
+            t.dim(),
+        )),
     }
     let used = lines.len() as u16;
     f.render_widget(Paragraph::new(lines), r);
 
-    let b_y = (r.y + used).max(r.bottom().saturating_sub(2)).min(r.bottom());
-    let b_area = Rect { y: b_y, height: r.bottom() - b_y, ..r };
+    let b_y = (r.y + used)
+        .max(r.bottom().saturating_sub(2))
+        .min(r.bottom());
+    let b_area = Rect {
+        y: b_y,
+        height: r.bottom() - b_y,
+        ..r
+    };
     let lines = match v.d.breakdown.get() {
         Some(c) => {
             let b = &c.data;
@@ -266,12 +390,19 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
                 Line::from(vec![
                     Span::styled("~/.cache   ", t.dim()),
                     Span::styled(
-                        format!("≈{}{}", fmt::bytes_short(b.cache), if warn { " ▲" } else { "" }),
+                        format!(
+                            "≈{}{}",
+                            fmt::bytes_short(b.cache),
+                            if warn { " ▲" } else { "" }
+                        ),
                         t.s(if warn { t.yellow } else { t.fg }),
                     ),
                     Span::styled("  ostree ", t.dim()),
                     num(b.ostree),
-                    Span::styled(format!("  {}", fmt::ago(c.age_secs(jiff::Timestamp::now()))), t.dim()),
+                    Span::styled(
+                        format!("  {}", fmt::ago(c.age_secs(jiff::Timestamp::now()))),
+                        t.dim(),
+                    ),
                 ]),
             ]
         }
@@ -283,11 +414,18 @@ fn draw_disks(f: &mut Frame, area: Rect, v: &View) {
 
 fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
-    let iface = v.d.sys.as_ref().map(|s| s.net.iface.clone()).unwrap_or_default();
+    let iface =
+        v.d.sys
+            .as_ref()
+            .map(|s| s.net.iface.clone())
+            .unwrap_or_default();
     let block = panel(t, "Network", iface);
     let r = inner(&block, area);
     f.render_widget(block, area);
-    let (rx, tx) = v.d.sys.as_ref().map_or((0.0, 0.0), |s| (s.net.rx_bps, s.net.tx_bps));
+    let (rx, tx) =
+        v.d.sys
+            .as_ref()
+            .map_or((0.0, 0.0), |s| (s.net.rx_bps, s.net.tx_bps));
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(format!("↓ {}", fmt::rate(rx)), t.s(t.green)),
@@ -313,8 +451,28 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     let rxs = tail(&v.d.rx_hist);
     let txs = tail(&v.d.tx_hist);
     let peak = |xs: &[f64]| xs.iter().copied().fold(1024.0, f64::max);
-    graph(f.buffer_mut(), Rect { y: r.y + 2, height: rx_h, ..r }, &rxs, peak(&rxs), t.green);
-    graph(f.buffer_mut(), Rect { y: r.y + 2 + rx_h, height: tx_h, ..r }, &txs, peak(&txs), t.mag);
+    graph(
+        f.buffer_mut(),
+        Rect {
+            y: r.y + 2,
+            height: rx_h,
+            ..r
+        },
+        &rxs,
+        peak(&rxs),
+        t.green,
+    );
+    graph(
+        f.buffer_mut(),
+        Rect {
+            y: r.y + 2 + rx_h,
+            height: tx_h,
+            ..r
+        },
+        &txs,
+        peak(&txs),
+        t.mag,
+    );
     let c = v.d.counts.unwrap_or_default();
     let foot = vec![
         Line::from(vec![
@@ -325,7 +483,14 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
         ]),
         Line::styled("recorder off · history needs `sentry record`", t.dim()),
     ];
-    f.render_widget(Paragraph::new(foot), Rect { y: r.bottom().saturating_sub(2), height: 2.min(r.height), ..r });
+    f.render_widget(
+        Paragraph::new(foot),
+        Rect {
+            y: r.bottom().saturating_sub(2),
+            height: 2.min(r.height),
+            ..r
+        },
+    );
 }
 
 fn draw_status(f: &mut Frame, area: Rect, v: &View) {
@@ -337,13 +502,24 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
     let mut rows: Vec<(&str, String, ratatui::style::Color, String)> = Vec::new();
 
     // updates: ostree from rpm-ostree's cached-update, flatpak from our cache
-    let os = v.d.ostree.get().map(|o| o.update.as_ref().map_or(0, |u| u.upgraded.len() + u.added.len()));
+    let os = v.d.ostree.get().map(|o| {
+        o.update
+            .as_ref()
+            .map_or(0, |u| u.upgraded.len() + u.added.len())
+    });
     let fp = v.d.fp_updates.get().map(|c| c.data.len());
     let checking = v.d.loading(Fetch::OstreeCheck) || v.d.loading(Fetch::FlatpakUpdates);
-    let age = v.d.ostree_checked.map(|ts| (now.as_second() - ts.as_second()).max(0));
+    let age =
+        v.d.ostree_checked
+            .map(|ts| (now.as_second() - ts.as_second()).max(0));
     let stale = age.is_none_or(|a| a as u64 > v.cfg.cache.update_check_max_age.0.as_secs());
+    let (os_l, fp_l) = if r.width < 50 {
+        ("os", "fp")
+    } else {
+        ("ostree", "flatpak")
+    };
     let upd_text = format!(
-        "{} ostree · {} flatpak",
+        "{} {os_l} · {} {fp_l}",
         os.map_or("?".into(), |n| n.to_string()),
         fp.map_or("?".into(), |n| n.to_string())
     );
@@ -355,18 +531,43 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
         (false, Some(a)) => fmt::ago(a),
     };
     rows.push(("updates", upd_text, if any { t.yellow } else { t.fg }, note));
-    if v.d.ostree.get().and_then(|o| o.update.as_ref()).is_some_and(|u| u.kernel_changed) {
+    if v.d
+        .ostree
+        .get()
+        .and_then(|o| o.update.as_ref())
+        .is_some_and(|u| u.kernel_changed)
+    {
         rows.push(("", "kernel changes".into(), t.yellow, "kmod ritual".into()));
     }
 
-    rows.push(("findings", "no audit yet".into(), t.dim, "milestone 3".into()));
+    rows.push((
+        "findings",
+        "no audit yet".into(),
+        t.dim,
+        "milestone 3".into(),
+    ));
     match v.d.units.get() {
         Some(u) => {
             let n = u.failed.len();
-            let note = u.failed.iter().map(|f| f.unit.trim_end_matches(".service")).collect::<Vec<_>>().join(", ");
-            rows.push(("failed units", n.to_string(), if n > 0 { t.yellow } else { t.fg }, note));
+            let note = u
+                .failed
+                .iter()
+                .map(|f| f.unit.trim_end_matches(".service"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            rows.push((
+                "failed units",
+                n.to_string(),
+                if n > 0 { t.yellow } else { t.fg },
+                note,
+            ));
         }
-        None => rows.push(("failed units", v.d.units.status(v.d.loading(Fetch::Units)), t.dim, String::new())),
+        None => rows.push((
+            "failed units",
+            v.d.units.status(v.d.loading(Fetch::Units)),
+            t.dim,
+            String::new(),
+        )),
     }
     rows.push(("jobs due", "—".into(), t.dim, "milestone 4".into()));
     let wf = crate::resume::in_progress();

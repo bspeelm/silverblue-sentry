@@ -25,7 +25,7 @@ pub use data::{Fetch, FetchErr, Payload};
 pub enum Event {
     Key(KeyEvent),
     Resize,
-    Data(Fetch, Result<Payload, FetchErr>),
+    Data(Fetch, Box<Result<Payload, FetchErr>>),
     Run(u64, StreamMsg),
     Signal,
 }
@@ -127,7 +127,9 @@ impl ScreenId {
 
     pub fn from_name(s: &str) -> Option<Self> {
         let s = s.to_ascii_lowercase();
-        Self::ALL.into_iter().find(|id| id.slug() == s || id.short().to_ascii_lowercase() == s)
+        Self::ALL
+            .into_iter()
+            .find(|id| id.slug() == s || id.short().to_ascii_lowercase() == s)
     }
 }
 
@@ -170,7 +172,9 @@ fn spawn_input(tx: Sender<Event>, ctl: Receiver<InputCtl>) {
 
 fn spawn_signals(tx: Sender<Event>) {
     use signal_hook::consts::{SIGHUP, SIGTERM};
-    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP]) else { return };
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP]) else {
+        return;
+    };
     std::thread::spawn(move || {
         if signals.forever().next().is_some() {
             let _ = tx.send(Event::Signal);
@@ -205,7 +209,10 @@ pub fn run() -> anyhow::Result<()> {
     let (ctl_tx, ctl_rx) = mpsc::channel();
     // ratatui::try_init installs a panic hook that restores the terminal first.
     let terminal = ratatui::try_init()?;
-    let mut term = Term { terminal, input: ctl_tx };
+    let mut term = Term {
+        terminal,
+        input: ctl_tx,
+    };
     spawn_input(tx.clone(), ctl_rx);
     spawn_signals(tx.clone());
 

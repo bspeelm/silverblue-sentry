@@ -12,12 +12,12 @@ use super::Event;
 use crate::cache::{self, Cached};
 use crate::collectors::breakdown::{self, Breakdown};
 use crate::collectors::disk::{self, Mount};
-use crate::collectors::flatpak::{self, FpUpdate, Flatpak};
+use crate::collectors::flatpak::{self, Flatpak, FpUpdate};
 use crate::collectors::gpu::{self, Gpu};
 use crate::collectors::net::{self, Counts, Net};
 use crate::collectors::ostree::{self, Ostree};
 use crate::collectors::podman::{self, Podman};
-use crate::collectors::processes::{ProcSampler, Proc};
+use crate::collectors::processes::{Proc, ProcSampler};
 use crate::collectors::system::{Sampler, SystemSnap};
 use crate::collectors::units::{self, Units};
 use crate::collectors::{CollectError, Ctx};
@@ -87,7 +87,11 @@ pub struct Slot<T> {
 
 impl<T> Default for Slot<T> {
     fn default() -> Self {
-        Self { value: None, at: None, err: None }
+        Self {
+            value: None,
+            at: None,
+            err: None,
+        }
     }
 }
 
@@ -133,7 +137,6 @@ impl Ring {
     pub fn vec(&self) -> Vec<f64> {
         self.0.iter().copied().collect()
     }
-
 }
 
 pub struct DataStore {
@@ -166,7 +169,8 @@ pub struct DataStore {
 impl DataStore {
     pub fn new() -> Self {
         let mut d = Self::blank(os_version(), ostree::booted_kernel());
-        d.ostree_checked = cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
+        d.ostree_checked =
+            cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
         // Cached results are shown immediately with their age; never refreshed automatically.
         if let Some(c) = cache::load(cache::FLATPAK_UPDATES) {
             d.fp_updates.set(Ok(c));
@@ -222,7 +226,10 @@ impl DataStore {
     }
 
     pub fn sample_procs(&mut self) {
-        self.procs = self.proc_sampler.get_or_insert_with(ProcSampler::new).sample();
+        self.procs = self
+            .proc_sampler
+            .get_or_insert_with(ProcSampler::new)
+            .sample();
     }
 
     pub fn apply(&mut self, f: Fetch, r: Result<Payload, FetchErr>) {
@@ -266,7 +273,7 @@ impl DataStore {
         std::thread::spawn(move || {
             let ctx = Ctx::new((*cfg).clone());
             let r = run_fetch(f, &ctx);
-            let _ = tx.send(Event::Data(f, r));
+            let _ = tx.send(Event::Data(f, Box::new(r)));
         });
     }
 }
@@ -280,8 +287,14 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         Fetch::Disks => Payload::Disks(disk::collect()?),
         Fetch::Breakdown => {
             let b = breakdown::collect(ctx);
-            let at = stored(cache::DISK_BREAKDOWN, cache::store(cache::DISK_BREAKDOWN, &b))?;
-            Payload::Breakdown(Cached { fetched_at: at, data: b })
+            let at = stored(
+                cache::DISK_BREAKDOWN,
+                cache::store(cache::DISK_BREAKDOWN, &b),
+            )?;
+            Payload::Breakdown(Cached {
+                fetched_at: at,
+                data: b,
+            })
         }
         Fetch::Net => Payload::Net(net::collect(ctx)?),
         Fetch::Ostree => Payload::Ostree(ostree::collect()?),
@@ -293,16 +306,28 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
                 .map_err(CollectError::from)?;
             // Exit 77 means "no updates" for --check; --preview returns 0 either way.
             if out.code != 0 && out.code != 77 {
-                return Err(FetchErr::Failed(format!("rpm-ostree upgrade --preview: {}", out.stderr.trim())));
+                return Err(FetchErr::Failed(format!(
+                    "rpm-ostree upgrade --preview: {}",
+                    out.stderr.trim()
+                )));
             }
-            let at = stored(cache::OSTREE_CHECK, cache::store(cache::OSTREE_CHECK, &serde_json::json!({})))?;
+            let at = stored(
+                cache::OSTREE_CHECK,
+                cache::store(cache::OSTREE_CHECK, &serde_json::json!({})),
+            )?;
             Payload::OstreeChecked(ostree::collect()?, at)
         }
         Fetch::Flatpak => Payload::Flatpak(flatpak::collect(ctx)?),
         Fetch::FlatpakUpdates => {
             let u = flatpak::collect_updates()?;
-            let at = stored(cache::FLATPAK_UPDATES, cache::store(cache::FLATPAK_UPDATES, &u))?;
-            Payload::FlatpakUpdates(Cached { fetched_at: at, data: u })
+            let at = stored(
+                cache::FLATPAK_UPDATES,
+                cache::store(cache::FLATPAK_UPDATES, &u),
+            )?;
+            Payload::FlatpakUpdates(Cached {
+                fetched_at: at,
+                data: u,
+            })
         }
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
@@ -332,7 +357,9 @@ mod tests {
     #[test]
     fn os_release() {
         assert_eq!(
-            super::parse_os_version("NAME=\"Fedora Linux\"\nVERSION=\"44.20261002.0 (Silverblue)\"\nVERSION_ID=44\n"),
+            super::parse_os_version(
+                "NAME=\"Fedora Linux\"\nVERSION=\"44.20261002.0 (Silverblue)\"\nVERSION_ID=44\n"
+            ),
             "44.20261002.0"
         );
     }

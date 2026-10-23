@@ -22,7 +22,7 @@ expression: body(&s)
 │   local    kmod-nvidia-7.1.4-200.fc44.x86_64-3:610.43.03-1.fc44.x86_64 r…  │  │                                                                            │
 │                                                                            │  │                                                                            │
 │ ────────────────────────────────────────────────────────────────────────── │  │                                                                            │
-│ 216 package updates → 44.20261023.0  24 advisories  never checked by sentr │  │                                                                            │
+│ 216 package updates → 44.20261023.0  24 advisories  not checked yet        │  │                                                                            │
 │   kernel                      7.2.8-200.fc44 → 7.2.11-200.fc44             │  │                                                                            │
 │   kernel-core                 7.2.8-200.fc44 → 7.2.11-200.fc44             │  │                                                                            │
 │   kernel-devel                7.2.8-200.fc44 → 7.2.11-200.fc44             │  │                                                                            │

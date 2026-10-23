@@ -67,7 +67,6 @@ impl Ostree {
             })
             .unwrap_or_default()
     }
-
 }
 
 pub fn collect() -> CResult<Ostree> {

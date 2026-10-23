@@ -39,17 +39,30 @@ fn store() -> DataStore {
         d.tx_hist.push((i as f64 * 0.5).sin().abs() * 2e5);
     }
     d.sys = Some(s);
-    d.counts = Some(net::Counts { listening: 7, established: 23 });
+    d.counts = Some(net::Counts {
+        listening: 7,
+        established: 23,
+    });
     d.gpu.set(Ok(gpu::parse(&fixture("gpu/nvidia-smi.csv"))));
-    d.disks.set(Ok(disk::parse(&fixture("disk/findmnt.json")).unwrap()));
+    d.disks
+        .set(Ok(disk::parse(&fixture("disk/findmnt.json")).unwrap()));
     let mut ls = net::parse_listen(&fixture("net/ss-listen.txt"));
-    net::classify(&mut ls, &crate::baseline::Baseline { listeners: vec!["127.0.0.1:631/cupsd".into()] });
-    d.net.set(Ok(net::Net { listeners: ls, established: net::parse_established(&fixture("net/ss-established.txt")) }));
+    net::classify(
+        &mut ls,
+        &crate::baseline::Baseline {
+            listeners: vec!["127.0.0.1:631/cupsd".into()],
+        },
+    );
+    d.net.set(Ok(net::Net {
+        listeners: ls,
+        established: net::parse_established(&fixture("net/ss-established.txt")),
+    }));
     let mut o = ostree::parse(&fixture("ostree/status.json")).unwrap();
     o.booted_kernel = "7.2.8-200.fc44.x86_64".into();
     d.ostree.set(Ok(o));
     d.podman.set(Ok(podman::Podman {
-        containers: podman::parse_ps(&fixture("podman/ps.json"), "/var/home/user", NOW, 30).unwrap(),
+        containers: podman::parse_ps(&fixture("podman/ps.json"), "/var/home/user", NOW, 30)
+            .unwrap(),
         images: podman::parse_images(&fixture("podman/images.json")).unwrap(),
         dangling: podman::parse_images(&fixture("podman/dangling.json")).unwrap(),
         volumes: 3,
@@ -59,7 +72,9 @@ fn store() -> DataStore {
         .into_iter()
         .map(|(id, origin, version, installation)| {
             let meta = std::fs::read_to_string(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/flatpak/metadata").join(&id),
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/flatpak/metadata")
+                    .join(&id),
             )
             .unwrap_or_default();
             let perms = flatpak::perms_from(&meta, &[]);
@@ -98,7 +113,10 @@ fn body(s: &str) -> String {
 }
 
 fn key(a: &mut App, c: KeyCode) {
-    a.on_event(Event::Key(KeyEvent::new(c, KeyModifiers::NONE)), Instant::now());
+    a.on_event(
+        Event::Key(KeyEvent::new(c, KeyModifiers::NONE)),
+        Instant::now(),
+    );
 }
 
 #[test]
@@ -116,7 +134,19 @@ fn every_screen_renders_at_both_sizes() {
 #[test]
 fn dashboard_wide() {
     let s = render_to_string(&mut app(ScreenId::Dash), 158, 41);
-    for want in ["CPU", "i9-14900K", "24c/32t", "c31", "Memory", "RTX 4090", "Disks", "/sysroot", "Network", "Status", "kernel changes"] {
+    for want in [
+        "CPU",
+        "i9-14900K",
+        "24c/32t",
+        "c31",
+        "Memory",
+        "RTX 4090",
+        "Disks",
+        "/sysroot",
+        "Network",
+        "Status",
+        "kernel changes",
+    ] {
         assert!(s.contains(want), "missing {want:?}\n{s}");
     }
     insta::assert_snapshot!("dashboard_158x41", body(&s));
@@ -177,7 +207,10 @@ fn upgrade_modal_uses_exact_kmod() {
     key(&mut a, KeyCode::Char('u'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("rpm-ostree upgrade --uninstall"), "{s}");
-    assert!(s.contains("kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64"), "{s}");
+    assert!(
+        s.contains("kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64"),
+        "{s}"
+    );
     assert!(s.contains("mirror lag"), "modal not clipped:\n{s}");
     key(&mut a, KeyCode::Char('n'));
     assert!(!render_to_string(&mut a, 158, 41).contains("--uninstall"));

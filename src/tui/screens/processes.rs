@@ -19,18 +19,22 @@ pub struct Processes {
 }
 
 pub fn hints() -> Hints {
-    vec![("j/k", "select"), ("C/M", "sort cpu/mem"), ("x", "kill"), ("/", "filter")]
+    vec![
+        ("j/k", "select"),
+        ("C/M", "sort cpu/mem"),
+        ("x", "kill"),
+        ("/", "filter"),
+    ]
 }
 
 impl Processes {
     fn rows(&self, v: &View) -> Vec<Proc> {
-        let mut p: Vec<Proc> = v
-            .d
-            .procs
-            .iter()
-            .filter(|p| v.matches(&[&p.cmd, &p.user, &p.pid.to_string()]))
-            .cloned()
-            .collect();
+        let mut p: Vec<Proc> =
+            v.d.procs
+                .iter()
+                .filter(|p| v.matches(&[&p.cmd, &p.user, &p.pid.to_string()]))
+                .cloned()
+                .collect();
         sort(&mut p, self.sort);
         p
     }
@@ -44,20 +48,41 @@ impl Processes {
             Action::Char('C') | Action::Char('P') => self.sort = SortBy::Cpu,
             Action::Char('M') => self.sort = SortBy::Mem,
             Action::Char('x') => {
-                let Some(p) = rows.get(self.cur.clamp(rows.len())) else { return Vec::new() };
+                let Some(p) = rows.get(self.cur.clamp(rows.len())) else {
+                    return Vec::new();
+                };
                 let me = rustix::process::getuid().as_raw();
                 if p.uid.is_some_and(|u| u != me) {
-                    return vec![Effect::Toast(format!("{} is owned by {} — requires root", p.pid, p.user))];
+                    return vec![Effect::Toast(format!(
+                        "{} is owned by {} — requires root",
+                        p.pid, p.user
+                    ))];
                 }
                 let t = v.t;
                 return vec![Effect::Confirm(Modal {
                     title: "Kill process".into(),
                     color: t.red,
                     lines: vec![
-                        Line::styled(format!("Send SIGTERM to {} {}?", p.pid, crate::tui::widgets::trunc(&p.cmd, 60)), t.fg()),
-                        Line::styled(format!("owner {} · cpu {:.1}% · mem {:.1}%", p.user, p.cpu, p.mem_pct), t.dim()),
+                        Line::styled(
+                            format!(
+                                "Send SIGTERM to {} {}?",
+                                p.pid,
+                                crate::tui::widgets::trunc(&p.cmd, 60)
+                            ),
+                            t.fg(),
+                        ),
+                        Line::styled(
+                            format!(
+                                "owner {} · cpu {:.1}% · mem {:.1}%",
+                                p.user, p.cpu, p.mem_pct
+                            ),
+                            t.dim(),
+                        ),
                     ],
-                    yes: Some(("send SIGTERM".into(), vec![Effect::Kill(p.pid, format!("sent SIGTERM to {}", p.pid))])),
+                    yes: Some((
+                        "send SIGTERM".into(),
+                        vec![Effect::Kill(p.pid, format!("sent SIGTERM to {}", p.pid))],
+                    )),
                 })];
             }
             _ => {}
@@ -76,7 +101,13 @@ impl Processes {
         let body: Vec<Row> = rows
             .iter()
             .map(|p| {
-                let cpu_c = if p.cpu > 15.0 { t.red } else if p.cpu > 5.0 { t.yellow } else { t.fg };
+                let cpu_c = if p.cpu > 15.0 {
+                    t.red
+                } else if p.cpu > 5.0 {
+                    t.yellow
+                } else {
+                    t.fg
+                };
                 Row::new(vec![
                     Cell::from(p.pid.to_string()).style(t.dim()),
                     Cell::from(p.user.clone()),
@@ -95,7 +126,7 @@ impl Processes {
                 header: vec!["PID", "USER", &cpu_h, &mem_h, "TIME", "COMMAND"],
                 widths: vec![
                     Constraint::Length(9),
-                    Constraint::Length(14),
+                    Constraint::Length(16),
                     Constraint::Length(9),
                     Constraint::Length(9),
                     Constraint::Length(11),

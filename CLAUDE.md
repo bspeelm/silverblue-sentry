@@ -11,6 +11,11 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - Install: `install -Dm755 target/release/sentry ~/.local/bin/sentry`
 - Try a collector: `cargo run -q -- collect ostree`
 
+## Notes
+- `XDG_CACHE_HOME` may be set (e.g. bothy shells): caches then live there, not `~/.cache/sentry`.
+- Render tests: `src/tui/screens/tests.rs` builds a `DataStore` from fixtures; snapshots in `src/tui/screens/snapshots/`.
+- `assets/workflows/*.toml` are seeded but not loaded until M5; `release-rebase` is `draft = true` (no cheatsheet covers a rebase).
+
 ## Rules
 - **No background processes**: no systemd units, timers or autostart. Threads die with the TUI.
 - Every external command goes through `exec::Cmd` (`Cmd::host` for host userspace). Never call `std::process::Command` directly. Dev happens in a toolbox, where `Cmd::host` adds the `flatpak-spawn --host` prefix.
@@ -22,6 +27,7 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 
 ## Milestones (spec §13)
 - [x] Prep: docs, fixtures, seeded workflows
-- [ ] M1 skeleton: CLI, config, TUI shell, live dashboard
-- [ ] M2 collectors + Dashboard/Processes/Network/Updates/Containers/Flatpaks
+- [x] M1 skeleton: CLI, config, TUI shell, live dashboard
+- [x] M2 collectors + Dashboard/Processes/Network/Updates/Containers/Flatpaks
+  (measured on host: 0.7% of one core incl. children at 1 Hz dashboard, 8 MB RSS)
 - [ ] M3 audit · [ ] M4 jobs · [ ] M5 workflows · [ ] M6 recorder · [ ] M7 polish

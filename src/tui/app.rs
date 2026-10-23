@@ -132,7 +132,14 @@ impl App {
             toast: None,
             input: Input::None,
             filters: HashMap::new(),
-            sched: Sched { sys: now, counts: now, gpu: now, slow: now, procs: now, net: now },
+            sched: Sched {
+                sys: now,
+                counts: now,
+                gpu: now,
+                slow: now,
+                procs: now,
+                net: now,
+            },
             tx,
             suspend: None,
             last_minute: 0,
@@ -165,7 +172,14 @@ impl App {
             toast: None,
             input: Input::None,
             filters: HashMap::new(),
-            sched: Sched { sys: now, counts: now, gpu: now, slow: now, procs: now, net: now },
+            sched: Sched {
+                sys: now,
+                counts: now,
+                gpu: now,
+                slow: now,
+                procs: now,
+                net: now,
+            },
             tx,
             suspend: None,
             last_minute: 0,
@@ -182,7 +196,11 @@ impl App {
             d: &self.data,
             cfg: &self.cfg,
             t: &self.theme,
-            filter: self.filters.get(&self.screen).map(String::as_str).filter(|s| !s.is_empty()),
+            filter: self
+                .filters
+                .get(&self.screen)
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -218,7 +236,8 @@ impl App {
 
     /// When the loop should wake up next if no event arrives.
     pub fn next_due(&self, now: Instant) -> Instant {
-        let mut due = now + Duration::from_secs(60 - (jiff::Timestamp::now().as_second() % 60) as u64);
+        let mut due =
+            now + Duration::from_secs(60 - (jiff::Timestamp::now().as_second() % 60) as u64);
         let mut at = |t: Instant| due = due.min(t);
         match self.screen {
             ScreenId::Dash => {
@@ -247,7 +266,11 @@ impl App {
                 if now >= self.sched.sys {
                     self.data.sample_system();
                     self.sched.sys = now
-                        + if first_sample { Duration::from_millis(300) } else { Self::hz(self.cfg.ui.dashboard_hz) };
+                        + if first_sample {
+                            Duration::from_millis(300)
+                        } else {
+                            Self::hz(self.cfg.ui.dashboard_hz)
+                        };
                     self.dirty = true;
                 }
                 if now >= self.sched.counts {
@@ -269,7 +292,11 @@ impl App {
                 let first = self.data.procs.is_empty();
                 self.data.sample_procs();
                 self.sched.procs = now
-                    + if first { Duration::from_millis(300) } else { Self::hz(self.cfg.ui.processes_hz) };
+                    + if first {
+                        Duration::from_millis(300)
+                    } else {
+                        Self::hz(self.cfg.ui.processes_hz)
+                    };
                 self.dirty = true;
             }
             ScreenId::Net if now >= self.sched.net => {
@@ -278,7 +305,11 @@ impl App {
             }
             _ => {}
         }
-        if self.toast.as_ref().is_some_and(|(_, t)| now >= *t + TOAST_FOR) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(_, t)| now >= *t + TOAST_FOR)
+        {
             self.toast = None;
             self.dirty = true;
         }
@@ -299,8 +330,12 @@ impl App {
             Event::Key(k) => self.on_key(k, now),
             Event::Resize => self.dirty = true,
             Event::Data(f, r) => {
+                let r = *r;
                 if let Err(e) = &r
-                    && matches!(f, Fetch::OstreeCheck | Fetch::FlatpakUpdates | Fetch::Breakdown)
+                    && matches!(
+                        f,
+                        Fetch::OstreeCheck | Fetch::FlatpakUpdates | Fetch::Breakdown
+                    )
                 {
                     self.toast(e.text());
                 }
@@ -313,7 +348,9 @@ impl App {
     }
 
     fn on_run_msg(&mut self, id: u64, msg: StreamMsg) {
-        let Some(run) = self.run.as_mut().filter(|r| r.id == id) else { return };
+        let Some(run) = self.run.as_mut().filter(|r| r.id == id) else {
+            return;
+        };
         match msg {
             StreamMsg::Line { stderr, text } => {
                 if run.lines.len() == RUN_LINES {
@@ -325,7 +362,11 @@ impl App {
                 run.done = Some((code, elapsed));
                 run.pid = None;
                 let then = std::mem::take(&mut run.then);
-                let msg = if code == 0 { run.ok_toast.clone() } else { format!("{} failed (exit {code})", run.title) };
+                let msg = if code == 0 {
+                    run.ok_toast.clone()
+                } else {
+                    format!("{} failed (exit {code})", run.title)
+                };
                 for f in then {
                     self.data.fetch(f, &self.cfg, &self.tx);
                 }
@@ -357,23 +398,35 @@ impl App {
             self.input_key(k, now);
             return;
         }
-        let Some(action) = self.keys.resolve(&k) else { return };
+        let Some(action) = self.keys.resolve(&k) else {
+            return;
+        };
         match action {
             Action::Screen(id) => self.enter(id, now),
             Action::NextScreen | Action::PrevScreen => {
                 let tabs = self.visible_tabs();
                 let i = tabs.iter().position(|s| *s == self.screen).unwrap_or(0);
                 let n = tabs.len();
-                let j = if action == Action::NextScreen { (i + 1) % n } else { (i + n - 1) % n };
+                let j = if action == Action::NextScreen {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                };
                 self.enter(tabs[j], now);
             }
             Action::Help => self.modal = Some(help_modal(&self.theme)),
             Action::Quit | Action::Interrupt => self.modal = Some(quit_modal(&self.theme)),
             Action::Filter => {
-                self.input = Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
+                self.input =
+                    Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
             }
             Action::Command => self.input = Input::Command(String::new()),
-            Action::Esc if self.filters.get(&self.screen).is_some_and(|f| !f.is_empty()) => {
+            Action::Esc
+                if self
+                    .filters
+                    .get(&self.screen)
+                    .is_some_and(|f| !f.is_empty()) =>
+            {
                 self.filters.remove(&self.screen);
             }
             a => {
@@ -381,7 +434,11 @@ impl App {
                     d: &self.data,
                     cfg: &self.cfg,
                     t: &self.theme,
-                    filter: self.filters.get(&self.screen).map(String::as_str).filter(|s| !s.is_empty()),
+                    filter: self
+                        .filters
+                        .get(&self.screen)
+                        .map(String::as_str)
+                        .filter(|s| !s.is_empty()),
                 };
                 let effects = self.screens.handle(self.screen, a, &v);
                 self.apply(effects, now);
@@ -430,7 +487,9 @@ impl App {
             (Some("refresh" | "r"), _) => self.on_key(KeyEvent::from(KeyCode::Char('r')), now),
             (Some("help" | "h"), _) => self.modal = Some(help_modal(&self.theme)),
             (Some("job"), _) => self.toast("jobs arrive in milestone 4 — :job is not wired yet"),
-            (Some("workflow"), _) => self.toast("workflows arrive in milestone 5 — :workflow is not wired yet"),
+            (Some("workflow"), _) => {
+                self.toast("workflows arrive in milestone 5 — :workflow is not wired yet")
+            }
             (Some(name), None) => match ScreenId::from_name(name) {
                 Some(id) => self.enter(id, now),
                 None => self.toast(format!("unknown command :{c}")),
@@ -442,7 +501,9 @@ impl App {
 
     fn run_key(&mut self, k: KeyEvent) {
         let Some(run) = self.run.as_mut() else { return };
-        let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(ratatui::crossterm::event::KeyModifiers::CONTROL);
+        let ctrl_c = k.code == KeyCode::Char('c')
+            && k.modifiers
+                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL);
         match (k.code, run.done) {
             (KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q'), Some(_)) => self.run = None,
             (_, None) if ctrl_c => {
@@ -480,7 +541,8 @@ impl App {
                     }
                     Err(e) => self.toast(format!("kill {pid}: {e}")),
                 },
-                Effect::AddListener(key) => match crate::baseline::BaselineFile::add_listener(&key) {
+                Effect::AddListener(key) => match crate::baseline::BaselineFile::add_listener(&key)
+                {
                     Ok(true) => {
                         self.toast(format!("{key} added to baseline.toml"));
                         self.data.fetch(Fetch::Net, &self.cfg, &self.tx);
@@ -538,7 +600,10 @@ impl App {
     fn visible_tabs(&self) -> Vec<ScreenId> {
         // History only appears once the recorder has produced data (spec §11); `H` still opens it.
         let has_rec = crate::paths::data_dir().join("metrics").is_dir();
-        ScreenId::ALL.into_iter().filter(|s| *s != ScreenId::Hist || has_rec || self.screen == ScreenId::Hist).collect()
+        ScreenId::ALL
+            .into_iter()
+            .filter(|s| *s != ScreenId::Hist || has_rec || self.screen == ScreenId::Hist)
+            .collect()
     }
 
     // ---------------------------------------------------------------- drawing
@@ -551,7 +616,13 @@ impl App {
                 f,
                 area,
                 &t,
-                &[(&format!("terminal too small ({}×{}, need 80×24)", area.width, area.height), t.dim())],
+                &[(
+                    &format!(
+                        "terminal too small ({}×{}, need 80×24)",
+                        area.width, area.height
+                    ),
+                    t.dim(),
+                )],
             );
             return;
         }
@@ -568,23 +639,43 @@ impl App {
         .areas(area);
         self.draw_top(f, top);
         self.draw_tabs(f, tabs);
-        f.render_widget(Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)), rule);
+        f.render_widget(
+            Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
+            rule,
+        );
         if let Some(r) = &self.resume {
             let line = Line::from(vec![
-                Span::styled(format!(" ↻ workflow {} in progress   ", r.workflow), t.s(t.yellow)),
+                Span::styled(
+                    format!(" ↻ workflow {} in progress   ", r.workflow),
+                    t.s(t.yellow),
+                ),
                 Span::styled("resume arrives in milestone 5", t.dim()),
             ]);
-            f.render_widget(Paragraph::new(line).style(Style::new().bg(t.banner_bg)), ban);
+            f.render_widget(
+                Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
+                ban,
+            );
         }
-        let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
+        let body = Rect {
+            y: body.y + 1,
+            height: body.height.saturating_sub(1),
+            ..body
+        };
         let v = View {
             d: &self.data,
             cfg: &self.cfg,
             t: &self.theme,
-            filter: self.filters.get(&self.screen).map(String::as_str).filter(|s| !s.is_empty()),
+            filter: self
+                .filters
+                .get(&self.screen)
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
         };
         self.screens.render(self.screen, f, body, &v);
-        f.render_widget(Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)), keyrule);
+        f.render_widget(
+            Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)),
+            keyrule,
+        );
         self.draw_keybar(f, keybar);
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
@@ -598,13 +689,24 @@ impl App {
 
     fn draw_top(&self, f: &mut Frame, area: Rect) {
         let t = &self.theme;
-        let up = self.data.sys.as_ref().map(|s| s.uptime_s).unwrap_or_else(sysinfo::System::uptime);
-        let left = Line::from(vec![
-            Span::styled(" sentry ", Style::new().fg(t.ink).bg(t.cyan).add_modifier(Modifier::BOLD)),
+        let up = self
+            .data
+            .sys
+            .as_ref()
+            .map(|s| s.uptime_s)
+            .unwrap_or_else(sysinfo::System::uptime);
+        let mut left = vec![
+            Span::styled(
+                " sentry ",
+                Style::new()
+                    .fg(t.ink)
+                    .bg(t.cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("  silverblue {}", self.data.os_version), t.fg()),
             Span::styled(format!("  kernel {}", self.data.kernel), t.dim()),
             Span::styled(format!("  up {}", fmt::uptime(up)), t.dim()),
-        ]);
+        ];
         let (live, color) = match self.screen {
             ScreenId::Dash => (format!("● live {} Hz", self.cfg.ui.dashboard_hz), t.green),
             ScreenId::Proc => (format!("● live {} Hz", self.cfg.ui.processes_hz), t.green),
@@ -612,10 +714,26 @@ impl App {
             _ => ("○ idle".to_string(), t.dim),
         };
         let clock = jiff::Zoned::now().strftime("%a %d %b %H:%M").to_string();
-        let right = Line::from(vec![Span::styled(live, t.s(color)), Span::styled(format!("   {clock} "), t.dim())]);
+        let right = Line::from(vec![
+            Span::styled(live, t.s(color)),
+            Span::styled(format!("   {clock} "), t.dim()),
+        ]);
         let rw = right.width() as u16;
-        f.render_widget(Paragraph::new(left), area);
-        f.render_widget(Paragraph::new(right), Rect { x: area.right().saturating_sub(rw), width: rw, ..area });
+        // Narrow terminals: drop kernel, then uptime, rather than overlap the clock.
+        for drop in [2, 2] {
+            if Line::from(left.clone()).width() as u16 + rw + 1 > area.width && left.len() > drop {
+                left.remove(drop);
+            }
+        }
+        f.render_widget(Paragraph::new(Line::from(left)), area);
+        f.render_widget(
+            Paragraph::new(right),
+            Rect {
+                x: area.right().saturating_sub(rw),
+                width: rw,
+                ..area
+            },
+        );
     }
 
     fn badge(&self, id: ScreenId) -> Option<(String, Color)> {
@@ -632,11 +750,12 @@ impl App {
                 }
             }
             ScreenId::Net => {
-                let n = self
-                    .data
-                    .net
-                    .get()
-                    .map_or(0, |n| n.listeners.iter().filter(|l| l.status == crate::collectors::net::ListenStatus::New).count());
+                let n = self.data.net.get().map_or(0, |n| {
+                    n.listeners
+                        .iter()
+                        .filter(|l| l.status == crate::collectors::net::ListenStatus::New)
+                        .count()
+                });
                 (n > 0).then(|| (format!(" {n}"), t.red))
             }
             ScreenId::Upgrade => self.resume.as_ref().map(|_| (" ●".into(), t.yellow)),
@@ -660,8 +779,16 @@ impl App {
             } else {
                 ""
             };
-            let (fg, kc, bg) = if active { (t.ink, t.ink, t.fg) } else { (t.fg, t.dim, Color::Reset) };
-            let bg_style = if active { Style::new().bg(bg) } else { Style::new() };
+            let (fg, kc, bg) = if active {
+                (t.ink, t.ink, t.fg)
+            } else {
+                (t.fg, t.dim, Color::Reset)
+            };
+            let bg_style = if active {
+                Style::new().bg(bg)
+            } else {
+                Style::new()
+            };
             spans.push(Span::styled(format!(" {}", id.key()), bg_style.fg(kc)));
             if !name.is_empty() {
                 spans.push(Span::styled(format!(" {name}"), bg_style.fg(fg)));
@@ -670,7 +797,10 @@ impl App {
                 spans.push(Span::styled(b, bg_style.fg(if active { t.ink } else { c })));
             }
             if let Some(flt) = self.filters.get(&id).filter(|s| !s.is_empty()) {
-                spans.push(Span::styled(format!(" /{flt}"), bg_style.fg(if active { t.ink } else { t.cyan })));
+                spans.push(Span::styled(
+                    format!(" /{flt}"),
+                    bg_style.fg(if active { t.ink } else { t.cyan }),
+                ));
             }
             spans.push(Span::styled(" ", bg_style));
             spans.push(Span::raw(" "));
@@ -715,14 +845,22 @@ impl App {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
         if let Some((msg, _)) = &self.toast {
             let w = (msg.chars().count() as u16 + 1).min(area.width / 2);
-            let r = Rect { x: area.right() - w, width: w, ..area };
-            f.render_widget(Paragraph::new(Span::styled(widgets::trunc(msg, w as usize - 1), t.fg())), r);
+            let r = Rect {
+                x: area.right() - w,
+                width: w,
+                ..area
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(widgets::trunc(msg, w as usize - 1), t.fg())),
+                r,
+            );
         }
     }
 }
 
 fn kill(pid: u32) -> std::io::Result<()> {
-    let pid = rustix::process::Pid::from_raw(pid as i32).ok_or_else(|| std::io::Error::other("bad pid"))?;
+    let pid = rustix::process::Pid::from_raw(pid as i32)
+        .ok_or_else(|| std::io::Error::other("bad pid"))?;
     rustix::process::kill_process(pid, rustix::process::Signal::TERM).map_err(std::io::Error::from)
 }
 
@@ -730,13 +868,28 @@ fn draw_modal(f: &mut Frame, area: Rect, t: &Theme, m: &Modal) {
     let w = 84u16.min(area.width);
     // Inner text width = box − borders − padding; count wrapped rows so nothing is clipped.
     let text_w = w.saturating_sub(4).max(1) as usize;
-    let rows: usize = m.lines.iter().map(|l| l.width().max(1).div_ceil(text_w)).sum();
+    let rows: usize = m
+        .lines
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(text_w))
+        .sum();
     let rect = widgets::centered(area, w, rows as u16 + 5);
     let inner = widgets::overlay(f, rect, t, &m.title, m.color);
-    let [body, _, keys] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
-    let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
-    f.render_widget(Paragraph::new(m.lines.clone()).wrap(Wrap { trim: false }), body);
+    let [body, _, keys] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let body = Rect {
+        y: body.y + 1,
+        height: body.height.saturating_sub(1),
+        ..body
+    };
+    f.render_widget(
+        Paragraph::new(m.lines.clone()).wrap(Wrap { trim: false }),
+        body,
+    );
     let mut spans = Vec::new();
     match &m.yes {
         Some((label, _)) => {
@@ -750,7 +903,11 @@ fn draw_modal(f: &mut Frame, area: Rect, t: &Theme, m: &Modal) {
 }
 
 fn draw_run(f: &mut Frame, area: Rect, t: &Theme, r: &RunPane) {
-    let rect = widgets::centered(area, area.width.saturating_sub(8).max(60), area.height.saturating_sub(2));
+    let rect = widgets::centered(
+        area,
+        area.width.saturating_sub(8).max(60),
+        area.height.saturating_sub(2),
+    );
     let (color, status) = match r.done {
         None => {
             let s = r.started.elapsed().as_secs();
@@ -760,9 +917,16 @@ fn draw_run(f: &mut Frame, area: Rect, t: &Theme, r: &RunPane) {
         Some((c, d)) => (t.red, format!("✗ exit {c} · {:.1}s", d.as_secs_f32())),
     };
     let inner = widgets::overlay(f, rect, t, &r.title, color);
-    let [cmd, log, foot] =
-        Layout::vertical([Constraint::Length(2), Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
-    f.render_widget(Paragraph::new(Span::styled(format!("$ {}", r.cmd), t.dim())), cmd);
+    let [cmd, log, foot] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("$ {}", r.cmd), t.dim())),
+        cmd,
+    );
     let h = log.height as usize;
     let end = r.lines.len().saturating_sub(r.scroll);
     let start = end.saturating_sub(h);
@@ -772,7 +936,11 @@ fn draw_run(f: &mut Frame, area: Rect, t: &Theme, r: &RunPane) {
         .skip(start)
         .take(end - start)
         .map(|(s, _)| {
-            let st = if s.contains("error") || s.contains("Error") { t.s(t.red) } else { t.fg() };
+            let st = if s.contains("error") || s.contains("Error") {
+                t.s(t.red)
+            } else {
+                t.fg()
+            };
             Line::styled(widgets::trunc(s, log.width as usize), st)
         })
         .collect();
@@ -791,8 +959,14 @@ fn help_modal(t: &Theme) -> Modal {
             l("/         filter (Esc clears)  n/N   next/prev    :  command (:q, :net)"),
             l("r         refresh current      c     check now (network collectors)"),
             l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
-            Line::styled("Destructive actions: preview → confirm → streamed output.", t.dim()),
-            Line::styled("Nothing runs in the background after sentry exits.", t.dim()),
+            Line::styled(
+                "Destructive actions: preview → confirm → streamed output.",
+                t.dim(),
+            ),
+            Line::styled(
+                "Nothing runs in the background after sentry exits.",
+                t.dim(),
+            ),
         ],
         yes: None,
     }
@@ -802,13 +976,21 @@ fn quit_modal(t: &Theme) -> Modal {
     Modal {
         title: "Quit".into(),
         color: t.dim,
-        lines: vec![Line::styled("Quit sentry? Nothing keeps running after exit.", t.fg())],
+        lines: vec![Line::styled(
+            "Quit sentry? Nothing keeps running after exit.",
+            t.fg(),
+        )],
         yes: Some(("quit".into(), vec![Effect::Quit])),
     }
 }
 
 pub fn info_modal(t: &Theme, title: &str, lines: Vec<Line<'static>>) -> Modal {
-    Modal { title: title.into(), color: t.cyan, lines, yes: None }
+    Modal {
+        title: title.into(),
+        color: t.cyan,
+        lines,
+        yes: None,
+    }
 }
 
 /// Render the whole UI into plain text (snapshot tests).

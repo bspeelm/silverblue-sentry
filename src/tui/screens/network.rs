@@ -18,7 +18,12 @@ pub struct Network {
 }
 
 pub fn hints() -> Hints {
-    vec![("j/k", "select"), ("e", "mark expected"), ("/", "filter"), ("r", "refresh")]
+    vec![
+        ("j/k", "select"),
+        ("e", "mark expected"),
+        ("/", "filter"),
+        ("r", "refresh"),
+    ]
 }
 
 impl Network {
@@ -40,7 +45,10 @@ impl Network {
             Action::Refresh => vec![Effect::Fetch(Fetch::Net)],
             Action::Char('e') => match rows.get(self.cur.clamp(rows.len())) {
                 Some(l) if l.status == ListenStatus::Baseline => {
-                    vec![Effect::Toast(format!("{} is already in the baseline", l.key()))]
+                    vec![Effect::Toast(format!(
+                        "{} is already in the baseline",
+                        l.key()
+                    ))]
                 }
                 Some(l) => vec![Effect::AddListener(l.key())],
                 None => Vec::new(),
@@ -51,16 +59,29 @@ impl Network {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
         let t = v.t;
-        let [left, right] = Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)]).spacing(2).areas(area);
+        let [left, right] =
+            Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)])
+                .spacing(2)
+                .areas(area);
         let rows = self.rows(v);
         let sel = self.cur.clamp(rows.len());
-        let new = rows.iter().filter(|l| l.status == ListenStatus::New).count();
-        let block = panel(t, "Listening", format!("ss -tulpn · {} · {new} new", rows.len()));
+        let new = rows
+            .iter()
+            .filter(|l| l.status == ListenStatus::New)
+            .count();
+        let block = panel(
+            t,
+            "Listening",
+            format!("ss -tulpn · {} · {new} new", rows.len()),
+        );
         let r = inner(&block, left);
         f.render_widget(block, left);
         self.cur.page = r.height as usize;
         if v.d.net.get().is_none() {
-            f.render_widget(Paragraph::new(v.d.net.status(v.d.loading(Fetch::Net))).style(t.dim()), r);
+            f.render_widget(
+                Paragraph::new(v.d.net.status(v.d.loading(Fetch::Net))).style(t.dim()),
+                r,
+            );
         } else {
             let body: Vec<Row> = rows
                 .iter()
@@ -89,14 +110,22 @@ impl Network {
                 t,
                 TableSpec {
                     header: vec!["PROTO", "LOCAL", "PROCESS", "STATUS"],
-                    widths: vec![Constraint::Length(5), Constraint::Fill(3), Constraint::Fill(2), Constraint::Length(8)],
+                    widths: vec![
+                        Constraint::Length(5),
+                        Constraint::Fill(3),
+                        Constraint::Fill(2),
+                        Constraint::Length(8),
+                    ],
                     rows: body,
                     selected: (!rows.is_empty()).then_some(sel),
                 },
             );
         }
 
-        let est = v.d.net.get().map_or(Vec::new(), |n| n.established.iter().collect::<Vec<_>>());
+        let est =
+            v.d.net
+                .get()
+                .map_or(Vec::new(), |n| n.established.iter().collect::<Vec<_>>());
         let block = panel(t, "Established", est.len().to_string());
         let r = inner(&block, right);
         f.render_widget(block, right);
