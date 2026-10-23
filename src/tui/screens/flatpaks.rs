@@ -192,7 +192,7 @@ impl Flatpaks {
             ),
             t.dim(),
         )];
-        // GL.nvidia + GL32 must match the host driver (cheatsheet §3b).
+        // GL.nvidia + GL32 must match the host driver, or 32-bit games lose GL.
         let driver =
             v.d.gpu
                 .get()

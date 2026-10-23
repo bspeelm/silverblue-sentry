@@ -3,7 +3,7 @@
 Spec: `docs/spec.md`. Binding amendments: `docs/spec-addendum.md` (read both before changing behavior).
 Design for M3–M7: `docs/design/m3-m7.md`.
 Visual target: `docs/design/sentry-tui.dc.html` (read the source; don't render it).
-Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/workflows/*.toml`.
+Upgrade procedures: the user's personal notes in `docs/cheatsheets/` (gitignored, never commit or publish them) are the source for `assets/workflows/*.toml`.
 
 ## Commands
 - Build/test: `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
@@ -16,7 +16,7 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 ## Notes
 - `XDG_CACHE_HOME` may be set (some dev shells set it): caches then live there, not `~/.cache/sentry`.
 - Render tests: `src/tui/screens/tests.rs` builds a `DataStore` from fixtures; snapshots in `src/tui/screens/snapshots/`.
-- `assets/workflows/*.toml` are embedded and seeded to `~/.config/sentry/workflows/` when missing; `release-rebase` is `draft = true` (no cheatsheet covers a rebase).
+- `assets/workflows/*.toml` are embedded and seeded to `~/.config/sentry/workflows/` when missing; `release-rebase` is `draft = true` (no rebase has been run end to end).
 - Workflow tests: put a harmless TOML in a scratch `XDG_CONFIG_HOME`, run with `SENTRY_NO_REBOOT=1`, fake a reboot by editing `boot_id` in `state.json`.
 
 ## Rules

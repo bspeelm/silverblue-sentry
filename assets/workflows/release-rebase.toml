@@ -1,6 +1,6 @@
 name = "release-rebase"
 description = "Rebase Silverblue to a new Fedora release with the NVIDIA kmod ritual"
-# DRAFT: the cheatsheets do not cover a release rebase with locally layered rpmfusion release RPMs.
+# DRAFT: a release rebase with locally layered rpmfusion release RPMs hasn't been run end to end.
 # Sentry refuses to start a draft. Review every step (rpm-ostree rebase has no dry-run; `rpm-ostree cleanup -p`
 # undoes a staged rebase), then delete this line.
 draft = true
@@ -100,7 +100,7 @@ on_fail = "manual"
 manual = """
 GL.nvidia-<ver> and GL32.nvidia-<ver> must both match the host driver.
 Run `flatpak update`, check `flatpak list --runtime | grep nvidia`, then fully quit and
-relaunch Steam (cheatsheet §3b)."""
+relaunch Steam: a sandbox started before the update keeps the old runtime."""
 
 [[steps]]
 id = "post-snapshot"

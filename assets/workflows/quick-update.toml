@@ -1,6 +1,5 @@
 name = "quick-update"
 description = "rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual when the kernel changes"
-# Source: docs/cheatsheets/silverblue-upgrade-cheatsheet.md (§0–§3b) and package-upgrade-cheatsheet.md (§4 order).
 # Built-ins: current_version, booted_kernel, pending_kernel, old_kmod, home.
 
 [[steps]]
@@ -65,11 +64,18 @@ gate = "confirm"
 when = "kernel_changed"
 on_fail = "manual"
 manual = """
-If the error is a wall of `openssl-devel` / `kernel-devel` depsolve problems, a stale mirror is the likely cause (cheatsheet §2b).
-Compare the master mirror's repomd age:
+If the error is a wall of `openssl-devel` / `kernel-devel` depsolve problems, your mirror is
+probably lagging behind the new base image. Compare the master mirror's repomd age:
   curl -s https://dl.fedoraproject.org/pub/fedora/linux/updates/{{ current_version }}/Everything/x86_64/repodata/repomd.xml | grep -oE '<revision>[0-9]+' | cut -d'>' -f2 | xargs -I{} date -d @{} -u
-Then either wait a few hours or add /etc/yum.repos.d/updates-master.repo (cheatsheet §2b) and retry this step.
-Leave the repo in place until the end of this workflow."""
+Either wait a few hours (mirrors catch up), or add a repo pointing at the master mirror and retry:
+  /etc/yum.repos.d/updates-master.repo:
+    [updates-master]
+    name=Fedora $releasever - $basearch - Updates (master mirror)
+    baseurl=https://dl.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/
+    enabled=1
+    gpgcheck=1
+    gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch
+Leave it in place until the end of this workflow (the kmod install re-depsolves too)."""
 
 [[steps]]
 id = "reboot-1"
@@ -129,7 +135,7 @@ gate = "auto"
 on_fail = "manual"
 manual = """
 Run `flatpak update` to pull GL.nvidia-<ver> and GL32.nvidia-<ver>. Both must be at the same version.
-Then fully quit and relaunch Steam (cheatsheet §3b)."""
+Then fully quit and relaunch Steam: a sandbox started before the update keeps the old runtime."""
 
 [[steps]]
 id = "master-repo-cleanup"

@@ -199,9 +199,9 @@ fn parse_update(cu: &Value) -> Option<Update> {
 pub enum UpgradePlan {
     NoUpdate,
     Routine,
-    /// Kernel changes: stage the upgrade dropping exactly this kmod (cheatsheet §2 step 1).
+    /// Kernel changes: stage the upgrade dropping exactly this kmod (kmod ritual step 1).
     Ritual(String),
-    /// Kernel changes but not exactly one layered kmod-nvidia: stop (cheatsheet).
+    /// Kernel changes but not exactly one layered kmod-nvidia: stop and resolve by hand.
     Ambiguous(Vec<String>),
 }
 

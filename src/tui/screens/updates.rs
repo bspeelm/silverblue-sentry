@@ -102,7 +102,7 @@ fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
                         t.dim(),
                     ),
                     Line::styled(
-                        "An openssl-devel depsolve wall means mirror lag — cheatsheet §2b.",
+                        "An openssl-devel depsolve wall means mirror lag: wait, or use the master mirror.",
                         t.dim(),
                     ),
                 ],
@@ -147,7 +147,7 @@ fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
 fn flatpak_effects(v: &View) -> Vec<Effect> {
     let t = v.t;
     let n = v.d.fp_updates.get().map(|c| c.data.len());
-    // Cheatsheet §3b: a sandbox started before the update keeps a stale runtime bind-mount.
+    // A sandbox started before the update keeps a stale runtime bind-mount.
     let running = Cmd::host("flatpak")
         .args(["ps", "--columns=application"])
         .timeout(Some(std::time::Duration::from_secs(3)))

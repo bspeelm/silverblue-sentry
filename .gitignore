@@ -2,3 +2,6 @@
 *.zip
 /.claude/settings.local.json
 *.snap.new
+
+# Personal upgrade notes: private source material, never committed
+docs/cheatsheets/

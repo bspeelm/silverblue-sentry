@@ -24,7 +24,7 @@ A daemon-free monitor and maintenance TUI for **Fedora Silverblue**: live system
 
 People running Fedora Silverblue (or another rpm-ostree desktop) who want one place to see what the system is doing and to do routine maintenance carefully. It's most useful if you run **NVIDIA through RPM Fusion akmods with the built `kmod-nvidia` layered as a local package** (needed with Secure Boot): `quick-update` encodes the drop-old-kmod → reboot → build/layer-new-kmod → reboot ritual so you can't skip a step. Without NVIDIA, the GPU parts simply hide and the routine upgrade path is a single step.
 
-It is opinionated about one kind of setup, and the procedures it encodes come from the cheatsheets in `docs/cheatsheets/`. Read them before trusting a workflow on your machine.
+It is opinionated about one kind of setup and encodes procedures proven on one machine. Read a workflow's TOML (`e` on the Upgrade screen) before trusting it on yours.
 
 ## Status and safety
 
@@ -102,8 +102,8 @@ Measured on the host: the open dashboard uses about 0.8% of one core including c
 ## Workflows
 
 Workflows are TOML files in `~/.config/sentry/workflows/`. `quick-update` and `release-rebase` are written there the first time you open Upgrade, and your edits are never overwritten.
-- `quick-update` follows `docs/cheatsheets/silverblue-upgrade-cheatsheet.md`. A routine upgrade is one step. When the kernel changes, it runs the NVIDIA kmod ritual: drop the exact layered kmod, reboot, build or layer the new kmod, reboot, then verify the driver and Flatpak GL.
-- `release-rebase` ships with `draft = true`. Sentry won't start it until you've reviewed the steps and deleted that line. Neither cheatsheet covers a rebase with locally layered RPM Fusion release packages.
+- `quick-update`: A routine upgrade is one step. When the kernel changes, it runs the NVIDIA kmod ritual: drop the exact layered kmod, reboot, build or layer the new kmod, reboot, then verify the driver and Flatpak GL.
+- `release-rebase` ships with `draft = true`. Sentry won't start it until you've reviewed the steps and deleted that line. It hasn't been run end to end with locally layered RPM Fusion release packages.
 
 Each run lives in `~/.local/share/sentry/workflows/<name>/run-<time>/`, holding `state.json`, a copy of the TOML, and `steps/<id>.log`.
 
@@ -133,7 +133,6 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 - `docs/spec-addendum.md`: binding amendments made after probing the real machine.
 - `docs/design/m3-m7.md`: design for the audit, jobs, workflows and recorder.
 - `docs/design/sentry-tui.dc.html`: the visual target.
-- `docs/cheatsheets/`: the upgrade procedures the workflows encode.
 
 ## License
 

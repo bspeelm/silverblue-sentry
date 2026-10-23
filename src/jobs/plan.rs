@@ -217,7 +217,7 @@ fn update_apply(p: &mut Plan) -> Result<(), CollectError> {
     }];
     if !running.is_empty() {
         preview.push(format!(
-            "running sandboxes: {} — quit them first (cheatsheet §3b)",
+            "running sandboxes: {} — quit them first",
             running.join(", ")
         ));
     }
@@ -319,7 +319,7 @@ fn cleanup_flatpak(p: &mut Plan) -> Result<(), CollectError> {
                 preview: vec![
                     format!("host driver is {d}; this extension is for another driver"),
                     format!("would remove runtime/{r}"),
-                    "not removed by --unused (cheatsheet §3b)".into(),
+                    "not removed by --unused".into(),
                 ],
                 act: Act::Run(
                     Cmd::host("flatpak")

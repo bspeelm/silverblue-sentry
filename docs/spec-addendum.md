@@ -12,7 +12,7 @@ Decided 2026-10-23 during build prep, after probing the target machine. Where th
 
 ## A3. NVIDIA model (replaces §9.5 assumptions)
 - The driver kmod is a **locally built, MOK-signed `kmod-nvidia-<kver>` RPM layered as a LocalPackage**, produced by akmods. `rpmfusion-{free,nonfree}-release-N` are also LocalPackages. Secure Boot is enforcing.
-- The kernel-change ritual (see `docs/cheatsheets/silverblue-upgrade-cheatsheet.md` §2):
+- The kernel-change ritual:
   1. `rpm-ostree upgrade --uninstall <exact old kmod>`, then reboot.
   2. Make sure `/var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm` exists (otherwise `sudo akmods --force --kernels $(uname -r)`), then `rpm-ostree install` it, then reboot.
   3. Run `nvidia-smi`, then check that Flatpak `GL.nvidia` and `GL32.nvidia` are at the same version.
