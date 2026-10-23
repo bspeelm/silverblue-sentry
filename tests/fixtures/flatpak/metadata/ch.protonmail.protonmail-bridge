@@ -1,0 +1,27 @@
+[Application]
+name=ch.protonmail.protonmail-bridge
+runtime=org.freedesktop.Platform/x86_64/25.08
+sdk=org.freedesktop.Sdk/x86_64/25.08
+command=protonmail-bridge
+
+[Context]
+shared=ipc;network;
+sockets=fallback-x11;wayland;
+devices=dri;
+
+[Session Bus Policy]
+org.kde.StatusNotifierWatcher=talk
+org.freedesktop.secrets=talk
+
+[Extension ch.protonmail.protonmail_bridge.Locale]
+directory=share/runtime/locale
+autodelete=true
+locale-subset=true
+
+[Extension ch.protonmail.protonmail_bridge.Debug]
+directory=lib/debug
+autodelete=true
+no-autodownload=true
+
+[Build]
+built-extensions=ch.protonmail.protonmail_bridge.Locale;ch.protonmail.protonmail_bridge.Debug;ch.protonmail.protonmail_bridge.Sources;

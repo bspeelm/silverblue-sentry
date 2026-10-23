@@ -1,0 +1,1 @@
+ostree=/ostree/boot.1/fedora/4640c8b582f0c403f940a3a8cfeeea869c2f6f3185f2eca877a7a87c623a6acb/0 rd.luks.uuid=luks-dbdbd177-d715-424d-ace3-189d24d15746 root=UUID=f89450cb-25eb-4098-94fc-0272d87371ef vconsole.keymap=us rootflags=subvol=root rw rd.driver.blacklist=nouveau modprobe.blacklist=nouveau nvidia-drm.modeset=1

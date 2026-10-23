@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>html,body{margin:0;background:#1d1e21;}a{color:#78a9e6;}a:hover{color:#6fd0c9;}</style>
+</helmet>
+<div style="min-height:100vh;display:flex;align-items:safe center;justify-content:safe center;padding:32px;box-sizing:border-box;font-family:'JetBrains Mono',ui-monospace,monospace;">
+<div style="width:1240px;flex-shrink:0;border-radius:12px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.5),0 0 0 1px #000;background:#131415;">
+  <div style="height:38px;background:#242528;display:flex;align-items:center;justify-content:center;position:relative;color:#bfc3c8;font:600 13px system-ui,sans-serif;">
+    <span>sentry — ~</span>
+    <span style="position:absolute;right:12px;width:22px;height:22px;border-radius:50%;background:#35373b;color:#bfc3c8;display:flex;align-items:center;justify-content:center;font-size:11px;">✕</span>
+  </div>
+  <div tabindex="0" style="position:relative;height:780px;padding:8px 14px 6px;box-sizing:border-box;display:flex;flex-direction:column;color:#d4d4d4;font-size:13px;line-height:19px;outline:none;">
+
+    <div style="display:flex;gap:16px;align-items:center;white-space:nowrap;">
+      <span style="color:#131415;background:#6fd0c9;padding:0 6px;font-weight:700;">sentry</span>
+      <span>silverblue {{ osVersion }}</span>
+      <span style="color:#7d8590;">kernel {{ kernel }}</span>
+      <span style="color:#7d8590;">up {{ uptime }}</span>
+      <span style="flex:1;"></span>
+      <span style="color:{{ liveColor }};">{{ liveLabel }}</span>
+      <span style="color:#7d8590;">{{ clock }}</span>
+    </div>
+
+    <div style="display:flex;gap:2px;margin-top:6px;border-bottom:1px solid #3a3e44;white-space:nowrap;">
+      <sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="11">
+        <div onClick="{{ tb.go }}" style="padding:1px 8px;cursor:pointer;background:{{ tb.bg }};color:{{ tb.fg }};"><span style="color:{{ tb.kc }};">{{ tb.k }}</span> {{ tb.name }}<span style="color:#e8c46b;">{{ tb.badge }}</span></div>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ showBanner }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ goUpgrade }}" style="margin-top:8px;padding:1px 8px;background:#2e2a1c;color:#e8c46b;white-space:pre;cursor:pointer;">↻ workflow {{ bannerText }}   <span style="color:#7d8590;">press 0 to continue</span></div>
+    </sc-if>
+
+    <div style="flex:1;min-height:0;position:relative;overflow:hidden;">
+
+      <sc-if value="{{ is.dash }}" hint-placeholder-val="{{ true }}">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px 18px;padding-top:18px;white-space:nowrap;">
+          <div style="grid-column:span 2;position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">CPU <span style="color:#7d8590;">· Ryzen 7 7700X · 8c/16t</span></div>
+            <div style="display:flex;gap:10px;"><span style="color:#7d8590;width:48px;">total</span><span><span style="color:#6fd0c9;">{{ cpuBar.fill }}</span><span style="color:#30343a;">{{ cpuBar.rest }}</span></span><span style="width:40px;text-align:right;">{{ cpuPct }}%</span><span style="color:#7d8590;">load</span><span>{{ load }}</span></div>
+            <div style="margin:10px 0 8px;color:#6fd0c9;line-height:15px;overflow:hidden;">
+              <sc-for list="{{ cpuGraph }}" as="row" hint-placeholder-count="5"><div style="white-space:pre;">{{ row }}</div></sc-for>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px;">
+              <sc-for list="{{ cores }}" as="c" hint-placeholder-count="8">
+                <div style="display:flex;gap:8px;"><span style="color:#7d8590;">{{ c.name }}</span><span><span style="color:{{ c.color }};">{{ c.bar.fill }}</span><span style="color:#30343a;">{{ c.bar.rest }}</span></span><span style="width:36px;text-align:right;">{{ c.pct }}%</span></div>
+              </sc-for>
+            </div>
+            <div style="margin-top:8px;color:#7d8590;">temp  cpu <span style="color:#d4d4d4;">{{ cpuTemp }}°C</span>   gpu <span style="color:#d4d4d4;">47°C</span>   nvme <span style="color:#d4d4d4;">41°C</span></div>
+          </div>
+
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Memory</div>
+            <div style="color:#7d8590;">mem   <span style="color:#d4d4d4;">{{ memUsed }}</span> / 31.2 GiB</div>
+            <div><span style="color:#c792ea;">{{ memBar.fill }}</span><span style="color:#30343a;">{{ memBar.rest }}</span> {{ memPct }}%</div>
+            <div style="color:#7d8590;margin-top:8px;">swap  <span style="color:#d4d4d4;">0.3</span> / 8.0 GiB zram</div>
+            <div><span style="color:#c792ea;">█</span><span style="color:#30343a;">░░░░░░░░░░░░░░░░░░░░░░░</span> 4%</div>
+            <div style="color:#7d8590;margin-top:8px;">cache 6.1 GiB · avail {{ memAvail }} GiB</div>
+            <div style="margin-top:14px;border-top:1px solid #2a2d31;padding-top:10px;color:#7d8590;">GPU  <span style="color:#d4d4d4;">RTX 4070</span> · nvidia 580.95</div>
+            <div style="color:#7d8590;">util <span style="color:#d4d4d4;">{{ gpuUtil }}%</span>  vram <span style="color:#d4d4d4;">1.9</span>/12 GiB</div>
+          </div>
+
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Disks</div>
+            <sc-for list="{{ disks }}" as="d" hint-placeholder-count="3">
+              <div style="margin-bottom:6px;">
+                <div style="display:flex;"><span>{{ d.mount }}</span><span style="flex:1;"></span><span style="color:#7d8590;">{{ d.used }}</span></div>
+                <div><span style="color:{{ d.color }};">{{ d.bar.fill }}</span><span style="color:#30343a;">{{ d.bar.rest }}</span> {{ d.pct }}%</div>
+              </div>
+            </sc-for>
+            <div style="color:#7d8590;margin-top:4px;">containers  <span style="color:#d4d4d4;">22.1G</span>  flatpak <span style="color:#d4d4d4;">18.4G</span></div>
+            <div style="color:#7d8590;">~/.cache    <span style="color:#e8c46b;">3.4G ▲</span>  ostree  <span style="color:#d4d4d4;">9.2G</span></div>
+          </div>
+
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Network <span style="color:#7d8590;">· enp6s0</span></div>
+            <div><span style="color:#8fcf7a;">↓ {{ rxNow }}</span>   <span style="color:#c792ea;">↑ {{ txNow }}</span></div>
+            <div style="margin:8px 0 4px;color:#8fcf7a;line-height:14px;">
+              <sc-for list="{{ rxGraph }}" as="row" hint-placeholder-count="3"><div style="white-space:pre;">{{ row }}</div></sc-for>
+            </div>
+            <div style="color:#c792ea;line-height:14px;">
+              <sc-for list="{{ txGraph }}" as="row" hint-placeholder-count="2"><div style="white-space:pre;">{{ row }}</div></sc-for>
+            </div>
+            <div style="color:#7d8590;margin-top:8px;">listening <span style="color:#d4d4d4;">7</span> · established <span style="color:#d4d4d4;">23</span></div>
+            <div style="color:#7d8590;">{{ histNote }}</div>
+          </div>
+
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Status</div>
+            <sc-for list="{{ statusLines }}" as="s" hint-placeholder-count="6">
+              <div style="display:flex;gap:8px;margin-bottom:3px;"><span style="color:#7d8590;width:96px;">{{ s.k }}</span><span style="color:{{ s.c }};">{{ s.v }}</span><span style="color:#7d8590;">{{ s.note }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.proc }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:12px;white-space:nowrap;">
+          <div style="display:grid;grid-template-columns:80px 110px 80px 80px 100px 1fr;color:#7d8590;border-bottom:1px solid #2a2d31;padding:0 8px;">
+            <span>PID</span><span>USER</span><span style="color:{{ sortCpuColor }};">CPU%{{ sortCpuMark }}</span><span style="color:{{ sortMemColor }};">MEM%{{ sortMemMark }}</span><span>TIME</span><span>COMMAND</span>
+          </div>
+          <sc-for list="{{ procRows }}" as="p" hint-placeholder-count="14">
+            <div onClick="{{ p.pick }}" style="display:grid;grid-template-columns:80px 110px 80px 80px 100px 1fr;padding:0 8px;background:{{ p.bg }};cursor:pointer;">
+              <span style="color:#7d8590;">{{ p.pid }}</span><span>{{ p.user }}</span><span style="color:{{ p.cpuColor }};">{{ p.cpu }}</span><span>{{ p.mem }}</span><span style="color:#7d8590;">{{ p.time }}</span><span>{{ p.cmd }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.net }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;display:grid;grid-template-columns:1.2fr 1fr;gap:18px;white-space:nowrap;">
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Listening <span style="color:#7d8590;">· ss -tulpn</span></div>
+            <div style="display:grid;grid-template-columns:56px 200px 1fr 90px;color:#7d8590;padding:0 12px;"><span>PROTO</span><span>LOCAL</span><span>PROCESS</span><span>STATUS</span></div>
+            <sc-for list="{{ listenRows }}" as="l" hint-placeholder-count="7">
+              <div onClick="{{ l.pick }}" style="display:grid;grid-template-columns:56px 200px 1fr 90px;padding:0 12px;background:{{ l.bg }};cursor:pointer;">
+                <span style="color:#7d8590;">{{ l.proto }}</span><span>{{ l.local }}</span><span>{{ l.proc }}</span><span style="color:{{ l.color }};">{{ l.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Established <span style="color:#7d8590;">· 23</span></div>
+            <div style="display:grid;grid-template-columns:1fr 140px;color:#7d8590;padding:0 12px;"><span>PEER</span><span>PROCESS</span></div>
+            <sc-for list="{{ est }}" as="e" hint-placeholder-count="8">
+              <div style="display:grid;grid-template-columns:1fr 140px;padding:0 12px;"><span>{{ e.peer }}</span><span style="color:#7d8590;">{{ e.proc }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.upd }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:18px;white-space:nowrap;">
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">rpm-ostree <span style="color:#7d8590;">· deployments</span></div>
+            <sc-for list="{{ deployments }}" as="d" hint-placeholder-count="2">
+              <div style="margin-bottom:10px;">
+                <div><span style="color:{{ d.color }};">{{ d.mark }}</span> {{ d.ref }}  <span style="color:#7d8590;">{{ d.label }}</span></div>
+                <div style="color:#7d8590;padding-left:18px;">version {{ d.ver }} · {{ d.date }}</div>
+                <div style="color:#7d8590;padding-left:18px;">layered  <span style="color:#d4d4d4;">{{ d.layered }}</span></div>
+              </div>
+            </sc-for>
+            <div style="border-top:1px solid #2a2d31;padding-top:8px;">
+              <div><span style="color:#e8c46b;">3 updates available</span>  <span style="color:#7d8590;">{{ updAge }}</span></div>
+              <div style="color:#7d8590;">  kernel        6.18.4-200 → <span style="color:#d4d4d4;">6.18.6-200</span></div>
+              <div style="color:#7d8590;">  mesa-*        25.2.3 → <span style="color:#d4d4d4;">25.2.4</span></div>
+              <div style="color:#7d8590;">  systemd-*     258.2 → <span style="color:#d4d4d4;">258.3</span></div>
+              <div style="color:#e8c46b;margin-top:6px;">! kernel changes · quick-update will rebuild nvidia</div>
+            </div>
+          </div>
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Flatpak <span style="color:#7d8590;">· remote-ls --updates</span></div>
+            <div style="display:grid;grid-template-columns:1fr 110px 130px;color:#7d8590;padding:0 12px;"><span>APP</span><span>ORIGIN</span><span>VERSION</span></div>
+            <sc-for list="{{ fpUpdates }}" as="u" hint-placeholder-count="5">
+              <div style="display:grid;grid-template-columns:1fr 110px 130px;padding:0 12px;"><span>{{ u.id }}</span><span style="color:#7d8590;">{{ u.origin }}</span><span>{{ u.ver }}</span></div>
+            </sc-for>
+            <div style="padding:8px 12px 0;color:#7d8590;">5 updates · 412 MB download · {{ updAge }}</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.cont }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:12px;white-space:nowrap;">
+          <div style="display:grid;grid-template-columns:200px 110px 120px 100px 80px 1fr;color:#7d8590;border-bottom:1px solid #2a2d31;padding:0 8px;"><span>NAME</span><span>KIND</span><span>STATUS</span><span>AGE</span><span>$HOME</span><span>IMAGE</span></div>
+          <sc-for list="{{ contRows }}" as="c" hint-placeholder-count="6">
+            <div onClick="{{ c.pick }}" style="display:grid;grid-template-columns:200px 110px 120px 100px 80px 1fr;padding:0 8px;background:{{ c.bg }};cursor:pointer;">
+              <span>{{ c.name }}</span><span style="color:#7d8590;">{{ c.kind }}</span><span style="color:{{ c.sColor }};">{{ c.status }}</span><span style="color:{{ c.ageColor }};">{{ c.age }}</span><span style="color:{{ c.homeColor }};">{{ c.home }}</span><span style="color:#7d8590;">{{ c.image }}</span>
+            </div>
+          </sc-for>
+          <div style="margin-top:14px;padding:0 8px;color:#7d8590;">images 14 · 31.8 GB · 3 dangling (2.1 GB)   volumes 4</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.flat }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:12px;white-space:nowrap;">
+          <div style="display:grid;grid-template-columns:330px 110px 110px 1fr;color:#7d8590;border-bottom:1px solid #2a2d31;padding:0 8px;"><span>APPLICATION</span><span>ORIGIN</span><span>VERSION</span><span>FLAGS</span></div>
+          <sc-for list="{{ flatRows }}" as="f" hint-placeholder-count="10">
+            <div onClick="{{ f.pick }}" style="display:grid;grid-template-columns:330px 110px 110px 1fr;padding:0 8px;background:{{ f.bg }};cursor:pointer;">
+              <span>{{ f.id }}</span><span style="color:{{ f.oColor }};">{{ f.origin }}</span><span style="color:#7d8590;">{{ f.ver }}</span><span style="color:{{ f.fColor }};">{{ f.flags }}</span>
+            </div>
+          </sc-for>
+          <div style="margin-top:14px;padding:0 8px;color:#7d8590;">permissions cached 2d ago · overrides in ~/.local/share/flatpak/overrides/ (2)</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.audit }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;display:grid;grid-template-columns:1.1fr 1fr;gap:18px;white-space:nowrap;">
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Findings <span style="color:#7d8590;">· 2026-10-01.json</span></div>
+            <sc-for list="{{ findingRows }}" as="f" hint-placeholder-count="6">
+              <div onClick="{{ f.pick }}" style="display:grid;grid-template-columns:76px 90px 1fr;padding:0 12px;background:{{ f.bg }};cursor:pointer;">
+                <span style="color:{{ f.color }};">{{ f.sev }}</span><span style="color:#7d8590;">{{ f.cat }}</span><span style="color:{{ f.msgColor }};">{{ f.msg }}</span>
+              </div>
+            </sc-for>
+            <div style="margin:12px 12px 0;padding-top:8px;border-top:1px solid #2a2d31;">
+              <div style="color:#7d8590;">evidence</div>
+              <div style="white-space:pre-wrap;">{{ finding.evidence }}</div>
+            </div>
+          </div>
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 12px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Diff <span style="color:#7d8590;">· 2026-09-01 → 2026-10-01</span></div>
+            <sc-for list="{{ diff }}" as="d" hint-placeholder-count="14">
+              <div style="color:{{ d.color }};white-space:pre;">{{ d.t }}</div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.jobs }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:12px;white-space:nowrap;">
+          <div style="display:grid;grid-template-columns:180px 150px 110px 110px 1fr;color:#7d8590;border-bottom:1px solid #2a2d31;padding:0 8px;"><span>JOB</span><span>LAST RUN</span><span>EVERY</span><span>STATUS</span><span>ACTION</span></div>
+          <sc-for list="{{ jobRows }}" as="j" hint-placeholder-count="7">
+            <div onClick="{{ j.pick }}" style="display:grid;grid-template-columns:180px 150px 110px 110px 1fr;padding:0 8px;background:{{ j.bg }};cursor:pointer;">
+              <span>{{ j.name }}</span><span style="color:#7d8590;">{{ j.last }}</span><span style="color:#7d8590;">{{ j.every }}</span><span style="color:{{ j.color }};">{{ j.status }}</span><span style="color:#7d8590;">{{ j.desc }}</span>
+            </div>
+          </sc-for>
+          <div style="margin-top:14px;padding:0 8px;color:#7d8590;">Cadence is a reminder. Nothing runs until you press Enter.</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.clean }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:18px;white-space:nowrap;">
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">Reclaimable <span style="color:#7d8590;">· from dry-run</span></div>
+            <sc-for list="{{ cleanRows }}" as="c" hint-placeholder-count="5">
+              <div onClick="{{ c.pick }}" style="display:grid;grid-template-columns:40px 1fr 90px;padding:0 12px;background:{{ c.bg }};cursor:pointer;">
+                <span style="color:{{ c.boxColor }};">{{ c.box }}</span><span>{{ c.name }}</span><span style="text-align:right;color:{{ c.sizeColor }};">{{ c.size }}</span>
+              </div>
+            </sc-for>
+            <div style="margin:10px 12px 0;padding-top:8px;border-top:1px solid #2a2d31;display:flex;"><span style="color:#7d8590;">selected</span><span style="flex:1;"></span><span style="color:#8fcf7a;">{{ cleanTotal }}</span></div>
+          </div>
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 12px 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">{{ cleanPaneTitle }}</div>
+            <sc-for list="{{ cleanPane }}" as="l" hint-placeholder-count="8">
+              <div style="color:{{ l.c }};white-space:pre-wrap;">{{ l.t }}</div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.upgrade }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;display:grid;grid-template-columns:470px 1fr;gap:18px;height:100%;box-sizing:border-box;padding-bottom:4px;white-space:nowrap;">
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 0 10px;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">{{ wfLeftTitle }}</div>
+            <sc-if value="{{ wfIdle }}" hint-placeholder-val="{{ false }}">
+              <sc-for list="{{ wfList }}" as="w" hint-placeholder-count="2">
+                <div onClick="{{ w.pick }}" style="padding:4px 12px 6px;background:{{ w.bg }};cursor:pointer;">
+                  <div>{{ w.name }}  <span style="color:#7d8590;">{{ w.steps }}</span></div>
+                  <div style="color:#7d8590;white-space:pre-wrap;">{{ w.desc }}</div>
+                  <div style="color:{{ w.lastColor }};">{{ w.last }}</div>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ wfActive }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ stepRows }}" as="s" hint-placeholder-count="13">
+                <div style="display:grid;grid-template-columns:22px 30px 1fr 78px;padding:0 12px;background:{{ s.bg }};">
+                  <span style="color:{{ s.color }};">{{ s.glyph }}</span><span style="color:#7d8590;">{{ s.n }}</span><span style="color:{{ s.tColor }};overflow:hidden;text-overflow:ellipsis;">{{ s.title }}</span><span style="color:{{ s.tagColor }};text-align:right;">{{ s.tag }}</span>
+                </div>
+              </sc-for>
+              <div style="margin:12px 12px 0;padding-top:8px;border-top:1px solid #2a2d31;color:#7d8590;">
+                <div>target = <span style="color:#d4d4d4;">45</span>   started {{ wfStarted }}</div>
+                <div>~/.local/share/sentry/workflows/release-rebase/</div>
+              </div>
+            </sc-if>
+          </div>
+          <div style="position:relative;border:1px solid #3a3e44;padding:14px 12px 10px;display:flex;flex-direction:column;min-height:0;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">{{ wfRightTitle }}</div>
+            <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;">
+              <sc-for list="{{ wfLog }}" as="l" hint-placeholder-count="10">
+                <div style="color:{{ l.c }};white-space:pre-wrap;">{{ l.t }}</div>
+              </sc-for>
+            </div>
+            <sc-if value="{{ gateCard.show }}" hint-placeholder-val="{{ true }}">
+              <div style="margin-top:10px;border:1px solid {{ gateCard.border }};padding:8px 12px;">
+                <div style="color:{{ gateCard.border }};">{{ gateCard.head }}</div>
+                <div style="white-space:pre-wrap;">{{ gateCard.body }}</div>
+                <div style="color:#7d8590;white-space:pre-wrap;">{{ gateCard.sub }}</div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.hist }}" hint-placeholder-val="{{ false }}">
+        <div style="padding-top:18px;white-space:nowrap;">
+          <sc-if value="{{ hasRecorder }}" hint-placeholder-val="{{ true }}">
+            <div style="position:relative;border:1px solid #3a3e44;padding:14px 14px 10px;">
+              <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#131415;">History <span style="color:#7d8590;">· last {{ histWin }} · metrics/ring.bin 18.4 MB</span></div>
+              <sc-for list="{{ histRows }}" as="h" hint-placeholder-count="5">
+                <div style="display:grid;grid-template-columns:110px 1fr 120px;gap:10px;margin-bottom:10px;align-items:end;">
+                  <span style="color:#7d8590;">{{ h.name }}</span>
+                  <div style="color:{{ h.color }};line-height:13px;">
+                    <sc-for list="{{ h.graph }}" as="row" hint-placeholder-count="3"><div style="white-space:pre;">{{ row }}</div></sc-for>
+                  </div>
+                  <span style="color:#7d8590;">{{ h.stat }}</span>
+                </div>
+              </sc-for>
+              <div style="display:grid;grid-template-columns:110px 1fr 120px;gap:10px;color:#7d8590;"><span></span><div style="display:flex;justify-content:space-between;"><sc-for list="{{ histAxis }}" as="a" hint-placeholder-count="5"><span>{{ a }}</span></sc-for></div><span></span></div>
+              <div style="margin-top:12px;color:#7d8590;">alerts  cpu>90%:5m · disk_free&lt;5% · new_listener   <span style="color:#8fcf7a;">● recorder running (pid 3310, 10s)</span></div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ noRecorder }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:60px 0;text-align:center;color:#7d8590;">
+              <div>No recorder data.</div>
+              <div style="margin-top:6px;">Run <span style="color:#d4d4d4;">sentry record --interval 10s</span> in a spare terminal. It exits on Ctrl-C.</div>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ modal.show }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;background:rgba(10,11,12,.55);display:flex;align-items:center;justify-content:center;">
+          <div style="width:640px;background:#17191b;border:1px solid {{ modal.border }};padding:16px 18px 12px;position:relative;white-space:pre-wrap;">
+            <div style="position:absolute;top:-10px;left:10px;padding:0 6px;background:#17191b;color:{{ modal.border }};">{{ modal.title }}</div>
+            <sc-for list="{{ modal.lines }}" as="l" hint-placeholder-count="4">
+              <div style="color:{{ l.c }};">{{ l.t }}</div>
+            </sc-for>
+            <div style="margin-top:12px;display:flex;gap:18px;"><span><span style="color:#131415;background:{{ modal.border }};padding:0 6px;">{{ modal.yesKey }}</span> {{ modal.yes }}</span><span><span style="color:#131415;background:#7d8590;padding:0 6px;">n</span> cancel</span></div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ rebooting }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:-60px -14px -40px;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7d8590;gap:6px;">
+          <div>systemctl reboot</div>
+          <div>…</div>
+          <div style="color:#d4d4d4;">$ sentry</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="display:flex;gap:16px;border-top:1px solid #3a3e44;padding-top:4px;margin-top:6px;white-space:nowrap;">
+      <sc-for list="{{ hints }}" as="h" hint-placeholder-count="6">
+        <span><span style="color:#131415;background:#7d8590;padding:0 5px;">{{ h.k }}</span> <span style="color:#a9b0b8;">{{ h.d }}</span></span>
+      </sc-for>
+      <span style="flex:1;"></span>
+      <span style="color:#7d8590;">{{ toast }}</span>
+    </div>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startScreen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dash&quot;,&quot;proc&quot;,&quot;net&quot;,&quot;upd&quot;,&quot;cont&quot;,&quot;flat&quot;,&quot;audit&quot;,&quot;jobs&quot;,&quot;clean&quot;,&quot;upgrade&quot;,&quot;hist&quot;],&quot;default&quot;:&quot;dash&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;workflowInProgress&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;recorderRunning&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+const C={fg:'#d4d4d4',dim:'#7d8590',red:'#ef6b73',green:'#8fcf7a',yellow:'#e8c46b',blue:'#78a9e6',mag:'#c792ea',cyan:'#6fd0c9'};
+const SEL='#22303f';
+const SP='▁▂▃▄▅▆▇█';
+const bar=(p,w)=>{const n=Math.max(0,Math.min(w,Math.round(p/100*w)));return{fill:'█'.repeat(n),rest:'░'.repeat(w-n)}};
+const walk=(v,lo,hi,s)=>Math.max(lo,Math.min(hi,v+(Math.random()-.5)*s));
+const graph=(arr,max,rows)=>{const out=[];for(let r=rows-1;r>=0;r--){out.push(arr.map(v=>{const lv=Math.round(Math.min(1,v/max)*rows*8)-r*8;return lv<=0?' ':lv>=8?'█':SP[lv-1]}).join(''))}return out};
+const SCREENS=[['1','dash','Dashboard'],['2','proc','Processes'],['3','net','Network'],['4','upd','Updates'],['5','cont','Containers'],['6','flat','Flatpaks'],['7','audit','Audit'],['8','jobs','Jobs'],['9','clean','Cleanup'],['0','upgrade','Upgrade'],['h','hist','History']];
+const PROCS=[
+ {pid:4821,user:'shadow',cpu:18.2,mem:6.1,time:'2:14:08',cmd:'firefox'},
+ {pid:2210,user:'shadow',cpu:9.4,mem:3.2,time:'1:02:51',cmd:'gnome-shell'},
+ {pid:5102,user:'shadow',cpu:7.1,mem:2.4,time:'0:41:12',cmd:'firefox -contentproc -isForBrowser 5102 tab'},
+ {pid:6630,user:'shadow',cpu:5.8,mem:8.9,time:'0:22:40',cmd:'rust-analyzer'},
+ {pid:1388,user:'root',cpu:3.2,mem:0.4,time:'0:08:19',cmd:'Xwayland :0 -rootless'},
+ {pid:7012,user:'shadow',cpu:2.9,mem:1.1,time:'0:03:02',cmd:'ptyxis-agent'},
+ {pid:3304,user:'shadow',cpu:2.1,mem:4.7,time:'0:19:55',cmd:'/app/bin/obsidian'},
+ {pid:991,user:'root',cpu:1.4,mem:0.2,time:'0:02:40',cmd:'nvidia-powerd'},
+ {pid:3310,user:'shadow',cpu:0.9,mem:0.1,time:'0:00:48',cmd:'sentry record --interval 10s'},
+ {pid:7431,user:'shadow',cpu:0.6,mem:0.1,time:'0:00:12',cmd:'sentry'},
+ {pid:2540,user:'shadow',cpu:0.5,mem:1.9,time:'0:04:33',cmd:'tracker-miner-fs-3'},
+ {pid:1201,user:'root',cpu:0.4,mem:0.3,time:'0:01:20',cmd:'systemd-journald'},
+ {pid:4011,user:'shadow',cpu:0.3,mem:2.2,time:'0:05:01',cmd:'syncthing serve --no-browser'},
+ {pid:1777,user:'root',cpu:0.2,mem:0.1,time:'0:00:31',cmd:'cupsd -l'},
+ {pid:2290,user:'shadow',cpu:0.1,mem:0.6,time:'0:00:44',cmd:'pipewire'}];
+const LISTEN=[
+ {proto:'tcp',local:'127.0.0.1:631',proc:'cupsd (1777)',st:'baseline'},
+ {proto:'tcp',local:'0.0.0.0:22000',proc:'syncthing (4011)',st:'new'},
+ {proto:'udp',local:'0.0.0.0:22000',proc:'syncthing (4011)',st:'new'},
+ {proto:'tcp',local:'127.0.0.1:8384',proc:'syncthing (4011)',st:'expected'},
+ {proto:'udp',local:'0.0.0.0:5353',proc:'avahi-daemon (880)',st:'expected'},
+ {proto:'udp',local:'127.0.0.54:53',proc:'systemd-resolve (702)',st:'expected'},
+ {proto:'tcp',local:'127.0.0.1:44917',proc:'rust-analyzer (6630)',st:'expected'}];
+const EST=[{peer:'151.101.65.91:443',proc:'firefox'},{peer:'34.107.243.93:443',proc:'firefox'},{peer:'140.82.114.26:443',proc:'firefox'},{peer:'185.199.108.133:443',proc:'firefox'},{peer:'38.145.60.20:443',proc:'gnome-software'},{peer:'192.168.1.24:22000',proc:'syncthing'},{peer:'192.168.1.31:22000',proc:'syncthing'},{peer:'… 16 more',proc:''}];
+const FLATS=[
+ {id:'org.mozilla.firefox',origin:'flathub',ver:'144.0',flags:'home'},
+ {id:'md.obsidian.Obsidian',origin:'flathub',ver:'1.9.14',flags:'home'},
+ {id:'com.valvesoftware.Steam',origin:'flathub',ver:'1.0.0.84',flags:'devices=all'},
+ {id:'com.visualstudio.code',origin:'flathub',ver:'1.105.1',flags:'host  talk:org.freedesktop.Flatpak',sev:'high'},
+ {id:'org.gnome.Loupe',origin:'fedora',ver:'49.0',flags:''},
+ {id:'com.github.tchx84.Flatseal',origin:'flathub',ver:'2.3.1',flags:''},
+ {id:'org.signal.Signal',origin:'flathub',ver:'7.76.0',flags:''},
+ {id:'io.github.someone.Tool',origin:'devrepo',ver:'0.4.2',flags:'home',sev:'medium'},
+ {id:'org.videolan.VLC',origin:'flathub',ver:'3.0.21',flags:'host-os',sev:'high'},
+ {id:'org.gnome.Calculator',origin:'fedora',ver:'49.1',flags:''}];
+const CONTS=[
+ {name:'fedora-toolbox-45',kind:'toolbox',status:'running',age:'2d',home:'yes',image:'registry.fedoraproject.org/fedora-toolbox:45'},
+ {name:'rust-dev',kind:'toolbox',status:'running',age:'21d',home:'yes',image:'registry.fedoraproject.org/fedora-toolbox:44'},
+ {name:'arch',kind:'distrobox',status:'exited',age:'64d',home:'yes',image:'quay.io/toolbx/arch-toolbox:latest',stale:true},
+ {name:'ubuntu-2404',kind:'distrobox',status:'exited',age:'12d',home:'yes',image:'quay.io/toolbx/ubuntu-toolbox:24.04'},
+ {name:'postgres',kind:'podman',status:'exited',age:'41d',home:'no',image:'docker.io/library/postgres:17',stale:true},
+ {name:'jellyfin',kind:'podman',status:'running',age:'9d',home:'no',image:'docker.io/jellyfin/jellyfin:10.11'}];
+const FINDINGS=[
+ {sev:'high',cat:'listener',msg:'New listener 0.0.0.0:22000 (syncthing)',ev:'ss -tulpnH\ntcp LISTEN 0.0.0.0:22000 users:(("syncthing",pid=4011))\nnot in [baseline].listeners'},
+ {sev:'high',cat:'flatpak',msg:'com.visualstudio.code gained filesystem=host',ev:'flatpak info --show-permissions com.visualstudio.code\n[Context] filesystems=host;\nprev: filesystems=home;'},
+ {sev:'medium',cat:'flatpak',msg:'New app from unverified origin devrepo',ev:'io.github.someone.Tool 0.4.2\nremote devrepo → https://repo.example.dev/flatpak'},
+ {sev:'medium',cat:'container',msg:'arch: stopped 64d, mounts $HOME',ev:'podman ps -a · distrobox · exited 64 days ago\nmount /var/home/shadow → /var/home/shadow'},
+ {sev:'low',cat:'units',msg:'1 failed user unit',ev:'tracker-miner-fs-3.service  failed  (exit-code)'},
+ {sev:'low',cat:'cache',msg:'~/.cache is 3.4 GB (> 2048 MB)',ev:'~/.cache/pip 1.4G · yarn 0.9G · mesa_shader 0.6G · other 0.5G'}];
+const DIFF=[
+ {t:'listeners',c:C.dim},{t:'+ tcp 0.0.0.0:22000   syncthing',c:C.green},{t:'+ udp 0.0.0.0:22000   syncthing',c:C.green},{t:'',c:C.dim},
+ {t:'flatpak',c:C.dim},{t:'+ io.github.someone.Tool   devrepo',c:C.green},{t:'- org.gnome.Boxes          flathub',c:C.red},
+ {t:'~ com.visualstudio.code   filesystems home → host',c:C.yellow},{t:'',c:C.dim},
+ {t:'layered packages',c:C.dim},{t:'  akmod-nvidia  xorg-x11-drv-nvidia-cuda  (unchanged)',c:C.dim},{t:'',c:C.dim},
+ {t:'repos',c:C.dim},{t:'  rpmfusion-free  rpmfusion-nonfree  (unchanged)',c:C.dim},{t:'',c:C.dim},
+ {t:'units',c:C.dim},{t:'+ syncthing.service (user, enabled)',c:C.green},{t:'',c:C.dim},
+ {t:'kargs',c:C.dim},{t:'  rd.driver.blacklist=nouveau modprobe.blacklist=nouveau',c:C.dim},{t:'  nvidia-drm.modeset=1  (unchanged)',c:C.dim}];
+const JOBS=[
+ {name:'audit',last:'2026-10-01',every:'30d',due:false,left:'in 8d',desc:'snapshot + diff + findings'},
+ {name:'update-check',last:'2026-10-21',every:'7d',due:false,left:'in 5d',desc:'rpm-ostree + flatpak availability'},
+ {name:'update-apply',last:'2026-10-09',every:'—',due:null,desc:'rpm-ostree upgrade · flatpak update -y'},
+ {name:'cleanup-flatpak',last:'2026-09-30',every:'30d',due:false,left:'in 7d',desc:'flatpak uninstall --unused'},
+ {name:'cleanup-podman',last:'2026-09-12',every:'30d',due:true,left:'11d over',desc:'prune stopped > 30d, dangling images'},
+ {name:'cleanup-ostree',last:'2026-09-14',every:'30d',due:true,left:'9d over',desc:'rpm-ostree cleanup -m'},
+ {name:'cleanup-cache',last:'never',every:'off',due:null,desc:'report ~/.cache over threshold'}];
+const CLEAN=[
+ {name:'rpm-ostree cleanup -m',mb:612,size:'612 MB',out:['Deleted rpm-md repo metadata (fedora, updates, rpmfusion-*)','Freed: 612 MB']},
+ {name:'flatpak uninstall --unused',mb:1840,size:'1.8 GB',out:['org.gnome.Platform//47','org.freedesktop.Platform.GL.nvidia-570-153-02','Uninstall complete · 1.8 GB']},
+ {name:'podman: stopped > 30d',mb:420,size:'420 MB',out:['removed arch','removed postgres','420 MB']},
+ {name:'podman: dangling images',mb:2150,size:'2.1 GB',out:['deleted 3 images','2.1 GB']},
+ {name:'~/.cache (opted-in: none)',mb:0,size:'list only',out:[]}];
+const STEPS=[
+ {id:'preflight',title:'Pre-flight checks',run:'sentry check preflight --target 45',gate:'auto',out:['/ free 38.2 GB ✓   /var free 212 GB ✓','no pending deployment ✓','AC power ✓   network ✓']},
+ {id:'snapshot',title:'Record pre-upgrade state',run:'sentry job audit --tag pre-rebase-45',gate:'auto',out:['collecting 11 sections…','report → reports/2026-10-23-pre-rebase-45.json']},
+ {id:'rpmfusion',title:'Swap RPM Fusion release packages to 45',run:'rpm-ostree update --uninstall rpmfusion-*-release-44 --install rpmfusion-*-release-45',gate:'confirm',out:['Checking out tree 8e1f2a4… done','Staging deployment… done']},
+ {id:'rebase-dry',title:'Dry-run the rebase',run:'rpm-ostree rebase --dry-run fedora:fedora/45/x86_64/silverblue',gate:'confirm',out:['Resolving dependencies… done','Would upgrade 1,284, add 37, remove 12']},
+ {id:'rebase',title:'Rebase to Fedora 45',run:'rpm-ostree rebase fedora:fedora/45/x86_64/silverblue',gate:'confirm',out:['Receiving objects: 100% (48211/48211) 1.9 GB','Staging deployment… done']},
+ {id:'reboot-1',title:'Reboot into new deployment',kind:'reboot'},
+ {id:'verify-boot',title:'Confirm booted into Fedora 45',run:'sentry check booted-version --expect 45',gate:'auto',out:['booted: 45.20261020.0 (silverblue)','✓ matches expected 45']},
+ {id:'nvidia-rebuild',title:'Rebuild NVIDIA kernel modules',run:'sudo akmods --force --kernels $(uname -r)',gate:'confirm',slow:true,out:['[sudo] password for shadow: ••••••••','Checking kmods exist for 6.18.4-200.fc45.x86_64','Building and installing nvidia-kmod','  still building · 0:30','  still building · 1:00','  still building · 1:30','Building and installing nvidia-kmod   [  OK  ]']},
+ {id:'nvidia-verify',title:'Verify nvidia module for running kernel',run:'sentry check nvidia-module',gate:'auto',out:['/lib/modules/6.18.4-200.fc45.x86_64/extra/nvidia/nvidia.ko.xz','✓ module present']},
+ {id:'reboot-2',title:'Reboot to load drivers',kind:'reboot'},
+ {id:'final-verify',title:'Post-upgrade verification',run:'sentry check nvidia-loaded && sentry check booted-version --expect 45 && sentry check kargs',gate:'auto',out:['✓ nvidia loaded · 580.95.05 · RTX 4070','✓ booted 45','✓ kargs present']},
+ {id:'post-snapshot',title:'Record post-upgrade state and diff',run:'sentry job audit --tag post-rebase-45 --diff-against pre-rebase-45',gate:'auto',out:['report → reports/2026-10-23-post-rebase-45.json','diff: 1,284 pkgs · 0 new listeners · 0 new repos']},
+ {id:'cleanup',title:'Remove old deployment',run:'rpm-ostree cleanup -r',gate:'confirm',optional:true,out:['Freed: 2.4 GB']}];
+const INIT_LOG=[
+ {t:'↻ resumed release-rebase · boot_id 3f2c… ≠ 9a1e… → reboot-1 complete',c:C.cyan},
+ {t:'▶ 7/13 Confirm booted into Fedora 45',c:C.cyan},{t:'$ sentry check booted-version --expect 45',c:C.dim},
+ {t:'booted: 45.20261020.0 (silverblue)',c:C.fg},{t:'✓ matches expected 45',c:C.fg},{t:'✓ done · 0.2s',c:C.green}];
+const WFS=[
+ {name:'quick-update',steps:'5 steps',desc:'rpm-ostree upgrade + flatpak update; NVIDIA rebuild if kernel changed',last:'✓ 2026-10-09 · completed',lastColor:C.green},
+ {name:'release-rebase',steps:'13 steps',desc:'Rebase Silverblue to a new Fedora release with NVIDIA re-install',last:'✓ 2026-04-28 · 43 → 44 · completed',lastColor:C.green}];
+const rnd=(n,lo,hi)=>Array.from({length:n},()=>lo+Math.random()*(hi-lo));
+const smooth=(n,base,amp,noise)=>Array.from({length:n},(_,i)=>Math.max(0,base+amp*Math.sin(i/9)+amp*.6*Math.sin(i/3.3)+(Math.random()-.5)*noise));
+
+class Component extends DCLogic {
+  state = this.init();
+  init(){
+    const p=this.props||{};
+    const inProg=p.workflowInProgress ?? true;
+    return {
+      screen:p.startScreen ?? 'dash', t:0,
+      cpu:34, cores:rnd(8,8,60), cpuHist:smooth(92,30,12,14), mem:11.4, gpu:12, temp:54,
+      rx:smooth(46,40,25,30), tx:smooth(46,10,6,10),
+      procs:PROCS.map(x=>({...x})), sortBy:'cpu',
+      sel:{proc:0,net:1,cont:2,flat:3,audit:0,jobs:4,clean:0,wfl:1},
+      checked:{0:true,1:true,2:true,3:true}, expected:{}, baselined:{}, killed:{},
+      modal:null, toast:'', updAge:'cached 2d ago', cleanLog:null,
+      wf:{phase:inProg?'waiting':'idle', cur:inProg?7:0, status:STEPS.map((s,i)=>inProg&&i<7?'ok':'pending'), log:inProg?INIT_LOG:[], started:inProg?'2026-10-23 09:12':''},
+      rebooting:false, histWin:'24h',
+      hist:{cpu:smooth(120,30,18,20),mem:smooth(120,40,6,4),rx:smooth(120,30,25,40),temp:smooth(120,55,8,6),disk:smooth(120,41,1,.5)}
+    };
+  }
+  componentDidMount(){
+    this.iv=setInterval(()=>this.tick(),500);
+    this.onKey=e=>this.key(e);
+    window.addEventListener('keydown',this.onKey);
+  }
+  componentWillUnmount(){clearInterval(this.iv);clearInterval(this.stepIv);window.removeEventListener('keydown',this.onKey)}
+  tick(){
+    this.setState(s=>{
+      const n={t:s.t+1};
+      const live=s.screen==='proc'||(s.screen==='dash'&&s.t%2===0);
+      if(!live) return n;
+      const cpu=walk(s.cpu,6,92,14);
+      n.cpu=cpu; n.cpuHist=[...s.cpuHist.slice(1),cpu];
+      n.cores=s.cores.map(v=>walk(v*.6+cpu*.4,2,100,30));
+      n.mem=walk(s.mem,10.8,12.6,.2); n.gpu=Math.round(walk(s.gpu,4,40,8)); n.temp=Math.round(walk(s.temp,46,72,3));
+      n.rx=[...s.rx.slice(1),walk(s.rx[s.rx.length-1],2,95,40)]; n.tx=[...s.tx.slice(1),walk(s.tx[s.tx.length-1],1,30,10)];
+      if(s.screen==='proc') n.procs=s.procs.map(p=>({...p,cpu:Math.max(0,+(p.cpu+(Math.random()-.5)*p.cpu*.5).toFixed(1))}));
+      return n;
+    });
+  }
+  flash(msg){this.setState({toast:msg});clearTimeout(this.tt);this.tt=setTimeout(()=>this.setState({toast:''}),2200)}
+  go(id){this.setState({screen:id,modal:null})}
+  listLen(sc){return {proc:this.sortedProcs().length,net:LISTEN.length,cont:CONTS.length,flat:FLATS.length,audit:FINDINGS.length,jobs:JOBS.length,clean:CLEAN.length,upgrade:this.state.wf.phase==='idle'?WFS.length:0}[sc]||0}
+  selKey(sc){return sc==='upgrade'?'wfl':sc}
+  move(d){const sc=this.state.screen,len=this.listLen(sc);if(!len)return;const k=this.selKey(sc);
+    this.setState(s=>({sel:{...s.sel,[k]:(s.sel[k]+d+len)%len}}))}
+  pick(sc,i){this.setState(s=>({sel:{...s.sel,[this.selKey(sc)]:i}}))}
+  sortedProcs(){const s=this.state;return s.procs.filter(p=>!s.killed[p.pid]).sort((a,b)=>b[s.sortBy]-a[s.sortBy])}
+  key(e){
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    const s=this.state,k=e.key;
+    if(s.rebooting)return;
+    if(s.modal){
+      if(k==='y'||k==='Enter'){e.preventDefault();const f=s.modal.onYes;this.setState({modal:null});f&&f()}
+      else if(k==='n'||k==='Escape'){this.setState({modal:null})}
+      return;
+    }
+    const idx=SCREENS.findIndex(x=>x[1]===s.screen);
+    const hit=SCREENS.find(x=>x[0]===k);
+    if(hit){this.go(hit[1]);return}
+    if(k==='Tab'){e.preventDefault();this.go(SCREENS[(idx+(e.shiftKey?-1:1)+SCREENS.length)%SCREENS.length][1]);return}
+    if(k==='ArrowDown'||k==='j'){e.preventDefault();this.move(1);return}
+    if(k==='ArrowUp'||k==='k'){e.preventDefault();this.move(-1);return}
+    if(k==='?'){this.help();return}
+    if(k==='q'){this.setState({modal:{title:'Quit',border:C.dim,yesKey:'y',yes:'quit',lines:[{t:'Quit sentry? Nothing keeps running after exit.',c:C.fg}],onYes:()=>this.flash('(preview) sentry would exit here')}});return}
+    if(k==='r'){this.flash('refreshed '+SCREENS[idx][2].toLowerCase());return}
+    if(k==='c'&&(s.screen==='upd'||s.screen==='dash'||s.screen==='flat')){this.checkNow();return}
+    const sc=s.screen;
+    if(sc==='proc'){
+      if(k==='C'||k==='P'){this.setState({sortBy:'cpu'})}
+      if(k==='M'){this.setState({sortBy:'mem'})}
+      if(k==='x'){const p=this.sortedProcs()[s.sel.proc];if(p)this.setState({modal:{title:'Kill process',border:C.red,yesKey:'y',yes:'send SIGTERM',lines:[{t:'Send SIGTERM to '+p.pid+' '+p.cmd+'?',c:C.fg},{t:'owner '+p.user+' · cpu '+p.cpu+'% · mem '+p.mem+'%',c:C.dim}],onYes:()=>{this.setState(st=>({killed:{...st.killed,[p.pid]:true},sel:{...st.sel,proc:Math.max(0,st.sel.proc-0)}}));this.flash('sent SIGTERM to '+p.pid)}}})}
+    }
+    if(sc==='net'&&k==='e'){const l=LISTEN[s.sel.net];this.setState(st=>({expected:{...st.expected,[s.sel.net]:true}}));this.flash(l.local+' added to [baseline].listeners')}
+    if(sc==='audit'&&k==='b'){this.setState(st=>({baselined:{...st.baselined,[s.sel.audit]:true}}));this.flash('finding written to baseline.toml')}
+    if(sc==='upd'&&k==='u'){this.setState({modal:{title:'rpm-ostree upgrade',border:C.yellow,yesKey:'y',yes:'run',lines:[{t:'Dry run first:',c:C.dim},{t:'$ rpm-ostree upgrade --preview',c:C.fg},{t:'kernel 6.18.4 → 6.18.6 · mesa · systemd · 41 packages',c:C.fg},{t:'Kernel changes. Prefer workflow quick-update (includes NVIDIA rebuild).',c:C.yellow}],onYes:()=>this.flash('staged · reboot required')}})}
+    if(sc==='upd'&&k==='f'){this.setState({modal:{title:'flatpak update',border:C.yellow,yesKey:'y',yes:'update',lines:[{t:'$ flatpak update -y',c:C.fg},{t:'5 apps · 412 MB',c:C.dim}],onYes:()=>this.flash('flatpak: 5 updated')}})}
+    if(sc==='jobs'&&k==='Enter'){const j=JOBS[s.sel.jobs];this.setState({modal:{title:'Run job',border:C.yellow,yesKey:'y',yes:'run now',lines:[{t:'sentry job '+j.name,c:C.fg},{t:j.desc,c:C.dim}],onYes:()=>this.flash(j.name+' finished')}})}
+    if(sc==='clean'){
+      if(k===' '){e.preventDefault();const i=s.sel.clean;if(CLEAN[i].mb)this.setState(st=>({checked:{...st.checked,[i]:!st.checked[i]}}))}
+      if(k==='Enter')this.cleanConfirm();
+    }
+    if(sc==='hist'&&(k==='['||k===']')){const w=['6h','24h','72h'];const i=w.indexOf(s.histWin)+(k===']'?1:-1);this.setState({histWin:w[Math.max(0,Math.min(2,i))]})}
+    if(sc==='upgrade'){
+      if(k==='Enter')this.wfEnter();
+      if(k==='s')this.wfSkip();
+      if(k==='a'&&s.wf.phase!=='idle'&&s.wf.phase!=='done')this.setState({modal:{title:'Abandon workflow',border:C.red,yesKey:'y',yes:'abandon (leave as-is)',lines:[{t:'Stop release-rebase at step '+(s.wf.cur+1)+'?',c:C.fg},{t:'Rollback steps: none marked rollback = true.',c:C.dim},{t:'Run state is kept for review.',c:C.dim}],onYes:()=>{this.setWf({phase:'idle'});this.flash('workflow abandoned')}}});
+    }
+  }
+  help(){this.setState({modal:{title:'Keys',border:C.cyan,yesKey:'Enter',yes:'close',lines:[
+    {t:'1–9 0 h  switch screen     Tab  next screen',c:C.fg},{t:'j/k ↑↓   move selection     /    filter',c:C.fg},
+    {t:'r        refresh current   c    check now (network collectors)',c:C.fg},{t:'?        help              q    quit',c:C.fg},
+    {t:'Destructive actions: dry-run → confirm → streamed output.',c:C.dim}]}})}
+  checkNow(){this.setState({updAge:'checking…'});setTimeout(()=>this.setState({updAge:'checked just now'}),1600)}
+  cleanConfirm(){
+    const s=this.state;const items=CLEAN.filter((c,i)=>s.checked[i]&&c.mb);
+    if(!items.length){this.flash('nothing selected');return}
+    const total=items.reduce((a,c)=>a+c.mb,0);
+    this.setState({modal:{title:'Confirm cleanup',border:C.yellow,yesKey:'y',yes:'run '+items.length+' jobs',lines:[...items.map(c=>({t:'• '+c.name+'   '+c.size,c:C.fg})),{t:'Total '+(total/1000).toFixed(1)+' GB · rollback deployment kept',c:C.dim}],onYes:()=>this.runClean(items)}});
+  }
+  runClean(items){
+    const lines=[];items.forEach(c=>{lines.push({t:'$ '+c.name,c:C.cyan});c.out.forEach(o=>lines.push({t:o,c:C.fg}))});lines.push({t:'✓ cleanup complete',c:C.green});
+    this.setState({cleanLog:[]});let i=0;clearInterval(this.cIv);
+    this.cIv=setInterval(()=>{if(i>=lines.length){clearInterval(this.cIv);return}const l=lines[i++];this.setState(s=>({cleanLog:[...s.cleanLog,l]}))},280);
+  }
+  setWf(p){this.setState(s=>({wf:{...s.wf,...p}}))}
+  pushLog(l){this.setState(s=>({wf:{...s.wf,log:[...s.wf.log,l].slice(-26)}}))}
+  setStatus(i,v){this.setState(s=>{const st=[...s.wf.status];st[i]=v;return{wf:{...s.wf,status:st}}})}
+  wfEnter(){
+    const s=this.state,wf=s.wf;
+    if(wf.phase==='idle'){
+      const w=WFS[s.sel.wfl];
+      if(w.name!=='release-rebase'){this.flash('preview: only release-rebase is wired up');return}
+      this.setState({modal:{title:'Start workflow',border:C.cyan,yesKey:'y',yes:'start',lines:[{t:'release-rebase · 13 steps',c:C.fg},{t:'Target Fedora version [45]: 45',c:C.fg},{t:'sentry workflow lint release-rebase  ✓ ok',c:C.green}],onYes:()=>{
+        this.setState({wf:{phase:'running',cur:0,status:STEPS.map(()=>'pending'),log:[],started:'2026-10-23 '+new Date().toTimeString().slice(0,5)}});this.advance(0)}}});
+      return;
+    }
+    if(wf.phase!=='waiting')return;
+    const st=STEPS[wf.cur];
+    if(st.kind==='reboot'){
+      this.setState({modal:{title:'Reboot',border:C.yellow,yesKey:'y',yes:'reboot now',lines:[{t:'State saved — run `sentry` after login to continue.',c:C.fg},{t:'Next: '+STEPS[wf.cur+1].title,c:C.dim}],onYes:()=>this.doReboot()}});
+    } else {
+      this.setState({modal:{title:'Run step '+(wf.cur+1)+'/13',border:C.yellow,yesKey:'y',yes:'run',lines:[{t:st.title,c:C.fg},{t:'$ '+st.run,c:C.dim},...(st.slow?[{t:'sudo will prompt in this terminal. Can take minutes.',c:C.yellow}]:[])],onYes:()=>this.runStep(wf.cur)}});
+    }
+  }
+  wfSkip(){const wf=this.state.wf;if(wf.phase!=='waiting')return;const st=STEPS[wf.cur];if(!st.optional){this.flash('step is not optional');return}
+    this.setStatus(wf.cur,'skip');this.pushLog({t:'– skipped '+st.id,c:C.dim});this.advance(wf.cur+1)}
+  doReboot(){
+    const i=this.state.wf.cur;this.setState({rebooting:true});
+    setTimeout(()=>{this.setStatus(i,'ok');this.setState(s=>({rebooting:false,screen:'upgrade',wf:{...s.wf,log:[{t:'↻ resumed release-rebase · boot_id changed → '+STEPS[i].id+' complete',c:C.cyan}]}}));this.advance(i+1)},1800);
+  }
+  advance(i){
+    if(i>=STEPS.length){this.setWf({phase:'done',cur:i});this.pushLog({t:'━ workflow complete · pre/post diff saved to reports/',c:C.green});return}
+    const st=STEPS[i];this.setWf({cur:i});
+    if(st.gate==='auto'&&st.kind!=='reboot'){this.setWf({phase:'running'});setTimeout(()=>this.runStep(i),450)}
+    else this.setWf({phase:'waiting'});
+  }
+  runStep(i){
+    const st=STEPS[i];
+    this.setStatus(i,'run');this.setWf({phase:'running',cur:i,stepStart:Date.now()});
+    this.pushLog({t:'▶ '+(i+1)+'/13 '+st.title,c:C.cyan});this.pushLog({t:'$ '+st.run,c:C.dim});
+    let k=0;const out=st.out||['exit 0'];clearInterval(this.stepIv);
+    this.stepIv=setInterval(()=>{
+      if(k<out.length){const t=out[k++];this.pushLog({t,c:/still building/.test(t)?C.yellow:/✓|OK/.test(t)?C.fg:C.fg});return}
+      clearInterval(this.stepIv);const dur=((Date.now()-this.state.wf.stepStart)/1000).toFixed(1);
+      this.pushLog({t:'✓ done · '+(st.slow?'1m 42s':dur+'s'),c:C.green});this.setStatus(i,'ok');this.advance(i+1);
+    },st.slow?650:300);
+  }
+  renderVals(){
+    const s=this.state,p=this.props||{},wf=s.wf;
+    const is={};SCREENS.forEach(x=>is[x[1]]=s.screen===x[1]);
+    const active=wf.phase!=='idle'&&wf.phase!=='done';
+    const post=active||wf.phase==='done'||(p.workflowInProgress??true);
+    const hasRec=p.recorderRunning ?? true;
+    const highOpen=FINDINGS.filter((f,i)=>f.sev==='high'&&!s.baselined[i]).length;
+    const badges={upd:' 8',audit:highOpen?' !'+highOpen:'',jobs:' 2',upgrade:active?' ●':''};
+    const tabs=SCREENS.filter(x=>x[1]!=='hist'||hasRec||is.hist).map(([k,id,name])=>({k,name,badge:badges[id]||'',go:()=>this.go(id),bg:s.screen===id?'#d4d4d4':'transparent',fg:s.screen===id?'#131415':C.fg,kc:s.screen===id?'#131415':C.dim}));
+    const live=is.dash?['● live 1 Hz',C.green]:is.proc?['● live 2 Hz',C.green]:['○ idle',C.dim];
+    const cur=STEPS[Math.min(wf.cur,STEPS.length-1)];
+    const wfStateWord=wf.phase==='running'?'running':cur.kind==='reboot'?'reboot pending':'waiting for confirm';
+    const bars=(v,w)=>bar(v,w);
+    const procRows=this.sortedProcs().map((x,i)=>({...x,cpu:x.cpu.toFixed(1),mem:x.mem.toFixed(1),bg:i===s.sel.proc?SEL:'transparent',cpuColor:x.cpu>15?C.red:x.cpu>5?C.yellow:C.fg,pick:()=>this.pick('proc',i)}));
+    const stepRows=STEPS.map((st,i)=>{
+      const v=wf.status[i],isCur=i===wf.cur&&active;
+      let glyph='○',color=C.dim;
+      if(v==='ok'){glyph='✓';color=C.green}else if(v==='skip'){glyph='–'}
+      else if(v==='run'){glyph='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[s.t%10];color=C.cyan}
+      else if(isCur){glyph=st.kind==='reboot'?'↻':'▶';color=C.yellow}
+      else if(st.kind==='reboot'){glyph='↻'}
+      return{glyph,color,n:String(i+1).padStart(2,' '),title:st.title,tColor:v==='pending'&&!isCur?C.dim:v==='skip'?C.dim:C.fg,
+        tag:st.kind==='reboot'?'reboot':st.optional?'optional':st.gate,tagColor:st.kind==='reboot'?C.mag:st.gate==='confirm'?C.yellow:C.dim,bg:isCur?SEL:'transparent'};
+    });
+    let gateCard={show:false};
+    if(is.upgrade&&wf.phase==='waiting'){
+      gateCard=cur.kind==='reboot'
+        ?{show:true,border:C.mag,head:'↻ '+(wf.cur+1)+'/13 '+cur.title,body:'State saved — run `sentry` after login to continue.',sub:'[Enter] reboot now · reboot never runs on its own'}
+        :{show:true,border:C.yellow,head:'▶ '+(wf.cur+1)+'/13 '+cur.title+' · confirm',body:'$ '+cur.run,sub:'[Enter] run'+(cur.optional?'   [s] skip optional':'')+'   [a] abandon'};
+    } else if(is.upgrade&&wf.phase==='running'){
+      const el=Math.floor((Date.now()-(wf.stepStart||Date.now()))/1000);
+      gateCard={show:true,border:C.cyan,head:'⠿ running · '+cur.id,body:'elapsed '+Math.floor(el/60)+':'+String(el%60).padStart(2,'0')+(cur.timeout?'':''),sub:'output → steps/'+cur.id+'.log'};
+    } else if(is.upgrade&&wf.phase==='done'){
+      gateCard={show:true,border:C.green,head:'✓ release-rebase complete',body:'Fedora 44 → 45 · nvidia 580.95.05 loaded',sub:'report: reports/2026-10-23-post-rebase-45.md'};
+    } else if(is.upgrade&&wf.phase==='idle'){
+      gateCard={show:true,border:C.dim,head:'~/.config/sentry/workflows/'+WFS[s.sel.wfl].name+'.toml',body:WFS[s.sel.wfl].name==='release-rebase'?'preflight → snapshot → rpmfusion → rebase-dry → rebase → reboot → verify → nvidia-rebuild → nvidia-verify → reboot → verify → snapshot → cleanup':'upgrade --check → rpm-ostree upgrade → flatpak update → nvidia-rebuild (when kernel_changed) → reboot',sub:'[Enter] start   [e] edit in $EDITOR   lint ✓'};
+    }
+    const idleLog=[{t:'No workflow in progress.',c:C.dim},{t:'',c:C.dim},{t:'last run  release-rebase  2026-04-28',c:C.fg},{t:'          43 → 44 · 13/13 steps · 2 reboots · 24m',c:C.dim}];
+    const cleanSel=CLEAN.filter((c,i)=>s.checked[i]&&c.mb);
+    const totalMb=cleanSel.reduce((a,c)=>a+c.mb,0);
+    const ci=CLEAN[s.sel.clean];
+    const cleanPane=s.cleanLog?s.cleanLog:(ci.mb?[{t:'$ '+ci.name+' --dry-run',c:C.dim},...ci.out.slice(0,-1).map(t=>({t:'  would remove '+t.replace(/^(removed|deleted) /,''),c:C.fg})),{t:'  ≈ '+ci.size,c:C.green}]:[{t:'~/.cache entries over 2048 MB threshold:',c:C.dim},{t:'  pip          1.4 GB',c:C.fg},{t:'  yarn         0.9 GB',c:C.fg},{t:'  mesa_shader  0.6 GB',c:C.fg},{t:'Add to [cleanup.cache].delete_dirs to allow deletion.',c:C.dim}]);
+    const hw={'6h':30,'24h':60,'72h':120}[s.histWin]||60;
+    const hs=k=>s.hist[k].slice(-hw).flatMap(v=>[v]);
+    const stretch=a=>{const out=[];const W=118;for(let i=0;i<W;i++)out.push(a[Math.floor(i*a.length/W)]);return out};
+    return {
+      is, tabs, osVersion:post?'45.20261020.0':'44.20261018.0', kernel:post?'6.18.4-200.fc45':'6.17.9-300.fc44', uptime:post?'0d 00:14':'3d 04:12',
+      liveLabel:live[0], liveColor:live[1], clock:'Fri 23 Oct '+String(9+Math.floor(s.t/7200)).padStart(2,'0')+':'+String(26+Math.floor(s.t/120)%34).padStart(2,'0'),
+      showBanner:active&&!is.upgrade, bannerText:'release-rebase · step '+(wf.cur+1)+'/13 '+cur.title+' · '+wfStateWord, goUpgrade:()=>this.go('upgrade'),
+      cpuBar:bars(s.cpu,46), cpuPct:Math.round(s.cpu), load:(s.cpu/28).toFixed(2)+' 1.02 0.91', cpuGraph:graph(s.cpuHist.slice(-78),100,4), cpuTemp:s.temp,
+      cores:s.cores.map((v,i)=>({name:'c'+i,bar:bars(v,22),pct:Math.round(v),color:v>75?C.red:v>45?C.yellow:C.cyan})),
+      memUsed:s.mem.toFixed(1), memBar:bars(s.mem/31.2*100,24), memPct:Math.round(s.mem/31.2*100), memAvail:(31.2-s.mem-0.3).toFixed(1), gpuUtil:s.gpu,
+      disks:[{mount:'/sysroot  btrfs',used:'198 / 476 GiB',pct:42,bar:bars(42,24),color:C.blue},{mount:'/boot',used:'412 / 974 MiB',pct:42,bar:bars(42,24),color:C.blue},{mount:'/boot/efi',used:'19 / 599 MiB',pct:3,bar:bars(3,24),color:C.blue}],
+      rxNow:(s.rx[s.rx.length-1]/30).toFixed(1)+' MB/s', txNow:Math.round(s.tx[s.tx.length-1]*8)+' KB/s', rxGraph:graph(s.rx.slice(-34),100,3), txGraph:graph(s.tx.slice(-34),40,2),
+      histNote:hasRec?'recorder ● history 18h':'recorder off',
+      statusLines:[
+        {k:'updates',v:'3 ostree · 5 flatpak',c:C.yellow,note:s.updAge.replace('cached ','')},
+        {k:'findings',v:highOpen+' high · 2 med · 2 low',c:highOpen?C.red:C.fg,note:''},
+        {k:'failed units',v:'1',c:C.yellow,note:'tracker-miner-fs-3'},
+        {k:'jobs due',v:'2',c:C.yellow,note:'cleanup-podman, -ostree'},
+        {k:'workflow',v:active?'release-rebase '+(wf.cur+1)+'/13':'none',c:active?C.yellow:C.dim,note:active?wfStateWord.split(' ')[0]:''},
+        {k:'recorder',v:hasRec?'running':'off',c:hasRec?C.green:C.dim,note:hasRec?'since 15:02 yday':''}],
+      procRows, sortCpuColor:s.sortBy==='cpu'?C.fg:C.dim, sortMemColor:s.sortBy==='mem'?C.fg:C.dim, sortCpuMark:s.sortBy==='cpu'?' ▼':'', sortMemMark:s.sortBy==='mem'?' ▼':'',
+      listenRows:LISTEN.map((l,i)=>{const st=s.expected[i]?'expected':l.st;return{...l,state:st==='new'?'NEW':st,color:st==='new'?C.red:st==='baseline'?C.dim:C.green,bg:i===s.sel.net?SEL:'transparent',pick:()=>this.pick('net',i)}}),
+      est:EST,
+      deployments:post?[{mark:'●',color:C.green,ref:'fedora:fedora/45/x86_64/silverblue',label:'booted',ver:'45.20261020.0',date:'2026-10-20',layered:'akmod-nvidia xorg-x11-drv-nvidia-cuda rpmfusion-*-release-45'},{mark:' ',color:C.dim,ref:'fedora:fedora/44/x86_64/silverblue',label:'rollback',ver:'44.20261018.0',date:'2026-10-18',layered:'akmod-nvidia xorg-x11-drv-nvidia-cuda rpmfusion-*-release-44'}]
+        :[{mark:'●',color:C.green,ref:'fedora:fedora/44/x86_64/silverblue',label:'booted',ver:'44.20261018.0',date:'2026-10-18',layered:'akmod-nvidia xorg-x11-drv-nvidia-cuda'},{mark:' ',color:C.dim,ref:'fedora:fedora/44/x86_64/silverblue',label:'rollback',ver:'44.20261009.0',date:'2026-10-09',layered:'akmod-nvidia xorg-x11-drv-nvidia-cuda'}],
+      updAge:s.updAge,
+      fpUpdates:[{id:'org.mozilla.firefox',origin:'flathub',ver:'144.0 → 144.0.2'},{id:'com.visualstudio.code',origin:'flathub',ver:'1.105.1 → 1.106'},{id:'org.signal.Signal',origin:'flathub',ver:'7.76 → 7.77'},{id:'org.gnome.Platform',origin:'flathub',ver:'49 (runtime)'},{id:'org.freedesktop.Platform.GL.nvidia',origin:'flathub',ver:'580-95-05'}],
+      contRows:CONTS.map((c,i)=>({...c,bg:i===s.sel.cont?SEL:'transparent',sColor:c.status==='running'?C.green:C.dim,ageColor:c.stale?C.yellow:C.dim,homeColor:c.home==='yes'?(c.stale?C.red:C.yellow):C.dim,age:c.age+(c.stale?' stale':''),pick:()=>this.pick('cont',i)})),
+      flatRows:FLATS.map((f,i)=>({...f,flags:f.flags||'—',bg:i===s.sel.flat?SEL:'transparent',oColor:f.origin==='devrepo'?C.yellow:C.dim,fColor:f.sev==='high'?C.red:f.sev==='medium'||f.flags?C.yellow:C.dim,pick:()=>this.pick('flat',i)})),
+      findingRows:FINDINGS.map((f,i)=>({sev:s.baselined[i]?'—':f.sev,cat:f.cat,msg:f.msg+(s.baselined[i]?'  (expected)':''),color:s.baselined[i]?C.dim:f.sev==='high'?C.red:f.sev==='medium'?C.yellow:C.dim,msgColor:s.baselined[i]?C.dim:C.fg,bg:i===s.sel.audit?SEL:'transparent',pick:()=>this.pick('audit',i)})),
+      finding:{evidence:FINDINGS[s.sel.audit].ev}, diff:DIFF,
+      jobRows:JOBS.map((j,i)=>({...j,status:j.due===null?'—':j.due?'DUE':'ok',color:j.due?C.yellow:C.dim,desc:(j.left?j.left+' · ':'')+j.desc,bg:i===s.sel.jobs?SEL:'transparent',pick:()=>this.pick('jobs',i)})),
+      cleanRows:CLEAN.map((c,i)=>({name:c.name,size:c.size,box:c.mb?(s.checked[i]?'[x]':'[ ]'):' · ',boxColor:s.checked[i]&&c.mb?C.green:C.dim,sizeColor:c.mb?C.fg:C.dim,bg:i===s.sel.clean?SEL:'transparent',pick:()=>this.pick('clean',i)})),
+      cleanTotal:(totalMb/1000).toFixed(1)+' GB', cleanPaneTitle:s.cleanLog?'Output':'Preview · '+ci.name, cleanPane,
+      wfIdle:wf.phase==='idle', wfActive:wf.phase!=='idle',
+      wfList:WFS.map((w,i)=>({...w,bg:i===s.sel.wfl?SEL:'transparent',pick:()=>this.pick('upgrade',i)})),
+      wfLeftTitle:wf.phase==='idle'?'Workflows':'release-rebase · '+wf.status.filter(x=>x==='ok').length+'/13',
+      wfRightTitle:wf.phase==='idle'?'Last result':'Log · steps/'+cur.id+'.log',
+      wfLog:wf.phase==='idle'?idleLog:wf.log, stepRows, gateCard, wfStarted:wf.started,
+      hasRecorder:hasRec, noRecorder:!hasRec, histWin:s.histWin,
+      histRows:[{name:'cpu %',color:C.cyan,graph:graph(stretch(hs('cpu')),100,3),stat:'avg 31 · max 88'},{name:'mem GiB',color:C.mag,graph:graph(stretch(hs('mem')),60,2),stat:'avg 12.4'},{name:'net rx',color:C.green,graph:graph(stretch(hs('rx')),100,3),stat:'peak 3.1 MB/s'},{name:'cpu °C',color:C.yellow,graph:graph(stretch(hs('temp')),80,2),stat:'max 71°C'},{name:'disk /var',color:C.blue,graph:graph(stretch(hs('disk')),100,1),stat:'42% used'}],
+      histAxis:{'6h':['03:30','05:00','06:30','08:00','09:30'],'24h':['09:30 yday','15:30','21:30','03:30','now'],'72h':['Tue','Wed','Thu','Fri','now']}[s.histWin],
+      modal:s.modal?{show:true,...s.modal}:{show:false,lines:[]},
+      rebooting:s.rebooting, toast:s.toast,
+      hints:this.hints(s,wf)
+    };
+  }
+  hints(s,wf){
+    const g=[{k:'?',d:'help'},{k:'q',d:'quit'}];
+    const m={
+      dash:[{k:'1-0',d:'screens'},{k:'c',d:'check updates'},{k:'r',d:'refresh'}],
+      proc:[{k:'↑↓',d:'select'},{k:'C/M',d:'sort cpu/mem'},{k:'x',d:'kill'},{k:'/',d:'filter'}],
+      net:[{k:'↑↓',d:'select'},{k:'e',d:'mark expected'}],
+      upd:[{k:'c',d:'check now'},{k:'u',d:'upgrade'},{k:'f',d:'flatpak update'},{k:'R',d:'rollback'}],
+      cont:[{k:'↑↓',d:'select'},{k:'Enter',d:'enter'},{k:'s',d:'stop'},{k:'d',d:'remove'}],
+      flat:[{k:'↑↓',d:'select'},{k:'o',d:'open in Flatseal'},{k:'c',d:'rescan perms'}],
+      audit:[{k:'↑↓',d:'select'},{k:'b',d:'accept as baseline'},{k:'Enter',d:'run audit'},{k:'[ ]',d:'browse reports'}],
+      jobs:[{k:'↑↓',d:'select'},{k:'Enter',d:'run now'},{k:'e',d:'edit cadence'}],
+      clean:[{k:'↑↓',d:'select'},{k:'Space',d:'toggle'},{k:'Enter',d:'preview & confirm'}],
+      upgrade:wf.phase==='idle'?[{k:'↑↓',d:'select'},{k:'Enter',d:'start'},{k:'e',d:'edit toml'}]:[{k:'Enter',d:'run'},{k:'s',d:'skip optional'},{k:'a',d:'abandon'},{k:'l',d:'log'}],
+      hist:[{k:'[ ]',d:'window'},{k:'←→',d:'scrub'}]};
+    return [...(m[s.screen]||[]),...g];
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+[Application]
+name=com.blitzfc.qbz
+runtime=org.kde.Platform/x86_64/6.11
+sdk=org.kde.Sdk/x86_64/6.11
+command=qbz
+
+[Context]
+shared=ipc;network;
+sockets=fallback-x11;pulseaudio;wayland;
+devices=all;
+filesystems=xdg-run/pipewire-0:ro;xdg-run/app/com.discordapp.Discord:create;xdg-music;xdg-config/kdeglobals:ro;xdg-run/discord-ipc-0;
+
+[Session Bus Policy]
+com.canonical.AppMenu.Registrar=talk
+org.kde.kconfig.notify=talk
+org.kde.KGlobalSettings=talk
+org.kde.StatusNotifierWatcher=talk
+
+[Build]
+built-extensions=com.blitzfc.qbz.Sources;

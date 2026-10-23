@@ -1,0 +1,46 @@
+udp UNCONN 0      0                                     127.0.0.54:53    0.0.0.0:*                                         
+udp UNCONN 0      0                                  127.0.0.53%lo:53    0.0.0.0:*                                         
+udp UNCONN 0      0                                      127.0.0.1:323   0.0.0.0:*                                         
+udp UNCONN 0      0                                        0.0.0.0:35905 0.0.0.0:* users:(("wsdd",pid=19947,fd=12))        
+udp UNCONN 0      0                                      127.0.0.1:3389  0.0.0.0:* users:(("pasta.avx2",pid=127235,fd=158))
+udp UNCONN 0      0                                   192.0.2.1:3702  0.0.0.0:* users:(("wsdd",pid=19947,fd=13))        
+udp UNCONN 0      0                                239.255.255.250:3702  0.0.0.0:* users:(("wsdd",pid=19947,fd=11))        
+udp UNCONN 0      0                                  192.0.2.2:3702  0.0.0.0:* users:(("wsdd",pid=19947,fd=10))        
+udp UNCONN 0      0                                239.255.255.250:3702  0.0.0.0:* users:(("wsdd",pid=19947,fd=8))         
+udp UNCONN 0      0                                    224.0.0.251:5353  0.0.0.0:* users:(("brave",pid=15095,fd=148))      
+udp UNCONN 0      0                                    224.0.0.251:5353  0.0.0.0:* users:(("brave",pid=15095,fd=147))      
+udp UNCONN 0      0                                        0.0.0.0:5353  0.0.0.0:*                                         
+udp UNCONN 0      0                                        0.0.0.0:5355  0.0.0.0:*                                         
+udp UNCONN 0      0                                        0.0.0.0:47479 0.0.0.0:*                                         
+udp UNCONN 0      0                                        0.0.0.0:53776 0.0.0.0:* users:(("wsdd",pid=19947,fd=9))         
+udp UNCONN 0      0                                          [::1]:323      [::]:*                                         
+udp UNCONN 0      0             [fe80::aaaa:bbbb:cccc:dddd]%enp4s0:546      [::]:*                                         
+udp UNCONN 0      0                                              *:34801       *:* users:(("wsdd",pid=19947,fd=18))        
+udp UNCONN 0      0                                              *:35061       *:* users:(("wsdd",pid=19947,fd=15))        
+udp UNCONN 0      0      [fe80::1111:2222:3333:4444]%wg-vpn-server:3702     [::]:* users:(("wsdd",pid=19947,fd=19))        
+udp UNCONN 0      0                        [ff02::c]%wg-vpn-server:3702     [::]:* users:(("wsdd",pid=19947,fd=17))        
+udp UNCONN 0      0             [fe80::aaaa:bbbb:cccc:dddd]%enp4s0:3702     [::]:* users:(("wsdd",pid=19947,fd=16))        
+udp UNCONN 0      0                               [ff02::c]%enp4s0:3702     [::]:* users:(("wsdd",pid=19947,fd=14))        
+udp UNCONN 0      0                                           [::]:5353     [::]:*                                         
+udp UNCONN 0      0                                           [::]:5355     [::]:*                                         
+udp UNCONN 0      0                                           [::]:47479    [::]:*                                         
+tcp LISTEN 0      4096                                     0.0.0.0:5355  0.0.0.0:*                                         
+tcp LISTEN 0      4096                               127.0.0.53%lo:53    0.0.0.0:*                                         
+tcp LISTEN 0      511                                    127.0.0.1:5194  0.0.0.0:* users:(("node",pid=237517,fd=22))       
+tcp LISTEN 0      511                                    127.0.0.1:5195  0.0.0.0:* users:(("node",pid=237517,fd=23))       
+tcp LISTEN 0      511                                    127.0.0.1:5192  0.0.0.0:* users:(("node",pid=39886,fd=22))        
+tcp LISTEN 0      128                                    127.0.0.1:8006  0.0.0.0:* users:(("pasta.avx2",pid=127235,fd=157))
+tcp LISTEN 0      128                                    127.0.0.1:8088  0.0.0.0:* users:(("ssh",pid=9682,fd=5))           
+tcp LISTEN 0      128                                    127.0.0.1:8083  0.0.0.0:* users:(("ssh",pid=9681,fd=6))           
+tcp LISTEN 0      128                                    127.0.0.1:8081  0.0.0.0:* users:(("ssh",pid=9681,fd=4))           
+tcp LISTEN 0      511                                    127.0.0.1:40059 0.0.0.0:* users:(("node",pid=39886,fd=21))        
+tcp LISTEN 0      4096                                  127.0.0.54:53    0.0.0.0:*                                         
+tcp LISTEN 0      4096                                   127.0.0.1:631   0.0.0.0:*                                         
+tcp LISTEN 0      128                                    127.0.0.1:3000  0.0.0.0:* users:(("ssh",pid=9682,fd=4))           
+tcp LISTEN 0      128                                    127.0.0.1:2222  0.0.0.0:* users:(("pasta.avx2",pid=127235,fd=155))
+tcp LISTEN 0      128                                    127.0.0.1:3389  0.0.0.0:* users:(("pasta.avx2",pid=127235,fd=156))
+tcp LISTEN 0      10                                       0.0.0.0:27500 0.0.0.0:*                                         
+tcp LISTEN 0      128                                    127.0.0.1:8384  0.0.0.0:* users:(("ssh",pid=9681,fd=5))           
+tcp LISTEN 0      511                                    127.0.0.1:43701 0.0.0.0:* users:(("node",pid=237517,fd=21))       
+tcp LISTEN 0      4096                                        [::]:5355     [::]:*                                         
+tcp LISTEN 0      4096                                       [::1]:631      [::]:*                                         

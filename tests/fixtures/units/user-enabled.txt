@@ -1,0 +1,15 @@
+proxy-tunnel.service           enabled disabled
+proxy-webui-tunnel.service     enabled disabled
+dbus-broker.service            enabled enabled
+gitlab-runner.service          enabled disabled
+mpris-proxy.service            enabled enabled
+obex.service                   enabled enabled
+systemd-tmpfiles-setup.service enabled enabled
+wireplumber.service            enabled enabled
+xdg-user-dirs.service          enabled enabled
+dbus.socket                    enabled enabled
+pipewire-pulse.socket          enabled enabled
+pipewire.socket                enabled enabled
+podman.socket                  enabled disabled
+grub-boot-success.timer        enabled enabled
+systemd-tmpfiles-clean.timer   enabled enabled

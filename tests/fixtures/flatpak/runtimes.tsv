@@ -1,0 +1,35 @@
+org.fedoraproject.Platform	44	f44
+org.fedoraproject.Platform	45	f45
+org.fedoraproject.Platform.CL.default		f44
+org.fedoraproject.Platform.GL.default		f44
+org.fedoraproject.Platform.GL.default		f45
+org.fedoraproject.Platform.Locale		f44
+org.fedoraproject.Platform.Locale		f45
+org.fedoraproject.Platform.VAAPI.Intel		f44
+org.fedoraproject.Platform.VAAPI.nvidia		f44
+org.freedesktop.Platform	freedesktop-sdk-25.08.19	25.08
+org.freedesktop.Platform	freedesktop-sdk-26.08.3	26.08
+org.freedesktop.Platform.Compat.i386		26.08
+org.freedesktop.Platform.GL.default	26.2.5	25.08
+org.freedesktop.Platform.GL.default	26.2.5	25.08-extra
+org.freedesktop.Platform.GL.default	26.2.5	26.08
+org.freedesktop.Platform.GL.default	26.2.5	26.08-extra
+org.freedesktop.Platform.GL.nvidia-610-57-04		1.4
+org.freedesktop.Platform.GL.nvidia-615-71-09		1.4
+org.freedesktop.Platform.GL32.default	26.2.5	26.08
+org.freedesktop.Platform.GL32.default	26.2.5	26.08-extra
+org.freedesktop.Platform.GL32.nvidia-615-71-09		1.4
+org.freedesktop.Platform.VAAPI.Intel		25.08
+org.freedesktop.Platform.VAAPI.Intel		26.08
+org.freedesktop.Platform.VAAPI.Intel.i386		26.08
+org.freedesktop.Platform.VAAPI.nvidia		25.08
+org.freedesktop.Platform.VAAPI.nvidia		26.08
+org.freedesktop.Platform.VAAPI.nvidia.i386		26.08
+org.freedesktop.Platform.VulkanLayer.gamescope	3.16.31	25.08
+org.freedesktop.Platform.VulkanLayer.gamescope	3.16.31	26.08
+org.freedesktop.Platform.codecs-extra		25.08-extra
+org.freedesktop.Platform.codecs-extra		26.08-extra
+org.freedesktop.Platform.codecs_extra.i386		26.08-extra
+org.freedesktop.Sdk	freedesktop-sdk-25.08.19	25.08
+org.kde.KStyle.Adwaita		6.11
+org.kde.Platform		6.11

@@ -1,0 +1,42 @@
+[
+    {
+        "Id": "91c79715a8029b7ae462e7d0089164f08a5cebc1b78af1b26d323ddff90c4645",
+        "ParentId": "f8abf1619e3702d61b72f3f96297d9433e6ad0a36e28903964daf111da8d0d08",
+        "RepoTags": null,
+        "RepoDigests": [],
+        "Size": 384950193,
+        "SharedSize": 0,
+        "VirtualSize": 384950193,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 0,
+        "Dangling": true,
+        "Digest": "sha256:12d1474cece9081510670ebe0679345af4fc872a679c54f54382d370320adf89",
+        "History": [
+            "docker.io/library/4b43d6c36994fe9754735fb23bb56d0eaa5809da63a05362a9120d7351511d52-tmp:latest"
+        ],
+        "Created": 1792092080,
+        "CreatedAt": "2026-10-15T19:21:20Z"
+    },
+    {
+        "Id": "6f2ca2a52d56d3c96058610a5a0e1d9cf8d2ea63b9f106d4eb6cf1032a9b6276",
+        "ParentId": "e37cb86e24858ae71694b54a205f1ecd7b285a4aa176858d92723d41d11df75f",
+        "RepoTags": null,
+        "RepoDigests": [],
+        "Size": 651543404,
+        "SharedSize": 0,
+        "VirtualSize": 651543404,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 0,
+        "Dangling": true,
+        "Digest": "sha256:f7e451590c07b383589438786b662ce846b2492d78f4a8dd9bda08b341b4308a",
+        "History": [
+            "docker.io/library/205f88ae30e603ce25e94bf7bedb957bea2ecebdd0197bae51c4b76081010736-tmp:latest"
+        ],
+        "Created": 1792091994,
+        "CreatedAt": "2026-10-15T19:19:54Z"
+    }
+]

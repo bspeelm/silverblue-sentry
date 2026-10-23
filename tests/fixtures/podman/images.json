@@ -1,0 +1,772 @@
+[
+    {
+        "Id": "2defcdaaa609a996938014f613fdb6ed55fdf85104fd848f1007220823970636",
+        "ParentId": "0d11445abc82311f116afd79643957ad6ff41455bbe7490ecc67fa5cd3e175a9",
+        "RepoTags": null,
+        "RepoDigests": [
+            "localhost/webapp-frontend@sha256:d2e8e9ea91e9b171631e3fd67c967c54444de59878ea96277c7e84606044a3b6"
+        ],
+        "Size": 70726355,
+        "SharedSize": 0,
+        "VirtualSize": 70726355,
+        "Labels": {
+            "io.buildah.version": "1.43.4",
+            "maintainer": "NGINX Docker Maintainers \u003cdocker-maint@nginx.com\u003e"
+        },
+        "Containers": 1,
+        "Digest": "sha256:d2e8e9ea91e9b171631e3fd67c967c54444de59878ea96277c7e84606044a3b6",
+        "History": [
+            "localhost/webapp-frontend:latest"
+        ],
+        "Names": [
+            "localhost/webapp-frontend:latest"
+        ],
+        "Created": 1792092081,
+        "CreatedAt": "2026-10-15T19:21:21Z"
+    },
+    {
+        "Id": "91c79715a8029b7ae462e7d0089164f08a5cebc1b78af1b26d323ddff90c4645",
+        "ParentId": "f8abf1619e3702d61b72f3f96297d9433e6ad0a36e28903964daf111da8d0d08",
+        "RepoTags": null,
+        "RepoDigests": [],
+        "Size": 384950193,
+        "SharedSize": 0,
+        "VirtualSize": 384950193,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 0,
+        "Dangling": true,
+        "Digest": "sha256:12d1474cece9081510670ebe0679345af4fc872a679c54f54382d370320adf89",
+        "History": [
+            "docker.io/library/4b43d6c36994fe9754735fb23bb56d0eaa5809da63a05362a9120d7351511d52-tmp:latest"
+        ],
+        "Created": 1792092080,
+        "CreatedAt": "2026-10-15T19:21:20Z"
+    },
+    {
+        "Id": "7550afde0f37d0d384bf92379c3dbb7a8f8b0328d5418a27a8d50e525732d3e2",
+        "ParentId": "c37db8d5b0adc8565ff91907fb3e6d252304c9973c55c0f447814d0c98025dd3",
+        "RepoTags": null,
+        "RepoDigests": [
+            "localhost/webapp-api@sha256:47785ffd350a99d66658c591266ebcdb8b0ee405e0f4eaeeb3cdeba6b9518733"
+        ],
+        "Size": 330571454,
+        "SharedSize": 0,
+        "VirtualSize": 330571454,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 1,
+        "Digest": "sha256:47785ffd350a99d66658c591266ebcdb8b0ee405e0f4eaeeb3cdeba6b9518733",
+        "History": [
+            "localhost/webapp-api:latest"
+        ],
+        "Names": [
+            "localhost/webapp-api:latest"
+        ],
+        "Created": 1792092001,
+        "CreatedAt": "2026-10-15T19:20:01Z"
+    },
+    {
+        "Id": "6f2ca2a52d56d3c96058610a5a0e1d9cf8d2ea63b9f106d4eb6cf1032a9b6276",
+        "ParentId": "e37cb86e24858ae71694b54a205f1ecd7b285a4aa176858d92723d41d11df75f",
+        "RepoTags": null,
+        "RepoDigests": [],
+        "Size": 651543404,
+        "SharedSize": 0,
+        "VirtualSize": 651543404,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 0,
+        "Dangling": true,
+        "Digest": "sha256:f7e451590c07b383589438786b662ce846b2492d78f4a8dd9bda08b341b4308a",
+        "History": [
+            "docker.io/library/205f88ae30e603ce25e94bf7bedb957bea2ecebdd0197bae51c4b76081010736-tmp:latest"
+        ],
+        "Created": 1792091994,
+        "CreatedAt": "2026-10-15T19:19:54Z"
+    },
+    {
+        "Id": "34dd3af8aaa7419172d9120cce59d4ad002427dfdb7f2c9494a3f06c127c3e85",
+        "ParentId": "8fb02025421d0e97eecbf2359e0a3779e5954d795db572e65c38b22bf13d6fe4",
+        "RepoTags": null,
+        "RepoDigests": [
+            "localhost/webapp-postgres@sha256:deb051af5d2df0ade770c42d8d083963d3937d5a89ea6c2eb7966a2280ba05a4"
+        ],
+        "Size": 294924331,
+        "SharedSize": 0,
+        "VirtualSize": 294924331,
+        "Labels": {
+            "io.buildah.version": "1.43.4"
+        },
+        "Containers": 1,
+        "Digest": "sha256:deb051af5d2df0ade770c42d8d083963d3937d5a89ea6c2eb7966a2280ba05a4",
+        "History": [
+            "localhost/webapp-postgres:latest"
+        ],
+        "Names": [
+            "localhost/webapp-postgres:latest"
+        ],
+        "Created": 1792091881,
+        "CreatedAt": "2026-10-15T19:18:01Z"
+    },
+    {
+        "Id": "76090a34b858323b6ab169711adc08253b5bee7123a973dc581ed46b643bc109",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/nginx@sha256:138af827713b7671ef4ee2deea73bc6f08ae265130ce350307e3e7b52cd4b51b",
+            "docker.io/library/nginx@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d"
+        ],
+        "Size": 70453246,
+        "SharedSize": 0,
+        "VirtualSize": 70453246,
+        "Labels": {
+            "maintainer": "NGINX Docker Maintainers \u003cdocker-maint@nginx.com\u003e"
+        },
+        "Containers": 0,
+        "Digest": "sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d",
+        "History": [
+            "docker.io/library/nginx:alpine"
+        ],
+        "Names": [
+            "docker.io/library/nginx:alpine"
+        ],
+        "Created": 1792003895,
+        "CreatedAt": "2026-10-14T18:51:35Z"
+    },
+    {
+        "Id": "b1db4d67775f7668cfe0763831b2f8750e3614dff9d9a5cb082bdc8f258df37b",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/atlassian/confluence@sha256:4727ec0b0591da45c44248473f36ab3e85a6c117838a7c82682f51fab2d16291",
+            "docker.io/atlassian/confluence@sha256:d6a1c23c40c5181b4a4dfe8a025d197b1ca5365da6a75cf06f22c70711a47b52"
+        ],
+        "Size": 1719420201,
+        "SharedSize": 0,
+        "VirtualSize": 1719420201,
+        "Labels": {
+            "maintainer": "dc-deployments@atlassian.com",
+            "org.opencontainers.image.revision": "3",
+            "org.opencontainers.image.version": "24.04",
+            "securitytxt": "https://www.atlassian.com/.well-known/security.txt"
+        },
+        "Containers": 1,
+        "Digest": "sha256:d6a1c23c40c5181b4a4dfe8a025d197b1ca5365da6a75cf06f22c70711a47b52",
+        "History": [
+            "docker.io/atlassian/confluence:9.2.26"
+        ],
+        "Names": [
+            "docker.io/atlassian/confluence:9.2.26"
+        ],
+        "Created": 1791645972,
+        "CreatedAt": "2026-10-10T15:26:12Z"
+    },
+    {
+        "Id": "59eb02d644f8b1279cf0c268f171817a3ba86b8c358821aedc217ac496fefffb",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/postgres@sha256:a5f9ead8ed7cb25abc36bea51fb9bb2be8d5579ed4ef3d28876027e438391ff0",
+            "docker.io/library/postgres@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c"
+        ],
+        "Size": 452044270,
+        "SharedSize": 0,
+        "VirtualSize": 452044270,
+        "Labels": null,
+        "Containers": 1,
+        "Digest": "sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
+        "History": [
+            "docker.io/library/postgres:15"
+        ],
+        "Names": [
+            "docker.io/library/postgres:15"
+        ],
+        "Created": 1791250433,
+        "CreatedAt": "2026-10-06T01:33:53Z"
+    },
+    {
+        "Id": "cbfaef1f04b4cb08137512116a64ed2005b58852bf04067b3f896342d5b3cb02",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "ghcr.io/dockur/windows@sha256:16fd7c39a3e48bb946d29c59dc6015942e5b900a1fa5d7e5552053bfc48ee2ea",
+            "ghcr.io/dockur/windows@sha256:59f8bed19cfd49cf1701debe34f9df6311e61a4e2ae68aa9f41206e2184e31cc"
+        ],
+        "Size": 707889576,
+        "SharedSize": 0,
+        "VirtualSize": 707889576,
+        "Labels": {
+            "org.opencontainers.image.created": "2026-10-05T21:29:01.257Z",
+            "org.opencontainers.image.description": "Windows inside a Docker container.",
+            "org.opencontainers.image.licenses": "MIT",
+            "org.opencontainers.image.revision": "013ea27498e0e820a46b3861a0fa047d5b19d846",
+            "org.opencontainers.image.source": "https://github.com/dockur/windows",
+            "org.opencontainers.image.title": "Windows",
+            "org.opencontainers.image.url": "https://github.com/dockur/windows",
+            "org.opencontainers.image.version": "6.06"
+        },
+        "Containers": 1,
+        "Digest": "sha256:16fd7c39a3e48bb946d29c59dc6015942e5b900a1fa5d7e5552053bfc48ee2ea",
+        "History": [
+            "ghcr.io/dockur/windows:6.06"
+        ],
+        "Names": [
+            "ghcr.io/dockur/windows:6.06"
+        ],
+        "Created": 1791235790,
+        "CreatedAt": "2026-10-05T21:29:50Z"
+    },
+    {
+        "Id": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
+            "docker.io/library/node@sha256:2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+        ],
+        "Size": 169931206,
+        "SharedSize": 0,
+        "VirtualSize": 169931206,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
+        "History": [
+            "docker.io/library/node:22-alpine"
+        ],
+        "Names": [
+            "docker.io/library/node:22-alpine"
+        ],
+        "Created": 1790197767,
+        "CreatedAt": "2026-09-23T21:09:27Z"
+    },
+    {
+        "Id": "319d040b5d68e3e5b98a238f0b5d375b4b4d9c5b3a6a9afb0308a8bcf0de72a5",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/postgres@sha256:25d430274d8a31184f9435cc5b2f56aff254952065bbbcac0c51acedb5a1d1e7",
+            "docker.io/library/postgres@sha256:f7d23353e1b15400d22ebe31189f4d314b87a4c129cc400c8c2d8d4ca127bf81"
+        ],
+        "Size": 294913943,
+        "SharedSize": 0,
+        "VirtualSize": 294913943,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:f7d23353e1b15400d22ebe31189f4d314b87a4c129cc400c8c2d8d4ca127bf81",
+        "History": [
+            "docker.io/library/postgres:15-alpine"
+        ],
+        "Names": [
+            "docker.io/library/postgres:15-alpine"
+        ],
+        "Created": 1789680730,
+        "CreatedAt": "2026-09-17T21:32:10Z"
+    },
+    {
+        "Id": "076829364656b78ff77e3eb391c42e6bf57dd82264c6db2702a73935f6ee18be",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/qmcgaw/gluetun@sha256:0fbfcc4b3fca9753b85ef8401e2c91ebd0acb4d20346aa9bb68e8d2614780421",
+            "docker.io/qmcgaw/gluetun@sha256:12df8b20528d4cd5e9b6e827d40f2886cf78e53e7e9afc750050648c31183793"
+        ],
+        "Size": 55845194,
+        "SharedSize": 0,
+        "VirtualSize": 55845194,
+        "Labels": {
+            "org.opencontainers.image.authors": "quentin.mcgaw@gmail.com",
+            "org.opencontainers.image.created": "2026-09-15T12:30:57.693Z",
+            "org.opencontainers.image.description": "VPN client in a thin Docker container for multiple VPN providers, written in Go, and using OpenVPN or Wireguard, DNS over TLS, with a few proxy servers built-in.",
+            "org.opencontainers.image.documentation": "https://github.com/passteque/gluetun",
+            "org.opencontainers.image.licenses": "MIT",
+            "org.opencontainers.image.revision": "e2e4a0658aada9751603bacd2036131319d4a82b",
+            "org.opencontainers.image.source": "https://github.com/passteque/gluetun",
+            "org.opencontainers.image.title": "gluetun",
+            "org.opencontainers.image.url": "https://github.com/passteque/gluetun",
+            "org.opencontainers.image.version": "latest"
+        },
+        "Containers": 0,
+        "Digest": "sha256:12df8b20528d4cd5e9b6e827d40f2886cf78e53e7e9afc750050648c31183793",
+        "History": [
+            "docker.io/qmcgaw/gluetun:latest"
+        ],
+        "Names": [
+            "docker.io/qmcgaw/gluetun:latest"
+        ],
+        "Created": 1789475636,
+        "CreatedAt": "2026-09-15T12:33:56Z"
+    },
+    {
+        "Id": "ea4201ef4a2915ad05301dd9007ffa1033b7e3cd8d604165b1412e60c069b677",
+        "ParentId": "bec20d7e47b830e0c7e0872b3b616fdb76bb323bfafb9e69cc1f7eba188eeeb9",
+        "RepoTags": null,
+        "RepoDigests": [
+            "localhost/aip-ci@sha256:14a9be03d195a63c2fad0def0487fada3f44275b1e1ae270372c54884d46e53d"
+        ],
+        "Size": 2334802968,
+        "SharedSize": 0,
+        "VirtualSize": 2334802968,
+        "Labels": {
+            "io.buildah.version": "1.43.2"
+        },
+        "Containers": 0,
+        "Digest": "sha256:14a9be03d195a63c2fad0def0487fada3f44275b1e1ae270372c54884d46e53d",
+        "History": [
+            "localhost/aip-ci:22.22.2-1.16.2-8.21.2-35353c20"
+        ],
+        "Names": [
+            "localhost/aip-ci:22.22.2-1.16.2-8.21.2-35353c20"
+        ],
+        "Created": 1789432658,
+        "CreatedAt": "2026-09-15T00:37:38Z"
+    },
+    {
+        "Id": "6de61f5e24904bcb04e56c0826c1bd9b3ebf7bce9b198a20315a8ac758f7e94c",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/gitlab/gitlab-runner@sha256:23b81db80313e536171bd0d6e8eb63ddead60eeda0ec6664593cd2415a160c06",
+            "docker.io/gitlab/gitlab-runner@sha256:e509571c56627a16f2d428cdf384219ec980bd5b9fc2a0ee841a66d71409fe30"
+        ],
+        "Size": 368577779,
+        "SharedSize": 0,
+        "VirtualSize": 368577779,
+        "Labels": {
+            "org.opencontainers.image.version": "24.04"
+        },
+        "Containers": 1,
+        "Digest": "sha256:23b81db80313e536171bd0d6e8eb63ddead60eeda0ec6664593cd2415a160c06",
+        "History": [
+            "docker.io/gitlab/gitlab-runner:latest"
+        ],
+        "Names": [
+            "docker.io/gitlab/gitlab-runner:latest"
+        ],
+        "Created": 1789069748,
+        "CreatedAt": "2026-09-10T19:49:08Z"
+    },
+    {
+        "Id": "f926c7b4a23f37e59ef6d9020053f30e1e4d2df3ff2aff01c392bdf8efeaab66",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper@sha256:de26c9e1ac2cc148a20fa47c35c46cc6c4aa9e4a0ad5d77337eb14aa01cb7690",
+            "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper@sha256:f48879fceecaa2b0678035255b094b22b6b35fa0dfe68ec6491b7bb92a04d51c"
+        ],
+        "Size": 107890851,
+        "SharedSize": 0,
+        "VirtualSize": 107890851,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:de26c9e1ac2cc148a20fa47c35c46cc6c4aa9e4a0ad5d77337eb14aa01cb7690",
+        "History": [
+            "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v19.3.2"
+        ],
+        "Names": [
+            "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v19.3.2"
+        ],
+        "Created": 1789069711,
+        "CreatedAt": "2026-09-10T19:48:31Z"
+    },
+    {
+        "Id": "b271072431262a19d811d3c67cc05a372f81ef04d797a42a4d61df43c7e48697",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "registry.fedoraproject.org/fedora@sha256:f0524c8e2be4d4e17ba64741f12e633092d0ae104048cfb00bd71bfd79eb230f",
+            "registry.fedoraproject.org/fedora@sha256:f59ce614aba37211165e711d732fd4785f1c0329c4a3a4289cf29e333cf36c52"
+        ],
+        "Size": 190275376,
+        "SharedSize": 0,
+        "VirtualSize": 190275376,
+        "Labels": {
+            "io.buildah.version": "1.43.2",
+            "org.opencontainers.image.licenses": "MIT",
+            "org.opencontainers.image.title": "fedora",
+            "org.opencontainers.image.url": "https://fedoraproject.org/",
+            "org.opencontainers.image.vendor": "Fedora Project",
+            "org.opencontainers.image.version": "44"
+        },
+        "Containers": 0,
+        "Digest": "sha256:f59ce614aba37211165e711d732fd4785f1c0329c4a3a4289cf29e333cf36c52",
+        "History": [
+            "registry.fedoraproject.org/fedora:44"
+        ],
+        "Names": [
+            "registry.fedoraproject.org/fedora:44"
+        ],
+        "Created": 1788763714,
+        "CreatedAt": "2026-09-07T06:48:34Z"
+    },
+    {
+        "Id": "0a42827f386ee0fabf7c7b8834176aba6f74221a34a61e982fdf7c084c7bac8c",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/python@sha256:5e0ede45886712ce95b0e66232f743cc3d69ff6c2f62cc0d63778e1e894f8bd4",
+            "docker.io/library/python@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
+        ],
+        "Size": 56379940,
+        "SharedSize": 0,
+        "VirtualSize": 56379940,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc",
+        "History": [
+            "docker.io/library/python:3-alpine"
+        ],
+        "Names": [
+            "docker.io/library/python:3-alpine"
+        ],
+        "Created": 1788220960,
+        "CreatedAt": "2026-09-01T00:02:40Z"
+    },
+    {
+        "Id": "091a50ca7950b41c2f050635ef67425b006afa7509798c13d8699b64a9e4ded4",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/archlinux@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c",
+            "docker.io/library/archlinux@sha256:82b1b08faae9d61e3e7e13d562f4d09114d939105b0d59ff34140f3bd418593a"
+        ],
+        "Size": 408403656,
+        "SharedSize": 0,
+        "VirtualSize": 408403656,
+        "Labels": {
+            "org.opencontainers.image.authors": "Santiago Torres-Arias \u003csantiago@archlinux.org\u003e (@SantiagoTorres), Christian Rebischke \u003cChris.Rebischke@archlinux.org\u003e (@shibumi), Justin Kromlinger \u003chashworks@archlinux.org\u003e (@hashworks)",
+            "org.opencontainers.image.created": "2026-08-30T00:09:25+00:00",
+            "org.opencontainers.image.description": "Official containerd image of Arch Linux, a simple, lightweight Linux distribution aimed for flexibility.",
+            "org.opencontainers.image.documentation": "https://wiki.archlinux.org/title/Docker#Arch_Linux",
+            "org.opencontainers.image.licenses": "GPL-3.0-or-later",
+            "org.opencontainers.image.revision": "34b87485162b028c8d957bdcd2674359d883cd21",
+            "org.opencontainers.image.source": "https://gitlab.archlinux.org/archlinux/archlinux-docker",
+            "org.opencontainers.image.title": "Arch Linux base Image",
+            "org.opencontainers.image.url": "https://gitlab.archlinux.org/archlinux/archlinux-docker/-/blob/master/README.md",
+            "org.opencontainers.image.version": "20260830.0.582275"
+        },
+        "Containers": 0,
+        "Digest": "sha256:82b1b08faae9d61e3e7e13d562f4d09114d939105b0d59ff34140f3bd418593a",
+        "History": [
+            "docker.io/library/archlinux:latest"
+        ],
+        "Names": [
+            "docker.io/library/archlinux:latest"
+        ],
+        "Created": 1788203295,
+        "CreatedAt": "2026-08-31T19:08:15Z"
+    },
+    {
+        "Id": "d9cdb12ac40b971d13a5b80821a16534d79abd934704dd4b0f53aa1131e32e46",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/zenika/alpine-chrome@sha256:47da877e5622528039625218d15d7e1ccae4e426c6cc7671d165837ea98aacc8",
+            "docker.io/zenika/alpine-chrome@sha256:9d4bebc4125b506e84f392de16760f5a1ac5d9c21b654e5a5ca927ec008675a5"
+        ],
+        "Size": 672668916,
+        "SharedSize": 0,
+        "VirtualSize": 672668916,
+        "Labels": {
+            "org.opencontainers.image.created": "2026-08-27T15:19:56.072Z",
+            "org.opencontainers.image.description": "Chrome Headless docker images built upon alpine official image",
+            "org.opencontainers.image.documentation": "https://github.com/Zenika/alpine-chrome/blob/master/README",
+            "org.opencontainers.image.licenses": "Apache-2.0",
+            "org.opencontainers.image.revision": "3c33c2a1de2fbf81405a42e69040ad9cc17486d0",
+            "org.opencontainers.image.source": "https://github.com/jlandure/alpine-chrome",
+            "org.opencontainers.image.title": "alpine-chrome",
+            "org.opencontainers.image.url": "https://github.com/jlandure/alpine-chrome",
+            "org.opencontainers.image.vendor": "Zenika",
+            "org.opencontainers.image.version": "latest"
+        },
+        "Containers": 0,
+        "Digest": "sha256:47da877e5622528039625218d15d7e1ccae4e426c6cc7671d165837ea98aacc8",
+        "History": [
+            "docker.io/zenika/alpine-chrome:latest"
+        ],
+        "Names": [
+            "docker.io/zenika/alpine-chrome:latest"
+        ],
+        "Created": 1787844085,
+        "CreatedAt": "2026-08-27T15:21:25Z"
+    },
+    {
+        "Id": "e8565fa265f973c06f0515fac7aa9d102edae01b5677d69216900b84029c6ad0",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/python@sha256:581429e3df12d76e6af4be5ab7d0e7fc2013eb57dc23d2de691411c8efdbb970",
+            "docker.io/library/python@sha256:9bbdaa0482ba166a4aa36b03162892a871c269311817cf7132db0922d6c7e91d"
+        ],
+        "Size": 1038659387,
+        "SharedSize": 0,
+        "VirtualSize": 1038659387,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:581429e3df12d76e6af4be5ab7d0e7fc2013eb57dc23d2de691411c8efdbb970",
+        "History": [
+            "docker.io/library/python:3.12-bookworm"
+        ],
+        "Names": [
+            "docker.io/library/python:3.12-bookworm"
+        ],
+        "Created": 1787629450,
+        "CreatedAt": "2026-08-25T03:44:10Z"
+    },
+    {
+        "Id": "6e6261159fd399ebe5a3d556b7d89da9c85c873f3f270918aad6c8107da8b411",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/node@sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96",
+            "docker.io/library/node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+        ],
+        "Size": 232726606,
+        "SharedSize": 0,
+        "VirtualSize": 232726606,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5",
+        "History": [
+            "docker.io/library/node:22-slim"
+        ],
+        "Names": [
+            "docker.io/library/node:22-slim"
+        ],
+        "Created": 1787619360,
+        "CreatedAt": "2026-08-25T00:56:00Z"
+    },
+    {
+        "Id": "15660f837e754fd4b9fe7553be578e1f479a06353676924d58e0255f3e5cef5c",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "ghcr.io/goreleaser/goreleaser@sha256:9475eec33ba7ad2bf2e5e084f4338508bfc20ca1bc18294b5fe94c149c50b536",
+            "ghcr.io/goreleaser/goreleaser@sha256:a7609141326e383370858ab3ca2572e96e00fb212fe3fd5610cd4de434652faa"
+        ],
+        "Size": 1103195318,
+        "SharedSize": 0,
+        "VirtualSize": 1103195318,
+        "Labels": {
+            "io.artifacthub.package.license": "MIT",
+            "io.artifacthub.package.logo-url": "https://goreleaser.com/favicon.svg",
+            "io.artifacthub.package.maintainers": "[{\"name\":\"Carlos Alexandro Becker\",\"email\":\"carlos@carlosbecker.dev\"}]",
+            "io.artifacthub.package.readme-url": "https://raw.githubusercontent.com/goreleaser/goreleaser/main/README.md"
+        },
+        "Containers": 0,
+        "Digest": "sha256:a7609141326e383370858ab3ca2572e96e00fb212fe3fd5610cd4de434652faa",
+        "History": [
+            "ghcr.io/goreleaser/goreleaser:latest"
+        ],
+        "Names": [
+            "ghcr.io/goreleaser/goreleaser:latest"
+        ],
+        "Created": 1787534371,
+        "CreatedAt": "2026-08-24T01:19:31Z"
+    },
+    {
+        "Id": "c038a8ef24ab88bc8edacfc93704c9bf301647b9253a59077f6f5342f39727ae",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1",
+            "docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1"
+        ],
+        "Size": 123905186,
+        "SharedSize": 0,
+        "VirtualSize": 123905186,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1",
+        "History": [
+            "docker.io/library/debian:trixie"
+        ],
+        "Names": [
+            "docker.io/library/debian:trixie"
+        ],
+        "Created": 1787529600,
+        "CreatedAt": "2026-08-24T00:00:00Z"
+    },
+    {
+        "Id": "25e851519fea5fd53b46d7a811ee2f1393cccb366bce7cba6f3f381c9bc06c7a",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "registry.fedoraproject.org/fedora-toolbox@sha256:53a5eab7dd50a60e6f10a5dbf2201fb07cae0cdaeacaff872f2936530282563b",
+            "registry.fedoraproject.org/fedora-toolbox@sha256:fbb6046ea65fcd66a1bbd27a01b489c528a30383f6fb853b50ac3fca7cb2196b"
+        ],
+        "Size": 2177559905,
+        "SharedSize": 0,
+        "VirtualSize": 2177559905,
+        "Labels": {
+            "com.github.containers.toolbox": "true",
+            "io.buildah.version": "1.43.2",
+            "org.opencontainers.image.licenses": "MIT",
+            "org.opencontainers.image.title": "fedora-toolbox",
+            "org.opencontainers.image.url": "https://fedoraproject.org/",
+            "org.opencontainers.image.vendor": "Fedora Project",
+            "org.opencontainers.image.version": "44"
+        },
+        "Containers": 3,
+        "Digest": "sha256:fbb6046ea65fcd66a1bbd27a01b489c528a30383f6fb853b50ac3fca7cb2196b",
+        "History": [
+            "registry.fedoraproject.org/fedora-toolbox:44"
+        ],
+        "Names": [
+            "registry.fedoraproject.org/fedora-toolbox:44"
+        ],
+        "Created": 1784098082,
+        "CreatedAt": "2026-07-15T06:48:02Z"
+    },
+    {
+        "Id": "d529dd0c6e5597ac7e4a3e2dea65c3fcc6173f4cae713c409265c1dd9914a11b",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+            "docker.io/library/alpine@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f"
+        ],
+        "Size": 17407585,
+        "SharedSize": 0,
+        "VirtualSize": 17407585,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+        "History": [
+            "docker.io/library/alpine:latest",
+            "localhost/bothy-agent:latest"
+        ],
+        "Names": [
+            "docker.io/library/alpine:latest"
+        ],
+        "Created": 1781568089,
+        "CreatedAt": "2026-06-16T00:01:29Z"
+    },
+    {
+        "Id": "80d6b5ca1fe3d8ecd98c508bcee62c0cec03c2b5d51bf6979044a386eaaf4520",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/linuxmintd/mint22-amd64@sha256:2526e6894bc3dd3a064c343b1c406868c546812b47162f2a7f2fae6d0cfcd99b"
+        ],
+        "Size": 2107611576,
+        "SharedSize": 0,
+        "VirtualSize": 2107611576,
+        "Labels": {
+            "org.opencontainers.image.ref.name": "ubuntu",
+            "org.opencontainers.image.version": "24.04"
+        },
+        "Containers": 0,
+        "Digest": "sha256:2526e6894bc3dd3a064c343b1c406868c546812b47162f2a7f2fae6d0cfcd99b",
+        "History": [
+            "docker.io/linuxmintd/mint22-amd64:latest"
+        ],
+        "Names": [
+            "docker.io/linuxmintd/mint22-amd64:latest"
+        ],
+        "Created": 1775215197,
+        "CreatedAt": "2026-04-03T11:19:57Z"
+    },
+    {
+        "Id": "91a7529964d0db55a9fa4ba31c7af092b0cc6d937e1e6cffa74eab21ccd15bcd",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/maven@sha256:0ccb24680338459567324858307f64ccff55e4e5904487b9b376dcf672f6dafa",
+            "docker.io/library/maven@sha256:6e08ab80ed557294e30c9555c923e7620a8125b4f207996d961535789088339b"
+        ],
+        "Size": 430608451,
+        "SharedSize": 0,
+        "VirtualSize": 430608451,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:0ccb24680338459567324858307f64ccff55e4e5904487b9b376dcf672f6dafa",
+        "History": [
+            "docker.io/library/maven:3.8.7-openjdk-18-slim"
+        ],
+        "Names": [
+            "docker.io/library/maven:3.8.7-openjdk-18-slim"
+        ],
+        "Created": 1676062794,
+        "CreatedAt": "2023-02-10T20:59:54Z"
+    },
+    {
+        "Id": "39473b6fc06af035f8670c6dcaf44dc572693bae11b61bc424d4a46468846fae",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/eclipse-temurin@sha256:0d503e979d1b0c61d122a26985e23e42e87741198fd967c0c1efeefbd240ff95",
+            "docker.io/library/eclipse-temurin@sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1",
+            "docker.io/library/openjdk@sha256:0d503e979d1b0c61d122a26985e23e42e87741198fd967c0c1efeefbd240ff95",
+            "docker.io/library/openjdk@sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1"
+        ],
+        "Size": 271411172,
+        "SharedSize": 0,
+        "VirtualSize": 271411172,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1",
+        "History": [
+            "docker.io/library/eclipse-temurin:18-jre",
+            "docker.io/library/openjdk:18-slim"
+        ],
+        "Names": [
+            "docker.io/library/openjdk:18-slim",
+            "docker.io/library/eclipse-temurin:18-jre"
+        ],
+        "Created": 1662096393,
+        "CreatedAt": "2022-09-02T05:26:33Z"
+    },
+    {
+        "Id": "39473b6fc06af035f8670c6dcaf44dc572693bae11b61bc424d4a46468846fae",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/library/eclipse-temurin@sha256:0d503e979d1b0c61d122a26985e23e42e87741198fd967c0c1efeefbd240ff95",
+            "docker.io/library/eclipse-temurin@sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1",
+            "docker.io/library/openjdk@sha256:0d503e979d1b0c61d122a26985e23e42e87741198fd967c0c1efeefbd240ff95",
+            "docker.io/library/openjdk@sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1"
+        ],
+        "Size": 271411172,
+        "SharedSize": 0,
+        "VirtualSize": 271411172,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:76246c2bef9e0876aa139a441e08fd7013921d34276326290d9c0f2c3b6f78d1",
+        "History": [
+            "docker.io/library/eclipse-temurin:18-jre",
+            "docker.io/library/openjdk:18-slim"
+        ],
+        "Names": [
+            "docker.io/library/openjdk:18-slim",
+            "docker.io/library/eclipse-temurin:18-jre"
+        ],
+        "Created": 1662096393,
+        "CreatedAt": "2022-09-02T05:26:33Z"
+    },
+    {
+        "Id": "0ac4ff905ae3ae036c6cd2aa50ae1231519b3be9ff9c771b697a0e936d1a3755",
+        "ParentId": "",
+        "RepoTags": null,
+        "RepoDigests": [
+            "docker.io/vimagick/tinyproxy@sha256:72b441b95ee1e641af948f68f09492f9f795ead72b73954414e339168c98ad8c"
+        ],
+        "Size": 6012556,
+        "SharedSize": 0,
+        "VirtualSize": 6012556,
+        "Labels": null,
+        "Containers": 0,
+        "Digest": "sha256:72b441b95ee1e641af948f68f09492f9f795ead72b73954414e339168c98ad8c",
+        "History": [
+            "docker.io/vimagick/tinyproxy:latest"
+        ],
+        "Names": [
+            "docker.io/vimagick/tinyproxy:latest"
+        ],
+        "Created": 1626997620,
+        "CreatedAt": "2021-07-22T23:47:00Z"
+    }
+]

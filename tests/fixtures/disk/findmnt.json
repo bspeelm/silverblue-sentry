@@ -1,0 +1,74 @@
+{
+   "filesystems": [
+      {
+         "target": "/etc",
+         "source": "/dev/mapper/luks-dbdbd177-d715-424d-ace3-189d24d15746[/root/ostree/deploy/fedora/deploy/1be875908c23ee4dbd5c689585e72bfbbca6e54794546df3ee100d4712cbdca1.0/etc]",
+         "fstype": "btrfs",
+         "size": 497313382400,
+         "used": 140515672064
+      },{
+         "target": "/sysroot",
+         "source": "/dev/mapper/luks-dbdbd177-d715-424d-ace3-189d24d15746[/root]",
+         "fstype": "btrfs",
+         "size": 497313382400,
+         "used": 140515672064,
+         "children": [
+            {
+               "target": "/sysroot/ostree/deploy/fedora/var",
+               "source": "/dev/mapper/luks-dbdbd177-d715-424d-ace3-189d24d15746[/root/ostree/deploy/fedora/var]",
+               "fstype": "btrfs",
+               "size": 497313382400,
+               "used": 140515672064
+            }
+         ]
+      },{
+         "target": "/run/media/user/USB DISK",
+         "source": "/dev/sdc1",
+         "fstype": "vfat",
+         "size": 61986963456,
+         "used": 1155268608
+      },{
+         "target": "/var",
+         "source": "/dev/mapper/luks-dbdbd177-d715-424d-ace3-189d24d15746[/var]",
+         "fstype": "btrfs",
+         "size": 497313382400,
+         "used": 140515672064,
+         "children": [
+            {
+               "target": "/var/home",
+               "source": "/dev/mapper/luks-dbdbd177-d715-424d-ace3-189d24d15746[/home]",
+               "fstype": "btrfs",
+               "size": 497313382400,
+               "used": 140515672064
+            },{
+               "target": "/var/mnt/workbench",
+               "source": "/dev/mapper/workbench",
+               "fstype": "btrfs",
+               "size": 2000381018112,
+               "used": 19150753792
+            },{
+               "target": "/var/mnt/vault",
+               "source": "/dev/mapper/vault",
+               "fstype": "btrfs",
+               "size": 2000382046208,
+               "used": 1075533615104
+            }
+         ]
+      },{
+         "target": "/boot",
+         "source": "/dev/nvme0n1p2",
+         "fstype": "ext4",
+         "size": 2040373248,
+         "used": 1045184512,
+         "children": [
+            {
+               "target": "/boot/efi",
+               "source": "/dev/nvme0n1p1",
+               "fstype": "vfat",
+               "size": 627900416,
+               "used": 13795328
+            }
+         ]
+      }
+   ]
+}

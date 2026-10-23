@@ -1,0 +1,139 @@
+name = "quick-update"
+description = "rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual when the kernel changes"
+# Source: docs/cheatsheets/silverblue-upgrade-cheatsheet.md (§0–§3b) and package-upgrade-cheatsheet.md (§4 order).
+# Built-ins: current_version, booted_kernel, pending_kernel, old_kmod, home.
+
+[[steps]]
+id = "preview"
+title = "Preview the upgrade (decides routine vs. kernel ritual)"
+run = "rpm-ostree upgrade --preview"
+gate = "auto"
+dry_run = false
+
+[[steps]]
+id = "flatpak-idle"
+title = "Make sure Steam is not running"
+run = "sentry check flatpak-idle --app com.valvesoftware.Steam"
+gate = "auto"
+on_fail = "manual"
+manual = """
+Fully quit Steam (closing the window is not enough).
+`flatpak ps | grep -i steam` must print nothing.
+A sandbox started before `flatpak update` keeps a bind-mount to the pruned runtime."""
+
+[[steps]]
+id = "flatpak"
+title = "Update Flatpaks"
+run = "flatpak update -y"
+gate = "confirm"
+
+[[steps]]
+id = "toolboxes"
+title = "Upgrade packages inside every toolbox"
+run = '''for c in $(podman ps -a --filter label=com.github.containers.toolbox=true --format '{{ "{{" }}.Names{{ "}}" }}'); do echo "=== $c ==="; toolbox run -c "$c" sudo dnf -y upgrade; done'''
+gate = "confirm"
+optional = true
+
+[[steps]]
+id = "upgrade-routine"
+title = "Stage upgrade (no kernel change)"
+run = "rpm-ostree upgrade"
+gate = "confirm"
+when = "!kernel_changed"
+
+[[steps]]
+id = "reboot-routine"
+title = "Reboot into the new deployment (whenever convenient)"
+kind = "reboot"
+when = "!kernel_changed"
+optional = true
+
+[[steps]]
+id = "kmod-guard"
+title = "Exactly one layered kmod-nvidia package present"
+run = "sentry check kmod-local --exactly-one"
+gate = "auto"
+when = "kernel_changed"
+on_fail = "stop"
+
+[[steps]]
+id = "upgrade-ritual"
+title = "Stage upgrade, dropping {{ old_kmod }}"
+run = "rpm-ostree upgrade --uninstall {{ old_kmod }}"
+gate = "confirm"
+when = "kernel_changed"
+on_fail = "manual"
+manual = """
+If the error is a wall of `openssl-devel` / `kernel-devel` depsolve problems, a stale mirror is the likely cause (cheatsheet §2b).
+Compare the master mirror's repomd age:
+  curl -s https://dl.fedoraproject.org/pub/fedora/linux/updates/{{ current_version }}/Everything/x86_64/repodata/repomd.xml | grep -oE '<revision>[0-9]+' | cut -d'>' -f2 | xargs -I{} date -d @{} -u
+Then either wait a few hours or add /etc/yum.repos.d/updates-master.repo (cheatsheet §2b) and retry this step.
+Leave the repo in place until the end of this workflow."""
+
+[[steps]]
+id = "reboot-1"
+title = "Reboot onto kernel {{ pending_kernel }}"
+kind = "reboot"
+when = "kernel_changed"
+
+[[steps]]
+id = "verify-kernel"
+title = "Booted into {{ pending_kernel }}"
+run = "sentry check booted-kernel --expect {{ pending_kernel }}"
+gate = "auto"
+when = "kernel_changed"
+on_fail = "stop"
+
+[[steps]]
+id = "akmods"
+title = "Build NVIDIA kmod for the running kernel (if akmods didn't already)"
+run = "ls /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm 2>/dev/null || sudo akmods --force --kernels $(uname -r)"
+gate = "confirm"
+when = "kernel_changed"
+timeout = "30m"
+
+[[steps]]
+id = "kmod-built"
+title = "Exactly one built kmod RPM for the running kernel"
+run = "sentry check akmods-built --exactly-one"
+gate = "auto"
+when = "kernel_changed"
+on_fail = "stop"
+
+[[steps]]
+id = "layer-kmod"
+title = "Layer the new kmod-nvidia RPM"
+run = "rpm-ostree install /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm"
+gate = "confirm"
+when = "kernel_changed"
+
+[[steps]]
+id = "reboot-2"
+title = "Reboot to load the driver"
+kind = "reboot"
+when = "kernel_changed"
+
+[[steps]]
+id = "verify"
+title = "Driver loaded on the expected kernel"
+run = "sentry check nvidia-loaded && sentry check booted-kernel --expect {{ pending_kernel }}"
+gate = "auto"
+when = "kernel_changed"
+
+[[steps]]
+id = "flatpak-gl"
+title = "Flatpak GL.nvidia and GL32.nvidia match the host driver"
+run = "sentry check flatpak-gl-nvidia"
+gate = "auto"
+on_fail = "manual"
+manual = """
+Run `flatpak update` to pull GL.nvidia-<ver> and GL32.nvidia-<ver>. Both must be at the same version.
+Then fully quit and relaunch Steam (cheatsheet §3b)."""
+
+[[steps]]
+id = "master-repo-cleanup"
+title = "Remove the temporary updates-master.repo"
+run = "sudo rm /etc/yum.repos.d/updates-master.repo"
+gate = "confirm"
+when = "master_repo_present"
+optional = true

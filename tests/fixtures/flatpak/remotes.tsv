@@ -1,0 +1,2 @@
+fedora	oci+https://registry.fedoraproject.org	system,oci
+flathub	https://dl.flathub.org/repo/	system

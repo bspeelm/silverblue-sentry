@@ -1,0 +1,114 @@
+name = "release-rebase"
+description = "Rebase Silverblue to a new Fedora release with the NVIDIA kmod ritual"
+# DRAFT: the cheatsheets do not cover a release rebase with locally layered rpmfusion release RPMs.
+# Lint refuses to start a draft until `rebase-dry` has succeeded once; then delete this line.
+draft = true
+
+[vars]
+target = { prompt = "Target Fedora version", default = "{{ current_version + 1 }}" }
+
+[[steps]]
+id = "preflight"
+title = "Pre-flight checks"
+run = "sentry check preflight --target {{ target }}"
+gate = "auto"
+
+[[steps]]
+id = "snapshot"
+title = "Record pre-upgrade state"
+run = "sentry job audit --tag pre-rebase-{{ target }}"
+gate = "auto"
+
+[[steps]]
+id = "kmod-guard"
+title = "Exactly one layered kmod-nvidia package present"
+run = "sentry check kmod-local --exactly-one"
+gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "rebase-dry"
+title = "Dry-run the rebase"
+run = "rpm-ostree rebase --dry-run fedora:fedora/{{ target }}/x86_64/silverblue --uninstall {{ old_kmod }} --uninstall rpmfusion-free-release --uninstall rpmfusion-nonfree-release --install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{{ target }}.noarch.rpm --install https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-{{ target }}.noarch.rpm"
+gate = "confirm"
+on_fail = "stop"
+dry_run = false
+
+[[steps]]
+id = "rebase"
+title = "Rebase to Fedora {{ target }}"
+run = "rpm-ostree rebase fedora:fedora/{{ target }}/x86_64/silverblue --uninstall {{ old_kmod }} --uninstall rpmfusion-free-release --uninstall rpmfusion-nonfree-release --install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{{ target }}.noarch.rpm --install https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-{{ target }}.noarch.rpm"
+gate = "confirm"
+timeout = "60m"
+dry_run = false
+
+[[steps]]
+id = "reboot-1"
+title = "Reboot into Fedora {{ target }}"
+kind = "reboot"
+
+[[steps]]
+id = "verify-boot"
+title = "Confirm booted into Fedora {{ target }}"
+run = "sentry check booted-version --expect {{ target }}"
+gate = "auto"
+on_fail = "stop"
+
+[[steps]]
+id = "akmods"
+title = "Build NVIDIA kmod for the running kernel (if akmods didn't already)"
+run = "ls /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm 2>/dev/null || sudo akmods --force --kernels $(uname -r)"
+gate = "confirm"
+timeout = "30m"
+
+[[steps]]
+id = "kmod-built"
+title = "Exactly one built kmod RPM for the running kernel"
+run = "sentry check akmods-built --exactly-one"
+gate = "auto"
+on_fail = "manual"
+
+[[steps]]
+id = "layer-kmod"
+title = "Layer the new kmod-nvidia RPM"
+run = "rpm-ostree install /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm"
+gate = "confirm"
+
+[[steps]]
+id = "reboot-2"
+title = "Reboot to load drivers"
+kind = "reboot"
+
+[[steps]]
+id = "final-verify"
+title = "Post-upgrade verification"
+run = "sentry check nvidia-loaded && sentry check booted-version --expect {{ target }} && sentry check kargs && sentry check secureboot-mok"
+gate = "auto"
+
+[[steps]]
+id = "flatpak-gl"
+title = "Flatpak GL.nvidia and GL32.nvidia match the host driver"
+run = "flatpak update -y && sentry check flatpak-gl-nvidia"
+gate = "confirm"
+on_fail = "manual"
+
+[[steps]]
+id = "post-snapshot"
+title = "Record post-upgrade state and diff"
+run = "sentry job audit --tag post-rebase-{{ target }} --diff-against pre-rebase-{{ target }}"
+gate = "auto"
+
+[[steps]]
+id = "rollback"
+title = "Roll back to the previous deployment"
+run = "rpm-ostree rollback"
+gate = "confirm"
+rollback = true
+optional = true
+
+[[steps]]
+id = "cleanup"
+title = "Remove old deployment (optional)"
+run = "rpm-ostree cleanup -r"
+gate = "confirm"
+optional = true

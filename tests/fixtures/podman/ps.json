@@ -1,0 +1,600 @@
+[
+  {
+    "AutoRemove": false,
+    "Command": [
+      "toolbox",
+      "--log-level",
+      "debug",
+      "init-container",
+      "--gid",
+      "1000",
+      "--home",
+      "/var/home/user",
+      "--shell",
+      "/bin/bash",
+      "--uid",
+      "1000",
+      "--user",
+      "user",
+      "--home-link",
+      "--media-link",
+      "--mnt-link"
+    ],
+    "CreatedAt": "3 months ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792123732,
+    "ExitCode": 143,
+    "ExposedPorts": null,
+    "Id": "f9aa26b92e78de3926b46c985034827ff8bf74d8e58a5594e70109711a285d96",
+    "Image": "registry.fedoraproject.org/fedora-toolbox:44",
+    "ImageID": "25e851519fea5fd53b46d7a811ee2f1393cccb366bce7cba6f3f381c9bc06c7a",
+    "IsInfra": false,
+    "Labels": {
+      "com.github.containers.toolbox": "true",
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora-toolbox",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [
+      "/run/avahi-daemon/socket",
+      "/run/.heim_org.h5l.kcm-socket",
+      "/run/media",
+      "/etc/profile.d/toolbox.sh",
+      "/run/host",
+      "/dev",
+      "/run/dbus/system_bus_socket",
+      "/run/user/1000",
+      "/dev/pts",
+      "/run/pcscd/pcscd.comm",
+      "/usr/bin/toolbox",
+      "/var/home/user"
+    ],
+    "Names": [
+      "aip"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792073785,
+    "State": "exited",
+    "Status": "Exited (143) 7 days ago",
+    "Created": 1784163079
+  },
+  {
+    "AutoRemove": false,
+    "Command": [
+      "toolbox",
+      "--log-level",
+      "debug",
+      "init-container",
+      "--gid",
+      "1000",
+      "--home",
+      "/var/home/user",
+      "--shell",
+      "/bin/bash",
+      "--uid",
+      "1000",
+      "--user",
+      "user",
+      "--home-link",
+      "--media-link",
+      "--mnt-link"
+    ],
+    "CreatedAt": "7 weeks ago",
+    "CIDFile": "",
+    "Exited": false,
+    "ExitedAt": 1792554623,
+    "ExitCode": 0,
+    "ExposedPorts": null,
+    "Id": "603fb49b68e6003ec97405653a7dd4269af428af58ff2f36e961ba69228c4eef",
+    "Image": "registry.fedoraproject.org/fedora-toolbox:44",
+    "ImageID": "25e851519fea5fd53b46d7a811ee2f1393cccb366bce7cba6f3f381c9bc06c7a",
+    "IsInfra": false,
+    "Labels": {
+      "com.github.containers.toolbox": "true",
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora-toolbox",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [
+      "/run/avahi-daemon/socket",
+      "/run/.heim_org.h5l.kcm-socket",
+      "/run/host",
+      "/dev",
+      "/run/user/1000",
+      "/run/pcscd/pcscd.comm",
+      "/run/media",
+      "/dev/pts",
+      "/run/dbus/system_bus_socket",
+      "/var/home/user",
+      "/etc/profile.d/toolbox.sh",
+      "/usr/bin/toolbox"
+    ],
+    "Names": [
+      "devbox-one"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [],
+    "Pid": 13902,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792764846,
+    "State": "running",
+    "Status": "Up 6 hours",
+    "Created": 1788138119
+  },
+  {
+    "AutoRemove": false,
+    "Command": [
+      "toolbox",
+      "--log-level",
+      "debug",
+      "init-container",
+      "--gid",
+      "1000",
+      "--home",
+      "/var/home/user",
+      "--shell",
+      "/bin/bash",
+      "--uid",
+      "1000",
+      "--user",
+      "user",
+      "--home-link",
+      "--media-link",
+      "--mnt-link"
+    ],
+    "CreatedAt": "7 weeks ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792123726,
+    "ExitCode": 143,
+    "ExposedPorts": null,
+    "Id": "3e3b1844edba6a83978fafc1e5bc3c1dc51383f5881eb36cfcb2159e165a0d9e",
+    "Image": "registry.fedoraproject.org/fedora-toolbox:44",
+    "ImageID": "25e851519fea5fd53b46d7a811ee2f1393cccb366bce7cba6f3f381c9bc06c7a",
+    "IsInfra": false,
+    "Labels": {
+      "com.github.containers.toolbox": "true",
+      "io.buildah.version": "1.43.2",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.title": "fedora-toolbox",
+      "org.opencontainers.image.url": "https://fedoraproject.org/",
+      "org.opencontainers.image.vendor": "Fedora Project",
+      "org.opencontainers.image.version": "44"
+    },
+    "Mounts": [
+      "/run/avahi-daemon/socket",
+      "/run/pcscd/pcscd.comm",
+      "/run/media",
+      "/etc/profile.d/toolbox.sh",
+      "/run/host",
+      "/var/home/user",
+      "/run/user/1000",
+      "/run/.heim_org.h5l.kcm-socket",
+      "/dev",
+      "/usr/bin/toolbox",
+      "/dev/pts",
+      "/run/dbus/system_bus_socket"
+    ],
+    "Names": [
+      "windows_migration"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792075965,
+    "State": "exited",
+    "Status": "Exited (143) 7 days ago",
+    "Created": 1788548351
+  },
+  {
+    "AutoRemove": false,
+    "Command": [
+      "postgres"
+    ],
+    "CreatedAt": "8 days ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792123726,
+    "ExitCode": 0,
+    "ExposedPorts": {
+      "5432": [
+  "tcp"
+]
+    },
+    "Id": "05637a7d487447b0c1ea01963ba09c5523c7036fa466b310dbad72b164ededa0",
+    "Image": "localhost/webapp-postgres:latest",
+    "ImageID": "34dd3af8aaa7419172d9120cce59d4ad002427dfdb7f2c9494a3f06c127c3e85",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.4"
+    },
+    "Mounts": [
+      "/var/lib/postgresql/data"
+    ],
+    "Names": [
+      "webapp-postgres"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [
+      "webapp-net"
+    ],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": [
+      {
+        "host_ip": "",
+        "container_port": 5432,
+        "host_port": 5432,
+        "range": 1,
+        "protocol": "tcp"
+      }
+    ],
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792092008,
+    "State": "exited",
+    "Status": "Exited (0) 7 days ago",
+    "Created": 1792092008
+  },
+  {
+    "AutoRemove": false,
+    "Command": null,
+    "CreatedAt": "8 days ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792123726,
+    "ExitCode": 143,
+    "ExposedPorts": {
+      "8080": [
+  "tcp"
+]
+    },
+    "Id": "07dadf4d2eb1f656a4a878eacd028cfd3ee1d9c2f981e1a7d61e3ffbe15b9ca8",
+    "Image": "localhost/webapp-api:latest",
+    "ImageID": "7550afde0f37d0d384bf92379c3dbb7a8f8b0328d5418a27a8d50e525732d3e2",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.4"
+    },
+    "Mounts": [],
+    "Names": [
+      "webapp-api"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [
+      "webapp-net"
+    ],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": [
+      {
+        "host_ip": "",
+        "container_port": 8080,
+        "host_port": 8080,
+        "range": 1,
+        "protocol": "tcp"
+      }
+    ],
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792092097,
+    "State": "exited",
+    "Status": "Exited (143) 7 days ago",
+    "Created": 1792092097
+  },
+  {
+    "AutoRemove": false,
+    "Command": null,
+    "CreatedAt": "8 days ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792123732,
+    "ExitCode": 0,
+    "ExposedPorts": {
+      "3000": [
+  "tcp"
+],
+      "80": [
+  "tcp"
+]
+    },
+    "Id": "7731b133d8ca2ec2a1c5198872ae440f24df07bdfcc5598663f7bfdf55b5e7ea",
+    "Image": "localhost/webapp-frontend:latest",
+    "ImageID": "2defcdaaa609a996938014f613fdb6ed55fdf85104fd848f1007220823970636",
+    "IsInfra": false,
+    "Labels": {
+      "io.buildah.version": "1.43.4",
+      "maintainer": "NGINX Docker Maintainers \u003cdocker-maint@nginx.com\u003e"
+    },
+    "Mounts": [],
+    "Names": [
+      "webapp-frontend"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [
+      "webapp-net"
+    ],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": [
+      {
+        "host_ip": "",
+        "container_port": 3000,
+        "host_port": 3002,
+        "range": 1,
+        "protocol": "tcp"
+      }
+    ],
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792092100,
+    "State": "exited",
+    "Status": "Exited (0) 7 days ago",
+    "Created": 1792092099
+  },
+  {
+    "AutoRemove": false,
+    "Command": [
+      "postgres"
+    ],
+    "CreatedAt": "6 days ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792554622,
+    "ExitCode": 0,
+    "ExposedPorts": {
+      "5432": [
+  "tcp"
+]
+    },
+    "Id": "af8406dfc5295ae016eb68b6b6767b04b740a8a4405e28a1bc81b6470f3c24b8",
+    "Image": "docker.io/library/postgres:15",
+    "ImageID": "59eb02d644f8b1279cf0c268f171817a3ba86b8c358821aedc217ac496fefffb",
+    "IsInfra": false,
+    "Labels": null,
+    "Mounts": [
+      "/var/lib/postgresql/data"
+    ],
+    "Names": [
+      "confluence-test-db"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [
+      "confluence-test"
+    ],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792504838,
+    "State": "exited",
+    "Status": "Exited (0) 2 days ago",
+    "Created": 1792198985
+  },
+  {
+    "AutoRemove": false,
+    "Command": [
+      "/entrypoint.py"
+    ],
+    "CreatedAt": "6 days ago",
+    "CIDFile": "",
+    "Exited": true,
+    "ExitedAt": 1792554622,
+    "ExitCode": 143,
+    "ExposedPorts": {
+      "8090": [
+  "tcp"
+],
+      "8091": [
+  "tcp"
+]
+    },
+    "Id": "b05746b292a7461dd0b7c3c8886a95b099f2d74025be8c1998f7a89dd7176779",
+    "Image": "docker.io/atlassian/confluence:9.2.26",
+    "ImageID": "b1db4d67775f7668cfe0763831b2f8750e3614dff9d9a5cb082bdc8f258df37b",
+    "IsInfra": false,
+    "Labels": {
+      "maintainer": "dc-deployments@atlassian.com",
+      "org.opencontainers.image.revision": "3",
+      "org.opencontainers.image.version": "24.04",
+      "securitytxt": "https://www.atlassian.com/.well-known/security.txt"
+    },
+    "Mounts": [
+      "/var/atlassian/application-data/confluence"
+    ],
+    "Names": [
+      "confluence-test-app"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [
+      "confluence-test"
+    ],
+    "Pid": 0,
+    "Pod": "",
+    "PodName": "",
+    "Ports": [
+      {
+        "host_ip": "",
+        "container_port": 8090,
+        "host_port": 8090,
+        "range": 1,
+        "protocol": "tcp"
+      }
+    ],
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792504838,
+    "State": "exited",
+    "Status": "Exited (143) 2 days ago",
+    "Created": 1792198985
+  },
+  {
+    "AutoRemove": true,
+    "Command": [
+      "run",
+      "--user=gitlab-runner",
+      "--working-directory=/home/gitlab-runner"
+    ],
+    "CreatedAt": "6 hours ago",
+    "CIDFile": "/run/user/1000/gitlab-runner.service.ctr-id",
+    "Exited": false,
+    "ExitedAt": -62135596800,
+    "ExitCode": 0,
+    "ExposedPorts": null,
+    "Id": "edc6052fe4137879591ff2a4ba48fd2d8409862ff05817d1251301461e73a227",
+    "Image": "docker.io/gitlab/gitlab-runner:latest",
+    "ImageID": "6de61f5e24904bcb04e56c0826c1bd9b3ebf7bce9b198a20315a8ac758f7e94c",
+    "IsInfra": false,
+    "Labels": {
+      "PODMAN_SYSTEMD_UNIT": "gitlab-runner.service",
+      "org.opencontainers.image.version": "24.04"
+    },
+    "Mounts": [
+      "/var/run/docker.sock",
+      "/etc/gitlab-runner",
+      "/home/gitlab-runner"
+    ],
+    "Names": [
+      "gitlab-runner"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [],
+    "Pid": 3557,
+    "Pod": "",
+    "PodName": "",
+    "Ports": null,
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792764343,
+    "State": "running",
+    "Status": "Up 6 hours",
+    "Created": 1792764343
+  },
+  {
+    "AutoRemove": false,
+    "Command": null,
+    "CreatedAt": "4 hours ago",
+    "CIDFile": "",
+    "Exited": false,
+    "ExitedAt": -62135596800,
+    "ExitCode": 0,
+    "ExposedPorts": {
+      "3389": [
+  "tcp"
+],
+      "8006": [
+  "tcp"
+]
+    },
+    "Id": "7760a5cb69aac896407c0e325c0693b19d07eb48240b99d3262c991ff33bcc59",
+    "Image": "ghcr.io/dockur/windows:6.06",
+    "ImageID": "cbfaef1f04b4cb08137512116a64ed2005b58852bf04067b3f896342d5b3cb02",
+    "IsInfra": false,
+    "Labels": {
+      "org.opencontainers.image.created": "2026-10-05T21:29:01.257Z",
+      "org.opencontainers.image.description": "Windows inside a Docker container.",
+      "org.opencontainers.image.licenses": "MIT",
+      "org.opencontainers.image.revision": "013ea27498e0e820a46b3861a0fa047d5b19d846",
+      "org.opencontainers.image.source": "https://github.com/dockur/windows",
+      "org.opencontainers.image.title": "Windows",
+      "org.opencontainers.image.url": "https://github.com/dockur/windows",
+      "org.opencontainers.image.version": "6.06"
+    },
+    "Mounts": [
+      "/storage",
+      "/oem"
+    ],
+    "Names": [
+      "win11"
+    ],
+    "Namespaces": {
+      
+    },
+    "Networks": [],
+    "Pid": 127243,
+    "Pod": "",
+    "PodName": "",
+    "Ports": [
+      {
+        "host_ip": "127.0.0.1",
+        "container_port": 22,
+        "host_port": 2222,
+        "range": 1,
+        "protocol": "tcp"
+      },
+      {
+        "host_ip": "127.0.0.1",
+        "container_port": 3389,
+        "host_port": 3389,
+        "range": 1,
+        "protocol": "tcp"
+      },
+      {
+        "host_ip": "127.0.0.1",
+        "container_port": 8006,
+        "host_port": 8006,
+        "range": 1,
+        "protocol": "tcp"
+      },
+      {
+        "host_ip": "127.0.0.1",
+        "container_port": 3389,
+        "host_port": 3389,
+        "range": 1,
+        "protocol": "udp"
+      }
+    ],
+    "Restarts": 0,
+    "Size": null,
+    "StartedAt": 1792772102,
+    "State": "running",
+    "Status": "Up 4 hours",
+    "Created": 1792772102
+  }
+]
