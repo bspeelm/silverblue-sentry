@@ -9,6 +9,7 @@ use std::time::Instant;
 use jiff::Timestamp;
 
 use super::Event;
+use super::screens::history::HistData;
 use super::screens::upgrade::WfInfo;
 use crate::audit::store::Stored;
 use crate::baseline::Baseline;
@@ -53,6 +54,8 @@ pub enum Fetch {
     Plan(JobId),
     /// Workflow files, lint results and last runs (Upgrade screen).
     Workflows,
+    /// Recorder ring file + status (History screen).
+    History,
 }
 
 pub enum Payload {
@@ -71,6 +74,7 @@ pub enum Payload {
     Cleanup(Vec<Plan>),
     Plan(Plan),
     Workflows(Vec<WfInfo>),
+    History(Box<HistData>),
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +190,9 @@ pub struct DataStore {
     /// The most recent single-job plan (consumed by the app to open a modal).
     pub plan: Option<Plan>,
     pub workflows: Slot<Vec<WfInfo>>,
+    pub history: Slot<Box<HistData>>,
+    /// The recorder process, checked with the dashboard's slow refresh.
+    pub recorder: Option<crate::recorder::Live>,
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
 
@@ -207,6 +214,8 @@ impl DataStore {
         if let Some(c) = cache::load(cache::DISK_BREAKDOWN) {
             d.breakdown.set(Ok(c));
         }
+        d.recorder = crate::recorder::live();
+        d.prefill_from_recording();
         d
     }
 
@@ -236,10 +245,30 @@ impl DataStore {
             cleanup: Slot::default(),
             plan: None,
             workflows: Slot::default(),
+            history: Slot::default(),
+            recorder: None,
             baseline: Baseline::default(),
             inflight: HashSet::new(),
             os_version,
             kernel,
+        }
+    }
+
+    /// Spec §10: the dashboard graphs extend back over the recording (one point per sample).
+    fn prefill_from_recording(&mut self) {
+        let Some((_, recs)) = crate::recorder::ring::read_metrics(&crate::recorder::ring::path())
+        else {
+            return;
+        };
+        let now = Timestamp::now().as_second();
+        // Only a recent recording: an old one would splice a stale past onto the live graph.
+        if recs.last().is_none_or(|r| now - r.ts > 300) {
+            return;
+        }
+        for r in &recs[recs.len().saturating_sub(HIST)..] {
+            self.cpu_hist.push(r.cpu as f64);
+            self.rx_hist.push(r.rx as f64);
+            self.tx_hist.push(r.tx as f64);
         }
     }
 
@@ -299,6 +328,7 @@ impl DataStore {
             Fetch::Jobs => put!(job_runs, Payload::Jobs),
             Fetch::Cleanup => put!(cleanup, Payload::Cleanup),
             Fetch::Workflows => put!(workflows, Payload::Workflows),
+            Fetch::History => put!(history, Payload::History),
             Fetch::Plan(_) => {
                 self.plan = match r {
                     Ok(Payload::Plan(p)) => Some(p),
@@ -373,6 +403,7 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         ),
         Fetch::Plan(j) => Payload::Plan(crate::jobs::plan::plan(j, ctx)),
         Fetch::Workflows => Payload::Workflows(super::screens::upgrade::load_infos()),
+        Fetch::History => Payload::History(Box::new(super::screens::history::load())),
     })
 }
 

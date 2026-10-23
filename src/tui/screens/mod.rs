@@ -6,9 +6,9 @@ mod cleanup;
 mod containers;
 mod dashboard;
 mod flatpaks;
+pub mod history;
 pub mod jobs;
 mod network;
-mod placeholder;
 mod processes;
 mod updates;
 pub mod upgrade;
@@ -101,6 +101,7 @@ pub struct Screens {
     jobs: jobs::Jobs,
     clean: cleanup::Cleanup,
     upgrade: upgrade::Upgrade,
+    hist: history::History,
 }
 
 impl Screens {
@@ -113,6 +114,7 @@ impl Screens {
             ScreenId::Jobs => jobs::on_enter(v),
             ScreenId::Clean => cleanup::on_enter(v),
             ScreenId::Upgrade => upgrade::on_enter(v),
+            ScreenId::Hist => history::on_enter(v),
             _ => Vec::new(),
         }
     }
@@ -129,7 +131,7 @@ impl Screens {
             ScreenId::Jobs => self.jobs.handle(a, v),
             ScreenId::Clean => self.clean.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, v),
-            _ => placeholder::handle(id, a),
+            ScreenId::Hist => self.hist.handle(a, v),
         }
     }
 
@@ -145,7 +147,7 @@ impl Screens {
             ScreenId::Jobs => self.jobs.render(f, area, v),
             ScreenId::Clean => self.clean.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
-            _ => placeholder::render(id, f, area, v),
+            ScreenId::Hist => self.hist.render(f, area, v),
         }
     }
 
@@ -161,7 +163,7 @@ impl Screens {
             ScreenId::Jobs => jobs::hints(),
             ScreenId::Clean => cleanup::hints(),
             ScreenId::Upgrade => upgrade::hints(v),
-            _ => placeholder::hints(id),
+            ScreenId::Hist => history::hints(),
         }
     }
 

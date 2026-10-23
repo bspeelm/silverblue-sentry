@@ -81,3 +81,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `SENTRY_NO_REBOOT=1` replaces `systemctl reboot` with a message (testing). Simulate a reboot by changing the step's `boot_id` in `state.json`.
 - The `quick-update` `preview` step treats exit 77 ("no update") as success.
 - `sentry workflow list|lint [name]|abandon|<name> [--var k=v]`.
+
+## A13. Recorder and History (milestone 6)
+- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
+- `metrics/recorder.pid` marks a live recorder. Only one runs at a time, and the file is removed on Ctrl-C/SIGTERM/SIGHUP.
+- Footprint, measured on the host with a release build at a 10 s interval: **0.07% of one core including children, 9.8 MB RSS**. Getting there meant:
+  - top-3 processes from a CPU-only process refresh (kernel names) once a minute;
+  - nvidia-smi every 3 minutes;
+  - the `new_listener` alert reads `/proc/net/{tcp,udp}[6]` instead of spawning `ss`. Keys are `addr:port/?`, and the baseline matches them on the address alone.
+- Alert rules: `cpu|mem|swap|cpu_temp|gpu_temp>N[%][:dur]`, `disk_free<N%`, `new_listener`. Each fires once when its condition has held for `dur`, and re-arms when the condition clears. Alerts go to `notify-send` and `metrics/alerts.log` (the History screen shows the last 3).
+- History graphs show per-bucket means, with gaps left blank. Avg/max stats come from the raw samples, so spikes aren't flattened. The tab appears once `ring.bin` exists.
+- The dashboard pre-fills its CPU and net graphs from the recording at startup, but only when the newest sample is under 5 minutes old.

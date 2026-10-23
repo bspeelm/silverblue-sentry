@@ -481,7 +481,14 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
             Span::styled(" · established ", t.dim()),
             Span::styled(c.established.to_string(), t.fg()),
         ]),
-        Line::styled("recorder off · history needs `sentry record`", t.dim()),
+        match &v.d.recorder {
+            Some(l) => Line::from(vec![
+                Span::styled("recorder ", t.dim()),
+                Span::styled("●", t.s(t.green)),
+                Span::styled(format!(" every {}s · H for history", l.interval_s), t.dim()),
+            ]),
+            None => Line::styled("recorder off · history needs `sentry record`", t.dim()),
+        },
     ];
     f.render_widget(
         Paragraph::new(foot),
@@ -614,7 +621,25 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
         )),
         None => rows.push(("workflow", "none".into(), t.dim, String::new())),
     }
-    rows.push(("recorder", "off".into(), t.dim, String::new()));
+    match &v.d.recorder {
+        Some(l) => rows.push((
+            "recorder",
+            "running".into(),
+            t.green,
+            format!(
+                "pid {} · since {}",
+                l.pid,
+                jiff::Timestamp::from_second(l.started)
+                    .map(|ts| {
+                        ts.to_zoned(jiff::tz::TimeZone::system())
+                            .strftime("%a %H:%M")
+                            .to_string()
+                    })
+                    .unwrap_or_default()
+            ),
+        )),
+        None => rows.push(("recorder", "off".into(), t.dim, String::new())),
+    }
 
     let lines: Vec<Line> = rows
         .into_iter()

@@ -527,3 +527,50 @@ fn upgrade_screen_idle_and_running() {
     let s = render_to_string(&mut a, 80, 24);
     assert!(s.contains("workflow"), "{s}");
 }
+
+#[test]
+fn history_screen() {
+    use crate::recorder::ring::Rec;
+    use crate::tui::screens::history::HistData;
+    let newest = jiff::Timestamp::now().as_second();
+    let recs: Vec<Rec> = (0..2160)
+        .map(|k| {
+            let x = k as f32 / 60.0;
+            Rec {
+                ts: newest - (2160 - k) * 40,
+                cpu: 30.0 + 20.0 * x.sin() + if k == 1000 { 60.0 } else { 0.0 },
+                mem_gib: 12.0,
+                rx: 1e6 * (1.0 + x.cos()),
+                cpu_temp: 50.0,
+                gpu: f32::NAN,
+                gpu_temp: f32::NAN,
+                disk_pct: 30.0,
+                ..Default::default()
+            }
+        })
+        .collect();
+    let mut d = store();
+    d.history.set(Ok(Box::new(HistData {
+        recs,
+        bytes: 3 << 20,
+        ..Default::default()
+    })));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Hist);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("History · last 24h"), "{s}");
+    assert!(
+        s.contains("cpu %") && s.contains("net rx") && s.contains("now"),
+        "{s}"
+    );
+    assert!(!s.contains("gpu %"), "no GPU samples, no GPU row");
+    assert!(
+        s.contains("max 74"),
+        "stats come from raw samples, not bucket means: {s}"
+    );
+    assert!(s.contains("recorder off"), "{s}");
+    key(&mut a, KeyCode::Char('['));
+    assert!(render_to_string(&mut a, 158, 41).contains("last 6h"));
+    key(&mut a, KeyCode::Left);
+    assert!(render_to_string(&mut a, 158, 41).contains("until"));
+    assert!(render_to_string(&mut a, 80, 24).contains("History"));
+}

@@ -233,10 +233,83 @@ pub fn count_tcp(text: &str) -> (usize, usize) {
     (listen, est)
 }
 
+/// Listening sockets straight from `/proc/net/*` (no spawn): `(proto, addr, port)`.
+/// Used by the recorder's `new_listener` alert; process names need `ss`.
+pub fn proc_listeners() -> Vec<(String, String, String)> {
+    let mut v = Vec::new();
+    for (file, proto, state) in [
+        ("tcp", "tcp", "0A"),
+        ("tcp6", "tcp", "0A"),
+        ("udp", "udp", "07"),
+        ("udp6", "udp", "07"),
+    ] {
+        let text = std::fs::read_to_string(format!("/proc/net/{file}")).unwrap_or_default();
+        v.extend(parse_proc_net(&text, proto, state));
+    }
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Rows of `/proc/net/{tcp,udp}[6]` in `state`, local address decoded.
+pub fn parse_proc_net(text: &str, proto: &str, state: &str) -> Vec<(String, String, String)> {
+    text.lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f = fields(l);
+            if f.get(3) != Some(&state) {
+                return None;
+            }
+            let (hex, port) = f.get(1)?.split_once(':')?;
+            let port = u16::from_str_radix(port, 16).ok()?.to_string();
+            Some((proto.to_string(), decode_addr(hex)?, port))
+        })
+        .collect()
+}
+
+/// Kernel hex address: IPv4 is one little-endian u32, IPv6 four of them.
+fn decode_addr(hex: &str) -> Option<String> {
+    let words: Vec<u32> = (0..hex.len() / 8)
+        .map(|i| u32::from_str_radix(&hex[i * 8..i * 8 + 8], 16).ok())
+        .collect::<Option<_>>()?;
+    Some(match words.as_slice() {
+        [w] => std::net::Ipv4Addr::from(w.swap_bytes()).to_string(),
+        [a, b, c, d] => {
+            let mut bytes = [0u8; 16];
+            for (i, w) in [a, b, c, d].iter().enumerate() {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            format!("[{}]", std::net::Ipv6Addr::from(bytes))
+        }
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::collectors::fixture;
+
+    #[test]
+    fn proc_net_decoding() {
+        let tcp = "  sl  local_address rem_address   st\n\
+   0: 0100007F:0277 00000000:0000 0A 00000000:00000000\n\
+   1: 00000000:55F0 00000000:0000 0A 00000000:00000000\n\
+   2: 0100007F:D3C2 0100007F:0277 01 00000000:00000000\n";
+        assert_eq!(
+            parse_proc_net(tcp, "tcp", "0A"),
+            vec![
+                ("tcp".into(), "127.0.0.1".into(), "631".into()),
+                ("tcp".into(), "0.0.0.0".into(), "22000".into()),
+            ]
+        );
+        let tcp6 = "  sl\n   0: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A x\n\
+   1: 00000000000000000000000001000000:0277 00000000000000000000000000000000:0000 0A x\n";
+        let v = parse_proc_net(tcp6, "tcp", "0A");
+        assert_eq!(v[0].1, "[::]");
+        assert_eq!(v[0].2, "22");
+        assert_eq!(v[1].1, "[::1]");
+    }
 
     #[test]
     fn listen_fixture() {

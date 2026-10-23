@@ -11,6 +11,7 @@ mod fmt;
 mod jobs;
 mod keyfile;
 mod paths;
+mod recorder;
 mod resume;
 mod status;
 mod tui;
@@ -68,8 +69,9 @@ enum Command {
     },
     /// Foreground metrics recorder; exits on Ctrl-C.
     Record {
-        #[arg(long, default_value = "10s")]
-        interval: String,
+        /// Sample interval (default: [recorder] interval, 10s).
+        #[arg(long)]
+        interval: Option<String>,
     },
     /// Dump a collector as JSON.
     Collect {
@@ -103,11 +105,6 @@ fn init_logging() {
         .with_ansi(false)
         .with_writer(std::sync::Mutex::new(file))
         .try_init();
-}
-
-fn not_yet(what: &str, milestone: u8) -> ExitCode {
-    eprintln!("sentry {what}: not implemented yet (milestone {milestone})");
-    ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
@@ -171,6 +168,8 @@ fn main() -> ExitCode {
         Some(Command::Workflow { name, args }) => {
             ExitCode::from(workflows::cli::run_cli(&name, &args))
         }
-        Some(Command::Record { .. }) => not_yet("record", 6),
+        Some(Command::Record { interval }) => {
+            ExitCode::from(recorder::run_cli(interval.as_deref()))
+        }
     }
 }

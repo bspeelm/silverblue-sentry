@@ -372,6 +372,7 @@ impl App {
                     for f in [Fetch::Disks, Fetch::Units, Fetch::Ostree] {
                         self.data.fetch(f, &self.cfg, &self.tx);
                     }
+                    self.data.recorder = crate::recorder::live();
                     self.sched.slow = now + Duration::from_secs(60);
                 }
             }
@@ -1042,7 +1043,7 @@ impl App {
 
     fn visible_tabs(&self) -> Vec<ScreenId> {
         // History only appears once the recorder has produced data (spec §11); `H` still opens it.
-        let has_rec = crate::paths::data_dir().join("metrics").is_dir();
+        let has_rec = crate::recorder::ring::path().exists();
         ScreenId::ALL
             .into_iter()
             .filter(|s| *s != ScreenId::Hist || has_rec || self.screen == ScreenId::Hist)

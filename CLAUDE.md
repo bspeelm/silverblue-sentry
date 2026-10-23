@@ -36,4 +36,5 @@ Upgrade procedures: `docs/cheatsheets/` are the source of truth for `assets/work
 - [x] M3 audit (`src/audit/`, `sentry job audit`, Audit screen)
 - [x] M4 jobs (`src/jobs/`: plans, `sentry job`, Jobs + Cleanup screens, cadence)
 - [x] M5 workflows (`src/workflows/`, `src/checks.rs`, `src/tui/wf.rs`, Upgrade screen)
-- [ ] M6 recorder · [ ] M7 polish
+- [x] M6 recorder (`src/recorder/`, `sentry record`, History screen; 0.07% CPU, 9.8 MB on host)
+- [ ] M7 polish
