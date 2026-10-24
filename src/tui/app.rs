@@ -49,6 +49,16 @@ pub enum Effect {
     Wf(WfCmd),
     /// Send a turn to Claude: the first question, or a follow-up in the open chat.
     AskSend(AskTurn),
+    /// Show what an ask would send (the consent modal), e.g. `f` on an audit finding.
+    AskConsent(crate::claude::Ask),
+    /// Run one of Claude's proposed commands for the open chat (after its confirm modal).
+    ChatRun(crate::claude::Proposed),
+    /// Back from a suspended chat command: `Some((cmd, files))` for a proposal whose output
+    /// was tee'd to `files.0` and exit code to `files.1`, `None` after the Claude Code hand-off.
+    ChatBack(
+        Option<(String, std::path::PathBuf, std::path::PathBuf)>,
+        bool,
+    ),
     /// Switch to another tab.
     Goto(ScreenId),
     /// Open Upgrade and start this workflow (its own confirm/var prompts follow).
@@ -215,6 +225,8 @@ pub struct App {
     choice: Option<Choice>,
     /// Effects to apply once a suspended command returns.
     suspend_then: Vec<Effect>,
+    /// What to print above a suspended command instead of its full command line.
+    suspend_banner: Option<String>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -256,6 +268,7 @@ impl App {
             chat: None,
             choice: None,
             suspend_then: Vec::new(),
+            suspend_banner: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -310,6 +323,7 @@ impl App {
             chat: None,
             choice: None,
             suspend_then: Vec::new(),
+            suspend_banner: None,
         }
     }
 
@@ -526,6 +540,28 @@ impl App {
                 }
                 StreamMsg::Line { stderr: true, text } => c.on_raw(text),
                 StreamMsg::Exit { code, .. } => c.on_exit(code),
+            }
+            self.dirty = true;
+            return;
+        }
+        if let Some(c) = self.chat.as_mut()
+            && c.job.as_ref().is_some_and(|(jid, _, _)| *jid == id)
+        {
+            match msg {
+                StreamMsg::Line { text, .. } => c.on_job_line(text),
+                StreamMsg::Exit { code, .. } => match c.job.take().map(|j| j.2) {
+                    Some(super::chat::Job::Proposal {
+                        cmd,
+                        output,
+                        changes,
+                    }) => self.chat_done(cmd, code, output, changes),
+                    Some(super::chat::Job::Audit {
+                        cmd,
+                        code: c0,
+                        output,
+                    }) => self.chat_audited(cmd, c0, output, code == 0),
+                    None => {}
+                },
             }
             self.dirty = true;
             return;
@@ -754,26 +790,74 @@ impl App {
         };
         match self.screens.ask(self.screen, &v) {
             Err(why) => self.toast(why),
-            Ok(ask) => {
-                self.modal = Some(consent_modal(
-                    &self.theme,
-                    &ask.prompt(),
-                    AskTurn::First(ask),
-                ))
-            }
+            Ok(ask) => self.ask_consent(ask),
         }
+    }
+
+    fn ask_consent(&mut self, ask: crate::claude::Ask) {
+        self.modal = Some(consent_modal(
+            &self.theme,
+            &ask.prompt(),
+            AskTurn::First(ask),
+        ));
     }
 
     fn chat_key(&mut self, k: KeyEvent, now: Instant) {
         use ratatui::crossterm::event::KeyModifiers;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let Some(c) = self.chat.as_mut() else { return };
+        if c.picking {
+            c.picking = false;
+            if let KeyCode::Char(d @ '1'..='9') = k.code
+                && let Some(p) = c.proposals.get(d as usize - '1' as usize).cloned()
+            {
+                self.modal = Some(run_proposal_modal(&self.theme, p));
+            }
+            return;
+        }
+        let idle = c.input.is_empty() && !c.busy();
         match k.code {
             KeyCode::Char('c') if ctrl => {
                 if let Some((_, pid)) = c.live {
                     let _ = kill(pid);
                     c.push(super::chat::Kind::Info, "stopped");
                 }
+                if let Some((_, pid, _)) = &c.job {
+                    let _ = kill(*pid);
+                }
+            }
+            KeyCode::Char('r') if idle && !c.proposals.is_empty() => {
+                if c.proposals.len() == 1 {
+                    let p = c.proposals[0].clone();
+                    self.modal = Some(run_proposal_modal(&self.theme, p));
+                } else {
+                    c.picking = true;
+                }
+            }
+            KeyCode::Char('s') if idle && c.offer.is_some() => {
+                let text = c.offer.take().unwrap_or_default();
+                self.modal = Some(consent_modal(
+                    &self.theme,
+                    &text,
+                    AskTurn::Follow(text.clone()),
+                ));
+            }
+            KeyCode::Char('C') if idle && c.session.is_some() => {
+                let session = c.session.clone().unwrap_or_default();
+                c.push(
+                    super::chat::Kind::Info,
+                    "continued in Claude Code (sudo and file edits stay off; it asks before other commands)",
+                );
+                let reaudit = c.ask.finding.is_some();
+                self.suspend = Some(crate::claude::interactive_cmd(&session));
+                self.suspend_banner = Some(
+                    "sentry: continuing this conversation in Claude Code. Read-only commands are \
+                     pre-allowed; it asks before anything else, and sudo and file edits are off.\n\
+                     (The first time, Claude Code asks whether to trust sentry's scratch folder.)\n\
+                     Quit Claude Code (/exit or Ctrl-D twice) to return to sentry."
+                        .into(),
+                );
+                self.suspend_then = vec![Effect::ChatBack(None, reaudit)];
             }
             KeyCode::Char('k') if ctrl => c.scroll += 1,
             KeyCode::Char('j') if ctrl => c.scroll = c.scroll.saturating_sub(1),
@@ -782,6 +866,9 @@ impl App {
             KeyCode::Esc => {
                 if let Some((_, pid)) = c.live {
                     let _ = kill(pid);
+                }
+                if let Some((_, pid, _)) = &c.job {
+                    let _ = kill(*pid);
                 }
                 self.chat = None;
             }
@@ -796,7 +883,7 @@ impl App {
             KeyCode::Backspace => {
                 c.input.pop();
             }
-            KeyCode::Char(ch) if !ctrl && !c.running() => c.input.push(ch),
+            KeyCode::Char(ch) if !ctrl && !c.busy() => c.input.push(ch),
             _ => {}
         }
         let _ = now;
@@ -806,7 +893,11 @@ impl App {
         let (prompt, shown, resume) = match turn {
             AskTurn::First(ask) => {
                 let p = ask.prompt();
-                let q = ask.question.clone();
+                // The full instructions were in the consent modal; the transcript keeps one line.
+                let q = match ask.question.split_once(". ") {
+                    Some((first, _)) if ask.finding.is_some() => format!("{first}."),
+                    _ => ask.question.clone(),
+                };
                 self.chat = Some(super::chat::Chat::new(ask));
                 (p, q, None)
             }
@@ -832,10 +923,124 @@ impl App {
         }
     }
 
+    /// `y` on a proposal's modal: sudo hands the terminal over (output tee'd to a file so it
+    /// can go back to Claude); anything else streams into the chat.
+    fn chat_run(&mut self, p: crate::claude::Proposed) {
+        let changes = !crate::claude::read_only(&p.cmd);
+        let reaudit = changes && self.chat.as_ref().is_some_and(|c| c.ask.finding.is_some());
+        if p.cmd.contains("sudo") {
+            if let Some(why) = crate::workflows::runner::tty_blocker() {
+                self.toast(why);
+                return;
+            }
+            let dir = crate::claude::cwd();
+            let _ = std::fs::create_dir_all(&dir);
+            let (out, code) = (dir.join("last-run.txt"), dir.join("last-run.code"));
+            let _ = std::fs::remove_file(&code);
+            let script = format!(
+                "( {} ) 2>&1 | tee \"$1\"; echo ${{PIPESTATUS[0]}} > \"$2\"",
+                p.cmd
+            );
+            if let Some(c) = self.chat.as_mut() {
+                c.offer = None;
+                c.push(super::chat::Kind::Tool, format!("$ {}", p.cmd));
+            }
+            self.suspend_banner = Some(format!(
+                "sentry: running Claude's proposal (you confirmed it). Type your own password.\n$ {}",
+                p.cmd
+            ));
+            self.suspend = Some(
+                Cmd::host("bash")
+                    .args(["-c", &script, "sentry"])
+                    .arg(out.display().to_string())
+                    .arg(code.display().to_string())
+                    .timeout(None),
+            );
+            self.suspend_then = vec![Effect::ChatBack(Some((p.cmd, out, code)), reaudit)];
+            return;
+        }
+        let cmd = Cmd::host("bash").args(["-c", &p.cmd]).timeout(None);
+        self.chat_job(
+            cmd,
+            super::chat::Job::Proposal {
+                cmd: p.cmd.clone(),
+                output: String::new(),
+                changes: reaudit,
+            },
+            Some(format!("$ {}", p.cmd)),
+        );
+    }
+
+    fn chat_job(&mut self, cmd: Cmd, job: super::chat::Job, note: Option<String>) {
+        self.run_seq += 1;
+        let id = self.run_seq;
+        let tx = self.tx.clone();
+        let r = cmd.stream(move |m| {
+            let _ = tx.send(Event::Run(id, m));
+        });
+        let Some(c) = self.chat.as_mut() else { return };
+        c.offer = None;
+        if let Some(n) = note {
+            c.push(super::chat::Kind::Tool, n);
+        }
+        match r {
+            Ok(pid) => c.job = Some((id, pid, job)),
+            Err(e) => c.push(super::chat::Kind::Err, format!("couldn't start it: {e}")),
+        }
+    }
+
+    /// A chat command finished: audit again if it changed something, else offer the output.
+    fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
+        if reaudit {
+            self.chat_job(
+                crate::tui::screens::sentry_cmd(&["job", "audit"]),
+                super::chat::Job::Audit { cmd, code, output },
+                None,
+            );
+            return;
+        }
+        if let Some(c) = self.chat.as_mut() {
+            c.push(super::chat::Kind::Info, format!("exit {code}"));
+            if !cmd.is_empty() {
+                c.set_offer(&cmd, code, &output, None);
+            }
+        }
+    }
+
+    fn chat_audited(&mut self, cmd: String, code: i32, output: String, audit_ok: bool) {
+        self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
+        self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
+        let Some(c) = self.chat.as_mut() else { return };
+        let id = c.ask.finding.clone().unwrap_or_default();
+        let after = if !audit_ok {
+            "sentry's audit afterwards failed, so I can't tell whether the finding is gone.".into()
+        } else if crate::audit::store::latest()
+            .is_some_and(|r| r.findings.iter().any(|f| f.id == id))
+        {
+            format!("After this, sentry's audit still reports the finding ({id}).")
+        } else {
+            format!("After this, sentry's audit no longer reports the finding ({id}).")
+        };
+        if !cmd.is_empty() {
+            c.push(super::chat::Kind::Info, format!("exit {code}"));
+        }
+        c.push(super::chat::Kind::Info, after.clone());
+        if cmd.is_empty() {
+            c.offer = Some(format!(
+                "Back from the Claude Code session. {after} What, if anything, is left to do?"
+            ));
+        } else {
+            c.set_offer(&cmd, code, &output, Some(&after));
+        }
+    }
+
     /// Kill anything still talking to Claude (sentry is exiting).
     pub fn shutdown(&mut self) {
         if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
             let _ = kill(pid);
+        }
+        if let Some((_, pid, _)) = self.chat.as_ref().and_then(|c| c.job.as_ref()) {
+            let _ = kill(*pid);
         }
     }
 
@@ -985,6 +1190,30 @@ impl App {
                     self.suspend_then = then;
                 }
                 Effect::Choose(c) => self.choice = Some(c),
+                Effect::AskConsent(ask) => {
+                    if crate::claude::available() {
+                        self.ask_consent(ask);
+                    } else {
+                        self.toast("Claude Code not found (expected ~/.local/bin/claude)");
+                    }
+                }
+                Effect::ChatRun(p) => self.chat_run(p),
+                Effect::ChatBack(ran, reaudit) => match ran {
+                    Some((cmd, out, code)) => {
+                        let output = std::fs::read_to_string(&out).unwrap_or_default();
+                        let code = std::fs::read_to_string(&code)
+                            .ok()
+                            .and_then(|s| s.trim().parse().ok())
+                            .unwrap_or(-1);
+                        self.chat_done(cmd, code, output, reaudit);
+                    }
+                    None if reaudit => self.chat_done(String::new(), 0, String::new(), true),
+                    None => {
+                        if let Some(c) = self.chat.as_mut() {
+                            c.push(super::chat::Kind::Info, "back from Claude Code");
+                        }
+                    }
+                },
                 Effect::Kill(pid, msg) => match kill(pid) {
                     Ok(()) => {
                         self.toast(msg);
@@ -1292,8 +1521,13 @@ impl App {
         }
     }
 
-    pub fn take_suspend(&mut self) -> Option<Cmd> {
-        self.suspend.take()
+    pub fn take_suspend(&mut self) -> Option<(Cmd, String)> {
+        let cmd = self.suspend.take()?;
+        let banner = self
+            .suspend_banner
+            .take()
+            .unwrap_or_else(|| format!("$ {}", cmd.display()));
+        Some((cmd, banner))
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
@@ -1847,6 +2081,59 @@ fn consent_modal(t: &Theme, text: &str, turn: AskTurn) -> Modal {
         color: t.mag,
         lines,
         yes: Some(("send".into(), vec![Effect::AskSend(turn)])),
+    }
+}
+
+/// Confirm before sentry runs one of Claude's proposals: the exact command and what it does.
+fn run_proposal_modal(t: &Theme, p: crate::claude::Proposed) -> Modal {
+    let risky = crate::claude::risky(&p.cmd);
+    let mut lines = Vec::new();
+    for l in p.cmd.lines() {
+        lines.push(Line::styled(
+            format!("$ {l}"),
+            t.s(if risky.is_some() { t.red } else { t.fg }),
+        ));
+    }
+    lines.push(Line::raw(""));
+    if !p.why.is_empty() {
+        lines.push(Line::styled(format!("why: {}", p.why), t.fg()));
+    }
+    if p.known {
+        lines.push(Line::styled(
+            "This is one of sentry's known fixes.",
+            t.dim(),
+        ));
+    }
+    if let Some(u) = &p.undo {
+        lines.push(Line::styled(format!("undo: {u}"), t.dim()));
+    }
+    if let Some(r) = risky {
+        lines.push(Line::styled(
+            format!("Careful: this {r}. Check it before you say yes."),
+            t.s(t.red),
+        ));
+    }
+    if p.cmd.contains("sudo") {
+        lines.push(Line::styled(
+            "Needs sudo: sentry hands this terminal over so you type your own password.",
+            t.dim(),
+        ));
+    }
+    if !crate::claude::read_only(&p.cmd) {
+        lines.push(Line::styled(
+            "It changes something, so sentry audits again afterwards.",
+            t.dim(),
+        ));
+    }
+    lines.push(Line::styled(
+        "sentry runs this as you, not Claude. Its output stays here until you choose to send it.",
+        t.s(t.yellow),
+    ));
+    Modal {
+        title: "Run Claude's proposal".into(),
+        color: if risky.is_some() { t.red } else { t.yellow },
+        lines,
+        yes: Some(("run it".into(), vec![Effect::ChatRun(p)])),
     }
 }
 

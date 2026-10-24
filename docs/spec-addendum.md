@@ -165,3 +165,23 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
   - unverified origins and bad signatures.
 
   For those, `f` says why and points to "To do" or `A`.
+
+## A20. Fixing findings with Claude (supersedes the `f` flow of A19 when Claude Code is available)
+- `f` → consent modal → chat with `Ask::fix(&Finding)`. The prompt includes:
+  - the finding;
+  - sentry's known fixes (from A19), numbered with their commands and undo;
+  - the required answer shape: What's going on / Recommendation / Commands, one fenced block each with a `# why:` line.
+- **Claude's tools are unchanged** (A18 allowlist; `sudo`, `rm` and writes denied).
+- `claude::parse_commands` turns fenced blocks into `Proposed {cmd, why, undo, known}`.
+  - `known`/`undo` are set when a block matches a known fix exactly.
+  - The proposals are refreshed after every turn that produced any.
+- **Running a proposal** (`r`, then `1`–`9`): a confirm modal shows the command, the why, the undo, sudo and a `risky()` warning.
+  - sudo runs suspended, tee'd to `<cache>/sentry/claude/last-run.{txt,code}`, and is refused in a toolbox.
+  - Other proposals stream into the chat (`chat::Job`).
+  - Anything that isn't `read_only()` is followed by `sentry job audit`. The chat then reports whether the finding id is still in the latest report.
+- **Output back to Claude** only on `s`, through the consent modal (the last 60 lines plus the audit result).
+- **`C` hand-off:** `claude::interactive_cmd(session)` runs `claude --resume` with the same allowlist, the same denials and the system prompt, plus "the user runs anything that changes the system".
+  - It runs suspended with a short banner; afterwards sentry re-audits (for fix chats).
+  - Claude Code asks once whether to trust its scratch working directory. That decision is left to the user.
+- Letter keys in the chat (`r`, `s`, `C`) act only while the input line is empty; otherwise they're typed.
+- Without Claude Code, `f` is A19's static picker. In tests, `claude::TEST_AVAILABLE` fixes availability.

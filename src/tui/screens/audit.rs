@@ -44,7 +44,14 @@ pub fn hints(v: &View) -> Hints {
     }
     vec![
         ("j/k", "select"),
-        ("f", "fix"),
+        (
+            "f",
+            if crate::claude::available() {
+                "fix (with Claude)"
+            } else {
+                "fix"
+            },
+        ),
         ("b", "expected on/off"),
         ("B", "hide similar"),
         ("Enter", "run audit"),
@@ -309,6 +316,10 @@ impl Audit {
                     return Vec::new();
                 };
                 match a {
+                    // Claude reads the logs and says what to run; without it, sentry's own list.
+                    Action::Char('f') if crate::claude::available() => {
+                        return vec![Effect::AskConsent(crate::claude::Ask::fix(f))];
+                    }
                     Action::Char('f') => return fix_effects(v, f),
                     // `b` toggles: marks the finding expected, or un-marks it if it already is.
                     Action::Char('b') => {
@@ -420,8 +431,7 @@ impl Audit {
         } else {
             "Worth a look on this machine."
         };
-        let keys =
-            "f = fix it · b = expected on/off · A = ask Claude about it · Enter = audit again";
+        let keys = "f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
         let tw = (r.width as usize).saturating_sub(7).max(10);
         let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
@@ -450,8 +460,14 @@ impl Audit {
             sec("Why", &fd.why);
             sec("To do", &fd.fix);
             let fixes = crate::audit::fix::fixes(fd);
-            if !fixes.is_empty() {
-                let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
+            let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
+            if crate::claude::available() {
+                let mut l = "press f: Claude looks into it and tells you what to run".to_string();
+                if !labels.is_empty() {
+                    l.push_str(&format!(" (known fixes: {})", labels.join(" · ")));
+                }
+                sec("Fix", &l);
+            } else if !labels.is_empty() {
                 sec("Fix", &format!("press f: {}", labels.join(" · ")));
             }
             for l in fd.evidence.lines().take(8) {

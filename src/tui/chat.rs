@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
-use crate::claude::{Ask, Event};
+use crate::claude::{Ask, Event, Proposed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -20,6 +20,23 @@ pub enum Kind {
     ToolErr,
     Info,
     Err,
+}
+
+/// A command sentry runs on the user's behalf from inside the chat (not Claude).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Job {
+    /// A proposed command; `output` collects what it prints.
+    Proposal {
+        cmd: String,
+        output: String,
+        changes: bool,
+    },
+    /// `sentry job audit` after a change; the command and its result wait for it.
+    Audit {
+        cmd: String,
+        code: i32,
+        output: String,
+    },
 }
 
 pub struct Chat {
@@ -33,6 +50,14 @@ pub struct Chat {
     pub scroll: usize,
     pub cost: f64,
     got_done: bool,
+    /// Commands from Claude's latest answer, runnable with `r` + 1–9.
+    pub proposals: Vec<Proposed>,
+    /// `r` pressed: the next digit picks a proposal.
+    pub picking: bool,
+    /// Stream id, pid and kind of the command sentry is running for the chat.
+    pub job: Option<(u64, u32, Job)>,
+    /// A finished command's report, ready to send to Claude with `s`.
+    pub offer: Option<String>,
 }
 
 impl Chat {
@@ -47,7 +72,66 @@ impl Chat {
             scroll: 0,
             cost: 0.0,
             got_done: false,
+            proposals: Vec::new(),
+            picking: false,
+            job: None,
+            offer: None,
         }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.live.is_some() || self.job.is_some()
+    }
+
+    /// Re-read the proposals from the newest answer (after a turn ends).
+    fn refresh_proposals(&mut self) {
+        let last = self
+            .entries
+            .iter()
+            .rev()
+            .take_while(|(k, _)| *k != Kind::You)
+            .filter(|(k, _)| *k == Kind::Claude)
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>();
+        let text: String = last.into_iter().rev().collect::<Vec<_>>().join("\n");
+        let p = crate::claude::parse_commands(&text, &self.ask.known);
+        if !p.is_empty() || self.proposals.is_empty() {
+            self.proposals = p;
+        }
+    }
+
+    /// Output from the command sentry runs for the chat.
+    pub fn on_job_line(&mut self, text: String) {
+        let out = match self.job.as_mut() {
+            Some((_, _, Job::Proposal { output, .. })) => output,
+            // The audit's own progress isn't interesting here.
+            _ => return,
+        };
+        if out.len() < 16_000 {
+            out.push_str(&text);
+            out.push('\n');
+        }
+        self.push(Kind::Tool, format!("  {text}"));
+    }
+
+    /// The report sent back to Claude after a command (and the audit after it).
+    pub fn set_offer(&mut self, cmd: &str, code: i32, output: &str, after: Option<&str>) {
+        let tail: Vec<&str> = output.lines().rev().take(60).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        let mut text = format!(
+            "I ran this through sentry:\n$ {cmd}\nexit code {code}\noutput (last {} lines):\n{}",
+            tail.len(),
+            if tail.is_empty() {
+                "(none)".to_string()
+            } else {
+                tail.join("\n")
+            }
+        );
+        if let Some(a) = after {
+            text.push_str(&format!("\n\n{a}"));
+        }
+        text.push_str("\n\nDid it work? What, if anything, should I do next?");
+        self.offer = Some(text);
     }
 
     pub fn push(&mut self, kind: Kind, text: impl Into<String>) {
@@ -116,6 +200,7 @@ impl Chat {
         if code != 0 && !self.got_done {
             self.push(Kind::Err, format!("claude exited with {code}"));
         }
+        self.refresh_proposals();
     }
 
     pub fn running(&self) -> bool {
@@ -131,7 +216,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     );
     let color = if c.running() { t.cyan } else { t.mag };
     let inner = widgets::overlay(f, rect, t, &format!("Claude · {}", c.ask.subject), color);
-    let [log, rule, input, keys] = Layout::vertical([
+    let [log, rule, input, keyline] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -186,6 +271,55 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
             lines.push(Line::raw(""));
         }
     }
+    if !c.proposals.is_empty() && !c.running() {
+        lines.push(Line::styled(
+            "       Proposed commands (sentry runs them, after you confirm; Claude can't):",
+            t.s(t.yellow),
+        ));
+        for (i, p) in c.proposals.iter().take(9).enumerate() {
+            let first = p.cmd.lines().next().unwrap_or("");
+            let more = if p.cmd.lines().count() > 1 {
+                " …"
+            } else {
+                ""
+            };
+            let color = if crate::claude::risky(&p.cmd).is_some() {
+                t.red
+            } else {
+                t.cyan
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("     {} ", i + 1),
+                    ratatui::style::Style::new().fg(t.ink).bg(t.yellow),
+                ),
+                Span::styled(
+                    widgets::trunc(&format!(" {first}{more}"), w.saturating_sub(8).max(10)),
+                    t.s(color),
+                ),
+            ]));
+            let mut note = p.why.clone();
+            if p.known {
+                note.push_str(" (sentry's known fix)");
+            }
+            for l in wrap(&note, w.saturating_sub(9).max(10)) {
+                lines.push(Line::styled(format!("         {l}"), t.dim()));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
+    if let Some((_, _, job)) = &c.job {
+        let what = match job {
+            Job::Proposal { .. } => "       … running (C-c stops it)",
+            Job::Audit { .. } => "       … auditing again",
+        };
+        lines.push(Line::styled(what, t.dim()));
+    } else if c.offer.is_some() {
+        lines.push(Line::styled(
+            "       Press s to send this output to Claude (shown first), or ask your own follow-up.",
+            t.s(t.yellow),
+        ));
+    }
     if c.running() {
         let s = c.started.map_or(0, |s| s.elapsed().as_secs());
         lines.push(Line::styled(
@@ -203,6 +337,11 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     );
     let prompt = if c.running() {
         Line::styled("  (answering… C-c stops it)", t.dim())
+    } else if c.picking {
+        Line::styled(
+            format!("  run which? 1–{} (Esc cancels)", c.proposals.len().min(9)),
+            t.s(t.yellow),
+        )
     } else {
         Line::from(vec![
             Span::styled("› ", t.s(t.cyan)),
@@ -212,19 +351,35 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     };
     f.render_widget(Paragraph::new(prompt), input);
     let mut spans = Vec::new();
-    for (k, d) in [
-        ("Enter", "ask a follow-up"),
-        ("Esc", "close"),
-        ("C-c", "stop"),
-        ("PgUp/PgDn", "scroll"),
-    ] {
+    for (k, d) in keys(c) {
         spans.extend(chip(t, k, d, t.dim));
         spans.push(Span::raw("  "));
     }
     if c.cost > 0.0 {
         spans.push(Span::styled(format!("session ${:.3}", c.cost), t.dim()));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), keys);
+    f.render_widget(Paragraph::new(Line::from(spans)), keyline);
+}
+
+/// The key line: letters act only while the input line is empty (otherwise they're typed).
+pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
+    let mut k = vec![("Enter", "follow-up")];
+    let idle = c.input.is_empty() && !c.busy();
+    if idle && !c.proposals.is_empty() {
+        k.push(("r", "run a proposed command"));
+    }
+    if idle && c.offer.is_some() {
+        k.push(("s", "send output"));
+    }
+    if idle && c.session.is_some() {
+        k.push(("C", "continue in Claude Code"));
+    }
+    k.push(("Esc", "close"));
+    if c.busy() {
+        k.push(("C-c", "stop"));
+    }
+    k.push(("PgUp/Dn", "scroll"));
+    k
 }
 
 #[cfg(test)]
@@ -261,5 +416,42 @@ mod tests {
         );
         assert!(!c.running());
         assert!((c.cost - 0.0312).abs() < 1e-9);
+        assert!(c.proposals.is_empty());
+        assert!(!keys(&c).iter().any(|(k, _)| *k == "r"));
+        assert!(keys(&c).iter().any(|(k, _)| *k == "C"));
+    }
+
+    #[test]
+    fn proposals_after_answer() {
+        let f = crate::audit::Finding {
+            id: "unit-failed:system:systemd-remount-fs.service".into(),
+            message: "systemd-remount-fs.service failed".into(),
+            ..Default::default()
+        };
+        let mut c = Chat::new(Ask::fix(&f));
+        c.begin_turn("q", 1, 42);
+        c.on_event(Event::Text(
+            "**What's going on** read-only root.\n**Commands**\n```bash\n# why: harmless on composefs\nsudo systemctl reset-failed systemd-remount-fs.service\n```\n".into(),
+        ));
+        c.on_exit(0);
+        assert_eq!(c.proposals.len(), 1);
+        assert!(c.proposals[0].known);
+        assert!(keys(&c).iter().any(|(k, _)| *k == "r"));
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        let t = Theme::truecolor();
+        term.draw(|fr| draw(fr, fr.area(), &t, &c)).unwrap();
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|x| x.symbol())
+            .collect();
+        assert!(screen.contains("Proposed commands"));
+        assert!(screen.contains("sudo systemctl reset-failed systemd-remount-fs.service"));
+        assert!(screen.contains("sentry's known fix"));
+        c.set_offer("x", 0, "ok", Some("The finding is gone."));
+        assert!(c.offer.as_deref().unwrap().contains("exit code 0"));
     }
 }

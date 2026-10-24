@@ -709,6 +709,7 @@ fn chat_pane_and_consent_render() {
         "Port 27500 is owned by root; check it with sudo ss.",
     );
     c.on_exit(0);
+    c.session = Some("s1".into());
     let mut a = App::for_test(Config::default(), store(), ScreenId::Audit);
     a.set_chat(c);
     let s = render_to_string(&mut a, 120, 30);
@@ -719,7 +720,10 @@ fn chat_pane_and_consent_render() {
     assert!(s.contains("you    Explain this on my machine."), "{s}");
     assert!(s.contains("$ ss -tlnp 'sport = :27500'"), "{s}");
     assert!(s.contains("claude Port 27500 is owned by root"), "{s}");
-    assert!(s.contains("ask a follow-up"), "{s}");
+    assert!(
+        s.contains("follow-up") && s.contains("continue in Claude Code"),
+        "{s}"
+    );
     // Typing goes to the follow-up line; Enter asks for consent first.
     for ch in "who owns it?".chars() {
         key(&mut a, KeyCode::Char(ch));
@@ -791,6 +795,8 @@ fn dashboard_rows_jump_to_tabs() {
 
 #[test]
 fn audit_fix_key() {
+    // Without Claude Code, `f` is sentry's own list of fixes.
+    crate::claude::TEST_AVAILABLE.with(|c| c.set(false));
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
@@ -828,6 +834,55 @@ fn audit_fix_key() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("Remove it from Cleanup") || s.contains("Cleanup"),
+        "{s}"
+    );
+}
+
+#[test]
+fn audit_fix_with_claude() {
+    use crate::claude::{Ask, Event};
+    use crate::tui::chat::Chat;
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
+    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    render_to_string(&mut a, 158, 41);
+    // `f` shows what would be sent (finding + sentry's known fixes) before anything leaves.
+    key(&mut a, KeyCode::Char('f'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Ask Claude") && s.contains("sentry's known fixes"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    // An answer with a proposal: `r` opens the confirm box, `n` runs nothing.
+    let f = crate::audit::Finding {
+        id: "listener:svc:passim (fwupd firmware cache)".into(),
+        message: "passim".into(),
+        ..Default::default()
+    };
+    let mut c = Chat::new(Ask::fix(&f));
+    c.begin_turn("q", 1, 1);
+    c.on_event(Event::Text(
+        "**Commands**\n```bash\n# why: stop LAN sharing\nsudo systemctl mask --now passim.service\n```\n"
+            .into(),
+    ));
+    c.on_exit(0);
+    a.set_chat(c);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("run a proposed command"), "{s}");
+    key(&mut a, KeyCode::Char('r'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Run Claude's proposal"), "{s}");
+    assert!(
+        s.contains("undo: sudo systemctl unmask passim.service"),
+        "{s}"
+    );
+    assert!(s.contains("sentry runs this as you, not Claude"), "{s}");
+    key(&mut a, KeyCode::Char('n'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        !s.contains("Run Claude's proposal") && s.contains("Proposed commands"),
         "{s}"
     );
 }

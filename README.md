@@ -84,7 +84,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `4` | Updates | deployments, cached rpm-ostree and Flatpak updates. `c` checks, `u` upgrades (kmod ritual aware), `f` updates Flatpaks, `R` rolls back |
 | `5` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags, and pending dnf updates inside each toolbox (`old → new`). `c` checks (stopped toolboxes are started, then stopped again), `u`/`U` upgrade one/all, `Enter` opens a shell, `s` stops, `d` removes |
 | `6` | Flatpaks | permission flags from metadata + overrides, GL.nvidia pair check, `o` opens Flatseal |
-| `7` | Audit | what's worth a look, each explained (what it is, why it's listed, what to do) and marked `check` / `review` / `info`; known services are named and grouped; diff against the previous audit. `f` fixes the selected finding (shows the exact command and how to undo it, asks first, hands over the terminal for sudo, then audits again), `b` toggles expected, `A` asks Claude, `Enter` audits, `[`/`]` browse reports |
+| `7` | Audit | what's worth a look, each explained (what it is, why it's listed, what to do) and marked `check` / `review` / `info`; known services are named and grouped; diff against the previous audit. `f` fixes the selected finding: with Claude Code, Claude reads the logs and tells you what to run (see below); without it, sentry's own fixes (the exact command and how to undo it, asked first, the terminal handed over for sudo, then a re-audit), `b` toggles expected, `A` asks Claude, `Enter` audits, `[`/`]` browse reports |
 | `8` | Jobs | last run, cadence, due status. `Enter` shows the plan, then runs; `e` edits the cadence |
 | `9` | Cleanup | reclaimable space from dry runs; `Space` toggles, `Enter` confirms and runs the selection |
 | `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip, `a` abandon, `R` roll back, `l` log |
@@ -106,6 +106,17 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 - **You see what's sent.** Before every question, a screen shows the exact text that will go to Anthropic. `y` sends it.
 - **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. Claude Code refuses anything else, including `sudo` and any writes. The list is `ALLOWED` in `src/claude.rs`.
 - **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc closes the pane and stops Claude, and nothing keeps running after that.
+
+### Fixing a finding with Claude (`f` on Audit)
+
+`f` sends the finding and sentry's known fixes for it, and asks Claude for three things: what's going on, what it recommends (leaving it alone and marking it expected is a valid answer), and the commands to run, each with a `# why:` line.
+
+- **Claude proposes; you run.** Claude still can't change anything. Its commands show up as a numbered list under the answer. Press `r` (then `1`–`9`) to see one in a confirm box: the exact command, why, the undo if it's one of sentry's known fixes, and whether it needs sudo. Patterns like `curl … | sh` or `rm -rf /` are shown in red. `y` runs it: sentry runs it as you, not Claude.
+  - `sudo` commands hand over the terminal so you type your own password.
+  - Other commands stream into the chat.
+  - Commands that change something are followed by a re-audit, and the chat says whether the finding is gone.
+- **The output stays with you** until you press `s`, which shows the follow-up ("I ran X, exit N, output…") before sending it.
+- **`C` continues in Claude Code.** It opens the same conversation as an interactive `claude` session in this terminal. Read-only commands are pre-allowed and sudo and file edits stay off; Claude Code asks you before anything else. Quit it to return to sentry, which audits again.
 
 ## Workflows
 

@@ -231,10 +231,9 @@ fn event_loop(term: &mut Term, app: &mut app::App, rx: &Receiver<Event>) -> anyh
             term.terminal.draw(|f| app.draw(f))?;
             app.dirty = false;
         }
-        if let Some(cmd) = app.take_suspend() {
-            let title = cmd.display();
+        if let Some((cmd, banner)) = app.take_suspend() {
             let status = term.suspend(|| {
-                println!("$ {title}");
+                println!("{banner}");
                 cmd.interactive()
             })?;
             app.after_suspend(status);

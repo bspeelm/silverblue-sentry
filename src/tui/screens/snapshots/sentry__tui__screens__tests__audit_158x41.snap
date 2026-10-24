@@ -7,7 +7,7 @@ expression: body(&s)
 
 ┌ Findings · 2026-10-23.json (2/2) ────────────────────────────────────────────┐  ┌ Diff · 2026-09-23 → 2026-10-23 ──────────────────────────────────────────┐
 │ Worth a look on this machine.                                                │  │ Changed: 1 listeners (reachable) · 2 flatpak                             │
-│ f = fix it · b = expected on/off · A = ask Claude about it · Enter = audit … │  │                                                                          │
+│ f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = … │  │                                                                          │
 │        AREA      FINDING                                                     │  │ listeners (reachable)                                                    │
 │ check  flatpak   com.visualstudio.code gained filesystem=host                │  │ + tcp  0.0.0.0:22000/syncthing                      Syncthing            │
 │ review units     systemd-remount-fs.service failed                           │  │                                                                          │
@@ -26,19 +26,19 @@ expression: body(&s)
 │                                                                              │  │                                                                          │
 │                                                                              │  │ units                                                                    │
 │                                                                              │  │   not collected in the previous report: nothing to compare               │
-│                                                                              │  │                                                                          │
-│ 1 to check · 1 to review · 2 info                                            │  │ containers                                                               │
-│ ──────────────────────────────────────────────────────────────────────────── │  │   not collected in the previous report: nothing to compare               │
-│ What   com.visualstudio.code can now access every file you can read, outside │  │                                                                          │
-│        its sandbox.                                                          │  │ kargs                                                                    │
-│ Why    This permission is new since the audit on 2026-09-23: an app update   │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
-│        or an override added it.                                              │  │                                                                          │
+│ 1 to check · 1 to review · 2 info                                            │  │                                                                          │
+│ ──────────────────────────────────────────────────────────────────────────── │  │ containers                                                               │
+│ What   com.visualstudio.code can now access every file you can read, outside │  │   not collected in the previous report: nothing to compare               │
+│        its sandbox.                                                          │  │                                                                          │
+│ Why    This permission is new since the audit on 2026-09-23: an app update   │  │ kargs                                                                    │
+│        or an override added it.                                              │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
 │ To do  Check `flatpak info --show-permissions com.visualstudio.code`. To     │  │                                                                          │
 │        take it back: Flatseal (Flatpaks tab, o) or `flatpak override --user  │  │                                                                          │
 │        --nofilesystem=host com.visualstudio.code`. If you expect it, press   │  │                                                                          │
 │        b.                                                                    │  │                                                                          │
-│ Fix    press f: Take the permission away (a user override)                   │  │                                                                          │
+│ Fix    press f: Claude looks into it and tells you what to run (known fixes: │  │                                                                          │
+│        Take the permission away (a user override))                           │  │                                                                          │
 │        [Context] filesystems=host;                                           │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   f  fix   b  expected on/off   B  hide similar   Enter  run audit   [ ]  browse reports   C-h/l  focus   A  ask Claude   ?  help   q  quit
+ j/k  select   f  fix (with Claude)   b  expected on/off   B  hide similar   Enter  run audit   [ ]  browse reports   A  ask Claude   ?  help   q  quit

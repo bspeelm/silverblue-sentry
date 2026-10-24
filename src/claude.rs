@@ -14,6 +14,10 @@ pub struct Ask {
     /// The facts sentry sends, shown verbatim in the consent modal.
     pub context: String,
     pub question: String,
+    /// sentry's own fixes for the thing asked about (matched against Claude's proposals).
+    pub known: Vec<crate::audit::fix::Fix>,
+    /// The audit finding this is about: audited again after a proposed command changes something.
+    pub finding: Option<String>,
 }
 
 impl Ask {
@@ -26,6 +30,51 @@ impl Ask {
             subject: subject.into(),
             context: context.into(),
             question: question.into(),
+            known: Vec::new(),
+            finding: None,
+        }
+    }
+
+    /// `f` on an audit finding: diagnose, recommend, and propose commands for the user to run.
+    pub fn fix(f: &crate::audit::Finding) -> Self {
+        use crate::audit::fix::{Act, fixes};
+        let known = fixes(f);
+        let list: Vec<String> = known
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| match &x.act {
+                Act::Shell { cmd, .. } => Some(format!(
+                    "  {}. {}: {cmd}{}",
+                    i + 1,
+                    x.label,
+                    x.undo
+                        .as_ref()
+                        .map_or(String::new(), |u| format!("  (undo: {u})"))
+                )),
+                _ => None,
+            })
+            .collect();
+        let context = format!(
+            "A finding from sentry's audit of my machine:\n{} [{}] {}\nsentry's notes:\n  what: {}\n  why: {}\n  to do: {}\nevidence:\n{}\n\nsentry's known fixes for this:\n{}",
+            f.severity.as_str(),
+            f.category,
+            f.message,
+            f.what,
+            f.why,
+            f.fix,
+            f.evidence,
+            if list.is_empty() {
+                "  (none)".to_string()
+            } else {
+                list.join("\n")
+            }
+        );
+        Self {
+            subject: format!("fix · {}", f.message),
+            context,
+            question: FIX_QUESTION.into(),
+            known,
+            finding: Some(f.id.clone()),
         }
     }
 
@@ -33,6 +82,136 @@ impl Ask {
     pub fn prompt(&self) -> String {
         format!("{}\n\nQuestion: {}", self.context.trim_end(), self.question)
     }
+}
+
+const FIX_QUESTION: &str = "Help me fix this. Investigate with your read-only commands first. You \
+cannot change anything: I will run whatever you recommend myself, through sentry. Answer in \
+exactly three parts:\n\
+**What's going on**: what the evidence and logs mean on this machine, in plain words.\n\
+**Recommendation**: what to do and why, and why not the alternatives. \"Leave it and mark it \
+expected\" is a fine answer when that's right.\n\
+**Commands**: each command I should run in its own ```bash fenced block, whose first line is a \
+`# why: ...` comment. Use sentry's known fix when one fits. Use sudo only where it's needed. \
+If nothing should be run, say so and give no blocks.";
+
+/// A command Claude proposed for the user to run (parsed from its answer).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Proposed {
+    pub cmd: String,
+    pub why: String,
+    /// The undo, when this matches one of sentry's known fixes.
+    pub undo: Option<String>,
+    pub known: bool,
+}
+
+/// Fenced code blocks in an answer → commands, each with the `# why:` line inside the block (or
+/// the last sentence before it). Comment lines are dropped from the command itself.
+pub fn parse_commands(text: &str, known: &[crate::audit::fix::Fix]) -> Vec<Proposed> {
+    let mut out = Vec::new();
+    let mut prev_text = String::new();
+    let mut lines = text.lines();
+    while let Some(l) = lines.next() {
+        let t = l.trim_start();
+        if !t.starts_with("```") {
+            if !t.is_empty() {
+                prev_text = t.trim_end_matches(':').to_string();
+            }
+            continue;
+        }
+        let mut why = String::new();
+        let mut body = Vec::new();
+        for b in lines.by_ref() {
+            if b.trim_start().starts_with("```") {
+                break;
+            }
+            let bt = b.trim();
+            if let Some(w) = bt
+                .strip_prefix("# why:")
+                .or_else(|| bt.strip_prefix("#why:"))
+            {
+                why = w.trim().to_string();
+            } else if bt.starts_with('#') || bt.is_empty() {
+                continue;
+            } else {
+                body.push(b.trim_end().to_string());
+            }
+        }
+        if body.is_empty() {
+            continue;
+        }
+        let cmd = body.join("\n");
+        let matched = known.iter().find(|f| {
+            matches!(&f.act, crate::audit::fix::Act::Shell { cmd: k, .. } if k.trim() == cmd.trim())
+        });
+        out.push(Proposed {
+            why: if why.is_empty() {
+                prev_text.clone()
+            } else {
+                why
+            },
+            undo: matched.and_then(|f| f.undo.clone()),
+            known: matched.is_some(),
+            cmd,
+        });
+    }
+    out
+}
+
+/// Patterns worth a red warning before running (never silently blocked).
+pub fn risky(cmd: &str) -> Option<&'static str> {
+    let c = cmd.replace(char::is_whitespace, " ");
+    if c.contains("rm -rf /") || c.contains("rm -rf ~") || c.contains("rm -fr /") {
+        Some("deletes recursively from a top-level path")
+    } else if (c.contains("curl") || c.contains("wget"))
+        && (c.contains("| sh") || c.contains("| bash"))
+    {
+        Some("downloads and runs a script")
+    } else if c.contains("mkfs") || c.contains("dd if=") || c.contains("wipefs") {
+        Some("writes to a disk directly")
+    } else if c.contains("rpm-ostree rebase") || c.contains("rpm-ostree reset") {
+        Some("replaces or resets the whole system image")
+    } else {
+        None
+    }
+}
+
+/// Every line is one of the allowlisted read-only commands (no re-audit needed after it).
+pub fn read_only(cmd: &str) -> bool {
+    cmd.lines().filter(|l| !l.trim().is_empty()).all(|l| {
+        l.split(['|', ';', '&'])
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .all(|part| {
+                ALLOWED.iter().any(|a| {
+                    a.strip_prefix("Bash(")
+                        .and_then(|x| x.strip_suffix(":*)"))
+                        .is_some_and(|prefix| part.starts_with(prefix))
+                }) || part.starts_with("grep")
+                    || part.starts_with("head")
+                    || part.starts_with("tail")
+            })
+    })
+}
+
+/// A full interactive Claude Code session continuing `session`, same restrictions: read-only
+/// commands pre-allowed, sudo and file edits denied, anything else asks you first.
+pub fn interactive_cmd(session: &str) -> Cmd {
+    let dir = cwd();
+    let _ = std::fs::create_dir_all(&dir);
+    Cmd::host("claude")
+        .args(["--resume", session, "--strict-mcp-config"])
+        .arg("--append-system-prompt")
+        .arg(format!(
+            "{} The user runs anything that changes the system themselves (including every sudo \
+             command); propose such commands, never run them.",
+            system_prompt()
+        ))
+        .arg("--allowedTools")
+        .args(ALLOWED.iter().copied())
+        .arg("--disallowedTools")
+        .args(DENIED.iter().copied())
+        .dir(dir)
+        .timeout(None)
 }
 
 /// Read-only commands and paths Claude may use. Review this list before widening it.
@@ -43,6 +222,8 @@ pub const ALLOWED: &[&str] = &[
     "Bash(systemctl status:*)",
     "Bash(systemctl --user status:*)",
     "Bash(systemctl list-units:*)",
+    "Bash(systemctl --failed:*)",
+    "Bash(systemctl --user --failed:*)",
     "Bash(systemctl --user list-units:*)",
     "Bash(systemctl list-unit-files:*)",
     "Bash(systemctl cat:*)",
@@ -122,7 +303,16 @@ pub fn cwd() -> std::path::PathBuf {
 }
 
 pub fn available() -> bool {
+    #[cfg(test)]
+    return TEST_AVAILABLE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
     Cmd::host("claude").available()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Render tests don't depend on whether this machine has Claude Code.
+    pub static TEST_AVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// One turn: the first (`resume = None`) or a follow-up in the same session.
@@ -302,6 +492,48 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn proposed_commands() {
+        let known = crate::audit::fix::fixes(&crate::audit::Finding {
+            id: "unit-failed:system:systemd-remount-fs.service".into(),
+            ..Default::default()
+        });
+        let answer = "**Commands**\nClear it:\n```bash\n# why: the root is a read-only composefs overlay, remount can't succeed\nsudo systemctl reset-failed systemd-remount-fs.service\n```\nThen check:\n```\nsystemctl status systemd-remount-fs.service\n```\n";
+        let p = parse_commands(answer, &known);
+        assert_eq!(p.len(), 2);
+        assert_eq!(
+            p[0].cmd,
+            "sudo systemctl reset-failed systemd-remount-fs.service"
+        );
+        assert!(p[0].why.starts_with("the root is a read-only"));
+        assert!(p[0].known && p[0].undo.is_some());
+        assert_eq!(
+            p[1].why, "Then check",
+            "falls back to the sentence before the block"
+        );
+        assert!(!p[1].known);
+        assert!(parse_commands("no blocks here", &known).is_empty());
+        assert!(read_only(
+            "systemctl status x; journalctl -b -u x | tail -5"
+        ));
+        assert!(!read_only("sudo systemctl reset-failed x"));
+        assert_eq!(
+            risky("curl -s https://x | sh"),
+            Some("downloads and runs a script")
+        );
+        assert_eq!(risky("sudo systemctl mask --now passim"), None);
+        let a = Ask::fix(&crate::audit::Finding {
+            id: "listener:svc:passim (fwupd firmware cache)".into(),
+            message: "passim · open to all networks".into(),
+            ..Default::default()
+        });
+        assert!(
+            a.context.contains("1. Stop passim sharing firmware")
+                && a.context.contains("(undo: sudo systemctl unmask")
+        );
+        assert!(a.finding.is_some() && a.prompt().contains("# why:"));
     }
 
     #[test]
