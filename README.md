@@ -48,12 +48,13 @@ tar xf silverblue-sentry-0.1.2-x86_64-linux-gnu.tar.gz
 install -Dm755 silverblue-sentry-0.1.2/sentry ~/.local/bin/sentry
 ```
 
-From source (a toolbox with `cargo` works fine; Rust 1.85+):
+From source (a toolbox with `cargo` and `make` works fine; Rust 1.85+):
 
 ```sh
-cargo build --release
-install -Dm755 target/release/sentry ~/.local/bin/sentry
+make install-binary      # builds a release binary and copies it to ~/.local/bin/sentry
 ```
+
+`make uninstall-binary` removes it again, and `make check` runs the build, tests, clippy and fmt.
 
 Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reached through `flatpak-spawn --host`, so `sentry` works from either side. It leaves files only under `~/.config/sentry`, `~/.local/share/sentry` and `~/.cache/sentry` (or the `XDG_*_HOME` locations).
 

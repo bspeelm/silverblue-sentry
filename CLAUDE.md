@@ -6,10 +6,10 @@ Visual target: `docs/design/sentry-tui.dc.html` (read the source; don't render i
 Upgrade procedures: the user's personal notes in `docs/cheatsheets/` (gitignored, never commit or publish them) are the source for `assets/workflows/*.toml`.
 
 ## Commands
-- Build/test: `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`
+- Build/test: `make check` (= `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`)
 - Snapshot tests: `cargo insta review` (or `INSTA_UPDATE=always cargo test` and then inspect `git diff`)
 - Re-capture fixtures: `scripts/capture-fixtures.sh` (scrubs the username and IPs; journal fixtures are synthetic, never captured)
-- Install: `install -Dm755 target/release/sentry ~/.local/bin/sentry`
+- Install: `make install-binary` (copies `target/release/sentry` to `~/.local/bin/sentry`)
 - Try a collector: `cargo run -q -- collect ostree`; a job plan: `cargo run -q -- job cleanup-flatpak --dry-run`
 - Manual TUI tests: point `XDG_DATA_HOME`/`XDG_CONFIG_HOME` at a scratch dir so reports, jobs.json and baseline.toml stay out of the real ones
 
