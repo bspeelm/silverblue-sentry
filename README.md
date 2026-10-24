@@ -28,7 +28,7 @@ It is opinionated about one kind of setup and encodes procedures proven on one m
 
 ## Status and safety
 
-**v0.1.2, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine, but some paths have only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree upgrade`/`rollback`/`cleanup`, reboots, `akmods`, `flatpak uninstall`, `podman` prune/remove.
+**v0.1.3, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine. The quick-update kernel path (`rpm-ostree upgrade`, both reboots, layering the kmod, the GL runtimes) has been run end to end on that machine. Some paths have still only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree rollback`/`cleanup`, `akmods` building a kmod, `flatpak uninstall`, `podman` prune/remove.
 
 - Nothing runs in the background: no services, timers or autostart. The recorder is a foreground process you start and stop.
 - Every destructive action shows a preview, waits for your confirmation, and streams its output. Reboots never happen on their own.
@@ -41,11 +41,11 @@ It is opinionated about one kind of setup and encodes procedures proven on one m
 From the [latest release](https://github.com/bspeelm/silverblue-sentry/releases/latest) (x86_64; built on Fedora 44 and linked only against glibc):
 
 ```sh
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.2/silverblue-sentry-0.1.2-x86_64-linux-gnu.tar.gz
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.2/silverblue-sentry-0.1.2-x86_64-linux-gnu.tar.gz.sha256
-sha256sum -c silverblue-sentry-0.1.2-x86_64-linux-gnu.tar.gz.sha256
-tar xf silverblue-sentry-0.1.2-x86_64-linux-gnu.tar.gz
-install -Dm755 silverblue-sentry-0.1.2/sentry ~/.local/bin/sentry
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.3/silverblue-sentry-0.1.3-x86_64-linux-gnu.tar.gz
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.1.3/silverblue-sentry-0.1.3-x86_64-linux-gnu.tar.gz.sha256
+sha256sum -c silverblue-sentry-0.1.3-x86_64-linux-gnu.tar.gz.sha256
+tar xf silverblue-sentry-0.1.3-x86_64-linux-gnu.tar.gz
+install -Dm755 silverblue-sentry-0.1.3/sentry ~/.local/bin/sentry
 ```
 
 From source (a toolbox with `cargo` and `make` works fine; Rust 1.85+):
