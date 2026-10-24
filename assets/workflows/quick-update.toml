@@ -129,6 +129,15 @@ run = "sentry check nvidia-loaded && sentry check booted-kernel --expect {{ pend
 gate = "auto"
 when = "kernel_changed"
 
+# The "flatpak" step ran before the new driver was loaded, so it couldn't pull the GL
+# runtimes for it; `flatpak update` installs the pair matching the running driver.
+[[steps]]
+id = "flatpak-gl-update"
+title = "Install the Flatpak GL runtimes for the running NVIDIA driver"
+run = "flatpak update -y"
+gate = "confirm"
+when = "!flatpak_gl_nvidia"
+
 [[steps]]
 id = "flatpak-gl"
 title = "Flatpak GL.nvidia and GL32.nvidia match the host driver"
@@ -137,6 +146,7 @@ gate = "auto"
 on_fail = "manual"
 manual = """
 Run `flatpak update` to pull GL.nvidia-<ver> and GL32.nvidia-<ver>. Both must be at the same version.
+If Flathub doesn't have that version yet, wait (it usually follows a driver release within days).
 Then fully quit and relaunch Steam: a sandbox started before the update keeps the old runtime."""
 
 [[steps]]

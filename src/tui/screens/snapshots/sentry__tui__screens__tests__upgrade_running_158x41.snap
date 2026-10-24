@@ -5,7 +5,7 @@ expression: body(&s)
  1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade ●
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ quick-update · 7/17 ─────────────────────────────────────┐  ┌ Log · steps/upgrade-ritual.log ──────────────────────────────────────────────────────────────┐
+┌ quick-update · 7/18 ─────────────────────────────────────┐  ┌ Log · steps/upgrade-ritual.log ──────────────────────────────────────────────────────────────┐
 │ ✓   1 Preview the upgrade (decides routine v…      auto  │  │ ▶ 5/17 Exactly one layered kmod-nvidia package present                                       │
 │ ✓   2 Make sure Steam is not running               auto  │  │ ✓ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64                                │
 │ ✓   3 Update Flatpaks                           confirm  │  │                                                                                              │
@@ -21,9 +21,9 @@ expression: body(&s)
 │ ○  13 Layer the new kmod-nvidia RPM             confirm  │  │                                                                                              │
 │ ↻  14 Reboot to load the driver                  reboot  │  │                                                                                              │
 │ ○  15 Driver loaded on the expected kernel         auto  │  │                                                                                              │
-│ ○  16 Flatpak GL.nvidia and GL32.nvidia matc…      auto  │  │                                                                                              │
-│ ○  17 Remove the temporary updates-master.re…  optional  │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│ ○  16 Install the Flatpak GL runtimes for th…   confirm  │  │                                                                                              │
+│ ○  17 Flatpak GL.nvidia and GL32.nvidia matc…      auto  │  │                                                                                              │
+│ ○  18 Remove the temporary updates-master.re…  optional  │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
@@ -33,7 +33,7 @@ expression: body(&s)
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
-│                                                          │  │ │ ▶ 8/17 Stage upgrade, dropping                                                           │ │
+│                                                          │  │ │ ▶ 8/18 Stage upgrade, dropping                                                           │ │
 │                                                          │  │ │ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 · confirm                    │ │
 │ ──────────────────────────────────────────────────────── │  │ │ $ rpm-ostree upgrade --uninstall                                                         │ │
 │ pending_kernel = 7.2.11-200.fc44.x86_64                  │  │ │ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64                              │ │

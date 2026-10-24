@@ -530,7 +530,7 @@ fn upgrade_screen_idle_and_running() {
     key(&mut a, KeyCode::Char('1'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("↻ workflow quick-update · step 8/17 Stage upgrade, dropping kmod-nvidia"),
+        s.contains("↻ workflow quick-update · step 8/18 Stage upgrade, dropping kmod-nvidia"),
         "{s}"
     );
     assert!(s.contains("press 0 to continue"));

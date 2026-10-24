@@ -6,7 +6,7 @@ expression: body(&s)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Workflows · /var/home/user/.config/sentry/workflows ─────┐  ┌ Last result ─────────────────────────────────────────────────────────────────────────────────┐
-│ quick-update  17 steps                                   │  │ No workflow in progress.                                                                     │
+│ quick-update  18 steps                                   │  │ No workflow in progress.                                                                     │
 │ rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual  │  │                                                                                              │
 │ when the kernel changes                                  │  │ quick-update has never run.                                                                  │
 │ never run                                                │  │                                                                                              │
@@ -36,7 +36,7 @@ expression: body(&s)
 │                                                          │  │ │ quick-update.toml                                                                        │ │
 │                                                          │  │ │ preview → flatpak-idle → flatpak → toolboxes → upgrade-routine → reboot-routine →        │ │
 │                                                          │  │ │ kmod-guard → upgrade-ritual → reboot-1 → verify-kernel → akmods → kmod-built →           │ │
-│                                                          │  │ │ layer-kmod → reboot-2 → verify → flatpak-gl → master-repo-cleanup                        │ │
+│                                                          │  │ │ layer-kmod → reboot-2 → verify → flatpak-gl-update → flatpak-gl → master-repo-cleanup    │ │
 │                                                          │  │ │ [Enter] start   [e] edit   lint ✓                                                        │ │
 │                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘

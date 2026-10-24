@@ -363,6 +363,8 @@ mod tests {
             match name {
                 "kernel_changed" => Ok(self.kernel_changed),
                 "master_repo_present" => Ok(false),
+                // A new driver needs new GL runtimes; a routine upgrade has them already.
+                "flatpak_gl_nvidia" => Ok(!self.kernel_changed),
                 n => Err(format!("unknown {n}")),
             }
         }
@@ -495,8 +497,8 @@ mod tests {
         assert_eq!(st.status, RunStatus::Done);
         assert_eq!(
             env.cond_calls.get(),
-            2,
-            "kernel_changed frozen after one evaluation"
+            3,
+            "kernel_changed frozen after one evaluation (+ master_repo_present, flatpak_gl_nvidia)"
         );
     }
 
@@ -521,6 +523,7 @@ mod tests {
                 "layer-kmod",
                 "reboot-2",
                 "verify",
+                "flatpak-gl-update",
                 "flatpak-gl",
                 "done"
             ]

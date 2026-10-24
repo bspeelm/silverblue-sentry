@@ -189,6 +189,7 @@ const SHIPPED: &[(&str, u64)] = &[
     ("quick-update", 0x62c1578a44eea6ad),
     ("quick-update", 0xde8871690062d69b),
     ("quick-update", 0x2d312982ded1964f),
+    ("quick-update", 0xf52047aecfabc312),
     ("release-rebase", 0x88a4b4c8c169a61b),
     ("release-rebase", 0xacf631c5205f1724),
     ("release-rebase", 0x66f7dd06dad74b07),
