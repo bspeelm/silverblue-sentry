@@ -38,6 +38,10 @@ pub enum Effect {
     Kill(u32, String),
     /// Append to `baseline.toml` (listener key or finding id/pattern).
     Baseline(BaselineEdit),
+    /// Run in this terminal with the TUI suspended, then apply the effects (e.g. re-audit).
+    Interactive(Cmd, Vec<Effect>),
+    /// Pick one of several actions with 1–9.
+    Choose(Choice),
     /// Remove from `baseline.toml` whatever covers this (the `b` toggle).
     Unbaseline(BaselineEdit),
     /// Ask for a line of input in the key bar (initial text).
@@ -80,6 +84,14 @@ impl Prompt {
 pub enum AskTurn {
     First(crate::claude::Ask),
     Follow(String),
+}
+
+/// A numbered choice between actions (fix options).
+#[derive(Clone)]
+pub struct Choice {
+    pub title: String,
+    pub lines: Vec<Line<'static>>,
+    pub options: Vec<(String, Vec<Effect>)>,
 }
 
 /// Workflow actions from the Upgrade screen, executed against the app's session.
@@ -200,6 +212,9 @@ pub struct App {
     wf: Option<Session>,
     suspend_for: Option<SuspendFor>,
     chat: Option<super::chat::Chat>,
+    choice: Option<Choice>,
+    /// Effects to apply once a suspended command returns.
+    suspend_then: Vec<Effect>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -239,6 +254,8 @@ impl App {
             wf: Session::resume(),
             suspend_for: None,
             chat: None,
+            choice: None,
+            suspend_then: Vec::new(),
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -291,6 +308,8 @@ impl App {
             wf: None,
             suspend_for: None,
             chat: None,
+            choice: None,
+            suspend_then: Vec::new(),
         }
     }
 
@@ -582,6 +601,23 @@ impl App {
         self.dirty = true;
         if self.run.is_some() {
             self.run_key(k);
+            return;
+        }
+        if let Some(c) = self.choice.take() {
+            match k.code {
+                KeyCode::Char(d @ '1'..='9') => {
+                    let i = d as usize - '1' as usize;
+                    match c.options.get(i) {
+                        Some((_, effects)) => {
+                            let e = effects.clone();
+                            self.apply(e, now);
+                        }
+                        None => self.choice = Some(c),
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {}
+                _ => self.choice = Some(c),
+            }
             return;
         }
         if let Some(m) = self.modal.take() {
@@ -944,6 +980,11 @@ impl App {
                     Err(e) => self.toast(format!("{}: {e}", cmd.bin())),
                 },
                 Effect::Suspend(cmd) => self.suspend = Some(cmd),
+                Effect::Interactive(cmd, then) => {
+                    self.suspend = Some(cmd);
+                    self.suspend_then = then;
+                }
+                Effect::Choose(c) => self.choice = Some(c),
                 Effect::Kill(pid, msg) => match kill(pid) {
                     Ok(()) => {
                         self.toast(msg);
@@ -1274,6 +1315,20 @@ impl App {
             self.dirty = true;
             return;
         }
+        let then = std::mem::take(&mut self.suspend_then);
+        if !then.is_empty() {
+            match &status {
+                Ok(s) if s.success() => self.toast("done · checking again"),
+                Ok(s) => self.toast(format!(
+                    "exited with {} · checking again",
+                    s.code().unwrap_or(-1)
+                )),
+                Err(e) => self.toast(e.to_string()),
+            }
+            self.apply(then, Instant::now());
+            self.dirty = true;
+            return;
+        }
         match status {
             Ok(s) if s.success() => self.toast("back in sentry"),
             Ok(s) => self.toast(format!("exited with {}", s.code().unwrap_or(-1))),
@@ -1393,6 +1448,17 @@ impl App {
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
             draw_modal(f, body, &t, m);
+        }
+        if let Some(c) = &self.choice {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            let lines = c.lines.clone();
+            let m = Modal {
+                title: c.title.clone(),
+                color: t.yellow,
+                lines,
+                yes: None,
+            };
+            draw_modal(f, body, &t, &m);
         }
         if let Some(r) = &self.run {
             widgets::dim_backdrop(f.buffer_mut(), body);

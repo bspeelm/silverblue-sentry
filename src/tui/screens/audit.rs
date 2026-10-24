@@ -11,6 +11,7 @@ use crate::audit::diff::{self, Kind};
 use crate::audit::findings::is_expected;
 use crate::audit::store::Stored;
 use crate::audit::{Finding, Sev};
+use crate::exec::Cmd;
 use crate::tui::app::{BaselineEdit, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
@@ -43,6 +44,7 @@ pub fn hints(v: &View) -> Hints {
     }
     vec![
         ("j/k", "select"),
+        ("f", "fix"),
         ("b", "expected on/off"),
         ("B", "hide similar"),
         ("Enter", "run audit"),
@@ -60,6 +62,151 @@ pub fn audit_run() -> Effect {
         then: vec![Fetch::Reports, Fetch::Jobs],
         ok_toast: "audit complete".into(),
     })
+}
+
+/// `f`: the finding's fixes as a confirm box (one) or a numbered choice (several).
+fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
+    use crate::audit::fix::{self, Act};
+    let t = v.t;
+    let fixes = fix::fixes(f);
+    if fixes.is_empty() {
+        return vec![Effect::Toast(fix::no_fix_reason(f).into())];
+    }
+    let to_effects = |x: &fix::Fix| -> Result<Vec<Effect>, String> {
+        let reaudit = if x.inspect { vec![] } else { vec![audit_run()] };
+        Ok(match &x.act {
+            Act::Shell { cmd, sudo: true } => {
+                if let Some(why) = crate::workflows::runner::tty_blocker() {
+                    return Err(why.into());
+                }
+                let mut then = reaudit;
+                if x.inspect {
+                    then.push(Effect::Toast("done".into()));
+                }
+                vec![Effect::Interactive(
+                    Cmd::host("bash").args(["-c", cmd]).timeout(None),
+                    then,
+                )]
+            }
+            Act::Shell { cmd, sudo: false } => {
+                let mut queue = Vec::new();
+                if !x.inspect {
+                    queue.push(sentry_cmd(&["job", "audit"]));
+                }
+                vec![Effect::Run(RunSpec {
+                    title: x.label.clone(),
+                    cmd: Cmd::host("bash").args(["-c", cmd]).timeout(None),
+                    queue,
+                    then: vec![Fetch::Reports, Fetch::Jobs],
+                    ok_toast: if x.inspect {
+                        "done".into()
+                    } else {
+                        "fixed · audited again".into()
+                    },
+                })]
+            }
+            Act::Edit { path, line } => {
+                let editor = std::env::var("VISUAL")
+                    .or_else(|_| std::env::var("EDITOR"))
+                    .unwrap_or_else(|_| "nano".into());
+                let path = path.replacen('~', &crate::paths::home().display().to_string(), 1);
+                vec![Effect::Interactive(
+                    Cmd::local(&editor)
+                        .arg(format!("+{line}"))
+                        .arg(path)
+                        .timeout(None),
+                    reaudit,
+                )]
+            }
+            Act::Open(slug) => match crate::tui::ScreenId::from_name(slug) {
+                Some(id) => vec![Effect::Goto(id)],
+                None => vec![],
+            },
+            Act::Cleanup(job) => vec![Effect::CleanupFocus(*job)],
+        })
+    };
+    let describe = |x: &fix::Fix| -> Vec<Line<'static>> {
+        let mut l = Vec::new();
+        match &x.act {
+            Act::Shell { cmd, sudo } => {
+                l.push(Line::styled(
+                    format!("$ {cmd}"),
+                    t.s(if x.risky { t.red } else { t.fg }),
+                ));
+                if *sudo {
+                    l.push(Line::styled(
+                        "Needs sudo: sentry hands this terminal over for your password.",
+                        t.dim(),
+                    ));
+                }
+            }
+            Act::Edit { path, line } => l.push(Line::styled(
+                format!("opens {path} at line {line} in $EDITOR"),
+                t.fg(),
+            )),
+            Act::Open(slug) => l.push(Line::styled(format!("goes to the {slug} tab"), t.fg())),
+            Act::Cleanup(job) => l.push(Line::styled(
+                format!(
+                    "opens Cleanup with {} selected (you confirm there)",
+                    job.name()
+                ),
+                t.fg(),
+            )),
+        }
+        if let Some(u) = &x.undo {
+            l.push(Line::styled(format!("undo: {u}"), t.dim()));
+        }
+        l
+    };
+    if fixes.len() == 1 {
+        let x = &fixes[0];
+        let effects = match to_effects(x) {
+            Ok(e) => e,
+            Err(why) => return vec![Effect::Toast(why)],
+        };
+        let mut lines = vec![
+            Line::styled(f.message.clone(), t.fg()),
+            Line::styled(format!("→ {}", x.label), t.s(t.cyan)),
+        ];
+        lines.extend(describe(x));
+        if !x.inspect && matches!(x.act, Act::Shell { .. } | Act::Edit { .. }) {
+            lines.push(Line::styled(
+                "Afterwards sentry audits again so you can see it's gone.",
+                t.dim(),
+            ));
+        }
+        return vec![Effect::Confirm(Modal {
+            title: "Fix".into(),
+            color: if x.risky { t.red } else { t.yellow },
+            lines,
+            yes: Some(("run it".into(), effects)),
+        })];
+    }
+    let mut lines = vec![Line::styled(f.message.clone(), t.fg()), Line::raw("")];
+    let mut options = Vec::new();
+    for (i, x) in fixes.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", i + 1),
+                ratatui::style::Style::new().fg(t.ink).bg(t.yellow),
+            ),
+            Span::styled(format!(" {}", x.label), t.s(t.cyan)),
+        ]));
+        for d in describe(x) {
+            let spans: Vec<Span> = std::iter::once(Span::raw("    ")).chain(d.spans).collect();
+            lines.push(Line::from(spans));
+        }
+        match to_effects(x) {
+            Ok(e) => options.push((x.label.clone(), e)),
+            Err(why) => options.push((format!("{} (unavailable: {why})", x.label), vec![])),
+        }
+    }
+    lines.push(Line::raw(""));
+    vec![Effect::Choose(crate::tui::app::Choice {
+        title: "Fix · pick one (1–9, n cancels)".into(),
+        lines,
+        options,
+    })]
 }
 
 /// Broader baseline pattern for `B`: same process on any address, same app any permission, …
@@ -162,6 +309,7 @@ impl Audit {
                     return Vec::new();
                 };
                 match a {
+                    Action::Char('f') => return fix_effects(v, f),
                     // `b` toggles: marks the finding expected, or un-marks it if it already is.
                     Action::Char('b') => {
                         let edit = if !f.listeners.is_empty() {
@@ -272,7 +420,8 @@ impl Audit {
         } else {
             "Worth a look on this machine."
         };
-        let keys = "b = expected on/off · B = hide all like it · A = ask Claude about it · Enter = audit again";
+        let keys =
+            "f = fix it · b = expected on/off · A = ask Claude about it · Enter = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
         let tw = (r.width as usize).saturating_sub(7).max(10);
         let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
@@ -300,6 +449,11 @@ impl Audit {
             );
             sec("Why", &fd.why);
             sec("To do", &fd.fix);
+            let fixes = crate::audit::fix::fixes(fd);
+            if !fixes.is_empty() {
+                let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
+                sec("Fix", &format!("press f: {}", labels.join(" · ")));
+            }
             for l in fd.evidence.lines().take(8) {
                 d.push(Line::styled(format!("       {l}"), t.dim()));
             }

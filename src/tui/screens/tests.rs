@@ -788,3 +788,46 @@ fn dashboard_rows_jump_to_tabs() {
         "first row opens Updates: {s}"
     );
 }
+
+#[test]
+fn audit_fix_key() {
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
+    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    // Row 1 is "com.visualstudio.code gained filesystem=host": one fix → confirm box.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Fix    press f: Take the permission away"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('f'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("$ flatpak override --user --nofilesystem=host com.visualstudio.code"),
+        "{s}"
+    );
+    assert!(
+        s.contains("undo: flatpak override --user --filesystem=host com.visualstudio.code"),
+        "{s}"
+    );
+    assert!(s.contains("audits again"), "{s}");
+    key(&mut a, KeyCode::Char('n'));
+    // Row 2 is the failed unit: several fixes → numbered choice.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('f'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Fix · pick one"), "{s}");
+    assert!(s.contains(" 1  Show why it failed (read-only)"), "{s}");
+    assert!(s.contains(" 3  Clear the failed state"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert!(!render_to_string(&mut a, 158, 41).contains("pick one"));
+    // A row without a fix explains why.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('f'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Remove it from Cleanup") || s.contains("Cleanup"),
+        "{s}"
+    );
+}

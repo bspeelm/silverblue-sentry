@@ -3,6 +3,7 @@
 
 pub mod diff;
 pub mod findings;
+pub mod fix;
 pub mod known;
 pub mod store;
 

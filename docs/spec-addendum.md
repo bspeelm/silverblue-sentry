@@ -149,3 +149,19 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
   - the toolbox upgrade is one command (`sentry toolbox upgrade`), used by Containers, update-apply and quick-update;
   - the Dashboard status rows are jump links.
 - `known.rs` gained passim (tcp 27500, the fwupd firmware cache), learned from a live answer.
+
+## A19. Fixing findings (`f`)
+- `audit::fix::fixes(&Finding)` derives concrete fixes from the finding id, so they work on old reports too. There are three kinds:
+  - a shell command (`sudo` flagged);
+  - opening an rc file in `$EDITOR` at the line;
+  - jumping to the tab that owns it (Flatpaks, or Cleanup focused on a job).
+- `f` shows the exact command and the undo, and asks first. With several fixes it shows a numbered picker (`1`–`9`).
+  - sudo fixes run with the TUI suspended, so the password prompt works. They're refused inside a toolbox, as for workflows.
+  - Other fixes stream in the run pane.
+  - Anything that changes the system re-runs the audit afterwards. Read-only "show why" fixes don't.
+- No fix is offered for:
+  - vendor repos (RPM Fusion provides the NVIDIA driver);
+  - unknown services (identify them first; that's the offered action);
+  - unverified origins and bad signatures.
+
+  For those, `f` says why and points to "To do" or `A`.
