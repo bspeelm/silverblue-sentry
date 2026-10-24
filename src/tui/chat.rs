@@ -39,6 +39,16 @@ pub enum Job {
     },
 }
 
+/// Where the failed workflow step a fix chat is about stands (kept up to date by the app).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Failed,
+    Running,
+    /// Its dry run passed: `t` runs it for real.
+    DryOk,
+    Done,
+}
+
 pub struct Chat {
     pub ask: Ask,
     pub session: Option<String>,
@@ -58,12 +68,13 @@ pub struct Chat {
     pub job: Option<(u64, u32, Job)>,
     /// A finished command's report, ready to send to Claude with `s`.
     pub offer: Option<String>,
+    /// Set for a chat about a failed workflow step.
+    pub step: Option<StepState>,
 }
 
 impl Chat {
     pub fn new(ask: Ask) -> Self {
         Self {
-            ask,
             session: None,
             entries: Vec::new(),
             live: None,
@@ -76,11 +87,18 @@ impl Chat {
             picking: false,
             job: None,
             offer: None,
+            step: ask.step().map(|_| StepState::Failed),
+            ask,
         }
     }
 
     pub fn busy(&self) -> bool {
-        self.live.is_some() || self.job.is_some()
+        self.live.is_some() || self.job.is_some() || self.step == Some(StepState::Running)
+    }
+
+    /// `t` is offered: the step can be retried (or run for real after its dry run).
+    pub fn can_retry(&self) -> bool {
+        matches!(self.step, Some(StepState::Failed | StepState::DryOk))
     }
 
     /// Re-read the proposals from the newest answer (after a turn ends).
@@ -308,7 +326,12 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
         }
         lines.push(Line::raw(""));
     }
-    if let Some((_, _, job)) = &c.job {
+    if c.step == Some(StepState::Running) {
+        lines.push(Line::styled(
+            "       … the step is running (its output is in the workflow log behind this)",
+            t.dim(),
+        ));
+    } else if let Some((_, _, job)) = &c.job {
         let what = match job {
             Job::Proposal { .. } => "       … running (C-c stops it)",
             Job::Audit { .. } => "       … auditing again",
@@ -370,6 +393,16 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     }
     if idle && c.offer.is_some() {
         k.push(("s", "send output"));
+    }
+    if idle && c.can_retry() {
+        k.push((
+            "t",
+            if c.step == Some(StepState::DryOk) {
+                "run the step"
+            } else {
+                "retry the step"
+            },
+        ));
     }
     if idle && c.session.is_some() {
         k.push(("C", "continue in Claude Code"));

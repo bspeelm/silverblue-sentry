@@ -886,3 +886,85 @@ fn audit_fix_with_claude() {
         "{s}"
     );
 }
+
+#[test]
+fn upgrade_failed_step_fix_with_claude() {
+    use crate::claude::{Ask, Event};
+    use crate::tui::chat::Chat;
+    use crate::tui::wf::Session;
+    use crate::workflows::parse;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::RunState;
+    let wf = parse(
+        r#"
+name = "flag-test"
+description = "test"
+[[steps]]
+id = "flag"
+title = "Flag file exists"
+run = "test -f /tmp/flag"
+gate = "auto"
+on_fail = "stop"
+[[steps]]
+id = "after"
+title = "Afterwards"
+run = "true"
+gate = "auto"
+"#,
+    )
+    .unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let mut st = RunState::new("flag-test", &ids, Default::default());
+    runner::finish(&mut st, 0, 1, None);
+    let sess = Session::for_test(wf, st, Next::Stopped(0));
+    let facts = crate::tui::screens::upgrade::step_facts(&sess).unwrap();
+    assert_eq!(facts.cmd, "test -f /tmp/flag");
+    assert!(facts.actions.iter().any(|(k, _)| *k == "retry"));
+    assert!(
+        !facts
+            .actions
+            .iter()
+            .any(|(k, _)| *k == "done by hand" || *k == "skip")
+    );
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    a.set_wf(sess);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("[f] fix with Claude"), "{s}");
+    key(&mut a, KeyCode::Char('f'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Ask Claude") && s.contains("step 1/2: Flag file exists"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+
+    // Claude proposes a fix; after it, `t` retries the step behind a confirm box.
+    let mut c = Chat::new(Ask::step_fix(&facts));
+    c.begin_turn("q", 1, 1);
+    c.on_event(Event::Text(
+        "**Commands**\n```bash\n# why: create it\ntouch /tmp/flag\n```\nThen retry (r).".into(),
+    ));
+    c.on_exit(0);
+    a.set_chat(c);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("run a proposed command") && s.contains("retry the step"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('t'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Retry step 1/2 of flag-test") && s.contains("$ test -f /tmp/flag"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    // The step fails again (as if retried): the chat says so and offers the log.
+    a.step_exit_for_test(0, 1);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("✗ flag failed again (exit 1)"), "{s}");
+    assert!(s.contains("send output"), "{s}");
+    a.step_exit_for_test(0, 0);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("✓ flag done"), "{s}");
+    assert!(!s.contains("retry the step"), "{s}");
+}

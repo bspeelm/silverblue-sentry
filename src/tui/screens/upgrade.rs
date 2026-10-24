@@ -71,9 +71,14 @@ pub fn hints(v: &View) -> Hints {
                 ("a", "abandon"),
                 ("l", "log"),
             ];
-            if matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. }) {
+            if failed(s) {
                 h.insert(1, ("r", "retry"));
-                h.insert(2, ("d", "done by hand"));
+                if matches!(s.next, Next::Manual { .. }) {
+                    h.insert(2, ("d", "done by hand"));
+                }
+                if crate::claude::available() {
+                    h.insert(1, ("f", "fix (with Claude)"));
+                }
             }
             if s.live.is_some() {
                 h = vec![("C-c", "terminate step"), ("C-j/k", "scroll")];
@@ -81,6 +86,62 @@ pub fn hints(v: &View) -> Hints {
             h
         }
     }
+}
+
+fn failed(s: &Session) -> bool {
+    matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. })
+}
+
+/// What `f` sends about the failed step: its command, log tail, the workflow's own advice and
+/// the actions sentry offers now.
+pub fn step_facts(s: &Session) -> Option<crate::claude::StepFacts> {
+    if !failed(s) {
+        return None;
+    }
+    let i = s.next.idx()?;
+    let step = &s.wf.steps[i];
+    let st = &s.run.state.steps[i];
+    let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().collect();
+    // Named, not keyed: the chat retries with `t`, the Upgrade screen with `r`.
+    let mut actions = vec![("retry", "run the step again (t in this chat)")];
+    if matches!(s.next, Next::Manual { .. }) {
+        actions.push((
+            "done by hand",
+            "accept the step as done after fixing it yourself",
+        ));
+    }
+    if step.optional {
+        actions.push(("skip", "skip this optional step"));
+    }
+    if s.wf.steps.iter().any(|x| x.rollback) {
+        actions.push((
+            "rollback",
+            "run the workflow's rollback steps, then abandon it",
+        ));
+    }
+    actions.push(("abandon", "stop the workflow, leaving the system as it is"));
+    Some(crate::claude::StepFacts {
+        workflow: s.wf.name.clone(),
+        idx: i,
+        total: s.wf.steps.len(),
+        id: step.id.clone(),
+        title: s.title(i),
+        prev: i.checked_sub(1).map(|j| s.title(j)),
+        next: (i + 1 < s.wf.steps.len()).then(|| s.title(i + 1)),
+        cmd: preview(&s.run.state, step.run.as_deref().unwrap_or("(no command)")),
+        code: st.code,
+        vars: s
+            .run
+            .state
+            .vars
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect(),
+        log_tail: lines[lines.len().saturating_sub(60)..].join("\n"),
+        manual: step.manual.as_deref().map(|m| preview(&s.run.state, m)),
+        actions,
+    })
 }
 
 fn when(ts: jiff::Timestamp) -> String {
@@ -228,6 +289,16 @@ impl Upgrade {
                     yes: Some(("reboot now".into(), vec![Effect::Wf(WfCmd::Go)])),
                 })],
                 _ => vec![Effect::Wf(WfCmd::Go)],
+            },
+            // Claude reads the step's log and says what to run; you run it, then retry.
+            Action::Char('f') => match step_facts(s) {
+                Some(facts) if crate::claude::available() => {
+                    vec![Effect::AskConsent(crate::claude::Ask::step_fix(&facts))]
+                }
+                Some(_) => vec![Effect::Toast(
+                    "Claude Code not found: see the step's advice and its log (l)".into(),
+                )],
+                None => vec![Effect::Toast("f helps with a failed step".into())],
             },
             Action::Char('s') => vec![Effect::Wf(WfCmd::Skip)],
             Action::Char('r') | Action::Refresh => vec![Effect::Wf(WfCmd::Retry)],
@@ -732,7 +803,12 @@ fn card_for(v: &View, s: &Session) -> (Color, Line<'static>, Vec<Line<'static>>,
                 body,
                 Line::styled(
                     format!(
-                        "[r] retry   {}[l] log   [a] abandon",
+                        "{}[r] retry   {}[l] log   [a] abandon",
+                        if crate::claude::available() {
+                            "[f] fix with Claude   "
+                        } else {
+                            ""
+                        },
                         if manual { "[d] done by hand   " } else { "" }
                     ),
                     t.dim(),

@@ -185,3 +185,24 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
   - Claude Code asks once whether to trust its scratch working directory. That decision is left to the user.
 - Letter keys in the chat (`r`, `s`, `C`) act only while the input line is empty; otherwise they're typed.
 - Without Claude Code, `f` is A19's static picker. In tests, `claude::TEST_AVAILABLE` fixes availability.
+
+## A21. Fixing failed workflow steps with Claude
+- `Ask.target: Option<Target>` replaces A20's `finding`:
+  - `Target::Finding(id)` re-audits after changes;
+  - `Target::Step{workflow, idx, id}` never re-audits; it offers a retry instead.
+- **`f` on a failed step** (`Next::Stopped` or a failed `Manual`) → `upgrade::step_facts(&Session)` → `Ask::step_fix(&StepFacts)`. The facts are:
+  - the position and the neighbouring step titles;
+  - the rendered command, exit code and vars;
+  - the 60-line log tail;
+  - the step's `manual` text;
+  - the actions valid now, by name (retry, done by hand only for manual, skip only if optional, rollback only if any, abandon).
+- **The question** is the shared `fix_question()`, plus: name one of the actions, and never propose `rpm-ostree upgrade/rebase/rollback/cleanup`, `ostree admin` or reboots.
+- **Proposals:**
+  - refused while a step is live;
+  - `touches_deployment()` adds a warning line (never a block) while a workflow is open;
+  - the "audits again" line only appears for finding chats.
+- **`t`** (`chat::StepState` Failed or DryOk) → a confirm box with the step's command → `ChatRetryStep`, which does `WfCmd::Retry`, then `wf_auto()`, then `WfCmd::Go` if the step is at a confirm gate (this box was the gate; the dry-run-first rule still applies).
+- **Feedback:** `chat_step_exit` runs after `Session::on_exit`, on both the stream and the suspended (sudo) paths.
+  - It sets Done, DryOk or Failed, adds an Info line, and sets the `s` offer to the step's log tail.
+  - One Claude session spans the retries.
+- The Upgrade key bar shows `d` only for failed `manual` steps.

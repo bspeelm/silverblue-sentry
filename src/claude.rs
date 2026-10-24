@@ -16,8 +16,41 @@ pub struct Ask {
     pub question: String,
     /// sentry's own fixes for the thing asked about (matched against Claude's proposals).
     pub known: Vec<crate::audit::fix::Fix>,
-    /// The audit finding this is about: audited again after a proposed command changes something.
-    pub finding: Option<String>,
+    /// What the chat is about, for what happens after a proposed command runs.
+    pub target: Option<Target>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Target {
+    /// An audit finding id: audited again after a command changes something.
+    Finding(String),
+    /// A failed workflow step: retried from the chat (`t`).
+    Step {
+        workflow: String,
+        idx: usize,
+        id: String,
+    },
+}
+
+/// What sentry knows about a failed workflow step (built by the Upgrade screen).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StepFacts {
+    pub workflow: String,
+    pub idx: usize,
+    pub total: usize,
+    pub id: String,
+    pub title: String,
+    pub prev: Option<String>,
+    pub next: Option<String>,
+    /// Rendered command.
+    pub cmd: String,
+    pub code: Option<i32>,
+    pub vars: Vec<String>,
+    pub log_tail: String,
+    /// The workflow author's advice for this failure (`manual`).
+    pub manual: Option<String>,
+    /// The sentry actions possible now: ("retry", "run the step again …"), …
+    pub actions: Vec<(&'static str, &'static str)>,
 }
 
 impl Ask {
@@ -31,7 +64,7 @@ impl Ask {
             context: context.into(),
             question: question.into(),
             known: Vec::new(),
-            finding: None,
+            target: None,
         }
     }
 
@@ -72,9 +105,84 @@ impl Ask {
         Self {
             subject: format!("fix · {}", f.message),
             context,
-            question: FIX_QUESTION.into(),
+            question: fix_question(""),
             known,
-            finding: Some(f.id.clone()),
+            target: Some(Target::Finding(f.id.clone())),
+        }
+    }
+
+    /// `f` on a failed workflow step: the same diagnose → recommend → propose shape, plus the
+    /// workflow actions Claude may recommend afterwards.
+    pub fn step_fix(s: &StepFacts) -> Self {
+        let actions: Vec<String> = s
+            .actions
+            .iter()
+            .map(|(k, d)| format!("  {k}: {d}"))
+            .collect();
+        let context = format!(
+            "A step of the sentry upgrade workflow {} failed on my machine.\n\
+             step {}/{}: {} ({})\n\
+             before it: {}\nafter it: {}\n\
+             command: {}\nexit code: {}\nvalues: {}\n\
+             the workflow's own advice for this failure:\n{}\n\
+             last lines of steps/{}.log:\n{}\n\n\
+             What I can do in sentry now:\n{}",
+            s.workflow,
+            s.idx + 1,
+            s.total,
+            s.title,
+            s.id,
+            s.prev.as_deref().unwrap_or("(first step)"),
+            s.next.as_deref().unwrap_or("(last step)"),
+            s.cmd,
+            s.code.map_or("?".into(), |c| c.to_string()),
+            if s.vars.is_empty() {
+                "(none)".into()
+            } else {
+                s.vars.join(" ")
+            },
+            s.manual.as_deref().map_or("  (none)".into(), |m| m
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            s.id,
+            if s.log_tail.trim().is_empty() {
+                "(empty)"
+            } else {
+                &s.log_tail
+            },
+            actions.join("\n"),
+        );
+        Self {
+            subject: format!("fix · {} · {}", s.workflow, s.id),
+            context,
+            question: fix_question(
+                "\nThe Recommendation must end by naming one of the sentry actions listed above \
+                 (usually: fix the cause with the commands, then retry). Never propose \
+                 `rpm-ostree upgrade/rebase/rollback/cleanup`, `ostree admin` or a reboot: the \
+                 workflow does those steps itself.",
+            ),
+            known: Vec::new(),
+            target: Some(Target::Step {
+                workflow: s.workflow.clone(),
+                idx: s.idx,
+                id: s.id.clone(),
+            }),
+        }
+    }
+
+    pub fn finding(&self) -> Option<&str> {
+        match &self.target {
+            Some(Target::Finding(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn step(&self) -> Option<usize> {
+        match &self.target {
+            Some(Target::Step { idx, .. }) => Some(*idx),
+            _ => None,
         }
     }
 
@@ -84,15 +192,33 @@ impl Ask {
     }
 }
 
-const FIX_QUESTION: &str = "Help me fix this. Investigate with your read-only commands first. You \
-cannot change anything: I will run whatever you recommend myself, through sentry. Answer in \
-exactly three parts:\n\
-**What's going on**: what the evidence and logs mean on this machine, in plain words.\n\
-**Recommendation**: what to do and why, and why not the alternatives. \"Leave it and mark it \
-expected\" is a fine answer when that's right.\n\
-**Commands**: each command I should run in its own ```bash fenced block, whose first line is a \
-`# why: ...` comment. Use sentry's known fix when one fits. Use sudo only where it's needed. \
-If nothing should be run, say so and give no blocks.";
+/// The three-part fix question; `extra` adds target-specific rules.
+fn fix_question(extra: &str) -> String {
+    format!(
+        "Help me fix this. Investigate with your read-only commands first. You cannot change \
+         anything: I will run whatever you recommend myself, through sentry. Answer in exactly \
+         three parts:\n\
+         **What's going on**: what the evidence and logs mean on this machine, in plain words.\n\
+         **Recommendation**: what to do and why, and why not the alternatives. \"Leave it and \
+         mark it expected\" is a fine answer when that's right.\n\
+         **Commands**: each command I should run in its own ```bash fenced block, whose first \
+         line is a `# why: ...` comment. Use sentry's known fix when one fits. Use sudo only \
+         where it's needed. If nothing should be run, say so and give no blocks.{extra}"
+    )
+}
+
+/// Commands that change deployments or reboot: they can confuse a workflow in progress.
+pub fn touches_deployment(cmd: &str) -> bool {
+    cmd.split(['\n', ';', '&', '|']).any(|part| {
+        let w: Vec<&str> = part.split_whitespace().filter(|w| *w != "sudo").collect();
+        match w.as_slice() {
+            ["rpm-ostree", "status", ..] | ["rpm-ostree", "db", ..] => false,
+            ["rpm-ostree", ..] | ["ostree", "admin", ..] | ["akmods", ..] => true,
+            ["systemctl", "reboot", ..] | ["reboot", ..] => true,
+            _ => false,
+        }
+    })
+}
 
 /// A command Claude proposed for the user to run (parsed from its answer).
 #[derive(Debug, Clone, PartialEq)]
@@ -533,7 +659,38 @@ mod tests {
             a.context.contains("1. Stop passim sharing firmware")
                 && a.context.contains("(undo: sudo systemctl unmask")
         );
-        assert!(a.finding.is_some() && a.prompt().contains("# why:"));
+        assert!(a.finding().is_some() && a.prompt().contains("# why:"));
+    }
+
+    #[test]
+    fn step_fix_prompt() {
+        let facts = StepFacts {
+            workflow: "quick-update".into(),
+            idx: 2,
+            total: 17,
+            id: "layer-kmod".into(),
+            title: "Layer the new kmod".into(),
+            cmd: "rpm-ostree install akmod-nvidia".into(),
+            code: Some(1),
+            log_tail: "error: Packages not found".into(),
+            manual: Some("Check `rpm-ostree status`.".into()),
+            actions: vec![("retry", "run the step again"), ("abandon", "stop it")],
+            ..Default::default()
+        };
+        let a = Ask::step_fix(&facts);
+        let p = a.prompt();
+        assert!(p.contains("step 3/17: Layer the new kmod (layer-kmod)"));
+        assert!(
+            p.contains("error: Packages not found") && p.contains("  Check `rpm-ostree status`.")
+        );
+        assert!(p.contains("  retry: run the step again") && !p.contains("done by hand"));
+        assert!(p.contains("**Commands**") && p.contains("Never propose"));
+        assert_eq!(a.step(), Some(2));
+        assert!(a.finding().is_none());
+        assert!(touches_deployment("sudo rpm-ostree upgrade"));
+        assert!(touches_deployment("echo x; systemctl reboot"));
+        assert!(!touches_deployment("rpm-ostree status -v"));
+        assert!(!touches_deployment("touch /tmp/flag"));
     }
 
     #[test]

@@ -59,6 +59,8 @@ pub enum Effect {
         Option<(String, std::path::PathBuf, std::path::PathBuf)>,
         bool,
     ),
+    /// `t` in a fix chat about a failed step: retry it (or run it after its dry run).
+    ChatRetryStep,
     /// Switch to another tab.
     Goto(ScreenId),
     /// Open Upgrade and start this workflow (its own confirm/var prompts follow).
@@ -284,6 +286,15 @@ impl App {
     #[cfg(test)]
     pub fn set_wf(&mut self, s: Session) {
         self.wf = Some(s);
+    }
+
+    /// A workflow step finished (what `on_run_msg` does, minus the process).
+    #[cfg(test)]
+    pub fn step_exit_for_test(&mut self, idx: usize, code: i32) {
+        if let Some(s) = self.wf.as_mut() {
+            s.on_exit(idx, false, code, None);
+        }
+        self.chat_step_exit(idx, false, code);
     }
 
     /// Construct without config/terminal side effects (snapshot tests).
@@ -574,6 +585,7 @@ impl App {
                 StreamMsg::Line { stderr, text } => s.on_line(text, stderr),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, dry, code, None);
+                    self.chat_step_exit(idx, dry, code);
                     self.wf_auto();
                     self.after_wf_change();
                 }
@@ -811,7 +823,13 @@ impl App {
             if let KeyCode::Char(d @ '1'..='9') = k.code
                 && let Some(p) = c.proposals.get(d as usize - '1' as usize).cloned()
             {
-                self.modal = Some(run_proposal_modal(&self.theme, p));
+                let reaudit = c.ask.finding().is_some();
+                self.modal = Some(run_proposal_modal(
+                    &self.theme,
+                    p,
+                    self.wf.is_some(),
+                    reaudit,
+                ));
             }
             return;
         }
@@ -827,11 +845,28 @@ impl App {
                 }
             }
             KeyCode::Char('r') if idle && !c.proposals.is_empty() => {
-                if c.proposals.len() == 1 {
+                if self.wf.as_ref().is_some_and(|s| s.live.is_some()) {
+                    self.toast("a workflow step is running: wait for it to finish");
+                } else if c.proposals.len() == 1 {
                     let p = c.proposals[0].clone();
-                    self.modal = Some(run_proposal_modal(&self.theme, p));
+                    let reaudit = c.ask.finding().is_some();
+                    self.modal = Some(run_proposal_modal(
+                        &self.theme,
+                        p,
+                        self.wf.is_some(),
+                        reaudit,
+                    ));
                 } else {
                     c.picking = true;
+                }
+            }
+            KeyCode::Char('t') if idle && c.can_retry() => {
+                let dry_ok = c.step == Some(super::chat::StepState::DryOk);
+                match self.wf.as_ref().zip(c.ask.step()) {
+                    Some((s, i)) if s.next.idx() == Some(i) => {
+                        self.modal = Some(retry_step_modal(&self.theme, s, i, dry_ok));
+                    }
+                    _ => self.toast("that step isn't waiting any more"),
                 }
             }
             KeyCode::Char('s') if idle && c.offer.is_some() => {
@@ -848,7 +883,7 @@ impl App {
                     super::chat::Kind::Info,
                     "continued in Claude Code (sudo and file edits stay off; it asks before other commands)",
                 );
-                let reaudit = c.ask.finding.is_some();
+                let reaudit = c.ask.finding().is_some();
                 self.suspend = Some(crate::claude::interactive_cmd(&session));
                 self.suspend_banner = Some(
                     "sentry: continuing this conversation in Claude Code. Read-only commands are \
@@ -895,7 +930,7 @@ impl App {
                 let p = ask.prompt();
                 // The full instructions were in the consent modal; the transcript keeps one line.
                 let q = match ask.question.split_once(". ") {
-                    Some((first, _)) if ask.finding.is_some() => format!("{first}."),
+                    Some((first, _)) if ask.target.is_some() => format!("{first}."),
                     _ => ask.question.clone(),
                 };
                 self.chat = Some(super::chat::Chat::new(ask));
@@ -927,7 +962,11 @@ impl App {
     /// can go back to Claude); anything else streams into the chat.
     fn chat_run(&mut self, p: crate::claude::Proposed) {
         let changes = !crate::claude::read_only(&p.cmd);
-        let reaudit = changes && self.chat.as_ref().is_some_and(|c| c.ask.finding.is_some());
+        let reaudit = changes
+            && self
+                .chat
+                .as_ref()
+                .is_some_and(|c| c.ask.finding().is_some());
         if p.cmd.contains("sudo") {
             if let Some(why) = crate::workflows::runner::tty_blocker() {
                 self.toast(why);
@@ -1004,14 +1043,92 @@ impl App {
             if !cmd.is_empty() {
                 c.set_offer(&cmd, code, &output, None);
             }
+            if c.can_retry() {
+                c.push(
+                    super::chat::Kind::Info,
+                    "press t to retry the step, or s to send this output to Claude first",
+                );
+            }
         }
+    }
+
+    /// `y` on the retry box: retry the failed step (or, after its dry run, run it for real).
+    /// Its confirm gate is the box just answered, so a confirm step is started too.
+    fn chat_retry_step(&mut self, now: Instant) {
+        let dry_ok = self
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.step == Some(super::chat::StepState::DryOk));
+        if !dry_ok {
+            self.wf_cmd(WfCmd::Retry, now);
+        }
+        self.wf_auto();
+        if self.wf.as_ref().is_some_and(|s| {
+            s.live.is_none() && matches!(s.next, crate::workflows::runner::Next::Confirm(_))
+        }) {
+            self.wf_cmd(WfCmd::Go, now);
+        }
+        let started = self.wf.as_ref().is_some_and(|s| s.live.is_some()) || self.suspend.is_some();
+        if let Some(c) = self.chat.as_mut() {
+            c.offer = None;
+            if started {
+                c.step = Some(super::chat::StepState::Running);
+                c.push(super::chat::Kind::Info, "retrying the step…");
+            } else {
+                c.push(
+                    super::chat::Kind::Info,
+                    "the step didn't start (see the toast)",
+                );
+            }
+        }
+    }
+
+    /// A workflow step finished: tell the fix chat about it, if it's that step's chat.
+    fn chat_step_exit(&mut self, idx: usize, dry: bool, code: i32) {
+        use super::chat::{Kind, StepState};
+        let Some(c) = self.chat.as_mut().filter(|c| c.ask.step() == Some(idx)) else {
+            return;
+        };
+        let Some(s) = self.wf.as_ref() else { return };
+        let id = s.wf.steps[idx].id.clone();
+        let log = std::fs::read_to_string(s.run.log_path(&id)).unwrap_or_default();
+        let what = if dry { "its dry run" } else { "the step" };
+        if code == 0 {
+            if dry {
+                c.step = Some(StepState::DryOk);
+                c.push(
+                    Kind::Info,
+                    format!("✓ {id}: dry run ok · t runs it for real"),
+                );
+            } else {
+                c.step = Some(StepState::Done);
+                c.push(Kind::Info, format!("✓ {id} done · the workflow carries on"));
+            }
+        } else {
+            c.step = Some(StepState::Failed);
+            c.push(
+                Kind::Info,
+                format!("✗ {id} failed again (exit {code}) · s sends the log to Claude"),
+            );
+        }
+        let tail: Vec<&str> = log.lines().rev().take(60).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        c.offer = Some(format!(
+            "I retried {what} ({id}) in sentry: exit {code}.\nLast lines of steps/{id}.log:\n{}\n\n{}",
+            tail.join("\n"),
+            if code == 0 {
+                "It worked. Anything I should check before carrying on?"
+            } else {
+                "It failed again. What now?"
+            }
+        ));
     }
 
     fn chat_audited(&mut self, cmd: String, code: i32, output: String, audit_ok: bool) {
         self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
         self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
         let Some(c) = self.chat.as_mut() else { return };
-        let id = c.ask.finding.clone().unwrap_or_default();
+        let id = c.ask.finding().unwrap_or_default().to_string();
         let after = if !audit_ok {
             "sentry's audit afterwards failed, so I can't tell whether the finding is gone.".into()
         } else if crate::audit::store::latest()
@@ -1198,6 +1315,7 @@ impl App {
                     }
                 }
                 Effect::ChatRun(p) => self.chat_run(p),
+                Effect::ChatRetryStep => self.chat_retry_step(now),
                 Effect::ChatBack(ran, reaudit) => match ran {
                     Some((cmd, out, code)) => {
                         let output = std::fs::read_to_string(&out).unwrap_or_default();
@@ -1541,6 +1659,7 @@ impl App {
                         Err(e) => (127, Some(e.to_string())),
                     };
                     s.on_exit(idx, false, code, note);
+                    self.chat_step_exit(idx, false, code);
                 }
                 SuspendFor::Shell(idx) => s.after_shell(idx),
             }
@@ -2085,7 +2204,55 @@ fn consent_modal(t: &Theme, text: &str, turn: AskTurn) -> Modal {
 }
 
 /// Confirm before sentry runs one of Claude's proposals: the exact command and what it does.
-fn run_proposal_modal(t: &Theme, p: crate::claude::Proposed) -> Modal {
+/// `t` in a step's fix chat: the step's own command, since this box is its confirm gate.
+fn retry_step_modal(t: &Theme, s: &Session, i: usize, dry_ok: bool) -> Modal {
+    let step = &s.wf.steps[i];
+    let cmd = crate::workflows::runner::preview(&s.run.state, step.run.as_deref().unwrap_or(""));
+    let dry = !dry_ok
+        && step.dry_run != Some(false)
+        && !s.run.state.steps[i].dry_ok
+        && crate::workflows::dry_run_of(&cmd).is_some();
+    let mut lines = vec![
+        Line::styled(
+            format!(
+                "{} step {}/{} of {}: {}",
+                if dry_ok { "Run" } else { "Retry" },
+                i + 1,
+                s.wf.steps.len(),
+                s.wf.name,
+                s.title(i)
+            ),
+            t.fg(),
+        ),
+        Line::styled(format!("$ {cmd}"), t.fg()),
+    ];
+    if dry {
+        lines.push(Line::styled(
+            "Its dry run goes first; t again runs it for real.",
+            t.dim(),
+        ));
+    }
+    lines.push(Line::styled(
+        "The output goes to the workflow log; the chat says how it went.",
+        t.dim(),
+    ));
+    Modal {
+        title: "Retry the step".into(),
+        color: t.yellow,
+        lines,
+        yes: Some((
+            if dry_ok { "run it" } else { "retry" }.into(),
+            vec![Effect::ChatRetryStep],
+        )),
+    }
+}
+
+fn run_proposal_modal(
+    t: &Theme,
+    p: crate::claude::Proposed,
+    wf_open: bool,
+    reaudit: bool,
+) -> Modal {
     let risky = crate::claude::risky(&p.cmd);
     let mut lines = Vec::new();
     for l in p.cmd.lines() {
@@ -2113,13 +2280,19 @@ fn run_proposal_modal(t: &Theme, p: crate::claude::Proposed) -> Modal {
             t.s(t.red),
         ));
     }
+    if wf_open && crate::claude::touches_deployment(&p.cmd) {
+        lines.push(Line::styled(
+            "A workflow is in progress: changing deployments or rebooting outside it can confuse it.",
+            t.s(t.yellow),
+        ));
+    }
     if p.cmd.contains("sudo") {
         lines.push(Line::styled(
             "Needs sudo: sentry hands this terminal over so you type your own password.",
             t.dim(),
         ));
     }
-    if !crate::claude::read_only(&p.cmd) {
+    if reaudit && !crate::claude::read_only(&p.cmd) {
         lines.push(Line::styled(
             "It changes something, so sentry audits again afterwards.",
             t.dim(),

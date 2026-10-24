@@ -118,6 +118,13 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 - **The output stays with you** until you press `s`, which shows the follow-up ("I ran X, exit N, output…") before sending it.
 - **`C` continues in Claude Code.** It opens the same conversation as an interactive `claude` session in this terminal. Read-only commands are pre-allowed and sudo and file edits stay off; Claude Code asks you before anything else. Quit it to return to sentry, which audits again.
 
+### Fixing a failed workflow step (`f` on Upgrade)
+
+When a workflow step fails, the failure card offers `[f] fix with Claude`. Claude gets the step's command, exit code, the last 60 lines of its log, the workflow's own advice for that failure, and the actions open to you (retry, done by hand, skip, rollback, abandon). It answers in the same three parts, ending with which of those actions to take. It's told not to propose upgrades, rebases, rollbacks or reboots, because the workflow does those itself.
+
+- `r` runs one of its commands, as above. If a command would change deployments or reboot while a workflow is in progress, the confirm box warns you.
+- **`t` retries the step** from the chat, after a confirm box showing the step's command. The step's output goes to the workflow log; the chat says whether it passed or failed again, and `s` sends the new log to Claude. The conversation carries on across retries.
+
 ## Workflows
 
 Workflows are TOML files in `~/.config/sentry/workflows/`. The shipped ones are written there the first time you open Upgrade. A copy you haven't edited is upgraded when a new version ships; a copy you have edited is never touched.
