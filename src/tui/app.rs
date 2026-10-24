@@ -38,6 +38,8 @@ pub enum Effect {
     Kill(u32, String),
     /// Append to `baseline.toml` (listener key or finding id/pattern).
     Baseline(BaselineEdit),
+    /// Remove from `baseline.toml` whatever covers this (the `b` toggle).
+    Unbaseline(BaselineEdit),
     /// Ask for a line of input in the key bar (initial text).
     Prompt(Prompt, String),
     Wf(WfCmd),
@@ -971,6 +973,47 @@ impl App {
                         }
                         Ok(false) => self.toast(format!("{label} is already in the baseline")),
                         Err(e) => self.toast(format!("baseline.toml: {e}")),
+                    }
+                }
+                Effect::Unbaseline(edit) => {
+                    use crate::baseline::BaselineFile;
+                    let (r, label) = match &edit {
+                        BaselineEdit::Listener(k) => (
+                            BaselineFile::remove_listeners(std::slice::from_ref(k)),
+                            k.clone(),
+                        ),
+                        BaselineEdit::Listeners(v) => (
+                            BaselineFile::remove_listeners(v),
+                            format!("{} address(es)", v.len()),
+                        ),
+                        BaselineEdit::Finding(k) => (BaselineFile::remove_finding(k), k.clone()),
+                    };
+                    self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
+                    let still = match &edit {
+                        BaselineEdit::Listener(k) => self.data.baseline.has_listener(k),
+                        BaselineEdit::Listeners(v) => {
+                            v.iter().any(|k| self.data.baseline.has_listener(k))
+                        }
+                        BaselineEdit::Finding(k) => self
+                            .data
+                            .baseline
+                            .findings
+                            .iter()
+                            .any(|p| crate::baseline::glob(p, k)),
+                    };
+                    match r {
+                        Err(e) => self.toast(format!("baseline.toml: {e}")),
+                        Ok(_) if still => self.toast(format!(
+                            "{label}: still expected by an entry in config.toml [baseline] (edit it there)"
+                        )),
+                        Ok(0) => self.toast(format!("{label} wasn't marked expected")),
+                        Ok(n) => self.toast(format!(
+                            "{label} no longer expected ({n} baseline.toml entr{} removed)",
+                            if n == 1 { "y" } else { "ies" }
+                        )),
+                    }
+                    if !matches!(edit, BaselineEdit::Finding(_)) {
+                        self.data.fetch(Fetch::Net, &self.cfg, &self.tx);
                     }
                 }
                 Effect::Prompt(p, init) => self.input = Input::Prompt(p, init),

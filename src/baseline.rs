@@ -45,6 +45,39 @@ impl BaselineFile {
         Ok(true)
     }
 
+    fn drop_listeners(&mut self, keys: &[String]) -> usize {
+        let before = self.listeners.len();
+        self.listeners
+            .retain(|p| !keys.iter().any(|k| listener_entry_matches(p, k)));
+        before - self.listeners.len()
+    }
+
+    fn drop_finding(&mut self, id: &str) -> usize {
+        let before = self.findings.len();
+        self.findings.retain(|p| !glob(p, id));
+        before - self.findings.len()
+    }
+
+    /// Remove every listener entry that covers one of `keys` (exact or glob). Returns how many.
+    pub fn remove_listeners(keys: &[String]) -> anyhow::Result<usize> {
+        let mut b = Self::load();
+        let n = b.drop_listeners(keys);
+        if n > 0 {
+            b.save()?;
+        }
+        Ok(n)
+    }
+
+    /// Remove every finding entry that covers `id` (exact or glob). Returns how many.
+    pub fn remove_finding(id: &str) -> anyhow::Result<usize> {
+        let mut b = Self::load();
+        let n = b.drop_finding(id);
+        if n > 0 {
+            b.save()?;
+        }
+        Ok(n)
+    }
+
     /// Append a listener key; returns false if it was already present.
     pub fn add_listener(key: &str) -> anyhow::Result<bool> {
         let mut b = Self::load();
@@ -85,13 +118,19 @@ impl Baseline {
     /// `key` is `addr:port/process`. Root-owned sockets have no visible process (`/?`); those
     /// match on the `addr:port` part alone so `127.0.0.1:631/cupsd` still covers cupsd.
     pub fn has_listener(&self, key: &str) -> bool {
-        let addr_only = key.strip_suffix("/?");
-        self.listeners.iter().any(|p| {
-            glob(p, key)
-                || addr_only
-                    .is_some_and(|a| glob(p.rsplit_once('/').map_or(p.as_str(), |(pa, _)| pa), a))
-        })
+        self.listeners
+            .iter()
+            .any(|p| listener_entry_matches(p, key))
     }
+}
+
+/// Whether baseline entry `p` covers listener `key`. Root-owned sockets have no visible
+/// process (`/?`), so those match on the `addr:port` part alone.
+pub fn listener_entry_matches(p: &str, key: &str) -> bool {
+    glob(p, key)
+        || key
+            .strip_suffix("/?")
+            .is_some_and(|a| glob(p.rsplit_once('/').map_or(p, |(pa, _)| pa), a))
 }
 
 /// `*` matches any run of characters (including none). Everything else is literal.
@@ -119,7 +158,30 @@ pub fn glob(pattern: &str, s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Baseline, glob};
+    use super::{Baseline, BaselineFile, glob};
+
+    #[test]
+    fn unmarking_removes_what_covers_it() {
+        let mut f = BaselineFile {
+            listeners: vec![
+                "0.0.0.0:27500/?".into(),
+                "*:5353/avahi-daemon".into(),
+                "127.0.0.1:631/cupsd".into(),
+            ],
+            findings: vec!["repo:_copr_x.repo".into(), "unit-failed:system:*".into()],
+        };
+        assert_eq!(f.drop_listeners(&["0.0.0.0:27500/?".into()]), 1);
+        // A root-owned socket (`/?`) is covered by an entry naming its process.
+        assert_eq!(f.drop_listeners(&["[::]:5353/?".into()]), 1);
+        assert_eq!(f.listeners, vec!["127.0.0.1:631/cupsd"]);
+        assert_eq!(
+            f.drop_finding("unit-failed:system:foo.service"),
+            1,
+            "glob entries count"
+        );
+        assert_eq!(f.drop_finding("repo:other.repo"), 0);
+        assert_eq!(f.findings, vec!["repo:_copr_x.repo"]);
+    }
 
     #[test]
     fn unknown_process_matches_addr() {

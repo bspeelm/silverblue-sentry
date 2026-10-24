@@ -20,7 +20,7 @@ pub struct Network {
 pub fn hints() -> Hints {
     vec![
         ("j/k", "select"),
-        ("b", "mark expected"),
+        ("b", "expected on/off"),
         ("/", "filter"),
         ("r", "refresh"),
     ]
@@ -45,13 +45,9 @@ impl Network {
             Action::Refresh => vec![Effect::Fetch(Fetch::Net)],
             // `b` everywhere marks things expected (`e` kept as an alias). A known service is
             // marked on all of its sockets at once, as the Audit tab groups it.
+            // `b` toggles expected (`e` kept as an alias). A known service is marked or
+            // un-marked on all of its sockets at once, as the Audit tab groups it.
             Action::Char('b' | 'e') => match rows.get(self.cur.clamp(rows.len())) {
-                Some(l) if l.status == ListenStatus::Baseline => {
-                    vec![Effect::Toast(format!(
-                        "{} is already in the baseline",
-                        l.key()
-                    ))]
-                }
                 Some(l) => {
                     let svc = |x: &Listener| {
                         x.port
@@ -60,26 +56,32 @@ impl Network {
                             .and_then(|p| crate::audit::known::service(&x.proto, p))
                             .map(|s| s.name)
                     };
-                    match svc(l) {
+                    let unmark = l.status == ListenStatus::Baseline;
+                    let keys: Vec<String> = match svc(l) {
                         Some(name) => {
-                            let keys: Vec<String> = v
-                                .d
-                                .net
+                            v.d.net
                                 .get()
                                 .map(|n| {
                                     n.listeners
                                         .iter()
                                         .filter(|x| {
-                                            svc(x) == Some(name) && x.status == ListenStatus::New
+                                            svc(x) == Some(name)
+                                                && (x.status == ListenStatus::Baseline) == unmark
+                                                && (unmark || x.status == ListenStatus::New)
                                         })
                                         .map(Listener::key)
                                         .collect()
                                 })
-                                .unwrap_or_default();
-                            vec![Effect::Baseline(BaselineEdit::Listeners(keys))]
+                                .unwrap_or_default()
                         }
-                        None => vec![Effect::Baseline(BaselineEdit::Listener(l.key()))],
-                    }
+                        None => vec![l.key()],
+                    };
+                    let edit = BaselineEdit::Listeners(keys);
+                    vec![if unmark {
+                        Effect::Unbaseline(edit)
+                    } else {
+                        Effect::Baseline(edit)
+                    }]
                 }
                 None => Vec::new(),
             },

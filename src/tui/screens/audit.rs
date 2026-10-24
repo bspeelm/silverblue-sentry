@@ -43,7 +43,7 @@ pub fn hints(v: &View) -> Hints {
     }
     vec![
         ("j/k", "select"),
-        ("b", "expected"),
+        ("b", "expected on/off"),
         ("B", "hide similar"),
         ("Enter", "run audit"),
         ("[ ]", "browse reports"),
@@ -162,9 +162,7 @@ impl Audit {
                     return Vec::new();
                 };
                 match a {
-                    Action::Char('b') if is_expected(f, &v.d.baseline) => {
-                        return vec![Effect::Toast("already in the baseline".into())];
-                    }
+                    // `b` toggles: marks the finding expected, or un-marks it if it already is.
                     Action::Char('b') => {
                         let edit = if !f.listeners.is_empty() {
                             BaselineEdit::Listeners(f.listeners.clone())
@@ -174,7 +172,11 @@ impl Audit {
                                 None => BaselineEdit::Finding(f.id.clone()),
                             }
                         };
-                        return vec![Effect::Baseline(edit)];
+                        return vec![if is_expected(f, &v.d.baseline) {
+                            Effect::Unbaseline(edit)
+                        } else {
+                            Effect::Baseline(edit)
+                        }];
                     }
                     Action::Char('B') => {
                         let Some((edit, what)) = pattern_for(f) else {
@@ -270,7 +272,8 @@ impl Audit {
         } else {
             "Worth a look on this machine."
         };
-        let keys = "b = expected, hide it next time · B = hide all like it · Enter = audit again";
+        let keys =
+            "b = expected on/off (hidden next time) · B = hide all like it · Enter = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
         let tw = (r.width as usize).saturating_sub(7).max(10);
         let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {

@@ -225,6 +225,7 @@ fn listeners(r: &Report, out: &mut Vec<Finding>) {
         };
         let mut f = f.evidence(evidence);
         f.listeners = g.keys.iter().map(|(_, k)| k.to_string()).collect();
+        f.listeners.dedup(); // tcp + udp on one address share a baseline key
         out.push(f.done());
     }
 }
