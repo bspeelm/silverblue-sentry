@@ -27,6 +27,7 @@ pub struct Cmd {
     site: Site,
     argv: Vec<OsString>,
     timeout: Option<Duration>,
+    dir: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +82,7 @@ impl Cmd {
             site: Site::Host,
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
+            dir: None,
         }
     }
 
@@ -90,6 +92,7 @@ impl Cmd {
             site: Site::Local,
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
+            dir: None,
         }
     }
 
@@ -104,6 +107,12 @@ impl Cmd {
         S: Into<OsString>,
     {
         self.argv.extend(it.into_iter().map(Into::into));
+        self
+    }
+
+    /// Working directory for the command (on the host for `Cmd::host` in a toolbox).
+    pub fn dir(mut self, d: impl Into<PathBuf>) -> Self {
+        self.dir = Some(d.into());
         self
     }
 
@@ -144,11 +153,18 @@ impl Cmd {
     fn command(&self) -> Command {
         let mut c = if self.site == Site::Host && spawn_mode() {
             let mut c = Command::new("flatpak-spawn");
-            c.arg("--host").arg("--env=LC_ALL=C").args(&self.argv);
+            c.arg("--host").arg("--env=LC_ALL=C");
+            if let Some(d) = &self.dir {
+                c.arg(format!("--directory={}", d.display()));
+            }
+            c.args(&self.argv);
             c
         } else {
             let mut c = Command::new(&self.argv[0]);
             c.args(&self.argv[1..]);
+            if let Some(d) = &self.dir {
+                c.current_dir(d);
+            }
             c
         };
         c.env("LC_ALL", "C");

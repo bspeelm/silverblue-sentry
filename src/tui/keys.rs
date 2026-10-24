@@ -35,6 +35,8 @@ pub enum Action {
     LogDown,
     LogUp,
     Interrupt,
+    /// Ask Claude about the selected thing.
+    Ask,
     /// Unbound key, passed to the active screen.
     Char(char),
 }
@@ -109,6 +111,7 @@ fn action_by_name(name: &str) -> Option<Action> {
         "focus_right" => FocusRight,
         "log_down" => LogDown,
         "log_up" => LogUp,
+        "ask" => Ask,
         n => Screen(
             ScreenId::ALL
                 .iter()
@@ -175,6 +178,7 @@ impl Keymap {
             (ctl('j'), LogDown),
             (ctl('k'), LogUp),
             (ctl('c'), Interrupt),
+            (ch('A'), Ask),
         ] {
             map.insert(k, a);
         }

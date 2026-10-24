@@ -165,6 +165,10 @@ impl Jobs {
         };
         match a {
             Action::Refresh => vec![Effect::Fetch(Fetch::Jobs)],
+            // Cleanup jobs run from the Cleanup tab: one place to choose and confirm deletions.
+            Action::Enter if JobId::CLEANUP.contains(&r.job) => {
+                vec![Effect::CleanupFocus(r.job)]
+            }
             Action::Enter => vec![
                 Effect::Fetch(Fetch::Plan(r.job)),
                 Effect::Toast(format!("planning {}…", r.job.name())),
@@ -244,5 +248,34 @@ impl Jobs {
             ]));
         }
         f.render_widget(Paragraph::new(lines), foot);
+    }
+}
+
+impl Jobs {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let r = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no job selected")?;
+        let last =
+            v.d.job_runs
+                .get()
+                .and_then(|rec| rec.runs.get(r.job.name()))
+                .map_or("never run".to_string(), |run| {
+                    format!("{} · {}", if run.ok { "ok" } else { "failed" }, run.summary)
+                });
+        Ok(crate::claude::Ask::new(
+            format!("job {}", r.job.name()),
+            format!(
+                "A sentry maintenance job:\njob {}\nwhat it does: {}\nsuggested every: {}\nlast run: {} ({last})\nstatus: {}\n`sentry job {} --dry-run` shows its exact plan.",
+                r.job.name(),
+                r.job.description(),
+                r.every.label(),
+                r.last,
+                r.status.0,
+                r.job.name()
+            ),
+            "What would this do on my machine right now, and is it safe to run?",
+        ))
     }
 }

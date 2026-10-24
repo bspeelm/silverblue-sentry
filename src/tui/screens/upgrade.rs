@@ -763,3 +763,62 @@ fn gate_card(f: &mut Frame, area: Rect, color: Color, head: Line, body: Vec<Line
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), b);
     f.render_widget(Paragraph::new(sub), s);
 }
+
+impl Upgrade {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let Some(s) = v.wf else {
+            let infos = self.infos(v);
+            let info = infos
+                .get(self.cur.sel.min(infos.len().saturating_sub(1)))
+                .ok_or("no workflow selected")?;
+            let text = std::fs::read_to_string(&info.entry.path).unwrap_or_default();
+            return Ok(crate::claude::Ask::new(
+                format!("workflow {}", info.entry.name),
+                format!(
+                    "A sentry upgrade workflow ({}):\n{text}",
+                    info.entry.path.display()
+                ),
+                "Walk me through what this workflow does on my machine and what could go wrong.",
+            ));
+        };
+        let i = s.next.idx().ok_or("the workflow is complete")?;
+        let step = &s.wf.steps[i];
+        let st = &s.run.state.steps[i];
+        let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        let tail = lines[lines.len().saturating_sub(60)..].join("\n");
+        let failed = matches!(st.status, crate::workflows::state::StepStatus::Failed);
+        let vars: Vec<String> = s
+            .run
+            .state
+            .vars
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        Ok(crate::claude::Ask::new(
+            format!("{} · {}", s.wf.name, step.id),
+            format!(
+                "Step {}/{} of the sentry workflow {} on my machine:\ntitle {}\ncommand {}\nstatus {:?}{}\nvars {}\nlast lines of steps/{}.log:\n{}",
+                i + 1,
+                s.wf.steps.len(),
+                s.wf.name,
+                s.title(i),
+                preview(&s.run.state, step.run.as_deref().unwrap_or("(no command)")),
+                st.status,
+                st.code.map_or(String::new(), |c| format!(", exit {c}")),
+                vars.join(" "),
+                step.id,
+                if tail.is_empty() {
+                    "(empty)".into()
+                } else {
+                    tail
+                }
+            ),
+            if failed {
+                "Why did this fail and what should I do next?"
+            } else {
+                "What does this step do and what could go wrong?"
+            },
+        ))
+    }
+}

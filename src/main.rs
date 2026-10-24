@@ -4,6 +4,7 @@ mod audit;
 mod baseline;
 mod cache;
 mod checks;
+mod claude;
 mod collectors;
 mod config;
 mod exec;
@@ -79,6 +80,11 @@ enum Command {
         #[arg(long)]
         interval: Option<String>,
     },
+    /// Toolbox/distrobox packages: `check` (dnf check-update in each, cached) or `upgrade` (all).
+    Toolbox {
+        /// check | upgrade
+        action: String,
+    },
     /// Dump a collector as JSON.
     Collect {
         /// One of: system, processes, gpu, disk, disk-breakdown, net, ostree, flatpak,
@@ -142,6 +148,14 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Some(Command::Toolbox { action }) => {
+            let (cfg, warnings) = config::Config::load();
+            warnings.iter().for_each(|w| eprintln!("{w}"));
+            ExitCode::from(collectors::toolbox::run_cli(
+                &action,
+                &collectors::Ctx::new(cfg),
+            ))
         }
         Some(Command::Status { short }) => {
             println!("{}", status::line(short));

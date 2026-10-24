@@ -471,3 +471,26 @@ impl Audit {
 fn strip_json(s: &str) -> &str {
     s.strip_suffix(".json").unwrap_or(s)
 }
+
+impl Audit {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let f = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no finding selected (run an audit with Enter)")?;
+        Ok(crate::claude::Ask::new(
+            format!("audit · {}", f.message),
+            format!(
+                "A finding from sentry's security audit of my machine:\n{} [{}] {}\nsentry's generic explanation:\n  what: {}\n  why: {}\n  to do: {}\nevidence:\n{}",
+                f.severity.as_str(),
+                f.category,
+                f.message,
+                f.what,
+                f.why,
+                f.fix,
+                f.evidence
+            ),
+            "Explain this on my machine specifically (check what you can) and tell me what to do.",
+        ))
+    }
+}

@@ -24,4 +24,4 @@ expression: body(&s)
 │ breakdown not measured · press r     │ │ recorder off · history needs `sentr │
 └──────────────────────────────────────┘ └─────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- 1-0  screens   c  check updates   r  measure disks   ?  help   q  quit
+ 1-0  screens   c  check updates   r  measure disks   j/k Enter  open a status r

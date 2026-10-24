@@ -167,6 +167,29 @@ impl Screens {
         }
     }
 
+    /// `A`: the selected thing as a question for Claude (spec: "ask" per tab).
+    pub fn ask(&self, id: ScreenId, v: &View) -> Result<crate::claude::Ask, String> {
+        match id {
+            ScreenId::Dash => dashboard::ask(v),
+            ScreenId::Proc => self.proc.ask(v),
+            ScreenId::Net => self.net.ask(v),
+            ScreenId::Upd => updates::ask(v),
+            ScreenId::Cont => self.cont.ask(v),
+            ScreenId::Flat => self.flat.ask(v),
+            ScreenId::Audit => self.audit.ask(v),
+            ScreenId::Jobs => self.jobs.ask(v),
+            ScreenId::Clean => self.clean.ask(v),
+            ScreenId::Upgrade => self.upgrade.ask(v),
+            ScreenId::Hist => self.hist.ask(v),
+        }
+    }
+
+    pub fn focus_cleanup(&mut self, job: crate::jobs::JobId) {
+        self.clean.focus = Some(job);
+        self.clean.jump = true;
+        self.clean.reset_checks();
+    }
+
     pub fn select_workflow(&mut self, i: usize) {
         self.upgrade.cur.sel = i;
     }

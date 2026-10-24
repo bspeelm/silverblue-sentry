@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                 │  │ recorder off · history needs `sentry record`     │  │                                                 │
 └─────────────────────────────────────────────────┘  └──────────────────────────────────────────────────┘  └─────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-0  screens   c  check updates   r  measure disks   ?  help   q  quit
+ 1-0  screens   c  check updates   r  measure disks   j/k Enter  open a status row   ?  help   q  quit

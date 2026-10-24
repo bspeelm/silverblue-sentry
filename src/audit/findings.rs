@@ -568,7 +568,7 @@ mod tests {
     /// The reachable listeners of a real Silverblue desktop (addresses scrubbed).
     fn desktop_listeners() -> Vec<ListenSec> {
         [
-            ("tcp", "0.0.0.0:27500/?"),
+            ("tcp", "0.0.0.0:27999/?"),
             ("udp", "0.0.0.0:5353/?"),
             ("tcp", "0.0.0.0:5355/?"),
             ("udp", "0.0.0.0:5355/?"),
@@ -599,7 +599,7 @@ mod tests {
             msgs,
             vec![
                 (
-                    "Unknown service on tcp/27500 · open to all networks",
+                    "Unknown service on tcp/27999 · open to all networks",
                     Sev::High
                 ),
                 (
@@ -614,7 +614,7 @@ mod tests {
         );
         let unknown = &f[0];
         assert!(unknown.what.contains("belongs to root"), "{}", unknown.what);
-        assert!(unknown.fix.contains("sudo ss -tulpn 'sport = :27500'"));
+        assert!(unknown.fix.contains("sudo ss -tulpn 'sport = :27999'"));
         let wsdd = f
             .iter()
             .find(|x| x.message.starts_with("WS-Discovery"))

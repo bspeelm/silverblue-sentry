@@ -348,6 +348,59 @@ fn clock(ts: i64, win: i64) -> String {
     }
 }
 
+impl History {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let h =
+            v.d.history
+                .get()
+                .filter(|h| !h.recs.is_empty())
+                .ok_or("no recorder data (run `sentry record`)")?;
+        let (win, label) = WINDOWS[self.win];
+        let newest = h.recs.last().map_or(0, |r| r.ts);
+        let end = newest - self.offset + 1;
+        let start = end - win;
+        let span: Vec<&Rec> = h
+            .recs
+            .iter()
+            .filter(|r| r.ts >= start && r.ts < end)
+            .collect();
+        let stat = |name: &str, f: &dyn Fn(&Rec) -> f32| {
+            let vals: Vec<f32> = span.iter().map(|r| f(r)).filter(|x| !x.is_nan()).collect();
+            if vals.is_empty() {
+                return format!("{name}: no data");
+            }
+            let avg = vals.iter().sum::<f32>() / vals.len() as f32;
+            let max = vals.iter().copied().fold(f32::MIN, f32::max);
+            let min = vals.iter().copied().fold(f32::MAX, f32::min);
+            format!("{name}: avg {avg:.1} · min {min:.1} · max {max:.1}")
+        };
+        let mut lines = vec![
+            format!("window: last {label}, {} samples", span.len()),
+            stat("cpu %", &|r| r.cpu),
+            stat("memory GiB", &|r| r.mem_gib),
+            stat("swap GiB", &|r| r.swap_gib),
+            stat("net rx B/s", &|r| r.rx),
+            stat("net tx B/s", &|r| r.tx),
+            stat("load1", &|r| r.load1),
+            stat("cpu °C", &|r| r.cpu_temp),
+            stat("gpu %", &|r| r.gpu),
+            stat("gpu °C", &|r| r.gpu_temp),
+            stat("/ used %", &|r| r.disk_pct),
+        ];
+        for (ts, msg) in &h.alerts {
+            lines.push(format!("alert {ts}: {msg}"));
+        }
+        Ok(crate::claude::Ask::new(
+            format!("history · last {label}"),
+            format!(
+                "Metrics recorded by `sentry record` on my machine:\n{}",
+                lines.join("\n")
+            ),
+            "Anything unusual in this period?",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

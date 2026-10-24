@@ -129,3 +129,23 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **Flatpak access is summarised** in one "N apps can read your files" **info** finding. A permission gained since the last audit, or a talk-name sandbox escape, is reported on its own.
 - **The diff never treats "not collected" as "empty".** Report `i` is compared with `i-1`, with any missing section borrowed from the newest earlier report that has it, and a note says so. A section with no source says "not collected". Only reachable listeners are diffed. "Gained" findings use the same merged report.
 - The rpm-ostree status timeout is 60 s. It was 10 s, and that timeout caused a report with no package section.
+
+## A18. Ask Claude (local Claude Code passthrough)
+- `A` on any tab builds a context for the selected thing (`Screens::ask`, one formatter per tab) and shows it verbatim in a consent modal. `y` runs `claude -p` on the host (`Cmd::host`). The CLI uses the user's Claude Code login, so there's no API key.
+- Flags:
+  - `--output-format stream-json --verbose --include-partial-messages`;
+  - `--append-system-prompt` (sentry's role plus machine facts);
+  - `--tools Bash Read Grep Glob`, `--allowedTools ALLOWED` (read-only), `--disallowedTools Write Edit … Bash(sudo:*) Bash(rm:*)`;
+  - `--strict-mcp-config`.
+- The working directory is `<cache>/sentry/claude`, so no project instructions get picked up. Follow-ups use `--resume <session_id>`.
+- Claude Code refuses tools outside the allowlist in `-p` mode, including compound commands with a disallowed part. The live tests confirmed this: `| head`, `firewall-cmd`, `systemctl list-sockets` were refused; the latter two were then added as read-only.
+- The chat pane streams text deltas and shows each tool call and its result summary. Esc kills the turn; killing `flatpak-spawn` also ends the host process, which the live test verified. Sentry kills it on exit too.
+- Per-tab questions are listed in the plan (Dashboard, Processes, Network, Updates, Containers, Flatpaks, Audit, Jobs, Cleanup, Upgrade, History).
+- **Overlap between tabs, resolved:**
+  - on a kernel change, Updates `u` starts quick-update; it no longer stages ritual step 1 by itself;
+  - Jobs Enter on a cleanup job opens Cleanup with only that job's items selected;
+  - `b` marks things expected on both Network and Audit, and a known service is marked on all its sockets;
+  - stale GL extensions and the cache size point to Cleanup;
+  - the toolbox upgrade is one command (`sentry toolbox upgrade`), used by Containers, update-apply and quick-update;
+  - the Dashboard status rows are jump links.
+- `known.rs` gained passim (tcp 27500, the fwupd firmware cache), learned from a live answer.

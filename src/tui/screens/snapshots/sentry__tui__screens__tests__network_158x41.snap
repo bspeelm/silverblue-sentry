@@ -7,7 +7,7 @@ expression: body(&s)
 
 ┌ Listening · ss -tulpn · 44 · 12 new ──────────────────────────────────────────────┐  ┌ Established · 26 ───────────────────────────────────────────────────┐
 │ PROTO LOCAL                                   PROCESS                    STATUS   │  │ PEER                                             PROCESS            │
-│ tcp   0.0.0.0:27500                           root · unknown             NEW      │  │ 198.51.100.2:https                               claude             │
+│ tcp   0.0.0.0:27500                           root · passim (fwupd firmw NEW      │  │ 198.51.100.2:https                               claude             │
 │ tcp   0.0.0.0:5355                            root · LLMNR (systemd-reso NEW      │  │ 198.51.100.3:https                               slack              │
 │ tcp   127.0.0.1:2222                          pasta.avx2 (127235)        local    │  │ 198.51.100.3:https                               slack              │
 │ tcp   127.0.0.1:3000                          ssh (9682)                 local    │  │ 198.51.100.4:https                               slack              │
@@ -41,4 +41,4 @@ expression: body(&s)
 │ udp   192.0.2.1:3702                          wsdd (19947)               NEW      │  │                                                                     │
 └───────────────────────────────────────────────────────────────────────────────────┘  └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   e  mark expected   /  filter   r  refresh   ?  help   q  quit
+ j/k  select   b  mark expected   /  filter   r  refresh   ?  help   q  quit

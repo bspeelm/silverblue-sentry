@@ -24,6 +24,10 @@ pub struct Cleanup {
     pub cur: Cursor,
     /// User toggles, keyed by (job, item key); absent = the item's default.
     checked: HashMap<(JobId, String), bool>,
+    /// Opened from Jobs for one job: only its items start selected.
+    pub focus: Option<JobId>,
+    /// Move the cursor to the focused job's first item once plans are loaded.
+    pub jump: bool,
 }
 
 pub fn on_enter(v: &View) -> Vec<Effect> {
@@ -55,12 +59,17 @@ impl Cleanup {
         })
     }
 
+    pub fn reset_checks(&mut self) {
+        self.checked.clear();
+    }
+
     fn is_on(&self, i: &Item) -> bool {
+        let default = i.default_on && self.focus.is_none_or(|j| j == i.job);
         i.runnable()
             && *self
                 .checked
                 .get(&(i.job, i.key.clone()))
-                .unwrap_or(&i.default_on)
+                .unwrap_or(&default)
     }
 
     fn selected<'a>(&self, v: &View<'a>) -> Vec<&'a Item> {
@@ -81,6 +90,7 @@ impl Cleanup {
         match a {
             Action::Refresh | Action::Check => {
                 self.checked.clear();
+                self.focus = None;
                 vec![
                     Effect::Fetch(Fetch::Cleanup),
                     Effect::Toast("re-planning cleanup (dry runs)…".into()),
@@ -178,7 +188,18 @@ impl Cleanup {
         let [left, right] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
             .spacing(2)
             .areas(area);
-        let block = panel(t, "Reclaimable", "from dry-run");
+        if self.jump
+            && let Some(j) = self.focus
+            && let Some(i) = self.items(v).iter().position(|x| x.job == j)
+        {
+            self.cur.sel = i;
+            self.jump = false;
+        }
+        let detail = match self.focus {
+            Some(j) => format!("from dry-run · {} selected", j.name()),
+            None => "from dry-run".into(),
+        };
+        let block = panel(t, "Reclaimable", detail);
         let r = inner(&block, left);
         f.render_widget(block, left);
         let Some(plans) = v.d.cleanup.get() else {
@@ -277,5 +298,33 @@ impl Cleanup {
             lines.push(Line::styled(format!("! {n}"), t.s(t.yellow)));
         }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
+    }
+}
+
+impl Cleanup {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let items = self.items(v);
+        let i = items
+            .get(self.cur.sel.min(items.len().saturating_sub(1)))
+            .ok_or("no cleanup item (plans still loading?)")?;
+        let cmd = match &i.act {
+            Act::Run(c) => c.display(),
+            _ => "nothing to run".into(),
+        };
+        Ok(crate::claude::Ask::new(
+            format!("cleanup · {}", i.label),
+            format!(
+                "A cleanup item from sentry's dry-run plan:\n{}\njob {}\nsize {}\npreview:\n{}\ncommand: {cmd}",
+                i.label,
+                i.job.name(),
+                i.bytes.map_or("unknown".to_string(), fmt::bytes),
+                i.preview
+                    .iter()
+                    .map(|l| format!("  {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            "Is this safe to delete, and what would I lose?",
+        ))
     }
 }

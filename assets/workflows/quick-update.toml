@@ -30,9 +30,9 @@ gate = "confirm"
 [[steps]]
 id = "toolboxes"
 title = "Upgrade packages inside every toolbox"
-# As root through podman: no sudo, so no terminal needed. Stopped toolboxes are started for the
-# upgrade and stopped again.
-run = '''for c in $(podman ps -a --filter label=com.github.containers.toolbox=true --format '{{ "{{" }}.Names{{ "}}" }}'); do echo "=== $c ==="; st=$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$c"); [ "$st" = running ] || podman start "$c" >/dev/null; podman exec --user root "$c" dnf -y upgrade; rc=$?; [ "$st" = running ] || podman stop -t 5 "$c" >/dev/null; [ $rc -eq 0 ] || exit $rc; done'''
+# As root through podman (no sudo, no terminal needed); stopped toolboxes are started for
+# the upgrade and stopped again. Same code as the Containers tab's U.
+run = "sentry toolbox upgrade"
 gate = "confirm"
 optional = true
 

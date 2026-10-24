@@ -20,7 +20,7 @@ pub struct Network {
 pub fn hints() -> Hints {
     vec![
         ("j/k", "select"),
-        ("e", "mark expected"),
+        ("b", "mark expected"),
         ("/", "filter"),
         ("r", "refresh"),
     ]
@@ -43,14 +43,44 @@ impl Network {
         }
         match a {
             Action::Refresh => vec![Effect::Fetch(Fetch::Net)],
-            Action::Char('e') => match rows.get(self.cur.clamp(rows.len())) {
+            // `b` everywhere marks things expected (`e` kept as an alias). A known service is
+            // marked on all of its sockets at once, as the Audit tab groups it.
+            Action::Char('b' | 'e') => match rows.get(self.cur.clamp(rows.len())) {
                 Some(l) if l.status == ListenStatus::Baseline => {
                     vec![Effect::Toast(format!(
                         "{} is already in the baseline",
                         l.key()
                     ))]
                 }
-                Some(l) => vec![Effect::Baseline(BaselineEdit::Listener(l.key()))],
+                Some(l) => {
+                    let svc = |x: &Listener| {
+                        x.port
+                            .parse()
+                            .ok()
+                            .and_then(|p| crate::audit::known::service(&x.proto, p))
+                            .map(|s| s.name)
+                    };
+                    match svc(l) {
+                        Some(name) => {
+                            let keys: Vec<String> = v
+                                .d
+                                .net
+                                .get()
+                                .map(|n| {
+                                    n.listeners
+                                        .iter()
+                                        .filter(|x| {
+                                            svc(x) == Some(name) && x.status == ListenStatus::New
+                                        })
+                                        .map(Listener::key)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            vec![Effect::Baseline(BaselineEdit::Listeners(keys))]
+                        }
+                        None => vec![Effect::Baseline(BaselineEdit::Listener(l.key()))],
+                    }
+                }
                 None => Vec::new(),
             },
             _ => Vec::new(),
@@ -158,5 +188,38 @@ impl Network {
                 selected: None,
             },
         );
+    }
+}
+
+impl Network {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let l = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no listener selected")?;
+        let svc = l
+            .port
+            .parse()
+            .ok()
+            .and_then(|p| crate::audit::known::service(&l.proto, p))
+            .map_or("not a port sentry recognises".to_string(), |s| {
+                s.name.to_string()
+            });
+        let owner = match (&l.process, l.pid) {
+            (Some(p), Some(pid)) => format!("{p} (pid {pid})"),
+            (Some(p), None) => p.clone(),
+            _ => "owned by root (not visible to an unprivileged ss)".into(),
+        };
+        Ok(crate::claude::Ask::new(
+            format!("listener {} {}", l.proto, l.local()),
+            format!(
+                "A listening socket on my machine (ss -tulpn):\n{} {}\nprocess: {owner}\nknown service: {svc}\nreachable from: {}\nsentry status: {:?}",
+                l.proto,
+                l.local(),
+                crate::audit::known::scope(&l.addr),
+                l.status
+            ),
+            "What is this, does it need to be reachable, and how do I close it if not?",
+        ))
     }
 }

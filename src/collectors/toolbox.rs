@@ -146,6 +146,60 @@ pub fn upgrade_cmd(name: &str, running: bool) -> Cmd {
         .timeout(None)
 }
 
+/// `sentry toolbox check|upgrade`. The same commands the Containers tab uses.
+pub fn run_cli(action: &str, ctx: &Ctx) -> u8 {
+    match action {
+        "check" => match crate::jobs::check_toolboxes(ctx) {
+            Ok(c) => {
+                for (name, b) in &c.data {
+                    match &b.error {
+                        Some(e) => println!("{name}: {e}"),
+                        None => println!("{name}: {} update(s)", b.updates.len()),
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("sentry toolbox check: {e}");
+                1
+            }
+        },
+        "upgrade" => {
+            let p = match podman::collect(ctx) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("sentry toolbox upgrade: {e}");
+                    return 1;
+                }
+            };
+            for c in p.containers.iter().filter(|c| c.kind != Kind::Podman) {
+                println!("=== {} ({}) ===", c.name, c.kind.as_str());
+                let cmd = upgrade_cmd(&c.name, c.running());
+                match cmd.interactive() {
+                    Ok(st) if st.success() => {}
+                    Ok(st) => {
+                        eprintln!(
+                            "{}: dnf upgrade failed (exit {})",
+                            c.name,
+                            st.code().unwrap_or(-1)
+                        );
+                        return 1;
+                    }
+                    Err(e) => {
+                        eprintln!("{}: {e}", c.name);
+                        return 1;
+                    }
+                }
+            }
+            0
+        }
+        other => {
+            eprintln!("sentry toolbox: unknown action {other:?} (check | upgrade)");
+            2
+        }
+    }
+}
+
 /// Total pending across containers (tab badge, dashboard).
 pub fn total(u: &ToolboxUpdates) -> usize {
     u.values().map(|b| b.updates.len()).sum()

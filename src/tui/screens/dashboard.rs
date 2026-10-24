@@ -9,19 +9,26 @@ use ratatui::widgets::Paragraph;
 use super::{Hints, View};
 use crate::collectors::system::SystemSnap;
 use crate::fmt;
+use crate::tui::ScreenId;
 use crate::tui::app::Effect;
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::widgets::{bar, graph, inner, panel, trunc};
 
 #[derive(Default)]
-pub struct Dashboard;
+pub struct Dashboard {
+    /// Selected Status row (j/k); Enter opens the tab behind it.
+    sel: Option<usize>,
+    /// Tab behind each Status row, from the last render.
+    targets: Vec<ScreenId>,
+}
 
 pub fn hints() -> Hints {
     vec![
         ("1-0", "screens"),
         ("c", "check updates"),
         ("r", "measure disks"),
+        ("j/k Enter", "open a status row"),
     ]
 }
 
@@ -44,6 +51,26 @@ impl Dashboard {
                 }
                 e
             }
+            Action::Down | Action::Up if !self.targets.is_empty() => {
+                let n = self.targets.len();
+                self.sel = Some(match (self.sel, a) {
+                    (None, Action::Down) => 0,
+                    (None, _) => n - 1,
+                    (Some(i), Action::Down) => (i + 1).min(n - 1),
+                    (Some(i), _) => i.saturating_sub(1),
+                });
+                Vec::new()
+            }
+            Action::Esc => {
+                self.sel = None;
+                Vec::new()
+            }
+            Action::Enter => match self.sel.and_then(|i| self.targets.get(i)) {
+                Some(id) => vec![Effect::Goto(*id)],
+                None => vec![Effect::Toast(
+                    "j/k selects a Status row; Enter opens it".into(),
+                )],
+            },
             _ => Vec::new(),
         }
     }
@@ -69,7 +96,7 @@ impl Dashboard {
             draw_mem(f, mem, v, &s);
             draw_disks(f, disks, v);
             draw_net(f, net, v);
-            draw_status(f, status, v);
+            self.targets = draw_status(f, status, v, self.sel);
         } else {
             // Short terminals: compact CPU (graph + heat strip) so the other panels get rows.
             let cpu_h = if area.height < 30 {
@@ -91,7 +118,7 @@ impl Dashboard {
                 .areas(r3);
             draw_cpu(f, r1, v, &s);
             draw_mem(f, mem, v, &s);
-            draw_status(f, status, v);
+            self.targets = draw_status(f, status, v, self.sel);
             draw_disks(f, disks, v);
             draw_net(f, net, v);
         }
@@ -501,7 +528,8 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
     );
 }
 
-fn draw_status(f: &mut Frame, area: Rect, v: &View) {
+/// Draws the Status panel; returns the tab each row links to.
+fn draw_status(f: &mut Frame, area: Rect, v: &View, sel: Option<usize>) -> Vec<ScreenId> {
     let t = v.t;
     let block = panel(t, "Status", "");
     let r = inner(&block, area);
@@ -645,17 +673,131 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
         None => rows.push(("recorder", "off".into(), t.dim, String::new())),
     }
 
+    let mut targets = Vec::new();
+    let mut last = ScreenId::Upd;
     let lines: Vec<Line> = rows
         .into_iter()
-        .map(|(k, val, c, note)| {
+        .enumerate()
+        .map(|(i, (k, val, c, note))| {
+            last = match k {
+                "updates" => ScreenId::Upd,
+                "findings" | "failed units" => ScreenId::Audit,
+                "jobs due" => ScreenId::Jobs,
+                "workflow" => ScreenId::Upgrade,
+                "recorder" => ScreenId::Hist,
+                _ => last, // continuation rows (kernel note) go where their parent goes
+            };
+            targets.push(last);
             let w = r.width as usize;
             let note = trunc(&note, w.saturating_sub(14 + val.chars().count() + 2));
-            Line::from(vec![
+            let line = Line::from(vec![
                 Span::styled(format!("{k:<13} "), t.dim()),
                 Span::styled(val, t.s(c)),
                 Span::styled(format!("  {note}"), t.dim()),
-            ])
+            ]);
+            if sel == Some(i) {
+                line.style(ratatui::style::Style::new().bg(t.sel_bg))
+            } else {
+                line
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines), r);
+    targets
+}
+
+/// `A` on the dashboard: the Status panel's facts, as one summary.
+pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
+    let d = v.d;
+    let mut lines = vec![format!("Silverblue {} · kernel {}", d.os_version, d.kernel)];
+    if let Some(o) = d.ostree.get() {
+        match &o.update {
+            Some(u) => lines.push(format!(
+                "rpm-ostree update pending: {} packages{}",
+                u.upgraded.len() + u.added.len(),
+                if u.kernel_changed {
+                    format!(
+                        ", kernel changes to {}",
+                        u.new_kernel.as_deref().unwrap_or("?")
+                    )
+                } else {
+                    String::new()
+                }
+            )),
+            None => lines.push("no rpm-ostree update known".into()),
+        }
+    }
+    if let Some(c) = d.fp_updates.get() {
+        lines.push(format!("{} Flatpak updates", c.data.len()));
+    }
+    if let Some(c) = d.tbx_updates.get() {
+        lines.push(format!(
+            "{} package updates inside toolboxes",
+            crate::collectors::toolbox::total(&c.data)
+        ));
+    }
+    if let Some(r) = d.reports.get().and_then(|r| r.last()) {
+        let c = r.report.counts(&d.baseline);
+        lines.push(format!(
+            "last audit: {} to check, {} to review, {} info",
+            c.high, c.medium, c.low
+        ));
+        for f in r.report.open(&d.baseline).take(6) {
+            lines.push(format!("  - {}", f.message));
+        }
+    }
+    if let Some(u) = d.units.get() {
+        for f in &u.failed {
+            lines.push(format!("failed unit: {} ({})", f.unit, f.scope));
+        }
+    }
+    if let Some(rec) = d.job_runs.get() {
+        let due: Vec<&str> = rec
+            .due_jobs(v.cfg, jiff::Timestamp::now())
+            .iter()
+            .map(|j| j.name())
+            .collect();
+        lines.push(format!(
+            "jobs due: {}",
+            if due.is_empty() {
+                "none".into()
+            } else {
+                due.join(", ")
+            }
+        ));
+    }
+    if let Some(s) = v.wf.filter(|s| !s.done()) {
+        lines.push(format!(
+            "workflow in progress: {} ({})",
+            s.wf.name,
+            s.state_word()
+        ));
+    }
+    for m in d.disks.get().into_iter().flatten() {
+        lines.push(format!(
+            "disk {} {}: {} of {} used",
+            m.target,
+            m.fstype,
+            fmt::bytes(m.used),
+            fmt::bytes(m.size)
+        ));
+    }
+    if let Some(s) = &d.sys {
+        lines.push(format!(
+            "cpu {:.0}% · load {:.2} · memory {} of {} · cpu temp {}",
+            s.cpu_total,
+            s.load[0],
+            fmt::bytes(s.mem.used),
+            fmt::bytes(s.mem.total),
+            s.temps.cpu.map_or("?".into(), |t| format!("{t:.0}°C"))
+        ));
+    }
+    Ok(crate::claude::Ask::new(
+        "dashboard",
+        format!(
+            "sentry's dashboard status for my machine:\n{}",
+            lines.join("\n")
+        ),
+        "Anything here I should act on, and in what order?",
+    ))
 }

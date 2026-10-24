@@ -80,42 +80,29 @@ fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
             })]
         }
         UpgradePlan::Ritual(kmod) => {
-            let cmd = Cmd::host("rpm-ostree")
-                .args(["upgrade", "--uninstall", &kmod])
-                .timeout(None);
+            // A kernel change is a multi-reboot procedure: one tracked, resumable place for it.
             let new_k = u
                 .and_then(|u| u.new_kernel.clone())
                 .unwrap_or_else(|| "?".into());
             vec![Effect::Confirm(Modal {
-                title: "rpm-ostree upgrade · kernel changes".into(),
+                title: "Kernel changes · use quick-update".into(),
                 color: t.yellow,
                 lines: vec![
                     Line::styled(summary, t.fg()),
                     Line::styled(format!("kernel {} → {new_k}", o.booted_kernel), t.yellow),
                     Line::styled(
-                        "Kmod ritual step 1: stage the upgrade and drop the old kmod.",
+                        "The NVIDIA kmod has to be rebuilt for the new kernel: drop the old kmod, reboot, build and layer the new one, reboot.",
                         t.fg(),
                     ),
-                    Line::styled(format!("$ {}", cmd.display()), t.dim()),
+                    Line::styled(format!("Old kmod: {kmod}"), t.dim()),
                     Line::styled(
-                        "Then reboot, build/layer the new kmod, reboot again (quick-update workflow, milestone 5).",
-                        t.dim(),
-                    ),
-                    Line::styled(
-                        "An openssl-devel depsolve wall means mirror lag: wait, or use the master mirror.",
+                        "quick-update runs that sequence step by step, survives the reboots, and shows where you are.",
                         t.dim(),
                     ),
                 ],
                 yes: Some((
-                    "stage upgrade".into(),
-                    vec![Effect::Run(RunSpec {
-                        queue: Vec::new(),
-                        title: "rpm-ostree upgrade (kmod ritual step 1)".into(),
-                        cmd,
-                        then,
-                        ok_toast: "staged without old kmod · reboot, then build the new kmod"
-                            .into(),
-                    })],
+                    "start quick-update".into(),
+                    vec![Effect::StartWorkflow("quick-update".into())],
                 )),
             })]
         }
@@ -453,6 +440,58 @@ fn draw_flatpak(f: &mut Frame, area: Rect, v: &View) {
             );
         }
     }
+}
+
+/// `A` on Updates: what's pending, for a risk read before applying.
+pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
+    let o = v.d.ostree.get().ok_or("rpm-ostree status not loaded yet")?;
+    let mut lines = vec![format!(
+        "booted {} (kernel {})",
+        o.booted().map_or("?", |b| b.version.as_str()),
+        o.booted_kernel
+    )];
+    if let Some(b) = o.booted() {
+        lines.push(format!("layered: {}", b.layered.join(" ")));
+        lines.push(format!("local packages: {}", b.local.join(" ")));
+    }
+    match &o.update {
+        None => lines.push("no rpm-ostree update known (press c to check)".into()),
+        Some(u) => {
+            lines.push(format!(
+                "pending rpm-ostree update {}: {} upgraded, {} added, {} removed, {} advisories{}",
+                u.version.as_deref().unwrap_or("?"),
+                u.upgraded.len(),
+                u.added.len(),
+                u.removed.len(),
+                u.advisories,
+                if u.kernel_changed {
+                    " · KERNEL CHANGES"
+                } else {
+                    ""
+                }
+            ));
+            for p in u.upgraded.iter().take(60) {
+                lines.push(format!("  {} {} → {}", p.name, p.old, p.new));
+            }
+            if u.upgraded.len() > 60 {
+                lines.push(format!("  … {} more", u.upgraded.len() - 60));
+            }
+        }
+    }
+    if let Some(c) = v.d.fp_updates.get() {
+        lines.push(format!("{} Flatpak updates:", c.data.len()));
+        for u in c.data.iter().take(30) {
+            lines.push(format!("  {} {} ({})", u.id, u.version, u.origin));
+        }
+    }
+    Ok(crate::claude::Ask::new(
+        "pending updates",
+        format!(
+            "Pending updates on my Silverblue machine. On a kernel change, sentry's quick-update workflow runs the NVIDIA kmod procedure (drop the old local kmod, reboot, build and layer the new one, reboot).\n{}",
+            lines.join("\n")
+        ),
+        "What's in this update, is anything risky for my NVIDIA/kmod setup, and should I use the routine path or quick-update?",
+    ))
 }
 
 #[cfg(test)]

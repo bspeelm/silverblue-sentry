@@ -5,6 +5,7 @@
 //! sleeps until the active screen's next refresh is due, so idle screens cost ~nothing.
 
 mod app;
+mod chat;
 mod data;
 mod keys;
 mod screens;
@@ -240,6 +241,7 @@ fn event_loop(term: &mut Term, app: &mut app::App, rx: &Receiver<Event>) -> anyh
             continue;
         }
         if app.quit {
+            app.shutdown();
             return Ok(());
         }
         let now = Instant::now();

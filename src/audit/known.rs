@@ -112,6 +112,14 @@ const RPCBIND: Service = Service {
     advice: "Only needed for NFS; otherwise `sudo systemctl disable --now rpcbind.socket rpcbind`.",
 };
 
+const PASSIM: Service = Service {
+    name: "passim (fwupd firmware cache)",
+    what: "Fedora's local cache server for firmware files: fwupd starts it so machines on your LAN can share firmware downloads.",
+    normal: true,
+    remote_access: false,
+    advice: "Harmless and read-only, but it advertises itself on the network. To stop sharing (fwupd still works): `sudo systemctl mask --now passim.service`.",
+};
+
 pub fn service(proto: &str, port: u16) -> Option<&'static Service> {
     let udp = proto.starts_with("udp");
     Some(match port {
@@ -130,6 +138,7 @@ pub fn service(proto: &str, port: u16) -> Option<&'static Service> {
         5900..=5903 if !udp => &VNC,
         137..=139 | 445 => &SAMBA,
         111 => &RPCBIND,
+        27500 if !udp => &PASSIM,
         _ => return None,
     })
 }
@@ -183,7 +192,11 @@ mod tests {
             "LLMNR (systemd-resolved)"
         );
         assert!(service("tcp", 22).unwrap().remote_access);
-        assert!(service("tcp", 27500).is_none());
+        assert_eq!(
+            service("tcp", 27500).unwrap().name,
+            "passim (fwupd firmware cache)"
+        );
+        assert!(service("tcp", 27501).is_none());
     }
 
     #[test]

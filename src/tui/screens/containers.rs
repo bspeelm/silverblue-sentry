@@ -459,3 +459,39 @@ impl Containers {
         );
     }
 }
+
+impl Containers {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let c = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no container selected")?;
+        let upd = match box_updates(v, &c.name) {
+            Some(b) if b.error.is_none() => {
+                let names: Vec<&str> = b.updates.iter().take(20).map(|u| u.name.as_str()).collect();
+                format!(
+                    "{} pending dnf updates: {}",
+                    b.updates.len(),
+                    names.join(" ")
+                )
+            }
+            Some(b) => format!("update check failed: {}", b.error.as_deref().unwrap_or("")),
+            None => "updates not checked".into(),
+        };
+        Ok(crate::claude::Ask::new(
+            format!("container {}", c.name),
+            format!(
+                "A podman container on my machine:\nname {}\nkind {} (toolbox/distrobox containers share my home folder)\nimage {}\nstate {} ({})\nage {}{}\nmounts $HOME: {}\n{upd}",
+                c.name,
+                c.kind.as_str(),
+                c.image,
+                c.state,
+                c.status,
+                fmt::age(c.age_s),
+                if c.stale { ", stale" } else { "" },
+                if c.home_mount { "yes" } else { "no" }
+            ),
+            "What is this container for, is it safe to keep or remove, and does it need updating?",
+        ))
+    }
+}

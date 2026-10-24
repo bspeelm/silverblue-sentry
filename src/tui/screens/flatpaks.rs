@@ -221,7 +221,7 @@ impl Flatpaks {
             if !stale.is_empty() {
                 spans.push(Span::styled(
                     format!(
-                        " · old extensions (not removed by --unused): {}",
+                        " · old extensions (not removed by --unused): {} · remove them in Cleanup (9)",
                         stale.join(", ")
                     ),
                     t.dim(),
@@ -230,5 +230,40 @@ impl Flatpaks {
             lines.push(Line::from(spans));
         }
         f.render_widget(Paragraph::new(lines), foot);
+    }
+}
+
+impl Flatpaks {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let a = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no app selected")?;
+        let p = &a.perms;
+        let j = |x: &[String]| {
+            if x.is_empty() {
+                "—".to_string()
+            } else {
+                x.join(" ")
+            }
+        };
+        Ok(crate::claude::Ask::new(
+            format!("flatpak {}", a.id),
+            format!(
+                "An installed Flatpak app (permissions = metadata + overrides):\nid {}\norigin {}\nversion {}\ninstallation {}\nfilesystems {}\nshared {}\nsockets {}\ndevices {}\ntalk-name {}\nown-name {}\nlocal overrides: {}",
+                a.id,
+                a.origin,
+                a.version,
+                a.installation,
+                j(&p.filesystems),
+                j(&p.shared),
+                j(&p.sockets),
+                j(&p.devices),
+                j(&p.talk),
+                j(&p.own),
+                if a.overridden { "yes" } else { "no" }
+            ),
+            "Does this app need these permissions, and what can I safely restrict?",
+        ))
     }
 }

@@ -138,3 +138,29 @@ impl Processes {
         );
     }
 }
+
+impl Processes {
+    pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
+        let rows = self.rows(v);
+        let p = rows
+            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .ok_or("no process selected")?;
+        Ok(crate::claude::Ask::new(
+            format!(
+                "process {} ({})",
+                p.pid,
+                p.cmd.split_whitespace().next().unwrap_or("?")
+            ),
+            format!(
+                "Process on my Silverblue machine (from the Processes screen):\npid {}\nuser {}\ncommand {}\ncpu {:.1}% of one core, memory {:.1}%\nrunning for {}",
+                p.pid,
+                p.user,
+                p.cmd,
+                p.cpu,
+                p.mem_pct,
+                fmt::uptime(p.run_time_s)
+            ),
+            "What is this process, and is this usage normal?",
+        ))
+    }
+}

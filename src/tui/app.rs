@@ -41,6 +41,14 @@ pub enum Effect {
     /// Ask for a line of input in the key bar (initial text).
     Prompt(Prompt, String),
     Wf(WfCmd),
+    /// Send a turn to Claude: the first question, or a follow-up in the open chat.
+    AskSend(AskTurn),
+    /// Switch to another tab.
+    Goto(ScreenId),
+    /// Open Upgrade and start this workflow (its own confirm/var prompts follow).
+    StartWorkflow(String),
+    /// Open Cleanup with only this job's items selected.
+    CleanupFocus(crate::jobs::JobId),
     Quit,
 }
 
@@ -64,6 +72,12 @@ impl Prompt {
             Prompt::WfVar { prompt, .. } => format!("{prompt}: "),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum AskTurn {
+    First(crate::claude::Ask),
+    Follow(String),
 }
 
 /// Workflow actions from the Upgrade screen, executed against the app's session.
@@ -183,6 +197,7 @@ pub struct App {
     last_minute: i64,
     wf: Option<Session>,
     suspend_for: Option<SuspendFor>,
+    chat: Option<super::chat::Chat>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -221,11 +236,17 @@ impl App {
             last_minute: 0,
             wf: Session::resume(),
             suspend_for: None,
+            chat: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
         }
         app
+    }
+
+    #[cfg(test)]
+    pub fn set_chat(&mut self, c: super::chat::Chat) {
+        self.chat = Some(c);
     }
 
     #[cfg(test)]
@@ -267,6 +288,7 @@ impl App {
             last_minute: 0,
             wf: None,
             suspend_for: None,
+            chat: None,
         }
     }
 
@@ -343,7 +365,9 @@ impl App {
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             at(now + Duration::from_secs(1));
         }
-        if self.wf.as_ref().is_some_and(|s| s.live.is_some()) {
+        if self.wf.as_ref().is_some_and(|s| s.live.is_some())
+            || self.chat.as_ref().is_some_and(|c| c.running())
+        {
             at(now + Duration::from_millis(250));
         }
         due.max(now)
@@ -412,6 +436,9 @@ impl App {
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             self.dirty = true;
         }
+        if self.chat.as_ref().is_some_and(|c| c.running()) {
+            self.dirty = true;
+        }
         if let Some(s) = self.wf.as_mut()
             && let Some(l) = s.live.as_mut()
         {
@@ -464,6 +491,24 @@ impl App {
     }
 
     fn on_run_msg(&mut self, id: u64, msg: StreamMsg) {
+        if let Some(c) = self.chat.as_mut()
+            && c.live.is_some_and(|(cid, _)| cid == id)
+        {
+            match msg {
+                StreamMsg::Line {
+                    stderr: false,
+                    text,
+                } => {
+                    for e in crate::claude::parse_line(&text) {
+                        c.on_event(e);
+                    }
+                }
+                StreamMsg::Line { stderr: true, text } => c.on_raw(text),
+                StreamMsg::Exit { code, .. } => c.on_exit(code),
+            }
+            self.dirty = true;
+            return;
+        }
         if let Some(s) = self.wf.as_mut()
             && let Some(live) = s.live.as_ref().filter(|l| l.id == id)
         {
@@ -549,6 +594,10 @@ impl App {
             }
             return;
         }
+        if self.chat.is_some() {
+            self.chat_key(k, now);
+            return;
+        }
         if !matches!(self.input, Input::None) {
             self.input_key(k, now);
             return;
@@ -570,6 +619,7 @@ impl App {
                 self.enter(tabs[j], now);
             }
             Action::Help => self.show_help(),
+            Action::Ask => self.ask(),
             Action::Interrupt
                 if self.screen == ScreenId::Upgrade
                     && self.wf.as_ref().is_some_and(|s| s.live.is_some()) =>
@@ -644,6 +694,110 @@ impl App {
         if let Input::Filter(s) = &self.input {
             self.filters.insert(self.screen, s.clone());
             self.screens.reset_cursor(self.screen);
+        }
+    }
+
+    /// `A`: build the selected thing's question and show exactly what would be sent.
+    fn ask(&mut self) {
+        if !crate::claude::available() {
+            self.toast("Claude Code not found (expected ~/.local/bin/claude)");
+            return;
+        }
+        let v = View {
+            d: &self.data,
+            cfg: &self.cfg,
+            t: &self.theme,
+            filter: self
+                .filters
+                .get(&self.screen)
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
+            wf: self.wf.as_ref(),
+        };
+        match self.screens.ask(self.screen, &v) {
+            Err(why) => self.toast(why),
+            Ok(ask) => {
+                self.modal = Some(consent_modal(
+                    &self.theme,
+                    &ask.prompt(),
+                    AskTurn::First(ask),
+                ))
+            }
+        }
+    }
+
+    fn chat_key(&mut self, k: KeyEvent, now: Instant) {
+        use ratatui::crossterm::event::KeyModifiers;
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(c) = self.chat.as_mut() else { return };
+        match k.code {
+            KeyCode::Char('c') if ctrl => {
+                if let Some((_, pid)) = c.live {
+                    let _ = kill(pid);
+                    c.push(super::chat::Kind::Info, "stopped");
+                }
+            }
+            KeyCode::Char('k') if ctrl => c.scroll += 1,
+            KeyCode::Char('j') if ctrl => c.scroll = c.scroll.saturating_sub(1),
+            KeyCode::PageUp => c.scroll += 10,
+            KeyCode::PageDown => c.scroll = c.scroll.saturating_sub(10),
+            KeyCode::Esc => {
+                if let Some((_, pid)) = c.live {
+                    let _ = kill(pid);
+                }
+                self.chat = None;
+            }
+            KeyCode::Enter if !c.running() && !c.input.trim().is_empty() => {
+                let text = std::mem::take(&mut c.input);
+                self.modal = Some(consent_modal(
+                    &self.theme,
+                    &text,
+                    AskTurn::Follow(text.clone()),
+                ));
+            }
+            KeyCode::Backspace => {
+                c.input.pop();
+            }
+            KeyCode::Char(ch) if !ctrl && !c.running() => c.input.push(ch),
+            _ => {}
+        }
+        let _ = now;
+    }
+
+    fn ask_turn(&mut self, turn: AskTurn) {
+        let (prompt, shown, resume) = match turn {
+            AskTurn::First(ask) => {
+                let p = ask.prompt();
+                let q = ask.question.clone();
+                self.chat = Some(super::chat::Chat::new(ask));
+                (p, q, None)
+            }
+            AskTurn::Follow(text) => {
+                let session = self.chat.as_ref().and_then(|c| c.session.clone());
+                (text.clone(), text, session)
+            }
+        };
+        let cmd = crate::claude::turn_cmd(&prompt, resume.as_deref());
+        self.run_seq += 1;
+        let id = self.run_seq;
+        let tx = self.tx.clone();
+        let r = cmd.stream(move |m| {
+            let _ = tx.send(Event::Run(id, m));
+        });
+        let Some(c) = self.chat.as_mut() else { return };
+        match r {
+            Ok(pid) => c.begin_turn(&shown, id, pid),
+            Err(e) => c.push(
+                super::chat::Kind::Err,
+                format!("couldn't start claude: {e}"),
+            ),
+        }
+    }
+
+    /// Kill anything still talking to Claude (sentry is exiting).
+    pub fn shutdown(&mut self) {
+        if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
+            let _ = kill(pid);
         }
     }
 
@@ -821,6 +975,13 @@ impl App {
                 }
                 Effect::Prompt(p, init) => self.input = Input::Prompt(p, init),
                 Effect::Wf(c) => self.wf_cmd(c, now),
+                Effect::AskSend(turn) => self.ask_turn(turn),
+                Effect::Goto(id) => self.enter(id, now),
+                Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
+                Effect::CleanupFocus(job) => {
+                    self.screens.focus_cleanup(job);
+                    self.enter(ScreenId::Clean, now);
+                }
                 Effect::Quit => self.quit = true,
             }
         }
@@ -1182,6 +1343,10 @@ impl App {
             keyrule,
         );
         self.draw_keybar(f, keybar);
+        if let Some(c) = &self.chat {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            super::chat::draw(f, body, &t, c);
+        }
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
             draw_modal(f, body, &t, m);
@@ -1515,6 +1680,38 @@ fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
         color: t.cyan,
         lines,
         yes: None,
+    }
+}
+
+/// What is about to leave the machine, verbatim, before every Claude turn.
+fn consent_modal(t: &Theme, text: &str, turn: AskTurn) -> Modal {
+    let mut lines = vec![
+        Line::styled(
+            "Sent to Claude through your Claude Code login (Anthropic):",
+            t.fg(),
+        ),
+        Line::raw(""),
+    ];
+    let shown: Vec<&str> = text.lines().collect();
+    for l in shown.iter().take(24) {
+        lines.push(Line::styled(format!("  {l}"), t.dim()));
+    }
+    if shown.len() > 24 {
+        lines.push(Line::styled(
+            format!("  … {} more lines", shown.len() - 24),
+            t.dim(),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        crate::claude::allowlist_summary(),
+        t.s(t.yellow),
+    ));
+    Modal {
+        title: "Ask Claude".into(),
+        color: t.mag,
+        lines,
+        yes: Some(("send".into(), vec![Effect::AskSend(turn)])),
     }
 }
 

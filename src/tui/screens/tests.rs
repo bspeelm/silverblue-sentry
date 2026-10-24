@@ -203,18 +203,22 @@ fn navigation_and_modals() {
 }
 
 #[test]
-fn upgrade_modal_uses_exact_kmod() {
+fn upgrade_on_kernel_change_offers_quick_update() {
     let mut a = app(ScreenId::Upd);
     key(&mut a, KeyCode::Char('u'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("rpm-ostree upgrade --uninstall"), "{s}");
+    assert!(s.contains("Kernel changes · use quick-update"), "{s}");
     assert!(
         s.contains("kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64"),
         "{s}"
     );
-    assert!(s.contains("mirror lag"), "modal not clipped:\n{s}");
+    assert!(s.contains("start quick-update"), "{s}");
+    assert!(
+        !s.contains("--uninstall"),
+        "no standalone ritual step 1 any more"
+    );
     key(&mut a, KeyCode::Char('n'));
-    assert!(!render_to_string(&mut a, 158, 41).contains("--uninstall"));
+    assert!(!render_to_string(&mut a, 158, 41).contains("use quick-update"));
 }
 
 #[test]
@@ -649,4 +653,138 @@ fn containers_toolbox_updates() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Upgrade all toolboxes"), "{s}");
     assert!(render_to_string(&mut a, 80, 24).contains("Containers"));
+}
+
+#[test]
+fn ask_claude_context_per_tab() {
+    use crate::tui::screens::{Screens, View};
+    use crate::tui::theme::Theme;
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    let cfg = Config::default();
+    let t = Theme::truecolor();
+    let v = View {
+        d: &d,
+        cfg: &cfg,
+        t: &t,
+        filter: None,
+        wf: None,
+    };
+    let s = Screens::default();
+    let expect: &[(ScreenId, &str)] = &[
+        (ScreenId::Dash, "sentry's dashboard status"),
+        (ScreenId::Proc, "no process selected"), // processes aren't sampled in the fixture store
+        (ScreenId::Net, "known service:"),
+        (ScreenId::Upd, "KERNEL CHANGES"),
+        (ScreenId::Cont, "A podman container"),
+        (ScreenId::Flat, "permissions = metadata + overrides"),
+        (ScreenId::Audit, "sentry's generic explanation"),
+        (ScreenId::Jobs, "--dry-run` shows its exact plan"),
+        (ScreenId::Clean, "plans still loading"),
+        (ScreenId::Upgrade, "no workflow selected"),
+        (ScreenId::Hist, "no recorder data"),
+    ];
+    for (id, want) in expect {
+        let text = match s.ask(*id, &v) {
+            Ok(a) => {
+                assert!(!a.question.is_empty() && !a.subject.is_empty(), "{id:?}");
+                a.prompt()
+            }
+            Err(e) => e,
+        };
+        assert!(text.contains(want), "{id:?}: {text}");
+    }
+}
+
+#[test]
+fn chat_pane_and_consent_render() {
+    use crate::claude::Ask;
+    use crate::tui::chat::{Chat, Kind};
+    let mut c = Chat::new(Ask::new("audit · Unknown service on tcp/27500", "ctx", "q"));
+    c.begin_turn("Explain this on my machine.", 1, 1);
+    c.push(Kind::Tool, "$ ss -tlnp 'sport = :27500'");
+    c.push(Kind::Tool, "  → 2 lines");
+    c.push(
+        Kind::Claude,
+        "Port 27500 is owned by root; check it with sudo ss.",
+    );
+    c.on_exit(0);
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Audit);
+    a.set_chat(c);
+    let s = render_to_string(&mut a, 120, 30);
+    assert!(
+        s.contains("Claude · audit · Unknown service on tcp/27500"),
+        "{s}"
+    );
+    assert!(s.contains("you    Explain this on my machine."), "{s}");
+    assert!(s.contains("$ ss -tlnp 'sport = :27500'"), "{s}");
+    assert!(s.contains("claude Port 27500 is owned by root"), "{s}");
+    assert!(s.contains("ask a follow-up"), "{s}");
+    // Typing goes to the follow-up line; Enter asks for consent first.
+    for ch in "who owns it?".chars() {
+        key(&mut a, KeyCode::Char(ch));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 120, 30);
+    assert!(
+        s.contains("Ask Claude") && s.contains("who owns it?"),
+        "{s}"
+    );
+    assert!(s.contains("read-only commands"), "{s}");
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 120, 30);
+    assert!(!s.contains("Claude ·"), "Esc closes the pane: {s}");
+}
+
+#[test]
+fn jobs_enter_on_cleanup_opens_cleanup_focused() {
+    use crate::exec::Cmd;
+    use crate::jobs::JobId;
+    use crate::jobs::plan::{Act, Item, Plan};
+    let mut d = store();
+    let item = |job, key: &str, on| Item {
+        job,
+        key: key.into(),
+        label: key.into(),
+        bytes: Some(1 << 20),
+        preview: vec![],
+        act: Act::Run(Cmd::host("true")),
+        default_on: on,
+    };
+    d.cleanup.set(Ok(vec![
+        Plan {
+            items: vec![item(JobId::CleanupOstree, "repomd", true)],
+            notes: vec![],
+        },
+        Plan {
+            items: vec![item(JobId::CleanupPodman, "dangling", true)],
+            notes: vec![],
+        },
+    ]));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Jobs);
+    // cleanup-podman is the 5th job row.
+    for _ in 0..4 {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("from dry-run · cleanup-podman selected"), "{s}");
+    assert!(
+        s.contains("[ ] repomd") && s.contains("[x] dangling"),
+        "{s}"
+    );
+}
+
+#[test]
+fn dashboard_rows_jump_to_tabs() {
+    let mut a = app(ScreenId::Dash);
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("rpm-ostree · deployments"),
+        "first row opens Updates: {s}"
+    );
 }
