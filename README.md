@@ -88,7 +88,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `7` | Audit | what's worth a look, each explained (what it is, why it's listed, what to do) and marked `check` / `review` / `info`; known services are named and grouped; diff against the previous audit. `f` fixes the selected finding: with Claude Code, Claude reads the logs and tells you what to run (see below); without it, sentry's own fixes (the exact command and how to undo it, asked first, the terminal handed over for sudo, then a re-audit), `b` toggles expected, `A` asks Claude, `Enter` audits, `[`/`]` browse reports |
 | `8` | Jobs | last run, cadence, due status. `Enter` shows the plan, then runs; `e` edits the cadence |
 | `9` | Cleanup | reclaimable space from dry runs; `Space` toggles, `Enter` confirms and runs the selection |
-| `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip, `a` abandon, `R` roll back, `l` log |
+| `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip (asks first unless the step is optional), `a` abandon, `R` roll back, `L` log. On a failed step: `r` retry, `d` done by hand (asks first for a failed check), `f` fix with Claude |
 | `H` | History | recorder data over 6h/24h/72h (`[`/`]`), `←`/`→` to scrub; the tab appears once `sentry record` has run |
 
 `A` asks Claude about the selected thing (see below). Vim keys work everywhere: `j/k`, `gg/G`, `C-d/C-u`, `h/l` (previous/next screen), `/` filter with `n/N`, and `:` commands (`:q`, `:net`, `:job audit`, `:workflow quick-update`). `C-h`/`C-l` switch panes and `C-j`/`C-k` scroll logs. `?` shows the keys for the current screen.
@@ -121,7 +121,7 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 
 ### Fixing a failed workflow step (`f` on Upgrade)
 
-When a workflow step fails, the failure card offers `[f] fix with Claude`. Claude gets the step's command, exit code, the last 60 lines of its log, the workflow's own advice for that failure, and the actions open to you (retry, done by hand, skip, rollback, abandon). It answers in the same three parts, ending with which of those actions to take. It's told not to propose upgrades, rebases, rollbacks or reboots, because the workflow does those itself.
+When a workflow step fails, the failure card offers `[f] fix with Claude`. Claude gets the step's command, exit code, the last 60 lines of its log, the workflow's own advice for that failure, the steps still to come, and the actions open to you (retry, done by hand, skip, rollback, abandon). It answers in the same three parts, ending with which of those actions to take; when the system is already the way the step checks for, it says so and recommends done by hand. It's told not to change deployments (upgrade, rebase, rollback, install/uninstall, override), run akmods or reboot, and not to do later steps itself, because the workflow does those and would fall out of step with the system.
 
 - `r` runs one of its commands, as above. If a command would change deployments or reboot while a workflow is in progress, the confirm box warns you.
 - **`t` retries the step** from the chat, after a confirm box showing the step's command. The step's output goes to the workflow log; the chat says whether it passed or failed again, and `s` sends the new log to Claude. The conversation carries on across retries.

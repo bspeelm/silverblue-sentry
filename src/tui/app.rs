@@ -114,6 +114,8 @@ pub enum WfCmd {
     Begin(String, BTreeMap<String, String>),
     Go,
     Skip,
+    /// Skip a step that isn't optional (after a confirm).
+    SkipAnyway,
     Retry,
     Done,
     SkipDry,
@@ -1499,7 +1501,8 @@ impl App {
                 };
                 match c {
                     WfCmd::Go => s.go(),
-                    WfCmd::Skip => s.skip().map(|_| None),
+                    WfCmd::Skip => s.skip(false).map(|_| None),
+                    WfCmd::SkipAnyway => s.skip(true).map(|_| None),
                     WfCmd::Retry => {
                         if s.error.is_some() {
                             s.refresh();

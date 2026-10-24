@@ -350,7 +350,7 @@ fn drive(name: &str, args: &[String]) -> anyhow::Result<u8> {
                 run.save()?;
                 let st = step_cmd(&run, &step.id, &cmd).interactive()?;
                 let code = st.code().unwrap_or(-1);
-                runner::finish(&mut run.state, i, code, None);
+                runner::complete(&wf, &mut run.state, i, code, None, &env);
                 run.save()?;
                 println!("{} exit {code}", if code == 0 { "✓" } else { "✗" });
             }
@@ -361,7 +361,8 @@ fn drive(name: &str, args: &[String]) -> anyhow::Result<u8> {
                 println!("State saved — run `sentry` after login to continue.");
                 match ask("[y] reboot now  [d] mark done (already rebooted)  [q] quit >").as_str() {
                     "y" | "yes" => {
-                        runner::request_reboot(&wf, &mut run.state, idx, &env);
+                        runner::request_reboot(&wf, &mut run.state, idx, &env)
+                            .map_err(|e| anyhow::anyhow!(e))?;
                         run.save()?;
                         reboot_cmd().interactive()?;
                         return Ok(0);

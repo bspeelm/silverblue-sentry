@@ -195,7 +195,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
   - the rendered command, exit code and vars;
   - the 60-line log tail;
   - the step's `manual` text;
-  - the actions valid now, by name (retry, done by hand only for manual, skip only if optional, rollback only if any, abandon).
+  - the actions valid now, by name (retry, done by hand, skip, rollback only if any, abandon), and the pending later steps (A22).
 - **The question** is the shared `fix_question()`, plus: name one of the actions, and never propose `rpm-ostree upgrade/rebase/rollback/cleanup`, `ostree admin` or reboots.
 - **Proposals:**
   - refused while a step is live;
@@ -205,4 +205,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **Feedback:** `chat_step_exit` runs after `Session::on_exit`, on both the stream and the suspended (sudo) paths.
   - It sets Done, DryOk or Failed, adds an Info line, and sets the `s` offer to the step's log tail.
   - One Claude session spans the retries.
-- The Upgrade key bar shows `d` only for failed `manual` steps.
+- The Upgrade key bar shows `d` for every failed step (A22).
+
+## A22. Failed steps are never a dead end
+- **`d` on a failed `on_fail = "stop"` step** marks it done by hand after a confirm box (the step, its command, "mark it done only if you've made sure of this yourself"). Failed `manual` steps keep `d` without a box.
+- **`s` on a step that isn't optional** skips it after a confirm box ("later steps may expect it to have run"). Optional steps still skip at once.
+- **Enter on a failed step** names the options in a toast; the key bar drops "Enter run" while a step is failed.
+- **The log is `L`**: `l` is next-tab everywhere (vim), so the old `l` on Upgrade never reached the screen.
+- **Built-ins freeze after every successful step** (`runner::complete`), not only at a reboot. `pending_kernel` comes from rpm-ostree's cached update, which staging clears, so the reboot was too late and `verify-kernel` failed after it with "no pending kernel update".
+- **A reboot is refused** while a built-in that a step still to run needs can't be resolved ("not rebooting: later steps need pending_kernel: …"), instead of rebooting with the value lost. Steps ruled out by a frozen `when` don't count.
+- **A command that can't be filled in** says which value (`can't fill in {{ pending_kernel }}: …`), and the line goes into `steps/<id>.log` too, so `L` and fix with Claude see why the step never ran.
+- **Fix with Claude** also gets the pending later steps, and is told not to install/uninstall/override packages, run akmods, or do a later step itself; if the system already satisfies the step, it recommends done by hand.

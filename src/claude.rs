@@ -42,6 +42,8 @@ pub struct StepFacts {
     pub title: String,
     pub prev: Option<String>,
     pub next: Option<String>,
+    /// The steps still to come, `id: title · command`: Claude mustn't do them itself.
+    pub later: Vec<String>,
     /// Rendered command.
     pub cmd: String,
     pub code: Option<i32>,
@@ -126,6 +128,7 @@ impl Ask {
              command: {}\nexit code: {}\nvalues: {}\n\
              the workflow's own advice for this failure:\n{}\n\
              last lines of steps/{}.log:\n{}\n\n\
+             steps the workflow still runs after this one:\n{}\n\n\
              What I can do in sentry now:\n{}",
             s.workflow,
             s.idx + 1,
@@ -152,6 +155,15 @@ impl Ask {
             } else {
                 &s.log_tail
             },
+            if s.later.is_empty() {
+                "  (none)".into()
+            } else {
+                s.later
+                    .iter()
+                    .map(|l| format!("  {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
             actions.join("\n"),
         );
         Self {
@@ -159,9 +171,12 @@ impl Ask {
             context,
             question: fix_question(
                 "\nThe Recommendation must end by naming one of the sentry actions listed above \
-                 (usually: fix the cause with the commands, then retry). Never propose \
-                 `rpm-ostree upgrade/rebase/rollback/cleanup`, `ostree admin` or a reboot: the \
-                 workflow does those steps itself.",
+                 (usually: fix the cause with the commands, then retry). If the system already \
+                 is the way this step checks for, say so and recommend done by hand. Never \
+                 propose `rpm-ostree upgrade/rebase/rollback/cleanup/install/uninstall/override`, \
+                 `ostree admin`, `akmods` or a reboot, and never do a later step yourself: the \
+                 workflow runs those, and doing them outside it leaves it out of step with the \
+                 system.",
             ),
             known: Vec::new(),
             target: Some(Target::Step {
@@ -683,7 +698,8 @@ mod tests {
         assert!(
             p.contains("error: Packages not found") && p.contains("  Check `rpm-ostree status`.")
         );
-        assert!(p.contains("  retry: run the step again") && !p.contains("done by hand"));
+        assert!(p.contains("  retry: run the step again") && !p.contains("  done by hand:"));
+        assert!(p.contains("still runs after this one:\n  (none)"));
         assert!(p.contains("**Commands**") && p.contains("Never propose"));
         assert_eq!(a.step(), Some(2));
         assert!(a.finding().is_none());

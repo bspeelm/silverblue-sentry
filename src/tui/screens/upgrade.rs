@@ -13,6 +13,7 @@ use super::{Cursor, Hints, View};
 use crate::tui::app::{Effect, Modal, Prompt, WfCmd};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
+use crate::tui::theme::Theme;
 use crate::tui::wf::{LogKind, Session};
 use crate::tui::widgets::{inner, panel, trunc, wrap};
 use crate::workflows::Kind;
@@ -63,22 +64,27 @@ pub fn hints(v: &View) -> Hints {
             ("e", "edit toml"),
             ("r", "reload"),
         ],
-        Some(s) if s.done() => vec![("Enter", "close"), ("l", "log")],
+        Some(s) if s.done() => vec![("Enter", "close"), ("L", "log")],
         Some(s) => {
-            let mut h = vec![
-                ("Enter", "run"),
-                ("s", "skip optional"),
-                ("a", "abandon"),
-                ("l", "log"),
-            ];
-            if failed(s) {
-                h.insert(1, ("r", "retry"));
-                if matches!(s.next, Next::Manual { .. }) {
-                    h.insert(2, ("d", "done by hand"));
-                }
-                if crate::claude::available() {
-                    h.insert(1, ("f", "fix (with Claude)"));
-                }
+            // `l` is next-tab everywhere, so the log is `L`.
+            let mut h = if failed(s) {
+                vec![
+                    ("r", "retry"),
+                    ("d", "done by hand"),
+                    ("s", "skip"),
+                    ("a", "abandon"),
+                    ("L", "log"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "run"),
+                    ("s", "skip"),
+                    ("a", "abandon"),
+                    ("L", "log"),
+                ]
+            };
+            if failed(s) && crate::claude::available() {
+                h.insert(0, ("f", "fix (with Claude)"));
             }
             if s.live.is_some() {
                 h = vec![("C-c", "terminate step"), ("C-j/k", "scroll")];
@@ -90,6 +96,62 @@ pub fn hints(v: &View) -> Hints {
 
 fn failed(s: &Session) -> bool {
     matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. })
+}
+
+/// `s`: optional steps skip at once; any other step asks first, since later steps may
+/// depend on it (you decide, e.g. after doing it another way).
+fn skip_keys(s: &Session, t: &Theme) -> Vec<Effect> {
+    let Some(i) = s.next.idx() else {
+        return Vec::new();
+    };
+    if s.wf.steps[i].optional {
+        return vec![Effect::Wf(WfCmd::Skip)];
+    }
+    vec![Effect::Confirm(Modal {
+        title: "Skip step".into(),
+        color: t.yellow,
+        lines: step_lines(
+            s,
+            i,
+            t,
+            "This step isn't optional: later steps may expect it to have run.",
+        ),
+        yes: Some(("skip it".into(), vec![Effect::Wf(WfCmd::SkipAnyway)])),
+    })]
+}
+
+/// `d`: a manual step is done at once; a failed check or command asks first, because you are
+/// vouching for what it would have checked.
+fn done_keys(s: &Session, t: &Theme) -> Vec<Effect> {
+    match s.next {
+        Next::Stopped(i) => vec![Effect::Confirm(Modal {
+            title: "Done by hand".into(),
+            color: t.yellow,
+            lines: step_lines(
+                s,
+                i,
+                t,
+                "Mark it done only if you've made sure of this yourself; the workflow continues with the next step.",
+            ),
+            yes: Some(("mark done".into(), vec![Effect::Wf(WfCmd::Done)])),
+        })],
+        _ => vec![Effect::Wf(WfCmd::Done)],
+    }
+}
+
+fn step_lines(s: &Session, i: usize, t: &Theme, warn: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!("{}/{} {}", i + 1, s.wf.steps.len(), s.title(i)),
+        t.fg(),
+    )];
+    if let Some(cmd) = &s.wf.steps[i].run {
+        lines.push(Line::styled(
+            format!("$ {}", preview(&s.run.state, cmd)),
+            t.dim(),
+        ));
+    }
+    lines.push(Line::styled(warn.to_string(), t.s(t.yellow)));
+    lines
 }
 
 /// What `f` sends about the failed step: its command, log tail, the workflow's own advice and
@@ -104,16 +166,21 @@ pub fn step_facts(s: &Session) -> Option<crate::claude::StepFacts> {
     let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     // Named, not keyed: the chat retries with `t`, the Upgrade screen with `r`.
-    let mut actions = vec![("retry", "run the step again (t in this chat)")];
-    if matches!(s.next, Next::Manual { .. }) {
-        actions.push((
+    let mut actions = vec![
+        ("retry", "run the step again (t in this chat)"),
+        (
             "done by hand",
-            "accept the step as done after fixing it yourself",
-        ));
-    }
-    if step.optional {
-        actions.push(("skip", "skip this optional step"));
-    }
+            "accept the step as done, when the system already is the way it checks for",
+        ),
+        (
+            "skip",
+            if step.optional {
+                "skip this optional step"
+            } else {
+                "skip the step (it isn't optional: later steps may expect it)"
+            },
+        ),
+    ];
     if s.wf.steps.iter().any(|x| x.rollback) {
         actions.push((
             "rollback",
@@ -129,6 +196,16 @@ pub fn step_facts(s: &Session) -> Option<crate::claude::StepFacts> {
         title: s.title(i),
         prev: i.checked_sub(1).map(|j| s.title(j)),
         next: (i + 1 < s.wf.steps.len()).then(|| s.title(i + 1)),
+        later: (i + 1..s.wf.steps.len())
+            .filter(|&j| s.run.state.steps[j].status == StepStatus::Pending)
+            .map(|j| {
+                let cmd = s.wf.steps[j]
+                    .run
+                    .as_deref()
+                    .map_or("(reboot or manual)".into(), |c| preview(&s.run.state, c));
+                format!("{}: {} · {cmd}", s.wf.steps[j].id, s.title(j))
+            })
+            .collect(),
         cmd: preview(&s.run.state, step.run.as_deref().unwrap_or("(no command)")),
         code: st.code,
         vars: s
@@ -252,7 +329,7 @@ impl Upgrade {
         if s.done() {
             return match a {
                 Action::Enter | Action::Esc => vec![Effect::Wf(WfCmd::Close)],
-                Action::Char('l') => vec![Effect::Wf(WfCmd::OpenLog)],
+                Action::Char('L') => vec![Effect::Wf(WfCmd::OpenLog)],
                 _ => Vec::new(),
             };
         }
@@ -262,7 +339,7 @@ impl Upgrade {
             Action::PageDown => vec![Effect::Wf(WfCmd::Scroll(-10))],
             Action::PageUp => vec![Effect::Wf(WfCmd::Scroll(10))],
             Action::Bottom => vec![Effect::Wf(WfCmd::Scroll(i32::MIN))],
-            Action::Char('l') => vec![Effect::Wf(WfCmd::OpenLog)],
+            Action::Char('L') => vec![Effect::Wf(WfCmd::OpenLog)],
             _ if s.live.is_some() => vec![Effect::Toast(
                 "a step is running · C-c terminates it".into(),
             )],
@@ -296,13 +373,13 @@ impl Upgrade {
                     vec![Effect::AskConsent(crate::claude::Ask::step_fix(&facts))]
                 }
                 Some(_) => vec![Effect::Toast(
-                    "Claude Code not found: see the step's advice and its log (l)".into(),
+                    "Claude Code not found: see the step's advice and its log (L)".into(),
                 )],
                 None => vec![Effect::Toast("f helps with a failed step".into())],
             },
-            Action::Char('s') => vec![Effect::Wf(WfCmd::Skip)],
+            Action::Char('s') => skip_keys(s, t),
             Action::Char('r') | Action::Refresh => vec![Effect::Wf(WfCmd::Retry)],
-            Action::Char('d') => vec![Effect::Wf(WfCmd::Done)],
+            Action::Char('d') => done_keys(s, t),
             Action::Char('D') => vec![Effect::Wf(WfCmd::SkipDry)],
             Action::Char('a') => {
                 let has_rb = s.wf.steps.iter().any(|x| x.rollback);
@@ -691,7 +768,7 @@ fn card_for(v: &View, s: &Session) -> (Color, Line<'static>, Vec<Line<'static>>,
                 ),
                 t.fg(),
             )],
-            Line::styled("[Enter] close   [l] log", t.dim()),
+            Line::styled("[Enter] close   [L] log", t.dim()),
         );
     }
     let Some(i) = s.next.idx() else {
@@ -796,20 +873,18 @@ fn card_for(v: &View, s: &Session) -> (Color, Line<'static>, Vec<Line<'static>>,
             if let Some(note) = &s.run.state.steps[i].note {
                 body.insert(0, Line::styled(note.clone(), t.dim()));
             }
-            let manual = matches!(s.next, Next::Manual { .. });
             (
                 t.red,
                 Line::styled(format!("✗ {title} · failed (exit {code})"), t.s(t.red)),
                 body,
                 Line::styled(
                     format!(
-                        "{}[r] retry   {}[l] log   [a] abandon",
+                        "{}[r] retry   [d] done by hand   [s] skip   [L] log   [a] abandon",
                         if crate::claude::available() {
                             "[f] fix with Claude   "
                         } else {
                             ""
                         },
-                        if manual { "[d] done by hand   " } else { "" }
                     ),
                     t.dim(),
                 ),

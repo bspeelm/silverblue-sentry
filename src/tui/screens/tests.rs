@@ -919,13 +919,9 @@ gate = "auto"
     let sess = Session::for_test(wf, st, Next::Stopped(0));
     let facts = crate::tui::screens::upgrade::step_facts(&sess).unwrap();
     assert_eq!(facts.cmd, "test -f /tmp/flag");
-    assert!(facts.actions.iter().any(|(k, _)| *k == "retry"));
-    assert!(
-        !facts
-            .actions
-            .iter()
-            .any(|(k, _)| *k == "done by hand" || *k == "skip")
-    );
+    let keys: Vec<&str> = facts.actions.iter().map(|(k, _)| *k).collect();
+    assert_eq!(keys, ["retry", "done by hand", "skip", "abandon"]);
+    assert_eq!(facts.later, ["after: Afterwards · true"]);
     let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
     a.set_wf(sess);
     let s = render_to_string(&mut a, 158, 41);
@@ -967,4 +963,60 @@ gate = "auto"
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("✓ flag done"), "{s}");
     assert!(!s.contains("retry the step"), "{s}");
+}
+
+#[test]
+fn upgrade_stopped_step_done_by_hand_or_skipped() {
+    use crate::tui::wf::Session;
+    use crate::workflows::parse;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::RunState;
+    let wf = parse(
+        r#"
+name = "flag-test"
+description = "test"
+[[steps]]
+id = "flag"
+title = "Flag file exists"
+run = "test -f /tmp/flag"
+gate = "auto"
+on_fail = "stop"
+[[steps]]
+id = "after"
+title = "Afterwards"
+run = "true"
+gate = "confirm"
+"#,
+    )
+    .unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let stopped = || {
+        let mut st = RunState::new("flag-test", &ids, Default::default());
+        runner::finish(&mut st, 0, 1, None);
+        Session::for_test(wf.clone(), st, Next::Stopped(0))
+    };
+    for (k, title, yes) in [
+        ('d', "Done by hand", "mark done"),
+        ('s', "Skip step", "skip it"),
+    ] {
+        let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+        a.set_wf(stopped());
+        let s = render_to_string(&mut a, 158, 41);
+        assert!(
+            s.contains("[d] done by hand   [s] skip   [L] log") && !s.contains("Enter  run"),
+            "{s}"
+        );
+        key(&mut a, KeyCode::Char(k));
+        let s = render_to_string(&mut a, 158, 41);
+        assert!(s.contains(title) && s.contains(yes), "{s}");
+        assert!(s.contains("$ test -f /tmp/flag"), "{s}");
+        key(&mut a, KeyCode::Char('y'));
+        let s = render_to_string(&mut a, 158, 41);
+        assert!(s.contains("▶   2 Afterwards"), "{k}: {s}");
+    }
+    // `l` stays next-tab on Upgrade too.
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    a.set_wf(stopped());
+    key(&mut a, KeyCode::Char('l'));
+    assert_ne!(a.screen, ScreenId::Upgrade);
 }

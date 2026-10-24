@@ -223,6 +223,10 @@ impl Session {
         let cmd = match self.rendered(idx) {
             Ok(c) => c,
             Err(e) => {
+                // Into the step's log too, so `L` and fix-with-Claude see why it never ran.
+                let id = self.wf.steps[idx].id.clone();
+                self.run
+                    .append_log(&id, &format!("✗ the command never ran: {e}"));
                 self.push(format!("✗ {e}"), LogKind::Err);
                 runner::finish(&mut self.run.state, idx, 2, Some(e));
                 self.refresh();
@@ -307,7 +311,7 @@ impl Session {
                 Ok(self.exec_step(i))
             }
             Next::Reboot { idx, .. } => {
-                runner::request_reboot(&self.wf, &mut self.run.state, idx, &RealEnv);
+                runner::request_reboot(&self.wf, &mut self.run.state, idx, &RealEnv)?;
                 self.save();
                 self.push(
                     "↻ rebooting · state saved; run `sentry` after login",
@@ -329,20 +333,22 @@ impl Session {
                 self.refresh();
                 Ok(None)
             }
-            Next::Manual { failed: true, .. } | Next::Stopped(_) => {
-                Err("failed step: r retries, d marks it done by hand, a abandons".into())
-            }
+            Next::Manual { failed: true, .. } | Next::Stopped(_) => Err(
+                "this step failed: r retries · d marks it done by hand · s skips it · a abandons"
+                    .into(),
+            ),
         }
     }
 
-    pub fn skip(&mut self) -> Result<(), String> {
+    /// `force`: the user confirmed skipping a step that isn't optional.
+    pub fn skip(&mut self, force: bool) -> Result<(), String> {
         let Some(i) = self.next.idx() else {
             return Err("nothing to skip".into());
         };
         if self.live.is_some() {
             return Err("a step is running".into());
         }
-        if !self.wf.steps[i].optional {
+        if !self.wf.steps[i].optional && !force {
             return Err(format!("{} is not optional", self.wf.steps[i].id));
         }
         runner::skip(&mut self.run.state, i, "skipped by user");
@@ -367,10 +373,11 @@ impl Session {
         }
     }
 
-    /// Accept a failed `on_fail = "manual"` step as done (after fixing things by hand).
+    /// Accept a manual or failed step as done (after fixing or checking things by hand).
     pub fn mark_done(&mut self) -> Result<(), String> {
         match self.next {
             Next::Manual { idx, .. }
+            | Next::Stopped(idx)
             | Next::Reboot {
                 idx,
                 requested: true,
@@ -383,7 +390,7 @@ impl Session {
                 self.refresh();
                 Ok(())
             }
-            _ => Err("d marks a manual or failed-manual step done".into()),
+            _ => Err("d marks a failed or manual step done · s skips a step".into()),
         }
     }
 
@@ -444,7 +451,7 @@ impl Session {
         if let Some(n) = &note {
             self.push(n.clone(), LogKind::Err);
         }
-        runner::finish(&mut self.run.state, idx, code, note);
+        runner::complete(&self.wf, &mut self.run.state, idx, code, note, &RealEnv);
         if code == 0 {
             self.push(format!("✓ {id} done"), LogKind::Ok);
         } else {

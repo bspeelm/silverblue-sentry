@@ -174,6 +174,24 @@ pub fn finish(st: &mut RunState, idx: usize, code: i32, note: Option<String>) {
 }
 
 /// Manual card confirmed, shell exited, or a failed step accepted by hand.
+/// A step exited: record it and, on success, freeze the built-ins while they still resolve.
+/// `pending_kernel` comes from rpm-ostree's cached update, which staging clears: waiting for
+/// the reboot to freeze it (as `request_reboot` does) is too late.
+pub fn complete(
+    wf: &Workflow,
+    st: &mut RunState,
+    idx: usize,
+    code: i32,
+    note: Option<String>,
+    env: &dyn Env,
+) {
+    finish(st, idx, code, note);
+    if code == 0 {
+        // Best effort: what can't resolve yet may after a later step; the reboot insists.
+        let _ = freeze_all(wf, st, env);
+    }
+}
+
 pub fn mark_done(st: &mut RunState, idx: usize, note: &str) {
     set(st, idx, |s| {
         s.status = StepStatus::Ok;
@@ -193,9 +211,24 @@ pub fn retry(st: &mut RunState, idx: usize) {
 }
 
 /// Reboot confirmed: remember the boot id, then the caller runs `systemctl reboot`.
-pub fn request_reboot(wf: &Workflow, st: &mut RunState, idx: usize, env: &dyn Env) {
-    freeze_all(wf, st, env);
+/// Refused while a built-in that a later step needs can't be resolved: after the reboot it
+/// describes a different world, so the value would be lost.
+pub fn request_reboot(
+    wf: &Workflow,
+    st: &mut RunState,
+    idx: usize,
+    env: &dyn Env,
+) -> Result<(), String> {
+    let missing = freeze_all(wf, st, env);
+    if !missing.is_empty() {
+        return Err(format!(
+            "not rebooting: later steps need {}, which can't be saved now. \
+             Fix that first (retry or re-run the preview), or abandon.",
+            missing.join("; ")
+        ));
+    }
     start(st, idx, env.boot_id());
+    Ok(())
 }
 
 pub fn abandon(st: &mut RunState) {
@@ -223,7 +256,8 @@ pub fn render(st: &mut RunState, env: &dyn Env, text: &str) -> Result<String, St
     let ids = template::idents(text)?;
     let mut vals = std::collections::BTreeMap::new();
     for id in ids {
-        vals.insert(id.clone(), lookup(st, env, &id)?);
+        let v = lookup(st, env, &id).map_err(|e| format!("can't fill in {{{{ {id} }}}}: {e}"))?;
+        vals.insert(id, v);
     }
     template::render(text, &|k| vals.get(k).cloned())
 }
@@ -238,19 +272,35 @@ pub fn preview(st: &RunState, text: &str) -> String {
 
 /// Built-ins describe the pre-reboot world (`pending_kernel`, `old_kmod`): freeze every one
 /// the workflow mentions before the first reboot, so post-reboot steps see the planned values.
-pub fn freeze_all(wf: &Workflow, st: &mut RunState, env: &dyn Env) {
-    for s in &wf.steps {
+/// Returns `name: why` for each one a step still to run needs but that can't be resolved.
+pub fn freeze_all(wf: &Workflow, st: &mut RunState, env: &dyn Env) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (i, s) in wf.steps.iter().enumerate() {
+        // A step still to run: pending, and not ruled out by an already frozen `when`.
+        let ruled_out = s
+            .cond()
+            .is_some_and(|(neg, name)| st.conds.get(name).is_some_and(|v| *v == neg));
+        let needed = st.steps[i].status == StepStatus::Pending && !s.rollback && !ruled_out;
         for text in [Some(&s.title), s.run.as_ref(), s.manual.as_ref()]
             .into_iter()
             .flatten()
         {
             for id in template::idents(text).unwrap_or_default() {
                 if super::BUILTINS.contains(&id.as_str()) && !LIVE.contains(&id.as_str()) {
-                    let _ = lookup(st, env, &id);
+                    let r = lookup(st, env, &id);
+                    if let Err(e) = r
+                        && needed
+                        && !missing
+                            .iter()
+                            .any(|m: &String| m.starts_with(&format!("{id}:")))
+                    {
+                        missing.push(format!("{id}: {e}"));
+                    }
                 }
             }
         }
     }
+    missing
 }
 
 /// Shell script for a `run` step: `sentry` resolves to this binary, output is tee'd to the log,
@@ -303,6 +353,8 @@ mod tests {
         kernel_changed: bool,
         boot: RefCell<String>,
         cond_calls: Cell<usize>,
+        /// Staging clears rpm-ostree's cached update, and with it `pending_kernel`.
+        staged: Cell<bool>,
     }
 
     impl Env for Fake {
@@ -316,6 +368,7 @@ mod tests {
         }
         fn builtin(&self, name: &str) -> Result<String, String> {
             Ok(match name {
+                "pending_kernel" if self.staged.get() => return Err("no pending kernel".into()),
                 "pending_kernel" => "7.2.11-200.fc44.x86_64".into(),
                 "old_kmod" => "kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64".into(),
                 "current_version" => "44".into(),
@@ -339,6 +392,7 @@ mod tests {
             kernel_changed,
             boot: RefCell::new("boot-a".into()),
             cond_calls: Cell::new(0),
+            staged: Cell::new(false),
         };
         (wf, st, env)
     }
@@ -371,11 +425,14 @@ mod tests {
                     let cmd = render(st, env, wf.steps[i].run.as_ref().unwrap()).unwrap();
                     assert!(!cmd.contains("{{ "), "{cmd}");
                     start(st, i, env.boot_id());
-                    finish(st, i, 0, None);
+                    complete(wf, st, i, 0, None, env);
+                    if wf.steps[i].id.starts_with("upgrade-") {
+                        env.staged.set(true);
+                    }
                 }
                 Next::Reboot { idx, requested } => {
                     assert!(!requested);
-                    request_reboot(wf, st, idx, env);
+                    request_reboot(wf, st, idx, env).unwrap();
                     *env.boot.borrow_mut() = format!("boot-{idx}");
                 }
                 Next::Manual { idx, .. } | Next::Shell(idx) => mark_done(st, idx, "ok"),
@@ -383,6 +440,39 @@ mod tests {
             }
         }
         seen
+    }
+
+    /// If `pending_kernel` was never saved before staging cleared it, the reboot is refused
+    /// (not taken with the value lost), and rendering says which value is missing.
+    #[test]
+    fn reboot_refused_while_a_needed_value_is_unsaved() {
+        let (wf, mut st, env) = quick(true);
+        env.staged.set(true);
+        let ritual = wf.steps.iter().position(|s| s.id == "reboot-1").unwrap();
+        for i in 0..ritual {
+            if wf.steps[i].when.as_deref() == Some("!kernel_changed") {
+                skip(&mut st, i, "test");
+            } else {
+                mark_done(&mut st, i, "test");
+            }
+        }
+        st.conds.insert("kernel_changed".into(), true);
+        let e = request_reboot(&wf, &mut st, ritual, &env).unwrap_err();
+        assert!(e.contains("pending_kernel: no pending kernel"), "{e}");
+        assert_eq!(st.steps[ritual].status, StepStatus::Pending);
+        let e = render(&mut st, &env, "check --expect {{ pending_kernel }}").unwrap_err();
+        assert!(e.starts_with("can't fill in {{ pending_kernel }}"), "{e}");
+
+        // The routine path never needs pending_kernel, so its reboot isn't held up.
+        let (wf, mut st, env) = quick(false);
+        env.staged.set(true);
+        st.conds.insert("kernel_changed".into(), false);
+        let reboot = wf
+            .steps
+            .iter()
+            .position(|s| s.id == "reboot-routine")
+            .unwrap();
+        assert!(request_reboot(&wf, &mut st, reboot, &env).is_ok());
     }
 
     #[test]
@@ -450,7 +540,7 @@ mod tests {
         loop {
             match advance(&wf, &mut st, &env).unwrap() {
                 Next::Reboot { idx, .. } => {
-                    request_reboot(&wf, &mut st, idx, &env);
+                    request_reboot(&wf, &mut st, idx, &env).unwrap();
                     break;
                 }
                 Next::Run(i) | Next::Confirm(i) => finish(&mut st, i, 0, None),
@@ -497,6 +587,7 @@ mod tests {
             kernel_changed: false,
             boot: RefCell::new("boot-a".into()),
             cond_calls: Cell::new(0),
+            staged: Cell::new(false),
         };
         let seen = drive(&wf, &mut st, &env);
         let order: Vec<&str> = seen.iter().map(|s| s.split(':').next().unwrap()).collect();
