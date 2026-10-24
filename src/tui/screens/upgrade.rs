@@ -682,7 +682,8 @@ impl Upgrade {
             .chain(body.iter())
             .map(|l| l.width().max(1).div_ceil(cw))
             .sum();
-        let card_h = (rows as u16 + 3).min(r.height / 2);
+        let rows = rows + key_rows(&sub, cw).len();
+        let card_h = (rows as u16 + 2).min(r.height / 2);
         let [log, _, card] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
@@ -910,9 +911,34 @@ fn gate_card(f: &mut Frame, area: Rect, color: Color, head: Line, body: Vec<Line
     f.render_widget(block, area);
     let mut lines = vec![head];
     lines.extend(body);
-    let [b, s] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(r);
+    let sub = key_rows(&sub, r.width.max(1) as usize);
+    let [b, s] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(sub.len() as u16)]).areas(r);
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), b);
     f.render_widget(Paragraph::new(sub), s);
+}
+
+/// The card's key line, broken between keys (`[r] retry   [d] …`) so none is cut off.
+fn key_rows(sub: &Line, width: usize) -> Vec<Line<'static>> {
+    let style = sub
+        .spans
+        .first()
+        .map_or(sub.style, |s| sub.style.patch(s.style));
+    let text: String = sub.spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut rows: Vec<String> = Vec::new();
+    for part in text.split("   ").filter(|p| !p.is_empty()) {
+        match rows.last_mut() {
+            Some(row) if row.chars().count() + 3 + part.chars().count() <= width => {
+                row.push_str("   ");
+                row.push_str(part);
+            }
+            _ => rows.push(part.to_string()),
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows.into_iter().map(|r| Line::styled(r, style)).collect()
 }
 
 impl Upgrade {

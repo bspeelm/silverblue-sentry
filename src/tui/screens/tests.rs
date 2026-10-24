@@ -1014,6 +1014,14 @@ gate = "confirm"
         let s = render_to_string(&mut a, 158, 41);
         assert!(s.contains("▶   2 Afterwards"), "{k}: {s}");
     }
+    // A narrow window wraps the card's key line instead of cutting keys off.
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    a.set_wf(stopped());
+    let s = render_to_string(&mut a, 100, 34);
+    assert!(
+        s.contains("[a] abandon") && s.contains("[d] done by hand"),
+        "{s}"
+    );
     // `l` stays next-tab on Upgrade too.
     let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
     a.set_wf(stopped());
