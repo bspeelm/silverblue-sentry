@@ -812,13 +812,19 @@ fn card_for(v: &View, s: &Session) -> (Color, Line<'static>, Vec<Line<'static>>,
                 body,
                 Line::styled(
                     format!(
-                        "[Enter] {}{opt}   [a] abandon",
+                        // Every key that applies, so a failing dry run isn't a loop on Enter.
+                        "[Enter] {}{}   [s] skip   [L] log   [a] abandon",
                         if dry_cmd.is_some() {
                             "dry run"
                         } else if auto {
                             "run now"
                         } else {
                             "run"
+                        },
+                        if dry_cmd.is_some() {
+                            "   [D] skip the dry run"
+                        } else {
+                            ""
                         }
                     ),
                     t.dim(),
