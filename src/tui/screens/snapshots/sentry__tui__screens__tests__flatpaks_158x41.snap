@@ -41,4 +41,4 @@ org.gnome.font-viewer                    fedora     50.0           —
 permissions read live from metadata + overrides · overrides: 1 (* marks apps with one)
 host driver 615.71.09 · GL ✓ · GL32 ✓ · old extensions (not removed by --unused): GL.nvidia-610-57-04 · remove them in Cleanup (9)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  permissions   o  open in Flatseal   c  rescan perms   ?  help   q  quit
+ j/k  select   Enter  permissions   o  open in Flatseal   c  rescan perms   A  ask Claude   ?  help   q  quit

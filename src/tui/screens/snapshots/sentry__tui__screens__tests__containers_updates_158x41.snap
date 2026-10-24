@@ -41,4 +41,4 @@ devbox-one               toolbox    running   53d        yes    3 ↑      regis
 
 images 30 · 15.9 GiB · 2 dangling (988 MiB)   volumes 3   stale = stopped > 30d
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  enter   c  check updates   u/U  upgrade one/all   s  stop   d  remove   ?  help   q  quit
+ j/k  select   Enter  enter   c  check updates   u/U  upgrade one/all   s  stop   d  remove   A  ask Claude   ?  help   q  quit

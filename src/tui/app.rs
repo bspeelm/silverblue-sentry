@@ -1570,9 +1570,34 @@ impl App {
                 } else {
                     let v = self.view();
                     let mut h = self.screens.hints(self.screen, &v);
+                    // `A` is global but invisible unless it's in the bar on every tab.
+                    if crate::claude::available() {
+                        h.push(("A", "ask Claude"));
+                    }
                     h.extend([("?", "help"), ("q", "quit")]);
                     h
                 };
+                // Too wide: drop the screen's own hints from the end, never the global
+                // ones (A, ?, q) that end the list. Chips are ` k ` + ` d` + two spaces.
+                let mut hints = hints;
+                let room = (area.width as usize).saturating_sub(
+                    self.toast
+                        .as_ref()
+                        .map_or(0, |(m, _)| m.chars().count() + 2),
+                );
+                let width = |h: &[(&str, &str)]| -> usize {
+                    h.iter()
+                        .map(|(k, d)| k.chars().count() + d.chars().count() + 5)
+                        .sum()
+                };
+                let globals = hints
+                    .iter()
+                    .rev()
+                    .take_while(|(k, _)| matches!(*k, "A" | "?" | "q"))
+                    .count();
+                while width(&hints) > room && hints.len() > globals {
+                    hints.remove(hints.len() - globals - 1);
+                }
                 for (k, d) in hints {
                     spans.extend(chip(t, k, d, t.dim));
                     spans.push(Span::raw("  "));
@@ -1693,6 +1718,7 @@ fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
         l("/         filter (Esc clears)  n/N   next/prev    C-h/C-l  pane focus"),
         l("r         refresh current      c     check now    C-j/C-k  scroll log/diff"),
         l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
+        l("A         ask Claude about the selected thing (you see what's sent first)"),
         l(":q  :<screen>  :job <name>  :workflow <name>  :refresh"),
         Line::raw(""),
         Line::styled(format!("{screen}:"), t.s(t.cyan)),

@@ -272,8 +272,7 @@ impl Audit {
         } else {
             "Worth a look on this machine."
         };
-        let keys =
-            "b = expected on/off (hidden next time) · B = hide all like it · Enter = audit again";
+        let keys = "b = expected on/off · B = hide all like it · A = ask Claude about it · Enter = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
         let tw = (r.width as usize).saturating_sub(7).max(10);
         let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
