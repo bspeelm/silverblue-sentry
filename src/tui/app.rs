@@ -95,6 +95,8 @@ enum SuspendFor {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BaselineEdit {
     Listener(String),
+    /// Every address of a grouped listener finding.
+    Listeners(Vec<String>),
     Finding(String),
 }
 
@@ -102,6 +104,7 @@ impl BaselineEdit {
     pub fn value(&self) -> String {
         match self {
             BaselineEdit::Listener(k) => format!("listeners += {k:?}"),
+            BaselineEdit::Listeners(v) => format!("listeners += {} addresses", v.len()),
             BaselineEdit::Finding(k) => format!("findings += {k:?}"),
         }
     }
@@ -793,23 +796,26 @@ impl App {
                     Err(e) => self.toast(format!("kill {pid}: {e}")),
                 },
                 Effect::Baseline(edit) => {
-                    let (r, key) = match &edit {
-                        BaselineEdit::Listener(k) => {
-                            (crate::baseline::BaselineFile::add_listener(k), k)
-                        }
-                        BaselineEdit::Finding(k) => {
-                            (crate::baseline::BaselineFile::add_finding(k), k)
-                        }
+                    use crate::baseline::BaselineFile;
+                    let (r, label) = match &edit {
+                        BaselineEdit::Listener(k) => (BaselineFile::add_listener(k), k.clone()),
+                        BaselineEdit::Listeners(v) => (
+                            v.iter().try_fold(false, |any, k| {
+                                BaselineFile::add_listener(k).map(|added| any | added)
+                            }),
+                            format!("{} address(es)", v.len()),
+                        ),
+                        BaselineEdit::Finding(k) => (BaselineFile::add_finding(k), k.clone()),
                     };
                     match r {
                         Ok(true) => {
-                            self.toast(format!("{key} added to baseline.toml"));
+                            self.toast(format!("{label} marked expected (baseline.toml)"));
                             self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
-                            if matches!(edit, BaselineEdit::Listener(_)) {
+                            if !matches!(edit, BaselineEdit::Finding(_)) {
                                 self.data.fetch(Fetch::Net, &self.cfg, &self.tx);
                             }
                         }
-                        Ok(false) => self.toast(format!("{key} is already in the baseline")),
+                        Ok(false) => self.toast(format!("{label} is already in the baseline")),
                         Err(e) => self.toast(format!("baseline.toml: {e}")),
                     }
                 }

@@ -2,16 +2,18 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit !2   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit !1   8 Jobs   9 Cleanup   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Findings · 2026-10-23.json (2/2) ────────────────────────────────────────────┐  ┌ Diff · 2026-09-23 → 2026-10-23 ──────────────────────────────────────────┐
-│ SEV     CATEGORY   FINDING                                                   │  │ listeners                                                                │
-│ high    flatpak    com.visualstudio.code gained filesystem=host              │  │ + tcp  0.0.0.0:22000/syncthing                                           │
-│ high    listener   New listener 0.0.0.0:22000 (syncthing)                    │  │                                                                          │
-│ medium  units      Failed system unit systemd-remount-fs.service             │  │ flatpak                                                                  │
-│ low     flatpak    Old GL.nvidia-610-57-04 extension (driver is 615.71.09)   │  │ ~ com.visualstudio.code                    home → host                   │
-│ —       listener   New listener 0.0.0.0:22 (?)  (expected)                   │  │ + org.gnome.Boxes                          flathub                       │
+│ Worth a look on this machine.                                                │  │ Changed: 1 listeners (reachable) · 2 flatpak                             │
+│ b = expected, hide it next time · B = hide all like it · Enter = audit again │  │                                                                          │
+│        AREA      FINDING                                                     │  │ listeners (reachable)                                                    │
+│ check  flatpak   com.visualstudio.code gained filesystem=host                │  │ + tcp  0.0.0.0:22000/syncthing                      Syncthing            │
+│ review units     systemd-remount-fs.service failed                           │  │                                                                          │
+│ info   flatpak   Old GL.nvidia-610-57-04 driver extension                    │  │ flatpak                                                                  │
+│ info   listener  Syncthing · open to all networks                            │  │ ~ com.visualstudio.code                    home → host                   │
+│ ok     listener  SSH server · open to all networks  (expected)               │  │ + org.gnome.Boxes                          flathub                       │
 │                                                                              │  │                                                                          │
 │                                                                              │  │ layered packages                                                         │
 │                                                                              │  │   ghostty  (unchanged)                                                   │
@@ -19,26 +21,24 @@ expression: body(&s)
 │                                                                              │  │ local packages                                                           │
 │                                                                              │  │   kmod-nvidia-7.2.8-200.fc44.x86_64  (unchanged)                         │
 │                                                                              │  │                                                                          │
-│                                                                              │  │ failed units                                                             │
-│                                                                              │  │ + system:systemd-remount-fs.service                                      │
+│                                                                              │  │ repos (third-party)                                                      │
+│                                                                              │  │   not collected in the previous report: nothing to compare               │
 │                                                                              │  │                                                                          │
-│                                                                              │  │ kargs                                                                    │
-│                                                                              │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
+│                                                                              │  │ units                                                                    │
+│                                                                              │  │   not collected in the previous report: nothing to compare               │
 │                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│                                                                              │  │                                                                          │
-│ 2 high · 1 medium · 1 low                                                    │  │                                                                          │
+│                                                                              │  │ containers                                                               │
+│ 1 to check · 1 to review · 2 info                                            │  │   not collected in the previous report: nothing to compare               │
 │ ──────────────────────────────────────────────────────────────────────────── │  │                                                                          │
-│ evidence                                                                     │  │                                                                          │
-│ metadata + overrides for com.visualstudio.code (system)                      │  │                                                                          │
-│ [Context] filesystems=host;                                                  │  │                                                                          │
-│ prev: filesystems=home;                                                      │  │                                                                          │
+│ What   com.visualstudio.code can now access every file you can read, outside │  │ kargs                                                                    │
+│        its sandbox.                                                          │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
+│ Why    This permission is new since the audit on 2026-09-23: an app update   │  │                                                                          │
+│        or an override added it.                                              │  │                                                                          │
+│ To do  Check `flatpak info --show-permissions com.visualstudio.code`. To     │  │                                                                          │
+│        take it back: Flatseal (Flatpaks tab, o) or `flatpak override --user  │  │                                                                          │
+│        --nofilesystem=host com.visualstudio.code`. If you expect it, press   │  │                                                                          │
+│        b.                                                                    │  │                                                                          │
+│        [Context] filesystems=host;                                           │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   b  accept as baseline   B  baseline pattern   Enter  run audit   [ ]  browse reports   C-h/l  focus   ?  help   q  quit
+ j/k  select   b  expected   B  hide similar   Enter  run audit   [ ]  browse reports   C-h/l  focus   ?  help   q  quit

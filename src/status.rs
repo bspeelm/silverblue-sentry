@@ -21,7 +21,7 @@ pub fn line(short: bool) -> String {
             parts.push(format!("{} job(s) due", due.len()));
         }
         if let Some(h) = high.filter(|h| *h > 0) {
-            parts.push(format!("{h} high finding(s)"));
+            parts.push(format!("{h} audit finding(s) to check"));
         }
         return parts.join(" · ");
     }
@@ -30,7 +30,7 @@ pub fn line(short: bool) -> String {
         cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| fmt::ago(c.age_secs(now)));
     let names: Vec<&str> = due.iter().map(|j| j.name()).collect();
     format!(
-        "workflow: {} · jobs due: {} · high findings: {} · flatpak updates: {} · last update check: {}",
+        "workflow: {} · jobs due: {} · audit findings to check: {} · flatpak updates: {} · last update check: {}",
         wf.unwrap_or_else(|| "none".into()),
         if names.is_empty() {
             "none".into()

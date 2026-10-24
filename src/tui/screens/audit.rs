@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
+use ratatui::widgets::{Cell, Paragraph, Row};
 
 use super::{Cursor, Hints, View, sentry_cmd};
 use crate::audit::diff::{self, Kind};
@@ -14,7 +14,7 @@ use crate::audit::{Finding, Sev};
 use crate::tui::app::{BaselineEdit, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
-use crate::tui::widgets::{TableSpec, inner, panel, placeholder, table, trunc};
+use crate::tui::widgets::{TableSpec, inner, panel, placeholder, table, trunc, wrap};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -43,8 +43,8 @@ pub fn hints(v: &View) -> Hints {
     }
     vec![
         ("j/k", "select"),
-        ("b", "accept as baseline"),
-        ("B", "baseline pattern"),
+        ("b", "expected"),
+        ("B", "hide similar"),
         ("Enter", "run audit"),
         ("[ ]", "browse reports"),
         ("C-h/l", "focus"),
@@ -65,17 +65,6 @@ pub fn audit_run() -> Effect {
 /// Broader baseline pattern for `B`: same process on any address, same app any permission, …
 pub fn pattern_for(f: &Finding) -> Option<(BaselineEdit, String)> {
     let id = f.id.as_str();
-    if let Some(key) = id.strip_prefix("listener:") {
-        let (_, proc) = key.rsplit_once('/')?;
-        if proc == "?" {
-            return None;
-        }
-        let p = format!("*/{proc}");
-        return Some((
-            BaselineEdit::Listener(p.clone()),
-            format!("any address/port for process {proc}"),
-        ));
-    }
     let (kind, rest) = id.split_once(':')?;
     let (p, what) = match kind {
         "flatpak-perm" => {
@@ -85,13 +74,7 @@ pub fn pattern_for(f: &Finding) -> Option<(BaselineEdit, String)> {
                 format!("every flagged permission of {app}"),
             )
         }
-        "repo" => {
-            let stem = rest.split(['-', '.']).next()?;
-            (
-                format!("repo:{stem}*"),
-                format!("every repo file starting with {stem}"),
-            )
-        }
+        "repo" | "repos" => ("repo*".into(), "every third-party repo finding".into()),
         "unit-failed" => {
             let scope = rest.split(':').next()?;
             (
@@ -183,9 +166,13 @@ impl Audit {
                         return vec![Effect::Toast("already in the baseline".into())];
                     }
                     Action::Char('b') => {
-                        let edit = match f.id.strip_prefix("listener:") {
-                            Some(k) => BaselineEdit::Listener(k.to_string()),
-                            None => BaselineEdit::Finding(f.id.clone()),
+                        let edit = if !f.listeners.is_empty() {
+                            BaselineEdit::Listeners(f.listeners.clone())
+                        } else {
+                            match f.id.strip_prefix("listener:") {
+                                Some(k) => BaselineEdit::Listener(k.to_string()),
+                                None => BaselineEdit::Finding(f.id.clone()),
+                            }
                         };
                         return vec![Effect::Baseline(edit)];
                     }
@@ -277,21 +264,66 @@ impl Audit {
         f.render_widget(block, left);
         let rows = self.rows(v);
         let sel = self.cur.clamp(rows.len());
-        let ev_lines: Vec<&str> = rows
-            .get(sel)
-            .map_or(Vec::new(), |f| f.evidence.lines().collect());
-        let ev_h = (ev_lines.len() as u16 + 2).clamp(4, 9).min(r.height / 2);
-        let [list, summary, evidence] = Layout::vertical([
+        let first = i == 0;
+        let header = if first {
+            "First audit: nothing is marked expected yet, so everything shows up once."
+        } else {
+            "Worth a look on this machine."
+        };
+        let keys = "b = expected, hide it next time · B = hide all like it · Enter = audit again";
+        // Detail box for the selected finding: what / why / to do, then the raw evidence.
+        let tw = (r.width as usize).saturating_sub(7).max(10);
+        let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
+            let mut d = Vec::new();
+            // Label in a 7-column gutter; wrapped text stays aligned under the first line.
+            let mut sec = |label: &str, text: &str| {
+                for (k, l) in wrap(text, tw).into_iter().enumerate() {
+                    d.push(Line::from(vec![
+                        Span::styled(
+                            format!("{:<7}", if k == 0 { label } else { "" }),
+                            t.s(t.cyan),
+                        ),
+                        Span::styled(l, t.fg()),
+                    ]));
+                }
+            };
+            // Reports from before what/why/fix existed: message + evidence only.
+            sec(
+                "What",
+                if fd.what.is_empty() {
+                    &fd.message
+                } else {
+                    &fd.what
+                },
+            );
+            sec("Why", &fd.why);
+            sec("To do", &fd.fix);
+            for l in fd.evidence.lines().take(8) {
+                d.push(Line::styled(format!("       {l}"), t.dim()));
+            }
+            d
+        });
+        let detail_rows = detail.len();
+        let ev_h = (detail_rows as u16 + 1).clamp(4, r.height / 2);
+        let [head, list, summary, evidence] = Layout::vertical([
+            Constraint::Length(2),
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(ev_h),
         ])
         .areas(r);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(header, t.fg()),
+                Line::styled(trunc(keys, head.width as usize), t.dim()),
+            ]),
+            head,
+        );
         self.cur.page = list.height as usize;
         if rows.is_empty() {
             f.render_widget(
                 Paragraph::new(if cur.report.findings.is_empty() {
-                    "No findings."
+                    "Nothing to report."
                 } else {
                     "No findings match the filter."
                 })
@@ -303,11 +335,12 @@ impl Audit {
                 .iter()
                 .map(|fd| {
                     let exp = is_expected(fd, b);
+                    // check = look at this now, review = worth a look, info = probably your choice
                     let (sev, sc) = match (exp, fd.severity) {
-                        (true, _) => ("—", t.dim),
-                        (_, Sev::High) => ("high", t.red),
-                        (_, Sev::Medium) => ("medium", t.yellow),
-                        (_, Sev::Low) => ("low", t.dim),
+                        (true, _) => ("ok", t.dim),
+                        (_, Sev::High) => ("check", t.red),
+                        (_, Sev::Medium) => ("review", t.yellow),
+                        (_, Sev::Low) => ("info", t.dim),
                     };
                     let msg = if exp {
                         format!("{}  (expected)", fd.message)
@@ -326,10 +359,10 @@ impl Audit {
                 list,
                 t,
                 TableSpec {
-                    header: vec!["SEV", "CATEGORY", "FINDING"],
+                    header: vec!["", "AREA", "FINDING"],
                     widths: vec![
-                        Constraint::Length(7),
-                        Constraint::Length(10),
+                        Constraint::Length(6),
+                        Constraint::Length(9),
                         Constraint::Fill(1),
                     ],
                     rows: body,
@@ -339,15 +372,15 @@ impl Audit {
         }
         let mut sum = vec![
             Span::styled(
-                format!("{} high", c.high),
+                format!("{} to check", c.high),
                 t.s(if c.high > 0 { t.red } else { t.dim }),
             ),
             Span::styled(" · ", t.dim()),
             Span::styled(
-                format!("{} medium", c.medium),
+                format!("{} to review", c.medium),
                 t.s(if c.medium > 0 { t.yellow } else { t.dim }),
             ),
-            Span::styled(format!(" · {} low", c.low), t.dim()),
+            Span::styled(format!(" · {} info", c.low), t.dim()),
         ];
         if !cur.report.errors.is_empty() {
             sum.push(Span::styled(
@@ -356,12 +389,12 @@ impl Audit {
             ));
         }
         f.render_widget(Paragraph::new(Line::from(sum)), summary);
-        let mut ev = vec![
-            Line::styled("─".repeat(evidence.width as usize), t.s(t.rule)),
-            Line::styled("evidence", t.dim()),
-        ];
-        ev.extend(ev_lines.iter().map(|l| Line::styled(l.to_string(), t.fg())));
-        f.render_widget(Paragraph::new(ev).wrap(Wrap { trim: false }), evidence);
+        let mut ev = vec![Line::styled(
+            "─".repeat(evidence.width as usize),
+            t.s(t.rule),
+        )];
+        ev.extend(detail);
+        f.render_widget(Paragraph::new(ev), evidence);
 
         // ---- diff pane
         let title = match prev {
@@ -371,8 +404,28 @@ impl Audit {
         let block = panel(t, "Diff", title);
         let r = inner(&block, right);
         f.render_widget(block, right);
-        let lines: Vec<diff::Line> = match prev {
-            Some(p) => diff::diff(&p.report, &cur.report),
+        let lines: Vec<diff::Line> = match crate::audit::store::baseline_for(all, i) {
+            Some((base, notes)) => {
+                let d = diff::diff(&base, &cur.report);
+                let head = match diff::summary(&d).as_str() {
+                    "no changes" => "Nothing changed since the previous audit.".to_string(),
+                    s => format!("Changed: {s}"),
+                };
+                std::iter::once(diff::Line {
+                    kind: Kind::Section,
+                    text: head,
+                })
+                .chain(notes.into_iter().map(|n| diff::Line {
+                    kind: Kind::Same,
+                    text: n,
+                }))
+                .chain(std::iter::once(diff::Line {
+                    kind: Kind::Same,
+                    text: String::new(),
+                }))
+                .chain(d)
+                .collect()
+            }
             None => vec![diff::Line {
                 kind: Kind::Same,
                 text: "Nothing to compare against yet. The next audit diffs against this one."

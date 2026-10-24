@@ -51,6 +51,24 @@ impl Out {
         self.push(Kind::Same, "");
     }
 
+    /// A section one side didn't collect: say so instead of reporting everything as changed.
+    fn missing(&mut self, title: &str, a: bool, b: bool) -> bool {
+        if a && b {
+            return false;
+        }
+        self.push(Kind::Section, title);
+        self.push(
+            Kind::Same,
+            if a {
+                "  not collected this time (see the report's errors)"
+            } else {
+                "  not collected in the previous report: nothing to compare"
+            },
+        );
+        self.push(Kind::Same, "");
+        true
+    }
+
     fn same(&mut self, items: Vec<&str>) {
         let joined = items.join("  ");
         let text = if items.is_empty() {
@@ -72,60 +90,80 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
     let (sa, sb) = (&a.sections, &b.sections);
     let mut o = Out::default();
 
-    o.sets(
-        "listeners",
-        &set(sa.listeners.as_ref(), |l| {
-            format!("{:<4} {}", l.proto, l.key)
-        }),
-        &set(sb.listeners.as_ref(), |l| {
-            format!("{:<4} {}", l.proto, l.key)
-        }),
-    );
-
-    // flatpak apps: added / removed / permission flags changed
-    o.push(Kind::Section, "flatpak");
-    let apps = |r: &Report| -> BTreeMap<String, (String, Vec<String>)> {
-        r.sections
-            .flatpak
-            .as_ref()
-            .map(|f| {
-                f.apps
-                    .iter()
-                    .map(|a| (a.id.clone(), (a.origin.clone(), a.flags.clone())))
-                    .collect()
-            })
-            .unwrap_or_default()
+    // Only listeners other machines can reach: loopback ports of dev tools churn every run.
+    let reachable = |l: &super::ListenSec| {
+        let (_, port, _) = super::known::split_key(&l.key);
+        let name = super::known::service(&l.proto, port).map_or("", |s| s.name);
+        format!("{:<4} {:<44} {name}", l.proto, l.key)
+            .trim_end()
+            .to_string()
     };
-    let (pa, pb) = (apps(a), apps(b));
-    let mut changed = false;
-    for (id, (origin, flags)) in &pb {
-        match pa.get(id) {
-            None => o.push(Kind::Add, format!("+ {id:<40} {origin}")),
-            Some((_, old)) if old != flags => o.push(
-                Kind::Change,
-                format!("~ {id:<40} {} → {}", show(old), show(flags)),
-            ),
-            Some(_) => continue,
-        }
-        changed = true;
+    let lset = |r: &Report| -> BTreeSet<String> {
+        r.sections
+            .listeners
+            .iter()
+            .flatten()
+            .filter(|l| !l.local)
+            .map(reachable)
+            .collect()
+    };
+    if !o.missing(
+        "listeners (reachable)",
+        sa.listeners.is_some(),
+        sb.listeners.is_some(),
+    ) {
+        o.sets("listeners (reachable)", &lset(a), &lset(b));
     }
-    for (id, (origin, _)) in &pa {
-        if !pb.contains_key(id) {
-            o.push(Kind::Remove, format!("- {id:<40} {origin}"));
+
+    let fp = !o.missing("flatpak", sa.flatpak.is_some(), sb.flatpak.is_some());
+    // flatpak apps: added / removed / permission flags changed
+    if fp {
+        o.push(Kind::Section, "flatpak");
+        let apps = |r: &Report| -> BTreeMap<String, (String, Vec<String>)> {
+            r.sections
+                .flatpak
+                .as_ref()
+                .map(|f| {
+                    f.apps
+                        .iter()
+                        .map(|a| (a.id.clone(), (a.origin.clone(), a.flags.clone())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (pa, pb) = (apps(a), apps(b));
+        let mut changed = false;
+        for (id, (origin, flags)) in &pb {
+            match pa.get(id) {
+                None => o.push(Kind::Add, format!("+ {id:<40} {origin}")),
+                Some((_, old)) if old != flags => o.push(
+                    Kind::Change,
+                    format!("~ {id:<40} {} → {}", show(old), show(flags)),
+                ),
+                Some(_) => continue,
+            }
             changed = true;
         }
+        for (id, (origin, _)) in &pa {
+            if !pb.contains_key(id) {
+                o.push(Kind::Remove, format!("- {id:<40} {origin}"));
+                changed = true;
+            }
+        }
+        if !changed {
+            o.push(Kind::Same, format!("  {} apps (unchanged)", pb.len()));
+        }
+        o.push(Kind::Same, "");
     }
-    if !changed {
-        o.push(Kind::Same, format!("  {} apps (unchanged)", pb.len()));
-    }
-    o.push(Kind::Same, "");
 
     let remotes = |r: &Report| {
         set(r.sections.flatpak.as_ref().map(|f| &f.remotes), |(n, u)| {
             format!("{n} {u}")
         })
     };
-    o.sets("flatpak remotes", &remotes(a), &remotes(b));
+    if fp {
+        o.sets("flatpak remotes", &remotes(a), &remotes(b));
+    }
 
     let os = |r: &Report, f: fn(&super::OstreeSec) -> &Vec<String>| -> BTreeSet<String> {
         r.sections
@@ -134,17 +172,24 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .map(|o| f(o).iter().cloned().collect())
             .unwrap_or_default()
     };
-    o.sets(
-        "layered packages",
-        &os(a, |o| &o.layered),
-        &os(b, |o| &o.layered),
+    let ost = !o.missing(
+        "packages (rpm-ostree)",
+        sa.ostree.is_some(),
+        sb.ostree.is_some(),
     );
-    o.sets("local packages", &os(a, |o| &o.local), &os(b, |o| &o.local));
-    o.sets(
-        "base removals",
-        &os(a, |o| &o.removals),
-        &os(b, |o| &o.removals),
-    );
+    if ost {
+        o.sets(
+            "layered packages",
+            &os(a, |o| &o.layered),
+            &os(b, |o| &o.layered),
+        );
+        o.sets("local packages", &os(a, |o| &o.local), &os(b, |o| &o.local));
+        o.sets(
+            "base removals",
+            &os(a, |o| &o.removals),
+            &os(b, |o| &o.removals),
+        );
+    }
 
     let repos = |r: &Report| {
         set(r.sections.repos.as_ref(), |x| {
@@ -159,11 +204,17 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
     let only_third = |s: BTreeSet<String>| -> BTreeSet<String> {
         s.into_iter().filter(|x| !x.starts_with("fedora")).collect()
     };
-    o.sets(
+    if !o.missing(
         "repos (third-party)",
-        &only_third(repos(a)),
-        &only_third(repos(b)),
-    );
+        sa.repos.is_some(),
+        sb.repos.is_some(),
+    ) {
+        o.sets(
+            "repos (third-party)",
+            &only_third(repos(a)),
+            &only_third(repos(b)),
+        );
+    }
 
     let units = |r: &Report, user: bool| -> BTreeSet<String> {
         r.sections
@@ -181,12 +232,15 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             })
             .unwrap_or_default()
     };
-    o.sets("units (user, enabled)", &units(a, true), &units(b, true));
-    o.sets(
-        "units (system, enabled)",
-        &units(a, false),
-        &units(b, false),
-    );
+    let un = !o.missing("units", sa.units.is_some(), sb.units.is_some());
+    if un {
+        o.sets("units (user, enabled)", &units(a, true), &units(b, true));
+        o.sets(
+            "units (system, enabled)",
+            &units(a, false),
+            &units(b, false),
+        );
+    }
     let failed = |r: &Report| {
         r.sections
             .units
@@ -194,7 +248,9 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .map(|u| u.failed.iter().cloned().collect())
             .unwrap_or_default()
     };
-    o.sets("failed units", &failed(a), &failed(b));
+    if un {
+        o.sets("failed units", &failed(a), &failed(b));
+    }
     let autostart = |r: &Report| {
         r.sections
             .units
@@ -202,17 +258,25 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .map(|u| u.autostart.iter().cloned().collect())
             .unwrap_or_default()
     };
-    o.sets("autostart", &autostart(a), &autostart(b));
+    if un {
+        o.sets("autostart", &autostart(a), &autostart(b));
+    }
 
-    o.sets(
+    if !o.missing(
         "containers",
-        &set(sa.containers.as_ref(), |c| {
-            format!("{} ({})", c.name, c.kind)
-        }),
-        &set(sb.containers.as_ref(), |c| {
-            format!("{} ({})", c.name, c.kind)
-        }),
-    );
+        sa.containers.is_some(),
+        sb.containers.is_some(),
+    ) {
+        o.sets(
+            "containers",
+            &set(sa.containers.as_ref(), |c| {
+                format!("{} ({})", c.name, c.kind)
+            }),
+            &set(sb.containers.as_ref(), |c| {
+                format!("{} ({})", c.name, c.kind)
+            }),
+        );
+    }
     o.sets(
         "shell rc",
         &set(Some(&sa.shell), |h| {
@@ -235,7 +299,9 @@ pub fn diff(a: &Report, b: &Report) -> Vec<Line> {
             .map(str::to_string)
             .collect()
     };
-    o.sets("kargs", &kargs(a), &kargs(b));
+    if ost {
+        o.sets("kargs", &kargs(a), &kargs(b));
+    }
     o.0
 }
 
@@ -326,7 +392,12 @@ mod tests {
         );
         let d = diff(&a, &b);
         let txt: Vec<&str> = d.iter().map(|l| l.text.as_str()).collect();
-        assert!(txt.contains(&"+ tcp  0.0.0.0:22000/syncthing"), "{txt:#?}");
+        assert!(
+            txt.iter().any(
+                |t| t.starts_with("+ tcp  0.0.0.0:22000/syncthing") && t.ends_with("Syncthing")
+            ),
+            "{txt:#?}"
+        );
         assert!(
             txt.iter()
                 .any(|t| t.starts_with("~ a.App") && t.ends_with("home → host"))
@@ -336,7 +407,36 @@ mod tests {
         assert!(txt.contains(&"  ghostty  (unchanged)"));
         assert!(txt.contains(&"- quiet"));
         assert!(txt.contains(&"+ rd.driver.blacklist=nouveau"));
-        assert_eq!(summary(&d), "1 listeners · 3 flatpak · 2 kargs");
+        assert_eq!(summary(&d), "1 listeners (reachable) · 3 flatpak · 2 kargs");
         assert_eq!(summary(&diff(&a, &a)), "no changes");
+    }
+
+    #[test]
+    fn missing_sections_and_loopback_churn() {
+        let mut a = r(&["0.0.0.0:22/?"], "rhgb", &[]);
+        a.sections.ostree = None; // the previous audit timed out on rpm-ostree
+        a.sections.listeners.as_mut().unwrap().push(ListenSec {
+            proto: "tcp".into(),
+            key: "127.0.0.1:41333/node".into(),
+            local: true,
+        });
+        let mut b = r(&["0.0.0.0:22/?"], "rhgb", &[]);
+        b.sections.listeners.as_mut().unwrap().push(ListenSec {
+            proto: "tcp".into(),
+            key: "127.0.0.1:45159/node".into(),
+            local: true,
+        });
+        let d = diff(&a, &b);
+        let txt: Vec<&str> = d.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            !txt.iter().any(|t| t.contains("ghostty")),
+            "no false package additions: {txt:#?}"
+        );
+        assert!(txt.contains(&"  not collected in the previous report: nothing to compare"));
+        assert!(
+            !txt.iter().any(|t| t.contains("node")),
+            "loopback churn hidden: {txt:#?}"
+        );
+        assert_eq!(summary(&d), "no changes");
     }
 }

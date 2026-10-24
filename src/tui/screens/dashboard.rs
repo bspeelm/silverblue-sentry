@@ -563,7 +563,7 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View) {
             };
             rows.push((
                 "findings",
-                format!("{} high · {} med · {} low", c.high, c.medium, c.low),
+                format!("{} check · {} review · {} info", c.high, c.medium, c.low),
                 color,
                 fmt::ago(now.as_second() - last.report.taken_at.as_second()),
             ));

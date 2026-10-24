@@ -3,6 +3,7 @@
 
 pub mod diff;
 pub mod findings;
+pub mod known;
 pub mod store;
 
 use std::time::Instant;
@@ -144,9 +145,10 @@ pub struct CacheSec {
     pub top: Vec<(String, u64)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Sev {
+    #[default]
     Low,
     Medium,
     High,
@@ -162,7 +164,7 @@ impl Sev {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Finding {
     /// Stable across reports; what `baseline.toml findings` stores.
     pub id: String,
@@ -173,6 +175,16 @@ pub struct Finding {
     /// Suppressed by the baseline when the report was taken.
     #[serde(default)]
     pub expected: bool,
+    /// Plain-language: what this is, why it's listed, what to do. Empty in old reports.
+    #[serde(default)]
+    pub what: String,
+    #[serde(default)]
+    pub why: String,
+    #[serde(default)]
+    pub fix: String,
+    /// Baseline keys of a grouped listener finding (`b` marks them all expected).
+    #[serde(default)]
+    pub listeners: Vec<String>,
 }
 
 /// Open findings by severity, honouring the *current* baseline.
@@ -400,7 +412,11 @@ pub fn run(
                 .ok_or_else(|| anyhow::anyhow!("no report tagged {t:?} to diff against"))?
                 .clone(),
         ),
-        None => all.last().cloned(),
+        // The newest report, with sections it failed to collect filled from older ones.
+        None => store::baseline_for(&all, all.len()).map(|(report, _)| store::Stored {
+            path: all[all.len() - 1].path.clone(),
+            report,
+        }),
     };
     let baseline = Baseline::effective(&ctx.cfg);
     r.findings = findings::derive(&r, prev.as_ref().map(|p| &p.report), &baseline, &ctx.cfg);

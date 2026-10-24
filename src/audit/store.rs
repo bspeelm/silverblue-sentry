@@ -62,6 +62,40 @@ pub fn latest() -> Option<Report> {
     serde_json::from_str(&text).ok()
 }
 
+/// What report `i` should be diffed against: report `i-1`, with any section it failed to
+/// collect filled in from the newest earlier report that has it. Also returns notes naming the
+/// borrowed sections (`packages (rpm-ostree) from 2026-10-23.json`).
+pub fn baseline_for(all: &[Stored], i: usize) -> Option<(Report, Vec<String>)> {
+    let prev = all.get(i.checked_sub(1)?)?;
+    let mut r = prev.report.clone();
+    let mut notes = Vec::new();
+    macro_rules! fill {
+        ($field:ident, $label:expr) => {
+            if r.sections.$field.is_none()
+                && let Some(older) = all[..i - 1]
+                    .iter()
+                    .rev()
+                    .find(|s| s.report.sections.$field.is_some())
+            {
+                r.sections.$field = older.report.sections.$field.clone();
+                notes.push(format!(
+                    "{} compared with {} ({} didn't collect them)",
+                    $label,
+                    older.name(),
+                    prev.name()
+                ));
+            }
+        };
+    }
+    fill!(ostree, "packages and kargs");
+    fill!(flatpak, "flatpaks");
+    fill!(containers, "containers");
+    fill!(listeners, "listeners");
+    fill!(units, "units");
+    fill!(repos, "repos");
+    Some((r, notes))
+}
+
 /// Latest report carrying `tag`.
 pub fn find_tag<'a>(all: &'a [Stored], tag: &str) -> Option<&'a Stored> {
     all.iter()
@@ -209,6 +243,10 @@ mod tests {
             message: "a | b".into(),
             evidence: String::new(),
             expected: false,
+            what: String::new(),
+            why: String::new(),
+            fix: String::new(),
+            listeners: vec![],
         });
         let p1 = save_in(&d, &a, None).unwrap();
         let p2 = save_in(&d, &a, None).unwrap();
@@ -222,6 +260,30 @@ mod tests {
         assert!(md.contains("| **high** | shell | a \\| b |"), "{md}");
         let all = list_in(&d);
         assert_eq!(all.len(), 2);
+        // A previous report missing a section borrows it from an older one.
+        let mut older = test_report(Sections::default());
+        older.sections.repos = Some(vec![]);
+        let three = vec![
+            Stored {
+                path: d.join("1.json"),
+                report: older,
+            },
+            Stored {
+                path: d.join("2.json"),
+                report: test_report(Sections::default()),
+            },
+            Stored {
+                path: d.join("3.json"),
+                report: test_report(Sections::default()),
+            },
+        ];
+        let (base, notes) = baseline_for(&three, 2).unwrap();
+        assert!(base.sections.repos.is_some());
+        assert_eq!(
+            notes,
+            vec!["repos compared with 1.json (2.json didn't collect them)"]
+        );
+        assert!(baseline_for(&three, 0).is_none());
         assert!(find_tag(&all, "pre rebase/45").is_some());
         std::fs::remove_dir_all(&d).unwrap();
     }

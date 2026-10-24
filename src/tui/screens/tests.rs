@@ -324,7 +324,10 @@ fn audit_screen() {
     let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("audit_158x41", body(&s));
-    assert!(s.contains("7 Audit !2"), "badge counts open highs: {s}");
+    assert!(
+        s.contains("7 Audit !1"),
+        "badge counts findings to check: {s}"
+    );
     // Browse to the first report: no diff yet.
     key(&mut a, KeyCode::Char('['));
     let s = render_to_string(&mut a, 158, 41);

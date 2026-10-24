@@ -81,6 +81,13 @@ pub fn hms(secs: u64) -> String {
     format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
+/// Local calendar date: `2026-10-23`.
+pub fn date(ts: jiff::Timestamp) -> String {
+    ts.to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%d")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -341,16 +341,18 @@ fn audit(o: Opts, ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<Option<Strin
     let b = crate::baseline::Baseline::effective(&ctx.cfg);
     let c = r.counts(&b);
     writeln!(out, "report → {}", path.display())?;
-    let counts = format!("{} high · {} medium · {} low", c.high, c.medium, c.low);
+    let counts = format!(
+        "{} to check · {} to review · {} info",
+        c.high, c.medium, c.low
+    );
     writeln!(out, "findings: {counts}")?;
     for f in r.open(&b) {
-        writeln!(
-            out,
-            "  {:<6} {:<10} {}",
-            f.severity.as_str(),
-            f.category,
-            f.message
-        )?;
+        let word = match f.severity {
+            audit::Sev::High => "check",
+            audit::Sev::Medium => "review",
+            audit::Sev::Low => "info",
+        };
+        writeln!(out, "  {word:<6} {:<9} {}", f.category, f.message)?;
     }
     match &prev {
         Some(p) => {

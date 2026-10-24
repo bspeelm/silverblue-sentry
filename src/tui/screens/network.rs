@@ -92,10 +92,18 @@ impl Network {
                         ListenStatus::Local => ("local", t.green),
                         ListenStatus::Ephemeral => ("client", t.dim),
                     };
-                    let proc = match (&l.process, l.pid) {
-                        (Some(p), Some(pid)) => format!("{p} ({pid})"),
-                        (Some(p), None) => p.clone(),
-                        _ => "?".into(),
+                    let svc = l
+                        .port
+                        .parse()
+                        .ok()
+                        .and_then(|p| crate::audit::known::service(&l.proto, p))
+                        .map(|s| s.name);
+                    let proc = match (&l.process, l.pid, svc) {
+                        (Some(p), Some(pid), _) => format!("{p} ({pid})"),
+                        (Some(p), None, _) => p.clone(),
+                        // Root-owned: ss can't show the process to a normal user.
+                        (None, _, Some(s)) => format!("root · {s}"),
+                        _ => "root · unknown".into(),
                     };
                     Row::new(vec![
                         Cell::from(l.proto.clone()).style(t.dim()),

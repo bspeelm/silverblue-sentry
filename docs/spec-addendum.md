@@ -116,3 +116,16 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **Rollback:** today's deployment is pinned (`sudo ostree admin pin booted`) before the rebase, and its version is frozen as `{{ booted_version }}`. `rpm-ostree rollback` isn't offered any more, because after the rebase and kmod deployments it points at "target without kmod". The rollback step finds the pinned deployment's index in `ostree admin status` and runs `ostree admin set-default`. An optional final step unpins it.
 - **Toolboxes:** each toolbox's `dnf repoquery --userinstalled` is saved to `<run>/toolboxes/<name>.txt`. Then an optional `dnf --releasever=N distro-sync` runs as root via podman.
 - **Seeding:** `.seeded.json` records the hash of every seed sentry writes. A workflow file is upgraded only while it still matches what sentry wrote, or one of the historical versions listed in `SHIPPED` (copies from before the record existed). New seeds don't need entries in `SHIPPED`.
+
+## A17. Audit, explained (supersedes parts of A9)
+- Every finding carries `what` / `why` / `fix` text. The screen shows them in a detail box, and the raw evidence underneath.
+- Severity is shown as **check** (high), **review** (medium) or **info** (low). Stored values are unchanged.
+- **Listeners are grouped by service.** `src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
+  - Reach is described in words (all networks / LAN / VPN / link-local).
+  - An unknown root-owned service is **check**, with the `sudo ss` command that names it.
+  - A known remote-access service open to every network is **review**. A stock desktop service is **info**.
+  - `b` baselines every address of the group.
+- **Repos are grouped by vendor** (RPM Fusion, Brave, …) as **info**. A COPR is individual (review, or check when new). `updates-master.repo` gets its own explanation.
+- **Flatpak access is summarised** in one "N apps can read your files" **info** finding. A permission gained since the last audit, or a talk-name sandbox escape, is reported on its own.
+- **The diff never treats "not collected" as "empty".** Report `i` is compared with `i-1`, with any missing section borrowed from the newest earlier report that has it, and a note says so. A section with no source says "not collected". Only reachable listeners are diffed. "Gained" findings use the same merged report.
+- The rpm-ostree status timeout is 60 s. It was 10 s, and that timeout caused a report with no package section.

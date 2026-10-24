@@ -14,7 +14,7 @@ use crate::tui::app::{Effect, Modal, Prompt, WfCmd};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::wf::{LogKind, Session};
-use crate::tui::widgets::{inner, panel, trunc};
+use crate::tui::widgets::{inner, panel, trunc, wrap};
 use crate::workflows::Kind;
 use crate::workflows::cli::{RealEnv, initial_vars};
 use crate::workflows::runner::{Next, preview};
@@ -762,23 +762,4 @@ fn gate_card(f: &mut Frame, area: Rect, color: Color, head: Line, body: Vec<Line
     let [b, s] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(r);
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), b);
     f.render_widget(Paragraph::new(sub), s);
-}
-
-/// Greedy word wrap for descriptions.
-fn wrap(s: &str, w: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut line = String::new();
-    for word in s.split_whitespace() {
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > w {
-            out.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        out.push(line);
-    }
-    out
 }

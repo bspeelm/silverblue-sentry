@@ -177,6 +177,25 @@ pub fn placeholder(f: &mut Frame, area: Rect, t: &Theme, lines: &[(&str, Style)]
     f.render_widget(Paragraph::new(text), r);
 }
 
+/// Greedy word wrap for descriptions.
+pub fn wrap(s: &str, w: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > w {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
