@@ -357,21 +357,21 @@ const walk=(v,lo,hi,s)=>Math.max(lo,Math.min(hi,v+(Math.random()-.5)*s));
 const graph=(arr,max,rows)=>{const out=[];for(let r=rows-1;r>=0;r--){out.push(arr.map(v=>{const lv=Math.round(Math.min(1,v/max)*rows*8)-r*8;return lv<=0?' ':lv>=8?'█':SP[lv-1]}).join(''))}return out};
 const SCREENS=[['1','dash','Dashboard'],['2','proc','Processes'],['3','net','Network'],['4','upd','Updates'],['5','cont','Containers'],['6','flat','Flatpaks'],['7','audit','Audit'],['8','jobs','Jobs'],['9','clean','Cleanup'],['0','upgrade','Upgrade'],['h','hist','History']];
 const PROCS=[
- {pid:4821,user:'shadow',cpu:18.2,mem:6.1,time:'2:14:08',cmd:'firefox'},
- {pid:2210,user:'shadow',cpu:9.4,mem:3.2,time:'1:02:51',cmd:'gnome-shell'},
- {pid:5102,user:'shadow',cpu:7.1,mem:2.4,time:'0:41:12',cmd:'firefox -contentproc -isForBrowser 5102 tab'},
- {pid:6630,user:'shadow',cpu:5.8,mem:8.9,time:'0:22:40',cmd:'rust-analyzer'},
+ {pid:4821,user:'user',cpu:18.2,mem:6.1,time:'2:14:08',cmd:'firefox'},
+ {pid:2210,user:'user',cpu:9.4,mem:3.2,time:'1:02:51',cmd:'gnome-shell'},
+ {pid:5102,user:'user',cpu:7.1,mem:2.4,time:'0:41:12',cmd:'firefox -contentproc -isForBrowser 5102 tab'},
+ {pid:6630,user:'user',cpu:5.8,mem:8.9,time:'0:22:40',cmd:'rust-analyzer'},
  {pid:1388,user:'root',cpu:3.2,mem:0.4,time:'0:08:19',cmd:'Xwayland :0 -rootless'},
- {pid:7012,user:'shadow',cpu:2.9,mem:1.1,time:'0:03:02',cmd:'ptyxis-agent'},
- {pid:3304,user:'shadow',cpu:2.1,mem:4.7,time:'0:19:55',cmd:'/app/bin/obsidian'},
+ {pid:7012,user:'user',cpu:2.9,mem:1.1,time:'0:03:02',cmd:'ptyxis-agent'},
+ {pid:3304,user:'user',cpu:2.1,mem:4.7,time:'0:19:55',cmd:'/app/bin/obsidian'},
  {pid:991,user:'root',cpu:1.4,mem:0.2,time:'0:02:40',cmd:'nvidia-powerd'},
- {pid:3310,user:'shadow',cpu:0.9,mem:0.1,time:'0:00:48',cmd:'sentry record --interval 10s'},
- {pid:7431,user:'shadow',cpu:0.6,mem:0.1,time:'0:00:12',cmd:'sentry'},
- {pid:2540,user:'shadow',cpu:0.5,mem:1.9,time:'0:04:33',cmd:'tracker-miner-fs-3'},
+ {pid:3310,user:'user',cpu:0.9,mem:0.1,time:'0:00:48',cmd:'sentry record --interval 10s'},
+ {pid:7431,user:'user',cpu:0.6,mem:0.1,time:'0:00:12',cmd:'sentry'},
+ {pid:2540,user:'user',cpu:0.5,mem:1.9,time:'0:04:33',cmd:'tracker-miner-fs-3'},
  {pid:1201,user:'root',cpu:0.4,mem:0.3,time:'0:01:20',cmd:'systemd-journald'},
- {pid:4011,user:'shadow',cpu:0.3,mem:2.2,time:'0:05:01',cmd:'syncthing serve --no-browser'},
+ {pid:4011,user:'user',cpu:0.3,mem:2.2,time:'0:05:01',cmd:'syncthing serve --no-browser'},
  {pid:1777,user:'root',cpu:0.2,mem:0.1,time:'0:00:31',cmd:'cupsd -l'},
- {pid:2290,user:'shadow',cpu:0.1,mem:0.6,time:'0:00:44',cmd:'pipewire'}];
+ {pid:2290,user:'user',cpu:0.1,mem:0.6,time:'0:00:44',cmd:'pipewire'}];
 const LISTEN=[
  {proto:'tcp',local:'127.0.0.1:631',proc:'cupsd (1777)',st:'baseline'},
  {proto:'tcp',local:'0.0.0.0:22000',proc:'syncthing (4011)',st:'new'},
@@ -403,7 +403,7 @@ const FINDINGS=[
  {sev:'high',cat:'listener',msg:'New listener 0.0.0.0:22000 (syncthing)',ev:'ss -tulpnH\ntcp LISTEN 0.0.0.0:22000 users:(("syncthing",pid=4011))\nnot in [baseline].listeners'},
  {sev:'high',cat:'flatpak',msg:'com.visualstudio.code gained filesystem=host',ev:'flatpak info --show-permissions com.visualstudio.code\n[Context] filesystems=host;\nprev: filesystems=home;'},
  {sev:'medium',cat:'flatpak',msg:'New app from unverified origin devrepo',ev:'io.github.someone.Tool 0.4.2\nremote devrepo → https://repo.example.dev/flatpak'},
- {sev:'medium',cat:'container',msg:'arch: stopped 64d, mounts $HOME',ev:'podman ps -a · distrobox · exited 64 days ago\nmount /var/home/shadow → /var/home/shadow'},
+ {sev:'medium',cat:'container',msg:'arch: stopped 64d, mounts $HOME',ev:'podman ps -a · distrobox · exited 64 days ago\nmount /var/home/user → /var/home/user'},
  {sev:'low',cat:'units',msg:'1 failed user unit',ev:'tracker-miner-fs-3.service  failed  (exit-code)'},
  {sev:'low',cat:'cache',msg:'~/.cache is 3.4 GB (> 2048 MB)',ev:'~/.cache/pip 1.4G · yarn 0.9G · mesa_shader 0.6G · other 0.5G'}];
 const DIFF=[
@@ -436,7 +436,7 @@ const STEPS=[
  {id:'rebase',title:'Rebase to Fedora 45',run:'rpm-ostree rebase fedora:fedora/45/x86_64/silverblue',gate:'confirm',out:['Receiving objects: 100% (48211/48211) 1.9 GB','Staging deployment… done']},
  {id:'reboot-1',title:'Reboot into new deployment',kind:'reboot'},
  {id:'verify-boot',title:'Confirm booted into Fedora 45',run:'sentry check booted-version --expect 45',gate:'auto',out:['booted: 45.20261020.0 (silverblue)','✓ matches expected 45']},
- {id:'nvidia-rebuild',title:'Rebuild NVIDIA kernel modules',run:'sudo akmods --force --kernels $(uname -r)',gate:'confirm',slow:true,out:['[sudo] password for shadow: ••••••••','Checking kmods exist for 6.18.4-200.fc45.x86_64','Building and installing nvidia-kmod','  still building · 0:30','  still building · 1:00','  still building · 1:30','Building and installing nvidia-kmod   [  OK  ]']},
+ {id:'nvidia-rebuild',title:'Rebuild NVIDIA kernel modules',run:'sudo akmods --force --kernels $(uname -r)',gate:'confirm',slow:true,out:['[sudo] password for user: ••••••••','Checking kmods exist for 6.18.4-200.fc45.x86_64','Building and installing nvidia-kmod','  still building · 0:30','  still building · 1:00','  still building · 1:30','Building and installing nvidia-kmod   [  OK  ]']},
  {id:'nvidia-verify',title:'Verify nvidia module for running kernel',run:'sentry check nvidia-module',gate:'auto',out:['/lib/modules/6.18.4-200.fc45.x86_64/extra/nvidia/nvidia.ko.xz','✓ module present']},
  {id:'reboot-2',title:'Reboot to load drivers',kind:'reboot'},
  {id:'final-verify',title:'Post-upgrade verification',run:'sentry check nvidia-loaded && sentry check booted-version --expect 45 && sentry check kargs',gate:'auto',out:['✓ nvidia loaded · 580.95.05 · RTX 4070','✓ booted 45','✓ kargs present']},
