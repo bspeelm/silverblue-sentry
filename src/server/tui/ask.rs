@@ -82,7 +82,7 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote, wf: Option<&Session>) -> Option<A
             ))
         }
         Tab::Containers => {
-            let c = v.s.docker.value.as_ref()?.containers.get(v.cur)?;
+            let c = super::tabs::selected_container(v)?;
             Some(Ask::new(
                 format!("{} · container {}", r.name, c.name),
                 format!(

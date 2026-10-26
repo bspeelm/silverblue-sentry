@@ -142,6 +142,9 @@ pub struct App {
     chat: Option<Chat>,
     /// The `:` command line being typed.
     cmdline: Option<String>,
+    /// Each tab's `/` filter, and whether it's being typed.
+    filters: [String; 6],
+    filtering: bool,
     pub quit: bool,
     pub dirty: bool,
     /// Fixed clock for snapshot tests.
@@ -175,6 +178,8 @@ impl App {
             wf_reboot_id: None,
             chat: None,
             cmdline: None,
+            filters: Default::default(),
+            filtering: false,
             quit: false,
             dirty: true,
             now_override: None,
@@ -471,6 +476,8 @@ impl App {
             name: &self.remote.name,
             cur: self.cursors[self.tab.index()],
             now: self.now_override.unwrap_or_else(jiff::Timestamp::now),
+            filter: Some(self.filters[self.tab.index()].as_str())
+                .filter(|f| !f.is_empty() && tabs::filterable(self.tab)),
         }
     }
 
@@ -486,6 +493,10 @@ impl App {
         self.dirty = true;
         if self.cmdline.is_some() {
             self.cmdline_key(k, now);
+            return;
+        }
+        if self.filtering {
+            self.filter_key(k);
             return;
         }
         // The chat takes raw keys (Backspace, any character) before the keymap, which knows
@@ -577,6 +588,14 @@ impl App {
                 })
             }
             Action::Command => self.cmdline = Some(String::new()),
+            Action::Filter if tabs::filterable(self.tab) => self.filtering = true,
+            Action::Filter => self.toast("nothing to filter on this tab"),
+            Action::Esc if !self.filters[self.tab.index()].is_empty() => {
+                self.filters[self.tab.index()].clear();
+            }
+            // Rows are already filtered, so n/N just walk them with wrap-around.
+            Action::NextMatch if n > 0 => *cur = (*cur + 1) % n,
+            Action::PrevMatch if n > 0 => *cur = (*cur + n - 1) % n,
             Action::Screen(id) => {
                 if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
                     self.enter(t, now);
@@ -604,6 +623,7 @@ impl App {
                         ("A", "ask Claude"),
                         ("1-5 0", "tabs (or Tab, h/l)"),
                         ("j/k", "move"),
+                        ("/", "filter (Esc clears) · n/N next/prev"),
                         (":", ":q quit · :r refresh · :<tab> · :wf <name>"),
                         ("q", "quit (asks)"),
                     ])
@@ -992,6 +1012,28 @@ impl App {
             }
             _ => {}
         }
+        self.dirty = true;
+    }
+
+    /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
+    fn filter_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let i = self.tab.index();
+        match k.code {
+            KeyCode::Char(c) => self.filters[i].push(c),
+            KeyCode::Backspace => {
+                if self.filters[i].pop().is_none() {
+                    self.filtering = false;
+                }
+            }
+            KeyCode::Esc => {
+                self.filters[i].clear();
+                self.filtering = false;
+            }
+            KeyCode::Enter => self.filtering = false,
+            _ => {}
+        }
+        self.cursors[i] = 0;
         self.dirty = true;
     }
 
@@ -1445,6 +1487,13 @@ impl App {
             if let Some((b, c)) = tabs::badge(tab, &self.view()) {
                 spans.push(Span::styled(b, style.fg(if active { t.ink } else { c })));
             }
+            let flt = &self.filters[tab.index()];
+            if !flt.is_empty() && tabs::filterable(tab) {
+                spans.push(Span::styled(
+                    format!(" /{flt}"),
+                    style.fg(if active { t.ink } else { t.cyan }),
+                ));
+            }
             spans.push(Span::styled(" ", style));
             spans.push(Span::raw(" "));
         }
@@ -1458,6 +1507,17 @@ impl App {
                 Paragraph::new(Line::from(vec![
                     Span::styled(format!(":{buf}"), t.fg()),
                     Span::styled("▏", t.s(t.cyan)),
+                ])),
+                area,
+            );
+            return;
+        }
+        if self.filtering {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!("/{}", self.filters[self.tab.index()]), t.fg()),
+                    Span::styled("▏", t.s(t.cyan)),
+                    Span::styled("   Enter keep · Esc clear", t.dim()),
                 ])),
                 area,
             );

@@ -770,3 +770,47 @@ fn quit_asks_and_colon_commands() {
     key(&mut a, KeyCode::Enter);
     assert!(a.quit, ":q quits");
 }
+
+#[test]
+fn slash_filters_the_tab() {
+    let mut a = app();
+    let screen = |a: &mut App| body(&render_to_string(a, 158, 41));
+    key(&mut a, KeyCode::Char('/'));
+    assert!(
+        screen(&mut a).contains("nothing to filter"),
+        "not on Overview"
+    );
+    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    let all = screen(&mut a);
+    assert!(all.contains("│ web") && all.contains("│ runner"));
+    for c in "/DB".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    let s = screen(&mut a);
+    assert!(s.contains("/DB▏"), "typing shows in the key bar\n{s}");
+    assert!(s.contains("│ db") && !s.contains("│ web") && !s.contains("│ runner"));
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Containers 1 /DB"),
+        "kept filter shows on the tab\n{s}"
+    );
+    assert!(!s.contains("│ web"));
+    // Each tab has its own filter.
+    key(&mut a, KeyCode::Char(Tab::Audit.key()));
+    assert!(!screen(&mut a).contains("Audit /"));
+    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    // n/N wrap around the matches; Esc clears.
+    key(&mut a, KeyCode::Char('n'));
+    assert!(screen(&mut a).contains("│ db"));
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(s.contains("│ web") && !s.contains("/DB"));
+    // Esc while typing drops it too; a filter matching nothing leaves the list empty.
+    for c in "/zzz".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    assert!(!screen(&mut a).contains("│ db"));
+    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("│ db"));
+}

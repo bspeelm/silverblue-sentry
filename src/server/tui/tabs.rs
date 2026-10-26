@@ -11,7 +11,8 @@ use super::app::Effect;
 use super::data::{Kind, Store};
 use crate::audit::{Finding, Sev};
 use crate::fmt;
-use crate::server::collect::apt::Kind as PkgKind;
+use crate::server::collect::apt::{Kind as PkgKind, Pkg};
+use crate::server::collect::docker::Container;
 use crate::server::collect::health::SmartHealth;
 use crate::server::config::Server;
 use crate::tui::theme::Theme;
@@ -24,9 +25,22 @@ pub struct View<'a> {
     pub name: &'a str,
     pub cur: usize,
     pub now: jiff::Timestamp,
+    /// The tab's `/` filter, when one is set.
+    pub filter: Option<&'a str>,
 }
 
 impl View<'_> {
+    /// Case-insensitive substring match of the filter against any field, as in sentry.
+    fn matches(&self, fields: &[&str]) -> bool {
+        match self.filter {
+            None => true,
+            Some(f) => {
+                let f = f.to_lowercase();
+                fields.iter().any(|x| x.to_lowercase().contains(&f))
+            }
+        }
+    }
+
     fn secs_since(&self, t: jiff::Timestamp) -> i64 {
         self.now.as_second() - t.as_second()
     }
@@ -38,8 +52,8 @@ pub fn rows(tab: Tab, v: &View) -> usize {
     match tab {
         Tab::Overview => status_rows(v).len(),
         Tab::Services => unit_rows(v).len(),
-        Tab::Containers => v.s.docker.value.as_ref().map_or(0, |d| d.containers.len()),
-        Tab::Updates => v.s.apt.value.as_ref().map_or(0, |a| a.upgrades.len()),
+        Tab::Containers => container_list(v).len(),
+        Tab::Updates => upgrade_list(v).len(),
         Tab::Audit => findings(v).len(),
         Tab::Workflows => 0,
     }
@@ -131,21 +145,21 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             }
             None => Vec::new(),
         },
-        (Tab::Containers, 'R' | 'L' | 'p' | 'u') => {
-            match v
-                .s
-                .docker
-                .value
-                .as_ref()
-                .and_then(|d| d.containers.get(v.cur))
-            {
-                Some(ct) => actions::containers(v, r, c, &ct.name, ct.compose.as_deref()),
-                None => Vec::new(),
-            }
-        }
+        (Tab::Containers, 'R' | 'L' | 'p' | 'u') => match selected_container(v) {
+            Some(ct) => actions::containers(v, r, c, &ct.name, ct.compose.as_deref()),
+            None => Vec::new(),
+        },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
         _ => Vec::new(),
     }
+}
+
+/// Tabs whose list `/` filters.
+pub fn filterable(tab: Tab) -> bool {
+    matches!(
+        tab,
+        Tab::Services | Tab::Containers | Tab::Updates | Tab::Audit
+    )
 }
 
 /// The count shown next to a tab name.
@@ -716,6 +730,7 @@ fn unit_rows(v: &View) -> Vec<UnitLine> {
             result: row.description.clone(),
         });
     }
+    out.retain(|u| v.matches(&[&u.unit, &u.state, &u.result]));
     out
 }
 
@@ -832,9 +847,8 @@ fn containers(f: &mut Frame, area: Rect, v: &View) {
     let r = inner(&b, area);
     f.render_widget(b, area);
     let stats = v.s.stats.value.as_ref();
-    let rows: Vec<Row> = d
-        .containers
-        .iter()
+    let rows: Vec<Row> = container_list(v)
+        .into_iter()
         .map(|c| {
             let (state_c, health_c) = (
                 if c.status == "running" {
@@ -911,13 +925,31 @@ fn containers(f: &mut Frame, area: Rect, v: &View) {
     );
 }
 
+/// Containers in table order, filtered.
+fn container_list<'a>(v: &View<'a>) -> Vec<&'a Container> {
+    let Some(d) = &v.s.docker.value else {
+        return Vec::new();
+    };
+    d.containers
+        .iter()
+        .filter(|c| {
+            v.matches(&[
+                &c.name,
+                &c.image,
+                &c.status,
+                c.compose.as_deref().unwrap_or(""),
+                c.health.as_deref().unwrap_or(""),
+            ])
+        })
+        .collect()
+}
+
+pub fn selected_container<'a>(v: &View<'a>) -> Option<&'a Container> {
+    container_list(v).get(v.cur).copied()
+}
+
 fn container_detail(v: &View) -> Vec<Effect> {
-    let Some(c) =
-        v.s.docker
-            .value
-            .as_ref()
-            .and_then(|d| d.containers.get(v.cur))
-    else {
+    let Some(c) = selected_container(v) else {
         return Vec::new();
     };
     let t = v.t;
@@ -1059,9 +1091,7 @@ fn updates(f: &mut Frame, area: Rect, v: &View) {
     let b = panel(t, "Packages", format!("{} to upgrade", a.upgrades.len()));
     let r = inner(&b, rest);
     f.render_widget(b, rest);
-    let mut pkgs: Vec<_> = a.upgrades.iter().collect();
-    pkgs.sort_by(|x, y| x.kind.cmp(&y.kind).then(x.name.cmp(&y.name)));
-    let rows: Vec<Row> = pkgs
+    let rows: Vec<Row> = upgrade_list(v)
         .into_iter()
         .map(|p| {
             let (k, c) = match p.kind {
@@ -1097,6 +1127,20 @@ fn updates(f: &mut Frame, area: Rect, v: &View) {
     );
 }
 
+/// Packages in table order (security first), filtered.
+fn upgrade_list<'a>(v: &View<'a>) -> Vec<&'a Pkg> {
+    let Some(a) = &v.s.apt.value else {
+        return Vec::new();
+    };
+    let mut pkgs: Vec<&Pkg> = a
+        .upgrades
+        .iter()
+        .filter(|p| v.matches(&[&p.name, &p.new, &p.origin]))
+        .collect();
+    pkgs.sort_by(|x, y| x.kind.cmp(&y.kind).then(x.name.cmp(&y.name)));
+    pkgs
+}
+
 // ---------- Audit ----------
 
 /// Open findings first, then the expected ones.
@@ -1106,6 +1150,7 @@ fn findings<'a>(v: &View<'a>) -> Vec<&'a Finding> {
     };
     let mut f: Vec<&Finding> = r.open().collect();
     f.extend(r.findings.iter().filter(|f| f.expected));
+    f.retain(|f| v.matches(&[&f.message, &f.category, f.severity.as_str(), &f.id]));
     f
 }
 
@@ -1176,7 +1221,10 @@ fn audit(f: &mut Frame, area: Rect, v: &View) {
     f.render_widget(b, detail_a);
     let mut lines = match list.get(v.cur) {
         Some(x) => finding_lines(t, x),
-        None => vec![Line::styled("✓ nothing needs attention", t.s(t.green))],
+        None => match v.filter {
+            Some(flt) => vec![Line::styled(format!("no finding matches /{flt}"), t.dim())],
+            None => vec![Line::styled("✓ nothing needs attention", t.s(t.green))],
+        },
     };
     if !rep.snapshot.errors.is_empty() {
         lines.push(Line::raw(""));

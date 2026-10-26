@@ -172,6 +172,8 @@ Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-ser
 | `5` Audit | findings: services down, stale or failing timers, containers down or restarted, the docker socket mounted in a container, unexpected listeners, reboot required, updates, SMART damage, full or missing disks… | `c` audit now, `b` mark expected |
 | `0` Workflows | multi-step maintenance in the same TOML format as the local workflows: `apt-maintenance` and `compose-update` are seeded in `~/.config/sentry/server-workflows/` | Enter, `s`, `d`, `r`, `a`, `L` as on Upgrade |
 
+On Services, Containers, Updates and Audit, `/` filters the list (any column, case-insensitive; `n`/`N` step through, `Esc` clears); each tab keeps its own filter.
+
 A reboot, from `B` or a workflow step, waits in place: sentry-server polls the server's boot id and says when it's back, then a workflow carries on. **`A` asks Claude** about whatever is selected. Claude reaches the server only through `sentry-server exec <server> -- <command>`, an allowlist of read-only commands with no shell, and ssh itself is denied. Whatever it proposes, you run after a confirm box.
 
 Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint`. Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
