@@ -1,0 +1,15 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": {"version": [7, 4], "argv": ["smartctl", "-j", "-n", "standby", "-H", "-A", "-i", "/dev/sda"], "exit_status": 0},
+  "device": {"name": "/dev/sda", "info_name": "/dev/sda [SAT]", "type": "sat", "protocol": "ATA"},
+  "model_name": "Example SSD 120GB",
+  "smart_status": {"passed": true},
+  "ata_smart_attributes": {"revision": 16, "table": [
+    {"id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 10, "raw": {"value": 0, "string": "0"}},
+    {"id": 9, "name": "Power_On_Hours", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 12873, "string": "12873"}},
+    {"id": 194, "name": "Temperature_Celsius", "value": 62, "worst": 50, "thresh": 0, "raw": {"value": 31, "string": "31"}},
+    {"id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "raw": {"value": 0, "string": "0"}}
+  ]},
+  "power_on_time": {"hours": 12873},
+  "temperature": {"current": 31}
+}

@@ -1,0 +1,37 @@
+@@stat
+cpu  100000 0 40000 1000000 2000 0 8000 0 0 0
+cpu0 25000 0 10000 250000 500 0 2000 0 0 0
+cpu1 25000 0 10000 250000 500 0 2000 0 0 0
+cpu2 25000 0 10000 250000 500 0 2000 0 0 0
+cpu3 25000 0 10000 250000 500 0 2000 0 0 0
+intr 123456789 0 0
+ctxt 987654321
+btime 1791990000
+processes 52817
+procs_running 1
+procs_blocked 0
+@@loadavg
+0.31 0.27 0.22 2/412 52817
+@@uptime
+1209731.44 9512267.90
+@@meminfo
+MemTotal:       32000000 kB
+MemFree:         1500000 kB
+MemAvailable:   20384000 kB
+Buffers:          120000 kB
+Cached:         17000000 kB
+SwapTotal:       4194300 kB
+SwapFree:        3932156 kB
+@@net/dev
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 1234567    8910    0    0    0     0          0         0  1234567    8910    0    0    0     0       0          0
+  eth0: 12345678901 23456789    0    0    0     0          0         0 9876543210 18765432    0    0    0     0       0          0
+docker0: 5000 60    0    0    0     0          0         0 7000 80    0    0    0     0       0          0
+@@net/route
+Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
+eth0	00000000	0102000C	0003	0	0	100	00000000	0	0	0
+eth0	0002000C	00000000	0001	0	0	100	00FFFFFF	0	0	0
+docker0	000011AC	00000000	0001	0	0	0	0000FFFF	0	0	0
+@@sys/kernel/random/boot_id
+5d1c7a3e-0f6b-4b8e-9b51-2f0c1e7d9a44

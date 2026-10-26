@@ -2,7 +2,7 @@
 name = "sentry"
 version = "0.1.3"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Daemon-free monitor & maintenance TUI for Fedora Silverblue"
 license = "MIT"
 repository = "https://github.com/bspeelm/silverblue-sentry"
@@ -27,6 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 signal-hook = "0.4"
 rustix = { version = "1", features = ["process", "fs"] }
+serde-saphyr = "1.3"
 
 [dev-dependencies]
 insta = "1.49"

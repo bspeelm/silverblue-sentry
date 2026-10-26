@@ -1,0 +1,69 @@
+name = "apt-maintenance"
+description = "Debian/Ubuntu: refresh package lists, upgrade, reboot if needed, check everything came back"
+# Built-ins: running_kernel, newest_kernel, server, compose_project, compose_file.
+# Conditions: reboot_required, kernel_pending, updates_pending, services_ok, containers_healthy.
+# Steps run on the server; `sentry-server cond …` steps run here and read the server over ssh.
+
+[[steps]]
+id = "preview"
+title = "Preview what would change"
+run = "apt-get -s -o Debug::NoLocking=1 dist-upgrade | grep -E '^(Inst|Remv) |upgraded,|kept back' || true"
+gate = "auto"
+
+[[steps]]
+id = "update"
+title = "Refresh package lists"
+run = "sudo apt-get update"
+gate = "confirm"
+
+[[steps]]
+id = "upgrade"
+title = "Install the updates"
+run = "sudo env DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold dist-upgrade"
+gate = "confirm"
+on_fail = "manual"
+manual = """
+apt stopped. The log (L) says why; common causes:
+  - another apt is running (unattended-upgrades): wait, then retry (r)
+  - dpkg was interrupted: run `sudo dpkg --configure -a` on the server, then retry
+Mark it done by hand (d) once `apt-get -s dist-upgrade` shows nothing left to do."""
+
+[[steps]]
+id = "autoremove"
+title = "Remove packages nothing needs any more"
+run = "sudo apt-get -y autoremove"
+gate = "confirm"
+optional = true
+
+[[steps]]
+id = "reboot"
+title = "Reboot onto the new kernel and libraries"
+kind = "reboot"
+when = "reboot_required"
+
+[[steps]]
+id = "verify-kernel"
+title = "Running the newest installed kernel"
+run = "test \"$(uname -r)\" = \"{{ newest_kernel }}\" && echo \"running $(uname -r)\""
+gate = "auto"
+when = "reboot_required"
+on_fail = "manual"
+manual = """
+The server didn't come back on the newest kernel ({{ newest_kernel }}).
+Check the bootloader's default entry, or whether the new kernel failed to boot and it fell back."""
+
+[[steps]]
+id = "services"
+title = "Configured services are running"
+run = "sentry-server cond services_ok --wait 120"
+gate = "auto"
+on_fail = "manual"
+manual = "A service from server_config.yaml isn't running: look at it on the Services tab (L for its log)."
+
+[[steps]]
+id = "containers"
+title = "Containers are running and healthy"
+run = "sentry-server cond containers_healthy --wait 180"
+gate = "auto"
+on_fail = "manual"
+manual = "A container is down or unhealthy: look at it on the Containers tab (L for its logs)."

@@ -108,12 +108,22 @@ pub struct Run {
 
 impl Run {
     pub fn create(name: &str, toml_text: &str, state: RunState) -> anyhow::Result<Self> {
+        Self::create_in(&root(), name, toml_text, state)
+    }
+
+    /// Like [`Run::create`], under another root (sentry-server keeps runs per server).
+    pub fn create_in(
+        root: &Path,
+        name: &str,
+        toml_text: &str,
+        state: RunState,
+    ) -> anyhow::Result<Self> {
         let stamp = state
             .started
             .to_zoned(jiff::tz::TimeZone::system())
             .strftime("%Y%m%d-%H%M%S")
             .to_string();
-        let base = root().join(name);
+        let base = root.join(name);
         let mut dir = base.join(format!("run-{stamp}"));
         let mut n = 2;
         while dir.exists() {
@@ -166,7 +176,11 @@ impl Run {
 
 /// All runs of a workflow, oldest first.
 pub fn runs_of(name: &str) -> Vec<Run> {
-    let mut v: Vec<Run> = std::fs::read_dir(root().join(name))
+    runs_in(&root(), name)
+}
+
+pub fn runs_in(root: &Path, name: &str) -> Vec<Run> {
+    let mut v: Vec<Run> = std::fs::read_dir(root.join(name))
         .into_iter()
         .flatten()
         .flatten()
@@ -179,10 +193,14 @@ pub fn runs_of(name: &str) -> Vec<Run> {
 
 /// The (single) run still in progress, across all workflows.
 pub fn in_progress() -> Option<Run> {
-    std::fs::read_dir(root())
+    in_progress_in(&root())
+}
+
+pub fn in_progress_in(root: &Path) -> Option<Run> {
+    std::fs::read_dir(root)
         .ok()?
         .flatten()
-        .flat_map(|wf| runs_of(&wf.file_name().to_string_lossy()))
+        .flat_map(|wf| runs_in(root, &wf.file_name().to_string_lossy()))
         .filter(|r| r.state.status == RunStatus::InProgress)
         .max_by_key(|r| r.state.started)
 }

@@ -5,24 +5,61 @@
 //! sleeps until the active screen's next refresh is due, so idle screens cost ~nothing.
 
 mod app;
-mod chat;
+pub(crate) mod chat;
 mod data;
-mod keys;
+pub(crate) mod keys;
+pub(crate) mod modal;
 mod screens;
-mod theme;
+pub(crate) mod theme;
 mod wf;
-mod widgets;
+pub(crate) mod widgets;
 
 use std::io;
+use std::process::ExitStatus;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
-use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as CEvent, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{cursor, execute, terminal};
+use ratatui::{DefaultTerminal, Frame};
 
-use crate::exec::StreamMsg;
+use crate::exec::{Cmd, ExecError, StreamMsg};
 pub use data::{Fetch, FetchErr, Payload};
+
+/// What the terminal itself produces, for any TUI built on [`run_ui`].
+pub enum Input {
+    Key(KeyEvent),
+    Resize,
+    Signal,
+}
+
+impl From<Input> for Event {
+    fn from(i: Input) -> Self {
+        match i {
+            Input::Key(k) => Event::Key(k),
+            Input::Resize => Event::Resize,
+            Input::Signal => Event::Signal,
+        }
+    }
+}
+
+/// An app [`run_ui`] can drive: it owns all state on the main thread and is told about
+/// events; the loop sleeps until `next_due`, so nothing runs while nothing is due.
+pub trait Ui {
+    type Ev: From<Input> + Send + 'static;
+    fn start(&mut self, now: Instant);
+    /// Something changed since the last draw.
+    fn dirty(&self) -> bool;
+    fn draw(&mut self, f: &mut Frame);
+    /// A command that needs the real terminal (sudo prompts, less, $EDITOR), with a banner.
+    fn take_suspend(&mut self) -> Option<(Cmd, String)>;
+    fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>);
+    fn quitting(&self) -> bool;
+    fn shutdown(&mut self);
+    fn next_due(&self, now: Instant) -> Instant;
+    fn on_event(&mut self, ev: Self::Ev, now: Instant);
+    fn tick(&mut self, now: Instant);
+}
 
 pub enum Event {
     Key(KeyEvent),
@@ -141,7 +178,7 @@ enum InputCtl {
     Resume,
 }
 
-fn spawn_input(tx: Sender<Event>, ctl: Receiver<InputCtl>) {
+fn spawn_input<E: From<Input> + Send + 'static>(tx: Sender<E>, ctl: Receiver<InputCtl>) {
     std::thread::spawn(move || {
         loop {
             match ctl.try_recv() {
@@ -160,26 +197,26 @@ fn spawn_input(tx: Sender<Event>, ctl: Receiver<InputCtl>) {
                 continue;
             }
             let ev = match event::read() {
-                Ok(CEvent::Key(k)) if k.kind != KeyEventKind::Release => Event::Key(k),
-                Ok(CEvent::Resize(..)) => Event::Resize,
+                Ok(CEvent::Key(k)) if k.kind != KeyEventKind::Release => Input::Key(k),
+                Ok(CEvent::Resize(..)) => Input::Resize,
                 Ok(_) => continue,
                 Err(_) => return,
             };
-            if tx.send(ev).is_err() {
+            if tx.send(E::from(ev)).is_err() {
                 return;
             }
         }
     });
 }
 
-fn spawn_signals(tx: Sender<Event>) {
+fn spawn_signals<E: From<Input> + Send + 'static>(tx: Sender<E>) {
     use signal_hook::consts::{SIGHUP, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP]) else {
         return;
     };
     std::thread::spawn(move || {
         if signals.forever().next().is_some() {
-            let _ = tx.send(Event::Signal);
+            let _ = tx.send(E::from(Input::Signal));
         }
     });
 }
@@ -207,6 +244,12 @@ impl Term {
 }
 
 pub fn run() -> anyhow::Result<()> {
+    run_ui(app::App::new)
+}
+
+/// Set up the terminal, the input and signal threads, run `make`'s app until it quits, and
+/// restore the terminal.
+pub fn run_ui<U: Ui>(make: impl FnOnce(Sender<U::Ev>) -> U) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
     let (ctl_tx, ctl_rx) = mpsc::channel();
     // ratatui::try_init installs a panic hook that restores the terminal first.
@@ -218,18 +261,19 @@ pub fn run() -> anyhow::Result<()> {
     spawn_input(tx.clone(), ctl_rx);
     spawn_signals(tx.clone());
 
-    let mut app = app::App::new(tx);
+    let mut app = make(tx);
     let result = event_loop(&mut term, &mut app, &rx);
     ratatui::restore();
     result
 }
 
-fn event_loop(term: &mut Term, app: &mut app::App, rx: &Receiver<Event>) -> anyhow::Result<()> {
+fn event_loop<U: Ui>(term: &mut Term, app: &mut U, rx: &Receiver<U::Ev>) -> anyhow::Result<()> {
     app.start(Instant::now());
+    let mut drawn = false;
     loop {
-        if app.dirty {
+        if app.dirty() || !drawn {
             term.terminal.draw(|f| app.draw(f))?;
-            app.dirty = false;
+            drawn = true;
         }
         if let Some((cmd, banner)) = app.take_suspend() {
             let status = term.suspend(|| {
@@ -239,7 +283,7 @@ fn event_loop(term: &mut Term, app: &mut app::App, rx: &Receiver<Event>) -> anyh
             app.after_suspend(status);
             continue;
         }
-        if app.quit {
+        if app.quitting() {
             app.shutdown();
             return Ok(());
         }

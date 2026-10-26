@@ -1,0 +1,30 @@
+name = "compose-update"
+description = "Docker compose: pull newer images, recreate what changed, wait until healthy"
+# Works on the first project under compose: in server_config.yaml ({{ compose_project }}).
+
+[[steps]]
+id = "pull"
+title = "Pull newer images for {{ compose_project }}"
+run = "sudo docker compose -f {{ compose_file }} pull"
+gate = "confirm"
+
+[[steps]]
+id = "up"
+title = "Recreate the containers whose image changed"
+run = "sudo docker compose -f {{ compose_file }} up -d"
+gate = "confirm"
+
+[[steps]]
+id = "healthy"
+title = "Containers are running and healthy"
+run = "sentry-server cond containers_healthy --wait 180"
+gate = "auto"
+on_fail = "manual"
+manual = "A container didn't come back healthy: look at its logs on the Containers tab (L)."
+
+[[steps]]
+id = "prune"
+title = "Remove images nothing uses any more"
+run = "sudo docker image prune -f"
+gate = "confirm"
+optional = true

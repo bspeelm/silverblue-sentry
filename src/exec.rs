@@ -4,6 +4,9 @@
 //! toolbox those binaries only exist on the host, so the command is wrapped in
 //! `flatpak-spawn --host`. Availability is probed by path *before* spawning because a missing
 //! binary behind flatpak-spawn surfaces as exit 1 plus a portal error, not as ENOENT.
+//!
+//! `Cmd::ssh` targets a server: the argv runs there through one multiplexed `ssh` connection
+//! (`sentry-server`). Exit 127 means the command is missing there, 255 that ssh itself failed.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -20,6 +23,8 @@ pub enum Site {
     /// Container-local binaries (tests; nothing in the app needs it yet).
     #[cfg_attr(not(test), allow(dead_code))]
     Local,
+    /// A server, by ssh alias. Leaked once per configured server so `Site` stays `Copy`.
+    Ssh(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +47,8 @@ pub enum ExecError {
         stdout: String,
         stderr: String,
     },
+    #[error("{0}")]
+    Unreachable(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -76,6 +83,38 @@ pub fn in_toolbox() -> bool {
     Path::new("/run/.containerenv").exists()
 }
 
+/// Quote for a POSIX shell when needed (`kmod nvidia` → `'kmod nvidia'`).
+pub fn sh_quote(s: &str) -> String {
+    if s.is_empty()
+        || s.contains(|c: char| c.is_whitespace() || "'\"$`\\|&;<>()*?#~{}[]!".contains(c))
+    {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Where ssh's multiplexing sockets live: short, because a socket path must stay under 108
+/// bytes, and private (0700).
+pub fn control_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d).join("sentry-server"),
+        None => PathBuf::from(format!(
+            "/tmp/sentry-server-{}",
+            rustix::process::getuid().as_raw()
+        )),
+    }
+}
+
+/// How a remote command gets a terminal: none (captured), forced (`-tt`: streamed, so killing
+/// the local ssh hangs up the remote command too), or the user's own (`-t`: interactive).
+#[derive(Clone, Copy, PartialEq)]
+enum Tty {
+    No,
+    Forced,
+    Inherit,
+}
+
 impl Cmd {
     pub fn host(bin: &str) -> Self {
         Self {
@@ -84,6 +123,20 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
         }
+    }
+
+    /// Run `bin` on a server over ssh (`host` is an ssh alias or `user@host`).
+    pub fn ssh(host: &'static str, bin: &str) -> Self {
+        Self {
+            site: Site::Ssh(host),
+            argv: vec![bin.into()],
+            timeout: Some(DEFAULT_TIMEOUT),
+            dir: None,
+        }
+    }
+
+    pub fn site(&self) -> Site {
+        self.site
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -130,27 +183,62 @@ impl Cmd {
         if self.argv.len() == 3 && self.argv[0] == "sh" && self.argv[1] == "-c" {
             return self.argv[2].to_string_lossy().into_owned();
         }
+        self.quoted_argv()
+    }
+
+    fn quoted_argv(&self) -> String {
         self.argv
             .iter()
-            .map(|a| {
-                let s = a.to_string_lossy();
-                if s.is_empty()
-                    || s.contains(|c: char| c.is_whitespace() || "'\"$`\\|&;<>()*?".contains(c))
-                {
-                    format!("'{}'", s.replace('\'', r"'\''"))
-                } else {
-                    s.into_owned()
-                }
-            })
+            .map(|a| sh_quote(&a.to_string_lossy()))
             .collect::<Vec<_>>()
             .join(" ")
     }
 
     pub fn available(&self) -> bool {
-        bin_available(self.site, &self.bin())
+        match self.site {
+            // Whether the remote command exists is only known by running it (exit 127).
+            Site::Ssh(_) => bin_available(Site::Local, "ssh"),
+            s => bin_available(s, &self.bin()),
+        }
+    }
+
+    /// The command line the server's shell runs: C locale, optional working directory.
+    pub fn remote_line(&self) -> String {
+        let cd = self
+            .dir
+            .as_ref()
+            .map(|d| format!("cd {} && ", sh_quote(&d.to_string_lossy())))
+            .unwrap_or_default();
+        format!("{cd}env LC_ALL=C {}", self.quoted_argv())
     }
 
     fn command(&self) -> Command {
+        self.command_tty(Tty::No)
+    }
+
+    fn command_tty(&self, tty: Tty) -> Command {
+        if let Site::Ssh(host) = self.site {
+            let dir = control_dir();
+            if !dir.exists() {
+                let _ = std::fs::create_dir_all(&dir);
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+            let mut c = Command::new("ssh");
+            c.args(ssh_opts(&dir, tty == Tty::No));
+            match tty {
+                Tty::No => {}
+                Tty::Forced => {
+                    c.arg("-tt");
+                }
+                Tty::Inherit => {
+                    c.arg("-t");
+                }
+            }
+            c.arg("--").arg(host).arg(self.remote_line());
+            c.env("LC_ALL", "C");
+            return c;
+        }
         let mut c = if self.site == Site::Host && spawn_mode() {
             let mut c = Command::new("flatpak-spawn");
             c.arg("--host").arg("--env=LC_ALL=C");
@@ -179,8 +267,28 @@ impl Cmd {
         }
     }
 
-    /// Run to completion, capturing output; any exit code is returned.
+    /// Run to completion, capturing output; any exit code is returned (over ssh, 127 and 255
+    /// become `NotFound` and `Unreachable`).
     pub fn run(&self) -> Result<Output, ExecError> {
+        let o = self.run_raw()?;
+        if let Site::Ssh(host) = self.site {
+            match o.code {
+                127 => return Err(ExecError::NotFound(format!("{} on {host}", self.bin()))),
+                255 => {
+                    let why = o.stderr.trim();
+                    return Err(ExecError::Unreachable(if why.is_empty() {
+                        format!("{host}: ssh failed")
+                    } else {
+                        format!("{host}: {why}")
+                    }));
+                }
+                _ => {}
+            }
+        }
+        Ok(o)
+    }
+
+    fn run_raw(&self) -> Result<Output, ExecError> {
         self.check()?;
         let mut child = self
             .command()
@@ -245,7 +353,11 @@ impl Cmd {
     ) -> Result<u32, ExecError> {
         self.check()?;
         let mut child = self
-            .command()
+            .command_tty(if matches!(self.site, Site::Ssh(_)) {
+                Tty::Forced
+            } else {
+                Tty::No
+            })
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -296,11 +408,16 @@ impl Cmd {
     /// Run with the terminal inherited. The caller must have suspended the TUI.
     pub fn interactive(&self) -> Result<ExitStatus, ExecError> {
         self.check()?;
-        Ok(self.command().status()?)
+        Ok(self.command_tty(Tty::Inherit).status()?)
     }
 
     /// Start in its own session and forget about it (new terminal windows, Flatseal).
     pub fn detach(&self) -> Result<(), ExecError> {
+        if matches!(self.site, Site::Ssh(_)) {
+            return Err(ExecError::Io(io::Error::other(
+                "can't detach a remote command",
+            )));
+        }
         self.check()?;
         let mut c = if self.site == Site::Host && spawn_mode() {
             let mut c = Command::new("flatpak-spawn");
@@ -319,6 +436,40 @@ impl Cmd {
         thread::spawn(move || child.wait());
         Ok(())
     }
+}
+
+/// Batch mode (never prompt) and quick failure when the server is gone. Captured commands share
+/// one multiplexed connection that outlives the last command by at most 15 s. Streamed and
+/// interactive ones (actions) get a connection of their own: through the shared one, killing
+/// the local client leaves the remote command running, because the master keeps its session.
+fn ssh_opts(control: &Path, shared: bool) -> Vec<String> {
+    // Tests point ssh at a throwaway server without touching ~/.ssh/config.
+    let file = std::env::var("SENTRY_SSH_CONFIG")
+        .ok()
+        .filter(|f| !f.is_empty())
+        .map(|f| vec!["-F".to_string(), f])
+        .unwrap_or_default();
+    file.into_iter()
+        .chain(
+            [
+                "BatchMode=yes".to_string(),
+                "ConnectTimeout=5".into(),
+                "ServerAliveInterval=10".into(),
+                "ServerAliveCountMax=3".into(),
+            ]
+            .into_iter()
+            .chain(if shared {
+                vec![
+                    "ControlMaster=auto".to_string(),
+                    format!("ControlPath={}/%C", control.display()),
+                    "ControlPersist=15s".into(),
+                ]
+            } else {
+                vec!["ControlPath=none".to_string()]
+            })
+            .flat_map(|o| ["-o".to_string(), o]),
+        )
+        .collect()
 }
 
 fn search_dirs(site: Site) -> Vec<PathBuf> {
@@ -376,6 +527,44 @@ mod tests {
         assert_eq!(c.display(), "rpm-ostree upgrade --uninstall 'kmod nvidia'");
     }
 
+    /// Whatever the argument, the server's shell gets it back literally: `;`, `$( )` and
+    /// quotes never become shell syntax.
+    #[test]
+    fn sh_quote_round_trips_through_a_shell() {
+        for arg in [
+            "plain",
+            "two words",
+            "it's",
+            "a;rm -rf ~",
+            "$(id)",
+            "`id`",
+            "{{json .}}",
+            "#comment",
+            "",
+            "back\\slash",
+        ] {
+            let o = Cmd::local("sh")
+                .arg("-c")
+                .arg(format!("printf %s {}", sh_quote(arg)))
+                .run()
+                .unwrap();
+            assert_eq!(o.stdout, arg, "{arg:?} quoted as {}", sh_quote(arg));
+        }
+    }
+
+    #[test]
+    fn ssh_remote_line() {
+        let c = Cmd::ssh("myserver", "docker")
+            .args(["ps", "--format", "{{json .}}"])
+            .dir("/opt/my stack");
+        assert_eq!(
+            c.remote_line(),
+            "cd '/opt/my stack' && env LC_ALL=C docker ps --format '{{json .}}'"
+        );
+        assert_eq!(c.site(), Site::Ssh("myserver"));
+        assert!(c.detach().is_err());
+    }
+
     #[test]
     fn missing_binary_is_not_found() {
         let e = Cmd::local("definitely-not-a-binary-xyz")
@@ -413,7 +602,7 @@ mod tests {
         let tx = Mutex::new(tx);
         Cmd::local("sh")
             .arg("-c")
-            .arg("echo a; echo b >&2; printf 'x\\ry\\n'")
+            .arg("echo a; echo b >&2; printf 'x\\ry\\n'; printf 'crlf\\r\\n'")
             .stream(move |m| tx.lock().unwrap().send(m).unwrap())
             .unwrap();
         let msgs: Vec<_> = rx
@@ -428,5 +617,7 @@ mod tests {
             })
             .collect();
         assert!(lines.contains(&"a") && lines.contains(&"b") && lines.contains(&"y"));
+        // `ssh -tt` ends lines with \r\n: the text survives.
+        assert!(lines.contains(&"crlf"), "{lines:?}");
     }
 }

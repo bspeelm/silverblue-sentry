@@ -1,0 +1,44 @@
+---
+source: src/server/tui/tests.rs
+expression: body(&s)
+---
+ 1 Overview   2 Services 1   3 Containers 1   4 Updates 4 ↻   5 Audit 7   0 Workflows
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Updates · simulated with apt-get -s; nothing is installed from here yet ───────────────────────────────────────────────────────────────────────────────────┐
+│ ● reboot required for 8d · running 6.1.0-9-amd64 · newest installed 6.1.0-25-amd64                                                                         │
+│   asked for by linux-image-6.1.0-25-amd64                                                                                                                  │
+│ package lists refreshed 4h ago · unattended upgrade ran 8h ago                                                                                             │
+│ held back (phased or would remove packages): libfoo1 libfoo-dev foo-tools                                                                                  │
+│ would remove: oldpkg                                                                                                                                       │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Packages · 4 to upgrade ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Package                             Installed                            New                                 Kind      From                                │
+│ libssl3t64                          3.0.14-1~deb12u1                     3.0.15-1~deb12u1                    security  12/oldstable-security               │
+│ newpkg                              (new)                                2.0-1                               update    12/oldstable                        │
+│ tzdata                              2024a-0+deb12u1                      2025b-0+deb12u1                     update    12-updates/oldstable-updates        │
+│ vendor-tool                         2.3.0-1                              2.4.0-1                             vendor    repo.example.com                    │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   c  check again   C  refresh lists   U  upgrade   B  reboot   A  ask Claude   ?  help   q  quit

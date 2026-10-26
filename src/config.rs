@@ -190,9 +190,9 @@ impl fmt::Display for Dur {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = self.0.as_secs();
         match s {
-            _ if s > 0 && s % 86400 == 0 => write!(f, "{}d", s / 86400),
-            _ if s > 0 && s % 3600 == 0 => write!(f, "{}h", s / 3600),
-            _ if s > 0 && s % 60 == 0 => write!(f, "{}m", s / 60),
+            _ if s > 0 && s.is_multiple_of(86400) => write!(f, "{}d", s / 86400),
+            _ if s > 0 && s.is_multiple_of(3600) => write!(f, "{}h", s / 3600),
+            _ if s > 0 && s.is_multiple_of(60) => write!(f, "{}m", s / 60),
             _ => write!(f, "{s}s"),
         }
     }

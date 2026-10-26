@@ -203,13 +203,22 @@ pub fn seed() -> std::io::Result<Vec<String>> {
 }
 
 pub fn seed_in(d: &Path) -> std::io::Result<Vec<String>> {
+    seed_with(d, SEEDS, SHIPPED)
+}
+
+/// Seed `seeds` into `d`, upgrading copies that are an unmodified earlier version (`shipped`).
+pub fn seed_with(
+    d: &Path,
+    seeds: &[(&str, &str)],
+    shipped: &[(&str, u64)],
+) -> std::io::Result<Vec<String>> {
     let rec_path = d.join(".seeded.json");
     let mut rec: BTreeMap<String, u64> = std::fs::read_to_string(&rec_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     let mut upgraded = Vec::new();
-    for (name, body) in SEEDS {
+    for (name, body) in seeds {
         let p = d.join(format!("{name}.toml"));
         let new = fnv(body.as_bytes());
         match std::fs::read(&p) {
@@ -218,7 +227,7 @@ pub fn seed_in(d: &Path) -> std::io::Result<Vec<String>> {
                 let h = fnv(&cur);
                 if h == new {
                     // Up to date.
-                } else if rec.get(*name) == Some(&h) || SHIPPED.contains(&(*name, h)) {
+                } else if rec.get(*name) == Some(&h) || shipped.contains(&(*name, h)) {
                     paths::write_atomic(&p, body.as_bytes())?;
                     upgraded.push(name.to_string());
                 } else {
@@ -269,7 +278,27 @@ impl Entry {
     }
 }
 
+/// What lint accepts: built-in variables, `when` conditions and `sentry check` names. The local
+/// workflows use [`LintRules::LOCAL`]; sentry-server has its own.
+pub struct LintRules {
+    pub builtins: &'static [&'static str],
+    pub cond: fn(&str) -> bool,
+    pub check: fn(&str) -> bool,
+}
+
+impl LintRules {
+    pub const LOCAL: LintRules = LintRules {
+        builtins: BUILTINS,
+        cond: |c| crate::checks::cond_check(c).is_some(),
+        check: |c| crate::checks::NAMES.contains(&c),
+    };
+}
+
 pub fn load_path(path: &Path) -> Entry {
+    load_path_with(path, &LintRules::LOCAL)
+}
+
+pub fn load_path_with(path: &Path, rules: &LintRules) -> Entry {
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -278,7 +307,7 @@ pub fn load_path(path: &Path) -> Entry {
         .map_err(|e| e.to_string())
         .and_then(|t| parse(&t));
     let issues = match &wf {
-        Ok(w) => lint(w),
+        Ok(w) => lint_with(w, rules),
         Err(_) => Vec::new(),
     };
     Entry {
@@ -318,6 +347,10 @@ pub struct Issue {
 
 /// Spec §9.6 lint: ids, templates, `when` names, `sentry check` names, kind/field combinations.
 pub fn lint(w: &Workflow) -> Vec<Issue> {
+    lint_with(w, &LintRules::LOCAL)
+}
+
+pub fn lint_with(w: &Workflow, rules: &LintRules) -> Vec<Issue> {
     let mut out = Vec::new();
     let mut err = |m: String| {
         out.push(Issue {
@@ -329,7 +362,7 @@ pub fn lint(w: &Workflow) -> Vec<Issue> {
         err("no steps".into());
     }
     let mut seen = std::collections::HashSet::new();
-    let known = |id: &str| w.vars.contains_key(id) || BUILTINS.contains(&id);
+    let known = |id: &str| w.vars.contains_key(id) || rules.builtins.contains(&id);
     for s in &w.steps {
         let at = format!("step {:?}", s.id);
         if s.id.trim().is_empty() {
@@ -367,20 +400,20 @@ pub fn lint(w: &Workflow) -> Vec<Issue> {
             }
         }
         if let Some((_, c)) = s.cond()
-            && crate::checks::cond_check(c).is_none()
+            && !(rules.cond)(c)
         {
             err(format!("{at}: unknown `when` condition {c:?}"));
         }
         if let Some(run) = &s.run {
             for name in check_names(run) {
-                if !crate::checks::NAMES.contains(&name) {
+                if !(rules.check)(name) {
                     err(format!("{at}: unknown check `sentry check {name}`"));
                 }
             }
         }
     }
     for (k, v) in &w.vars {
-        if BUILTINS.contains(&k.as_str()) {
+        if rules.builtins.contains(&k.as_str()) {
             out.push(Issue {
                 error: true,
                 msg: format!("var {k:?} shadows a built-in"),
@@ -389,7 +422,7 @@ pub fn lint(w: &Workflow) -> Vec<Issue> {
         if let Some(d) = &v.default {
             match template::idents(d) {
                 Ok(ids) => {
-                    for id in ids.iter().filter(|i| !BUILTINS.contains(&i.as_str())) {
+                    for id in ids.iter().filter(|i| !rules.builtins.contains(&i.as_str())) {
                         out.push(Issue {
                             error: true,
                             msg: format!("var {k:?}: default uses `{id}` (only built-ins allowed)"),

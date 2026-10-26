@@ -1,0 +1,80 @@
+# sentry-server configuration: ~/.config/sentry/server_config.yaml
+#
+# Each entry under `servers:` is one machine sentry-server monitors over ssh. Nothing is
+# installed on the server: sentry-server runs read-only commands through one multiplexed ssh
+# connection while you have it open, and maintenance only after you confirm it.
+#
+# `sentry-server init <ssh-host>` drafts this file from what it finds on the server;
+# `sentry-server lint` checks it. sentry-server never rewrites this file.
+
+servers:
+  myserver:
+    # What ssh connects to: an alias from ~/.ssh/config, or user@host. Default: the name above.
+    # Key-based login is required (sentry-server never types passwords for ssh).
+    ssh: admin@myserver.example
+
+    # Read-only commands sentry-server may run as `sudo -n` (never prompting). Each entry is
+    # the start of a command: `docker ps` allows `docker ps -a`, not `docker rm`. Leave out
+    # what you'd rather not grant; those panels then say what's missing. Write commands are
+    # refused here: maintenance goes in `actions:` and always asks first.
+    sudo:
+      - docker ps
+      - docker inspect
+      - docker logs
+      - docker compose ls
+      - docker stats
+      - smartctl
+      - fail2ban-client status
+      - journalctl
+      - ss -tulpn
+
+    # Filesystems to watch, percent used (defaults: warn 85, crit 95).
+    disks:
+      - mount: /
+      - mount: /srv/data
+        warn: 90
+        crit: 97
+
+    # SMART health. Disks that are asleep are left asleep and shown as such.
+    smart: [/dev/sda, /dev/sdb]
+
+    # Services that must be running.
+    services: [app.service, docker.service, ssh.service]
+
+    # Timers whose last run must be recent and successful.
+    timers:
+      - unit: backup.timer
+        max_age: 26h
+
+    # Docker compose projects (status, health, pull/up from the Containers tab).
+    compose:
+      - name: stack
+        file: /home/admin/stack/compose.yaml
+
+    containers:
+      ignore: []            # container names (globs) that may be stopped
+      restart_window: 24h   # started more recently than this counts as a restart
+
+    # Expected listening sockets, `addr:port/process`; `*` matches anything.
+    listeners:
+      - "*:22/*"
+      - "*:80/*"
+      - "*:443/*"
+      - "127.0.0.1:*/*"
+
+    # Findings that are expected on this server (ids from the Audit tab; globs allowed).
+    findings: []
+
+    thresholds:
+      mem: 90             # percent used
+      load_per_core: 2.0  # 1-minute load divided by cores
+      cpu_temp: 85        # °C
+      gpu_temp: 83
+
+    # Your own maintenance commands, run on the server after a confirm box.
+    actions:
+      - id: app-reload
+        title: Reload the app's configuration
+        run: systemctl reload app.service
+        sudo: true
+        undo: none needed

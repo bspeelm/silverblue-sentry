@@ -1,0 +1,26 @@
+{
+   "filesystems": [
+      {
+         "target": "/",
+         "source": "/dev/sda2",
+         "fstype": "ext4",
+         "size": 64424509440,
+         "used": 32212254720,
+         "children": [
+            {
+               "target": "/boot/efi",
+               "source": "/dev/sda1",
+               "fstype": "vfat",
+               "size": 536870912,
+               "used": 6291456
+            },{
+               "target": "/srv/data",
+               "source": "/dev/sdb1",
+               "fstype": "xfs",
+               "size": 1999307276288,
+               "used": 1850000000000
+            }
+         ]
+      }
+   ]
+}

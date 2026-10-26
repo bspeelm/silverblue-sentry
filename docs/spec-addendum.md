@@ -217,3 +217,10 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **A command that can't be filled in** says which value (`can't fill in {{ pending_kernel }}: …`), and the line goes into `steps/<id>.log` too, so `L` and fix with Claude see why the step never ran.
 - **Fix with Claude** also gets the pending later steps, and is told not to install/uninstall/override packages, run akmods, or do a later step itself; if the system already satisfies the step, it recommends done by hand.
 - **quick-update fixes the GL runtimes itself:** a `flatpak-gl-update` step (`flatpak update -y`, confirm, `when = "!flatpak_gl_nvidia"`) runs before the `flatpak-gl` check. The earlier `flatpak` step runs before the new driver is loaded, so it can't pull the matching GL runtimes; the check used to fail and leave the command to the user.
+
+## A23. sentry-server
+- A second binary (`src/bin/sentry-server.rs`) over the same library (`src/lib.rs`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`src/server/config.rs`, sample in `assets/`).
+- Transport: `exec::Site::Ssh`. Captured commands share one multiplexed connection (`ControlPersist=15s`); streamed and interactive ones get their own, so killing them stops the remote side (`-tt`). Exit 127 = not found there, 255 = unreachable.
+- Collectors (`src/server/collect/`) parse synthetic fixtures in `tests/fixtures/server/`; the audit (`src/server/audit.rs`) derives `srv:*` findings from a snapshot.
+- Workflows reuse `workflows::runner` with a remote `Env` (built-ins and conditions over ssh, `Env::builtins`/`live`), `LintRules`, and runs under the server's own data dir. `sentry-server cond` steps run locally and read the server.
+- Ask Claude uses `claude::Profile`: Claude may only run `sentry-server exec <server>` (`src/server/gateway.rs` allowlist); ssh, scp, sftp and rsync are denied.

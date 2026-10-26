@@ -48,10 +48,10 @@ tar xf silverblue-sentry-0.1.3-x86_64-linux-gnu.tar.gz
 install -Dm755 silverblue-sentry-0.1.3/sentry ~/.local/bin/sentry
 ```
 
-From source (a toolbox with `cargo` and `make` works fine; Rust 1.85+):
+From source (a toolbox with `cargo` and `make` works fine; Rust 1.89+):
 
 ```sh
-make install-binary      # builds a release binary and copies it to ~/.local/bin/sentry
+make install-binary      # builds sentry and sentry-server and copies them to ~/.local/bin
 ```
 
 `make uninstall-binary` removes it again, and `make check` runs the build, tests, clippy and fmt.
@@ -143,6 +143,38 @@ Reboots happen only after you confirm them. After one, open `sentry` again. Sent
 
 Lint (`sentry workflow lint`) checks for unknown fields, duplicate ids, undefined variables, unknown `when` conditions and unknown `sentry check` names. The file format is spec §9.2 plus a few additions described in `docs/spec-addendum.md` A3/A12.
 
+## sentry-server: a server over ssh
+
+`sentry-server` is a second binary from the same source, for a server you reach with `ssh`: a Debian or Ubuntu box running systemd services, timers and docker compose. It follows the same rules as `sentry`:
+- **Nothing is installed on the server.** It runs read-only commands through one multiplexed ssh connection while you have it open. That connection closes by itself 15 s after the last command.
+- **Nothing changes without a confirm box** showing the exact command.
+- **The server is described in one file you write,** `~/.config/sentry/server_config.yaml` ([sample](assets/server_config.example.yaml)). sentry-server never rewrites it.
+
+**Setting up a server:**
+
+```sh
+sentry-server init myserver --write   # look around (read-only) and draft its entry
+$EDITOR ~/.config/sentry/server_config.yaml
+sentry-server lint                     # the file, and that what it names exists there
+sentry-server check                    # connection, sudo, tools, and each sudo entry
+sentry-server                          # the TUI (or: sentry-server myserver)
+```
+
+Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box, and if sudo asks for a password the terminal is handed over.
+
+| Tab | What it shows | Keys |
+|---|---|---|
+| `1` Overview | CPU, memory and network at 1 Hz; temperatures and GPU; disks against their thresholds, SMART (sleeping disks are left asleep); status rows that jump to their tab | `a` your actions, `B` reboot |
+| `2` Services | configured services and timers (last run, next run, result), failed units | `R` restart (or run a timer's job now), `x` reset failed, `L` journal |
+| `3` Containers | containers by compose project: state, health, restarts, ports; `c` loads CPU/mem | `R` restart, `L` logs, `p` pull, `u` up -d |
+| `4` Updates | a simulated `apt-get dist-upgrade`, held-back packages, reboot required and why | `C` refresh lists, `U` upgrade, `B` reboot |
+| `5` Audit | findings: services down, stale or failing timers, containers down or restarted, the docker socket mounted in a container, unexpected listeners, reboot required, updates, SMART damage, full or missing disks… | `c` audit now, `b` mark expected |
+| `0` Workflows | multi-step maintenance in the same TOML format as the local workflows: `apt-maintenance` and `compose-update` are seeded in `~/.config/sentry/server-workflows/` | Enter, `s`, `d`, `r`, `a`, `L` as on Upgrade |
+
+A reboot, from `B` or a workflow step, waits in place: sentry-server polls the server's boot id and says when it's back, then a workflow carries on. **`A` asks Claude** about whatever is selected. Claude reaches the server only through `sentry-server exec <server> -- <command>`, an allowlist of read-only commands with no shell, and ssh itself is denied. Whatever it proposes, you run after a confirm box.
+
+Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint`. Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
+
 ## Config
 
 `~/.config/sentry/config.toml` follows `docs/spec.md` §12, and every key is optional. Additions:
@@ -157,7 +189,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 
 ## Development
 
-`cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); screens have insta snapshot tests. `CLAUDE.md` holds the working notes the project was built with.
+`make check` (build, tests, clippy, fmt). Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
 
 ## Docs
 

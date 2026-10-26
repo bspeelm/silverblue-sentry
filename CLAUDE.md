@@ -28,6 +28,15 @@ Upgrade procedures: the user's personal notes in `docs/cheatsheets/` (gitignored
 - Destructive actions: preview → confirm modal → streamed output.
 - Never run `rpm-ostree upgrade/rollback/rebase`, `systemctl reboot`, or podman rm/stop for real while developing.
 
+## sentry-server (`src/server/`, `src/bin/sentry-server.rs`)
+- A second binary from the same library: monitors a server over ssh (`exec::Cmd::ssh`), configured by `~/.config/sentry/server_config.yaml` (sample: `assets/server_config.example.yaml`).
+- **The repo is public: nothing about the developer's real server goes into git** (names, IPs, services, containers, ports, disks), nor into commit messages or release notes. Server fixtures in `tests/fixtures/server/` are synthetic (real formats, invented content: `myserver`, `app.service`, `stack`, 192.0.2.x). Captures from the real server go only in the gitignored `tests/fixtures/server/local/`.
+- Run `make privacy-check` before every commit and release (patterns live in the gitignored `.private-patterns`).
+- Against the real server, only read-only commands while developing; anything that changes it is exercised up to its confirm modal. Mutating mechanics are tested against a disposable local sshd container.
+- The one background exception: ssh's multiplex master (`ControlPersist=15s`) outlives the last command by at most 15 s, then exits by itself. Streamed and interactive commands (actions, workflow steps) use their own connection: through the shared one, killing the local client leaves the remote command running.
+- Test knobs: `SENTRY_SSH_CONFIG=<file>` passes `-F` to ssh (point it at a throwaway sshd without touching ~/.ssh). Local-only live tests (`#[ignore]`): `SENTRY_SERVER_LIVE=<name> cargo test live_tabs|live_ask -- --ignored --nocapture` (read-only against the real server); `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_actions|live_workflow -- --ignored` (against a disposable sshd container only); `cargo test parses_local_captures -- --ignored` (parsers vs gitignored real captures).
+- Measured on the real server: Overview at 1 Hz costs 0.67% of one core incl. its ssh commands, 6.9 MB RSS.
+
 ## Milestones (spec §13)
 - [x] Prep: docs, fixtures, seeded workflows
 - [x] M1 skeleton: CLI, config, TUI shell, live dashboard

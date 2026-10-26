@@ -208,7 +208,7 @@ impl Ask {
 }
 
 /// The three-part fix question; `extra` adds target-specific rules.
-fn fix_question(extra: &str) -> String {
+pub fn fix_question(extra: &str) -> String {
     format!(
         "Help me fix this. Investigate with your read-only commands first. You cannot change \
          anything: I will run whatever you recommend myself, through sentry. Answer in exactly \
@@ -456,8 +456,49 @@ thread_local! {
     pub static TEST_AVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
+/// What a chat may do: its system prompt, tools and permissions. The local machine's is
+/// [`Profile::local`]; sentry-server builds one per server.
+pub struct Profile {
+    pub system: String,
+    pub tools: Vec<String>,
+    pub allowed: Vec<String>,
+    pub denied: Vec<String>,
+}
+
+impl Profile {
+    pub fn local() -> Self {
+        Self {
+            system: system_prompt(),
+            tools: ["Bash", "Read", "Grep", "Glob"].map(String::from).to_vec(),
+            allowed: ALLOWED.iter().map(|s| s.to_string()).collect(),
+            denied: DENIED.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// The local denials plus every way around a server gateway.
+    pub fn denied_for_servers() -> Vec<String> {
+        DENIED
+            .iter()
+            .map(|s| s.to_string())
+            .chain(
+                [
+                    "Bash(ssh:*)",
+                    "Bash(scp:*)",
+                    "Bash(sftp:*)",
+                    "Bash(rsync:*)",
+                ]
+                .map(String::from),
+            )
+            .collect()
+    }
+}
+
 /// One turn: the first (`resume = None`) or a follow-up in the same session.
 pub fn turn_cmd(prompt: &str, resume: Option<&str>) -> Cmd {
+    turn_cmd_with(prompt, resume, &Profile::local())
+}
+
+pub fn turn_cmd_with(prompt: &str, resume: Option<&str>, p: &Profile) -> Cmd {
     let mut c = Cmd::host("claude")
         .args(["-p", prompt])
         .args([
@@ -468,12 +509,13 @@ pub fn turn_cmd(prompt: &str, resume: Option<&str>) -> Cmd {
             "--strict-mcp-config",
         ])
         .arg("--append-system-prompt")
-        .arg(system_prompt())
-        .args(["--tools", "Bash", "Read", "Grep", "Glob"])
+        .arg(&p.system)
+        .arg("--tools")
+        .args(&p.tools)
         .arg("--allowedTools")
-        .args(ALLOWED.iter().copied())
+        .args(&p.allowed)
         .arg("--disallowedTools")
-        .args(DENIED.iter().copied());
+        .args(&p.denied);
     if let Some(id) = resume {
         c = c.args(["--resume", id]);
     }

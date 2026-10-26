@@ -1,0 +1,17 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "type": "disk"
+      },{
+         "name": "sdb",
+         "type": "disk"
+      },{
+         "name": "sr0",
+         "type": "rom"
+      },{
+         "name": "zram0",
+         "type": "disk"
+      }
+   ]
+}

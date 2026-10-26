@@ -1,0 +1,3 @@
+{"__REALTIME_TIMESTAMP":"1793000000000000","PRIORITY":"3","_SYSTEMD_UNIT":"app.service","MESSAGE":"connection refused (first)"}
+{"__REALTIME_TIMESTAMP":"1793000100000000","PRIORITY":"3","_SYSTEMD_UNIT":"app.service","MESSAGE":"connection refused (second)"}
+{"__REALTIME_TIMESTAMP":"1793000050000000","PRIORITY":"2","SYSLOG_IDENTIFIER":"kernel","MESSAGE":"ata2: hard resetting link"}

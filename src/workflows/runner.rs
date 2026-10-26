@@ -12,6 +12,14 @@ pub trait Env {
     /// Resolve a built-in variable (`pending_kernel`).
     fn builtin(&self, name: &str) -> Result<String, String>;
     fn boot_id(&self) -> String;
+    /// Built-in variable names this environment resolves.
+    fn builtins(&self) -> &'static [&'static str] {
+        super::BUILTINS
+    }
+    /// Built-ins that always reflect now (never frozen into the run).
+    fn live(&self) -> &'static [&'static str] {
+        LIVE
+    }
 }
 
 /// Built-ins that always reflect the current boot instead of being frozen.
@@ -241,11 +249,11 @@ fn lookup(st: &mut RunState, env: &dyn Env, name: &str) -> Result<String, String
     if let Some(v) = st.vars.get(name) {
         return Ok(v.clone());
     }
-    if !super::BUILTINS.contains(&name) {
+    if !env.builtins().contains(&name) {
         return Err(format!("undefined variable `{name}`"));
     }
     let v = env.builtin(name)?;
-    if !LIVE.contains(&name) {
+    if !env.live().contains(&name) {
         st.vars.insert(name.to_string(), v.clone());
     }
     Ok(v)
@@ -286,7 +294,7 @@ pub fn freeze_all(wf: &Workflow, st: &mut RunState, env: &dyn Env) -> Vec<String
             .flatten()
         {
             for id in template::idents(text).unwrap_or_default() {
-                if super::BUILTINS.contains(&id.as_str()) && !LIVE.contains(&id.as_str()) {
+                if env.builtins().contains(&id.as_str()) && !env.live().contains(&id.as_str()) {
                     let r = lookup(st, env, &id);
                     if let Err(e) = r
                         && needed

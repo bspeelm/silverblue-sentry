@@ -1,22 +1,6 @@
 //! sentry: daemon-free monitor & maintenance TUI for Fedora Silverblue.
 
-mod audit;
-mod baseline;
-mod cache;
-mod checks;
-mod claude;
-mod collectors;
-mod config;
-mod exec;
-mod fmt;
-mod jobs;
-mod keyfile;
-mod paths;
-mod recorder;
-mod resume;
-mod status;
-mod tui;
-mod workflows;
+use sentry::{checks, collectors, config, jobs, paths, recorder, status, tui, workflows};
 
 use std::process::ExitCode;
 

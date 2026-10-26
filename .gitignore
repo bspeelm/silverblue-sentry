@@ -6,3 +6,10 @@
 # Personal upgrade notes: private source material, never committed
 docs/cheatsheets/
 todo.txt
+
+# sentry-server: the real server's config and anything captured from it stay local
+.private-patterns
+server_config.yaml
+*.server.yaml
+/servers/
+tests/fixtures/server/local/

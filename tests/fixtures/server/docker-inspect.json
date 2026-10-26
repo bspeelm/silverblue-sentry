@@ -1,0 +1,29 @@
+[
+  {
+    "Id": "aaa1",
+    "Name": "/web",
+    "RestartCount": 3,
+    "State": {"Status": "running", "Running": true, "Paused": false, "Restarting": false, "OOMKilled": false, "Dead": false, "Pid": 4242, "ExitCode": 0, "Error": "", "StartedAt": "2026-10-26T01:47:12.912345678Z", "FinishedAt": "2026-10-26T01:47:11.500000000Z", "Health": {"Status": "healthy", "FailingStreak": 0, "Log": []}},
+    "Config": {"Image": "nginx:1.29-alpine", "Labels": {"com.docker.compose.project": "stack", "com.docker.compose.service": "web"}},
+    "Mounts": [{"Type": "bind", "Source": "/home/admin/stack/site", "Destination": "/usr/share/nginx/html"}],
+    "NetworkSettings": {"Ports": {"443/tcp": [{"HostIp": "0.0.0.0", "HostPort": "443"}, {"HostIp": "::", "HostPort": "443"}], "80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8080"}], "9000/tcp": null}}
+  },
+  {
+    "Id": "bbb2",
+    "Name": "/db",
+    "RestartCount": 0,
+    "State": {"Status": "exited", "Running": false, "Paused": false, "Restarting": false, "OOMKilled": true, "Dead": false, "Pid": 0, "ExitCode": 137, "Error": "", "StartedAt": "0001-01-01T00:00:00Z", "FinishedAt": "2026-10-25T21:00:00Z", "Health": {"Status": "unhealthy", "FailingStreak": 5, "Log": []}},
+    "Config": {"Image": "postgres:17", "Labels": {"com.docker.compose.project": "stack"}},
+    "Mounts": [{"Type": "volume", "Source": "/var/lib/docker/volumes/stack_db/_data", "Destination": "/var/lib/postgresql/data"}],
+    "NetworkSettings": {"Ports": {}}
+  },
+  {
+    "Id": "ccc3",
+    "Name": "/runner",
+    "RestartCount": 0,
+    "State": {"Status": "running", "Running": true, "Paused": false, "Restarting": false, "OOMKilled": false, "Dead": false, "Pid": 5151, "ExitCode": 0, "Error": "", "StartedAt": "2026-10-20T12:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"},
+    "Config": {"Image": "ci/runner:1.0", "Labels": {}},
+    "Mounts": [{"Type": "volume", "Source": "/var/lib/docker/volumes/runner-config/_data", "Destination": "/etc/runner"}, {"Type": "bind", "Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}],
+    "NetworkSettings": {"Ports": {}}
+  }
+]

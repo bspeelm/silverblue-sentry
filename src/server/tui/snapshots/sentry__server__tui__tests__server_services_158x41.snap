@@ -1,0 +1,44 @@
+---
+source: src/server/tui/tests.rs
+expression: body(&s)
+---
+ 1 Overview   2 Services 1   3 Containers 1   4 Updates 4 ↻   5 Audit 7   0 Workflows
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Services and timers · 3 watched ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Unit                                                                       State                Last run   Next      Result                                │
+│ app.service                                                                active (running)                          success                               │
+│ backup.service                                                             failed (failed)                           exit-code                             │
+│ backup.timer                                                               active (waiting)     4h ago     in 20h    exit-code (exit 1)                    │
+│ report.service                                                             failed (failed)                           Weekly report                         │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  details   r  refresh   R  restart/run   x  reset failed   L  log   A  ask Claude   ?  help   q  quit
