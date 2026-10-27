@@ -197,6 +197,10 @@ pub struct App {
     wf_change: Option<crate::server::maint::Change>,
     /// The run already written to the maintenance log.
     wf_logged: Option<std::path::PathBuf>,
+    /// When the last maintenance run ended (a read with sudo before it is out of date).
+    last_change_at: Option<jiff::Timestamp>,
+    /// After the log note: offer to read the server again (the run changed what was read).
+    offer_reread: bool,
     /// The log entry waiting for its note, and the note typed so far.
     log_note: Option<(crate::server::maint::log::LogEntry, String)>,
     /// Tests: the last entry written with a note.
@@ -272,6 +276,8 @@ impl App {
             inventory_at: None,
             wf_change: None,
             wf_logged: None,
+            last_change_at: None,
+            offer_reread: false,
             log_note: None,
             last_log: None,
             suspend_edit: false,
@@ -315,6 +321,9 @@ impl App {
             self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
             crate::server::maint::plan::migrate(&self.remote.name);
             self.store.plans = crate::server::maint::plan::list(&self.remote.name);
+            self.last_change_at = crate::server::maint::log::list(&self.remote.name)
+                .first()
+                .and_then(|e| e.head.ended.or(e.head.started));
         }
         self.enter(self.tab, now);
     }
@@ -656,6 +665,10 @@ impl App {
             inventory: self
                 .inventory_at
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
+            inventory_stale: self
+                .inventory_at
+                .zip(self.last_change_at)
+                .is_some_and(|(read, changed)| read < changed),
             upstream: self.store.upstream_at,
             planning: self
                 .writer
@@ -1274,8 +1287,48 @@ impl App {
             }
             self.fetch(Kind::Maint);
         }
+        if done {
+            self.last_change_at = Some(jiff::Timestamp::now());
+            // What was read with sudo is from before this run: offer to read it again.
+            self.offer_reread =
+                self.store.sudo.value == Some(SudoMode::Password) && self.inventory_at.is_some();
+        }
         // What to know next time: asked now, while it's fresh.
         self.log_note = Some((entry, String::new()));
+    }
+
+    /// After a run that changed the server: what Maintenance and Containers show was read
+    /// with sudo before it; offer to read it again.
+    fn reread_box(&mut self) {
+        if !std::mem::take(&mut self.offer_reread) {
+            return;
+        }
+        let t = self.theme;
+        let when = self.inventory_at.map_or("earlier".into(), |a| {
+            a.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
+                .to_string()
+        });
+        self.modal = Some(Modal {
+            title: "Read the server again".into(),
+            color: t.cyan,
+            lines: vec![
+                Line::styled(
+                    format!(
+                        "Maintenance and Containers show what was read with sudo at {when}, \
+                         before this change, so they still show the old versions."
+                    ),
+                    t.fg(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    "Read it again now? One sudo, read-only (the terminal is handed over for \
+                     the password). Or later: I.",
+                    t.dim(),
+                ),
+            ],
+            yes: Some(("read".into(), vec![Effect::Inventory])),
+        });
     }
 
     /// The note for the maintenance log: Enter saves it (empty is fine), Esc leaves none.
@@ -1290,11 +1343,15 @@ impl App {
             KeyCode::Backspace => {
                 buf.pop();
             }
-            KeyCode::Esc => self.log_note = None,
+            KeyCode::Esc => {
+                self.log_note = None;
+                self.reread_box();
+            }
             KeyCode::Enter => {
                 let Some((entry, note)) = self.log_note.take() else {
                     return;
                 };
+                self.reread_box();
                 let note = note.trim();
                 if note.is_empty() {
                     return;
@@ -1410,6 +1467,7 @@ impl App {
             Kind::Jails,
             Kind::Journal,
             Kind::Listeners,
+            Kind::Maint,
         ] {
             self.fetch(k);
         }
@@ -3133,6 +3191,11 @@ impl App {
             w.answer = Some(answer.to_string());
         }
         self.writer_turn_ended();
+    }
+    /// Tests: when the server was read with sudo, and when it last changed.
+    pub fn set_inventory_times(&mut self, read: jiff::Timestamp, changed: jiff::Timestamp) {
+        self.inventory_at = Some(read);
+        self.last_change_at = Some(changed);
     }
     /// Tests: whether Claude is still writing a plan.
     pub fn writing(&self) -> bool {

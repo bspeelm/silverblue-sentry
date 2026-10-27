@@ -1722,3 +1722,24 @@ fn the_maintenance_log_can_be_reviewed() {
     key(&mut a, KeyCode::Enter);
     assert!(a.log_view.is_some());
 }
+
+#[test]
+fn a_read_from_before_the_last_change_says_so() {
+    let mut a = app();
+    data(
+        &mut a,
+        Kind::Sudo,
+        Payload::Sudo(crate::server::remote::SudoMode::Password),
+    );
+    let t = |s: &str| -> jiff::Timestamp { s.parse().unwrap() };
+    a.set_inventory_times(t("2026-10-26T10:00:00Z"), t("2026-10-26T11:00:00Z"));
+    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("before the last change: I reads again"), "{s}");
+    a.set_inventory_times(t("2026-10-26T11:30:00Z"), t("2026-10-26T11:00:00Z"));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("read with sudo") && !s.contains("before the last change"),
+        "{s}"
+    );
+}

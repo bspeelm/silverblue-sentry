@@ -31,6 +31,8 @@ pub struct View<'a> {
     pub inventory: Option<jiff::Timestamp>,
     /// When upstream versions were last looked up.
     pub upstream: Option<jiff::Timestamp>,
+    /// That read with sudo is from before the last maintenance run.
+    pub inventory_stale: bool,
     /// The maintenance item Claude is writing a plan for.
     pub planning: Option<String>,
     /// Open plans, by item.
@@ -41,7 +43,14 @@ impl View<'_> {
     /// " · read with sudo 3h ago" where root-only data comes from the inventory.
     pub fn inv_note(&self) -> String {
         self.inventory.map_or(String::new(), |at| {
-            format!(" · read with sudo {}", fmt::ago(self.secs_since(at)))
+            if self.inventory_stale {
+                format!(
+                    " · read with sudo {}, before the last change: I reads again",
+                    fmt::ago(self.secs_since(at))
+                )
+            } else {
+                format!(" · read with sudo {}", fmt::ago(self.secs_since(at)))
+            }
         })
     }
 
