@@ -1743,3 +1743,36 @@ fn a_read_from_before_the_last_change_says_so() {
         "{s}"
     );
 }
+
+#[test]
+fn the_tier_is_coloured_only_where_something_needs_doing() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    let backend = ratatui::backend::TestBackend::new(158, 41);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| a.draw(f)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let t = a.theme;
+    let row_of = |item: &str| {
+        (0..41)
+            .find(|&y| {
+                let line: String = (0..158).map(|x| buf[(x, y)].symbol()).collect();
+                line.contains(&format!("│ {item} "))
+            })
+            .unwrap()
+    };
+    let tier_fg = |y: u16| {
+        let x = (0..158)
+            .find(|&x| {
+                ["amber", "red"].iter().any(|w| {
+                    (0..w.len() as u16)
+                        .all(|i| buf[(x + i, y)].symbol() == &w[i as usize..i as usize + 1])
+                })
+            })
+            .unwrap();
+        buf[(x, y)].fg
+    };
+    // web: a security release → its tier in colour; engine: held, nothing due → dimmed.
+    assert_eq!(tier_fg(row_of("web")), t.yellow, "amber, coloured");
+    assert_eq!(tier_fg(row_of("engine")), t.dim, "held and not due: dim");
+}

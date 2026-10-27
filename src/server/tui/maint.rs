@@ -95,6 +95,23 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     }
 }
 
+/// Something to act on: a security fix or end of life, drift, a review due, a plan, a
+/// retirement, or newer versions it isn't held back from.
+fn needs_attention(v: &View, s: &Status) -> bool {
+    v.plans.contains_key(&s.id)
+        || [
+            Flag::Security,
+            Flag::Eol,
+            Flag::EolSoon,
+            Flag::Drift,
+            Flag::ReviewDue,
+            Flag::Retire,
+        ]
+        .iter()
+        .any(|f| s.has(*f))
+        || (s.has(Flag::Behind) && !s.has(Flag::Held))
+}
+
 /// The count on the tab: security fixes, end of life, drift and reviews due.
 pub fn badge(v: &View) -> Option<(String, Color)> {
     let st = v.s.maint.value.as_ref()?;
@@ -175,7 +192,12 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             };
             Row::new(vec![
                 Cell::from(s.id.clone()).style(t.fg()),
-                Cell::from(s.tier.as_str()).style(t.s(tier_color(v, s.tier))),
+                // The tier in colour only where it matters now: something to act on.
+                Cell::from(s.tier.as_str()).style(if needs_attention(v, s) {
+                    t.s(tier_color(v, s.tier))
+                } else {
+                    t.dim()
+                }),
                 Cell::from(cut(s.pinned.as_deref(), 16)).style(t.fg()),
                 Cell::from(running).style(t.dim()),
                 Cell::from(cut(s.latest.as_deref(), 16)).style(t.dim()),
