@@ -79,7 +79,6 @@ pub fn rows(tab: Tab, v: &View) -> usize {
         Tab::Containers => container_list(v).len(),
         Tab::Audit => findings(v).len(),
         Tab::Maint => super::maint::count(v),
-        Tab::Workflows => 0,
     }
 }
 
@@ -105,13 +104,13 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("p", "plan"),
             ("t", "track"),
             ("R", "review"),
+            ("w", "workflow"),
             ("x", "drop/ignore"),
             ("v", "log"),
             ("z", "later"),
             ("c", "look up"),
             ("e", "edit"),
         ],
-        Tab::Workflows => Vec::new(),
     }
 }
 
@@ -131,7 +130,6 @@ pub fn refresh(tab: Tab) -> Vec<Effect> {
         Tab::Containers => vec![Effect::Fetch(Kind::Docker)],
         Tab::Audit => vec![Effect::Fetch(Kind::Report)],
         Tab::Maint => vec![Effect::Fetch(Kind::Maint)],
-        Tab::Workflows => Vec::new(),
     }
 }
 
@@ -170,7 +168,6 @@ pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
         Tab::Containers => container_detail(v),
         Tab::Audit => finding_detail(v),
         Tab::Maint => super::maint::key('\n', v),
-        Tab::Workflows => Vec::new(),
     }
 }
 
@@ -200,6 +197,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
         (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         (Tab::Maint, 'R') => vec![Effect::ReviewOpen],
+        (Tab::Maint, 'w') => vec![Effect::ChooseWorkflow],
         (Tab::Maint, 'v') => vec![Effect::LogOpen(
             super::maint::selected(v).map(|(s, _)| s.id.clone()),
         )],
@@ -241,7 +239,7 @@ pub fn badge(tab: Tab, v: &View) -> Option<(String, Color)> {
             Some((format!(" {}", open.len()), sev_color(t, top)))
         }
         Tab::Maint => super::maint::badge(v),
-        Tab::Overview | Tab::Workflows => None,
+        Tab::Overview => None,
     }
 }
 
@@ -260,7 +258,6 @@ pub fn draw(f: &mut Frame, area: Rect, tab: Tab, v: &View) {
         Tab::Containers => containers(f, area, v),
         Tab::Audit => audit(f, area, v),
         Tab::Maint => super::maint::draw(f, area, v),
-        Tab::Workflows => {}
     }
 }
 

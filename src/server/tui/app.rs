@@ -74,6 +74,8 @@ pub enum Effect {
     StartWorkflow(String),
     /// Ask Claude how to fix an audit finding (the consent box first).
     FixFinding(String),
+    /// `w`: pick a workflow to start.
+    ChooseWorkflow,
     /// Select the first Maintenance recommendation whose key starts with this.
     MaintFind(String),
     /// Select an item's row on Maintenance.
@@ -196,7 +198,7 @@ pub struct App {
     keys: Keymap,
     pub store: Store,
     pub tab: Tab,
-    cursors: [usize; 6],
+    cursors: [usize; 5],
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
@@ -239,6 +241,8 @@ pub struct App {
     revise_input: Option<String>,
     /// The Maintenance row selected (`maint::row_key`): kept when the list changes under it.
     maint_sel: Option<String>,
+    /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
+    run_view: bool,
     /// The Review view (`R` on Maintenance), scrolled this far.
     review_view: Option<usize>,
     /// The Log view (`v` on Maintenance, `:log`).
@@ -265,7 +269,7 @@ pub struct App {
     /// A workflow's vars being asked for.
     var_input: Option<VarInput>,
     /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 6],
+    filters: [String; 5],
     filtering: bool,
     pub quit: bool,
     pub dirty: bool,
@@ -285,7 +289,7 @@ impl App {
             keys,
             store: Store::default(),
             tab: Tab::Overview,
-            cursors: [0; 6],
+            cursors: [0; 5],
             modal: None,
             modal_no: None,
             toast: None,
@@ -311,6 +315,7 @@ impl App {
             revise_input: None,
             log_view: None,
             review_view: None,
+            run_view: false,
             maint_sel: None,
             suspend_reads: None,
             run_seq: 0,
@@ -338,6 +343,8 @@ impl App {
         self.fetch(Kind::Sudo);
         if !self.offline {
             self.wf = Session::resume(&self.remote);
+            // A run left in progress: show it (its auto steps wait until it's open).
+            self.run_view = self.wf.is_some();
             self.inventory_at =
                 crate::server::inventory::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.upstream_at =
@@ -397,14 +404,6 @@ impl App {
                     self.fetch(Kind::Upstream);
                 }
             }
-            Tab::Workflows => {
-                if !self.offline {
-                    self.load_wf_entries();
-                }
-                if let Some(s) = self.wf.as_mut() {
-                    s.armed = true;
-                }
-            }
         }
         self.tick(now);
         self.dirty = true;
@@ -430,7 +429,7 @@ impl App {
             self.fetch(Kind::Probe);
             self.sched.probe = Some(now + Duration::from_secs(2));
         }
-        if self.tab == Tab::Workflows {
+        if self.run_view {
             self.wf_auto();
         }
         if self.tab != Tab::Overview {
@@ -711,11 +710,7 @@ impl App {
     }
 
     fn rows(&self) -> usize {
-        match self.tab {
-            Tab::Workflows if self.wf.is_none() => self.wf_entries.len(),
-            Tab::Workflows => 0,
-            t => tabs::rows(t, &self.view()),
-        }
+        tabs::rows(self.tab, &self.view())
     }
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
@@ -850,8 +845,15 @@ impl App {
             }
             return;
         }
-        if self.tab == Tab::Workflows && self.wf_key(a, now) {
-            return;
+        if self.run_view {
+            if self.wf.is_none() {
+                self.run_view = false;
+            } else if self.wf_key(a, now) {
+                return;
+            } else if matches!(a, Action::Esc) {
+                self.run_view = false;
+                return;
+            }
         }
         let n = self.rows();
         let cur = &mut self.cursors[self.tab.index()];
@@ -880,8 +882,10 @@ impl App {
             // Rows are already filtered, so n/N just walk them with wrap-around.
             Action::NextMatch if n > 0 => *cur = (*cur + 1) % n,
             Action::PrevMatch if n > 0 => *cur = (*cur + n - 1) % n,
+            Action::Screen(id) if id.key() == '0' => self.open_run_view(),
             Action::Screen(id) => {
                 if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
+                    self.run_view = false;
                     self.enter(t, now);
                 }
             }
@@ -938,8 +942,11 @@ impl App {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
                     let v = self.view();
-                    let entry = self.wf_entries.get(self.cursors[Tab::Workflows.index()]);
-                    match super::ask::ask_for(self.tab, &v, &self.remote, self.wf.as_ref(), entry) {
+                    let ask = match self.wf.as_ref().filter(|_| self.run_view) {
+                        Some(s) => Some(super::ask::ask_run(&v, &self.remote, s)),
+                        None => super::ask::ask_for(self.tab, &v, &self.remote),
+                    };
+                    match ask {
                         Some(ask) => {
                             let text = ask.prompt();
                             self.modal = Some(self.consent(&text, AskTurn::First(ask)));
@@ -1060,7 +1067,8 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::StartWorkflow(name) => self.command(&format!("wf {name}"), now),
+                Effect::StartWorkflow(name) => self.start_box(&name),
+                Effect::ChooseWorkflow => self.workflow_chooser(),
                 Effect::MaintFind(prefix) => {
                     let v = self.view();
                     if let Some(i) = super::maint::recs(&v)
@@ -1197,40 +1205,6 @@ impl App {
     fn wf_key(&mut self, a: Action, _now: Instant) -> bool {
         let t = self.theme;
         let Some(s) = self.wf.as_ref() else {
-            if let Action::Enter = a
-                && let Some(e) = self.wf_entries.get(self.cursors[Tab::Workflows.index()])
-            {
-                let steps: Vec<String> = match &e.wf {
-                    Ok(w) => w.steps.iter().map(|s| s.id.clone()).collect(),
-                    Err(_) => Vec::new(),
-                };
-                let mut lines = vec![
-                    Line::styled(
-                        e.wf.as_ref()
-                            .map(|w| w.description.clone())
-                            .unwrap_or_default(),
-                        t.fg(),
-                    ),
-                    Line::styled(steps.join(" → "), t.dim()),
-                    Line::styled(
-                        "Auto steps run right away; every other step waits for Enter.",
-                        t.dim(),
-                    ),
-                ];
-                if let Some(why) = e.blocked() {
-                    lines.push(Line::styled(why, t.s(t.yellow)));
-                }
-                self.modal = Some(Modal {
-                    title: format!("Start {} on {}", e.name, self.remote.name),
-                    color: t.yellow,
-                    lines,
-                    yes: Some((
-                        "start".into(),
-                        vec![Effect::Wf(WfCmd::Begin(e.name.clone()))],
-                    )),
-                });
-                return true;
-            }
             return false;
         };
         let failed = matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. });
@@ -1676,7 +1650,9 @@ impl App {
                     self.toast("a workflow is already in progress");
                     return;
                 }
-                self.enter(Tab::Workflows, Instant::now());
+                if self.wf_entries.is_empty() && !self.offline {
+                    self.load_wf_entries();
+                }
                 let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
                     self.toast(&format!(
                         "no workflow {name} in {}",
@@ -1713,6 +1689,7 @@ impl App {
                 Some(e) => match Session::begin(e, &self.remote, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
+                        self.run_view = true;
                         Ok(None)
                     }
                     Err(e) => Err(e.to_string()),
@@ -1721,6 +1698,7 @@ impl App {
             },
             WfCmd::Close => {
                 self.wf = None;
+                self.run_view = false;
                 if !self.offline {
                     self.load_wf_entries();
                 }
@@ -1753,10 +1731,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// Run the next auto step when the Workflows tab is open.
+    /// Run the next auto step while the Run view is open.
     fn wf_auto(&mut self) {
         self.wf_log_change();
-        if self.tab != Tab::Workflows {
+        if !self.run_view {
             return;
         }
         if !self
@@ -2002,6 +1980,88 @@ impl App {
     /// Start (or continue) Claude writing a plan in the background; the Plan view shows it.
     fn write_plan(&mut self, id: String, doc: PlanDoc, prompt: String, resume: Option<String>) {
         self.start_writer(planview::Writer::new(&id, doc), prompt, resume);
+    }
+
+    /// The start box for a workflow: what it does, then `start`.
+    fn start_box(&mut self, name: &str) {
+        if self.wf.as_ref().is_some_and(|s| !s.done()) {
+            self.open_run_view();
+            return self.toast("a workflow is already in progress: finish or abandon it first");
+        }
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
+        }
+        let t = self.theme;
+        let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
+            return self.toast(&format!("no workflow {name}"));
+        };
+        let steps: Vec<String> = match &e.wf {
+            Ok(w) => w.steps.iter().map(|s| s.id.clone()).collect(),
+            Err(_) => Vec::new(),
+        };
+        let mut lines = vec![
+            Line::styled(
+                e.wf.as_ref()
+                    .map(|w| w.description.clone())
+                    .unwrap_or_default(),
+                t.fg(),
+            ),
+            Line::styled(steps.join(" → "), t.dim()),
+            Line::styled(
+                "Auto steps run right away; every other step waits for Enter.",
+                t.dim(),
+            ),
+        ];
+        if let Some(why) = e.blocked() {
+            lines.push(Line::styled(why, t.s(t.yellow)));
+        }
+        self.modal = Some(Modal {
+            title: format!("Start {} on {}", e.name, self.remote.name),
+            color: t.yellow,
+            lines,
+            yes: Some((
+                "start".into(),
+                vec![Effect::Wf(WfCmd::Begin(e.name.clone()))],
+            )),
+        });
+    }
+
+    /// `w` on Maintenance: which workflow to start.
+    fn workflow_chooser(&mut self) {
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
+        }
+        let choices: Vec<Choice> = self
+            .wf_entries
+            .iter()
+            .map(|e| {
+                (
+                    format!(
+                        "{}{}",
+                        e.name,
+                        e.wf.as_ref()
+                            .map_or(String::new(), |w| format!("  · {}", w.description))
+                    ),
+                    vec![Effect::StartWorkflow(e.name.clone())],
+                )
+            })
+            .collect();
+        if choices.is_empty() {
+            return self.toast(&format!("no workflows in {}", self.wf_dir));
+        }
+        self.chooser = Some((format!("Start a workflow ({})", self.wf_dir), choices));
+    }
+
+    /// The Run view: the workflow in progress; its auto steps run while it's open.
+    fn open_run_view(&mut self) {
+        match self.wf.as_mut() {
+            Some(s) => {
+                s.armed = true;
+                self.run_view = true;
+                self.wf_auto();
+            }
+            None => self.toast("no workflow in progress · w on Maintenance starts one"),
+        }
     }
 
     fn writing_review(&self) -> bool {
@@ -2493,22 +2553,11 @@ impl App {
             }
             (Some("audit"), Some("now")) => self.apply(vec![Effect::Fetch(Kind::Audit)], now),
             (Some("log"), _) => self.open_log(None),
-            (Some("workflow" | "wf"), name) => {
-                self.enter(Tab::Workflows, now);
-                if let Some(n) = name {
-                    if self.wf.is_some() {
-                        self.toast("a workflow is already in progress");
-                    } else if let Some(i) = self.wf_entries.iter().position(|e| e.name == n) {
-                        self.cursors[Tab::Workflows.index()] = i;
-                        let enter = ratatui::crossterm::event::KeyEvent::from(
-                            ratatui::crossterm::event::KeyCode::Enter,
-                        );
-                        self.on_key(enter, now);
-                    } else {
-                        self.toast(&format!("no workflow {n}"));
-                    }
-                }
-            }
+            (Some("workflow" | "wf"), name) => match name {
+                Some(n) => self.start_box(n),
+                None if self.wf.as_ref().is_some_and(|s| !s.done()) => self.open_run_view(),
+                None => self.workflow_chooser(),
+            },
             (Some(name), None) => {
                 let name = name.to_ascii_lowercase();
                 match Tab::ALL.into_iter().find(|t| {
@@ -2982,7 +3031,7 @@ impl App {
             ..body
         };
         let body = match self.wf.as_ref().filter(|s| !s.done()) {
-            Some(s) if self.tab != Tab::Workflows => {
+            Some(s) if !self.run_view => {
                 let [ban, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
                 let step = s
@@ -3005,16 +3054,11 @@ impl App {
             }
             _ => body,
         };
-        match (self.tab, &self.wf) {
-            (Tab::Workflows, Some(s)) => super::wftab::draw_session(f, body, &t, s),
-            (Tab::Workflows, None) => super::wftab::draw_list(
-                f,
-                body,
-                &t,
-                &self.wf_dir,
-                &self.wf_entries,
-                self.cursors[Tab::Workflows.index()],
-            ),
+        match (&self.wf, self.run_view) {
+            (Some(s), true) => {
+                f.render_widget(ratatui::widgets::Clear, body);
+                super::wftab::draw_session(f, body, &t, s)
+            }
             _ => tabs::draw(f, body, self.tab, &self.view()),
         }
         if let Some(scroll) = self.review_view {
@@ -3307,15 +3351,15 @@ impl App {
             vec![("y", "confirm"), ("n", "cancel")]
         } else {
             let mut h = tabs::hints(self.tab, &self.view());
-            if self.tab == Tab::Workflows {
+            if self.run_view {
                 h = match &self.wf {
-                    None => vec![("j/k", "select"), ("Enter", "start")],
                     Some(s) if s.done() => vec![("Enter", "close")],
-                    Some(_) => vec![
+                    _ => vec![
                         ("Enter", "run"),
                         ("s", "skip"),
                         ("a", "abandon"),
                         ("L", "log"),
+                        ("Esc", "back (it carries on)"),
                     ],
                 };
             }

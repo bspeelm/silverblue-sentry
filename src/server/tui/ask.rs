@@ -7,7 +7,6 @@ use super::tabs::View;
 use crate::claude::{Ask, Profile, fix_question};
 use crate::server::remote::{Remote, SudoMode};
 use crate::server::workflow::Session;
-use crate::workflows::Entry;
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
 
@@ -164,15 +163,8 @@ pub fn ask_finding(v: &View, r: &Remote, f: &crate::audit::Finding) -> Ask {
     )
 }
 
-/// What `A` asks on each tab, from what's selected there. `entry`: the workflow selected on
-/// the Workflows tab when none is running.
-pub fn ask_for(
-    tab: Tab,
-    v: &View,
-    r: &Remote,
-    wf: Option<&Session>,
-    entry: Option<&Entry>,
-) -> Option<Ask> {
+/// What `A` asks on each tab, from what's selected there.
+pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
     let h = header(v, r);
     match tab {
         Tab::Overview => {
@@ -234,49 +226,12 @@ pub fn ask_for(
             },
             super::maint::Sel::Item(..) => None,
         },
-        Tab::Workflows => match wf {
-            Some(s) => Some(ask_step(&h, r, s)),
-            None => entry.map(|e| ask_workflow(&h, v, r, e)),
-        },
     }
 }
 
-/// A workflow before it starts: its steps and what the server looks like now.
-fn ask_workflow(h: &str, v: &View, r: &Remote, e: &Entry) -> Ask {
-    let steps = match &e.wf {
-        Ok(w) => w
-            .steps
-            .iter()
-            .enumerate()
-            .map(|(i, st)| {
-                format!(
-                    "{}. {} [{}{}]{}",
-                    i + 1,
-                    st.title,
-                    st.tag(),
-                    st.when
-                        .as_deref()
-                        .map_or(String::new(), |c| format!(", only when {c}")),
-                    st.run
-                        .as_deref()
-                        .map_or(String::new(), |c| format!("\n   $ {c}"))
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Err(err) => format!("(doesn't parse: {err})"),
-    };
-    let state = super::tabs::status_text(v).join("\n");
-    Ask::new(
-        format!("{} · workflow {}", r.name, e.name),
-        format!(
-            "{h}Workflow {} ({}), not started.\nSteps:\n{steps}\nThe server right now:\n{state}",
-            e.name,
-            e.path.display()
-        ),
-        "Is now a good time to run this workflow on this server? What will each step do here, \
-         what could go wrong, and what should I check first? Don't run any of its steps.",
-    )
+/// `A` in the Run view: the workflow's current step, whatever state it's in.
+pub fn ask_run(v: &View, r: &Remote, s: &Session) -> Ask {
+    ask_step(&header(v, r), r, s)
 }
 
 /// The workflow in progress: its current step, whatever state it's in.

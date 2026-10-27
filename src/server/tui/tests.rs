@@ -388,7 +388,7 @@ fn tabs_and_badges() {
     assert_eq!(a.tab, Tab::Services);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
-    assert_eq!(a.tab, Tab::Workflows, "wraps around");
+    assert_eq!(a.tab, Tab::Maint, "wraps around");
 }
 
 /// Against a real server: `SENTRY_SERVER_LIVE=<name> cargo test live_tabs -- --ignored --nocapture`.
@@ -674,9 +674,11 @@ fn live_workflow() {
     };
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     pump(&mut a, 2);
-    key(&mut a, KeyCode::Char('0'));
-    assert!(screen(&mut a).contains("apt-maintenance"));
-    key(&mut a, KeyCode::Enter);
+    a.apply(
+        vec![super::app::Effect::StartWorkflow("apt-maintenance".into())],
+        Instant::now(),
+    );
+    assert!(screen(&mut a).contains("Start apt-maintenance"));
     key(&mut a, KeyCode::Char('y'));
     // Drive it: Enter on confirm steps, skip the optional one, mark what can't pass in a
     // container (its kernel is the host's) done by hand.
@@ -893,7 +895,6 @@ fn quit_asks_and_colon_commands() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Workflows);
     assert!(render_to_string(&mut a, 158, 41).contains("Start compose-update on myserver"));
     key(&mut a, KeyCode::Esc);
     for c in ":xyz".chars() {
@@ -989,13 +990,6 @@ fn live_ask_boxes() {
         "no consent box on the updates recommendation"
     );
     key(&mut a, KeyCode::Esc);
-    // A workflow, before it starts.
-    a.enter(Tab::Workflows, Instant::now());
-    pump(&mut a, 1);
-    key(&mut a, KeyCode::Char('A'));
-    let s = render_to_string(&mut a, 158, 41);
-    println!("{s}");
-    assert!(s.contains("Ask Claude"), "no consent box on Workflows");
 }
 
 #[test]
@@ -1050,17 +1044,8 @@ fn workflow_vars_are_asked_before_it_starts() {
 }
 
 #[test]
-fn ask_works_on_workflows_and_updates() {
+fn ask_works_on_the_updates_recommendation() {
     let mut a = app();
-    let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Workflows.key()));
-    key(&mut a, KeyCode::Char('A'));
-    let s = screen(&mut a);
-    assert!(
-        s.contains("Ask Claude") && s.contains("Workflow apt-maintenance"),
-        "no run in progress: asks about the selected workflow\n{s}"
-    );
-    key(&mut a, KeyCode::Esc);
     // Updates live on Maintenance now: A on their recommendation.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     a.apply(
@@ -1097,8 +1082,10 @@ fn live_password_step() {
         }
     };
     pump(&mut a, 2);
-    key(&mut a, KeyCode::Char('0'));
-    key(&mut a, KeyCode::Enter);
+    a.apply(
+        vec![super::app::Effect::StartWorkflow("pw-check".into())],
+        Instant::now(),
+    );
     key(&mut a, KeyCode::Char('y'));
     key(&mut a, KeyCode::Enter);
     let (cmd, banner) = a
@@ -1211,7 +1198,6 @@ fn live_preflight() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = App::new(Remote::new(n, s), tx);
     a.start(Instant::now());
-    a.enter(Tab::Workflows, Instant::now());
     a.apply(
         vec![super::app::Effect::Wf(super::app::WfCmd::Begin(wf))],
         Instant::now(),
@@ -1955,4 +1941,29 @@ fn audit_findings_are_recommendations() {
         .expect("the fix question in the consent box");
     assert!(prompt.contains("Audit finding ("), "{prompt}");
     key(&mut a, KeyCode::Esc);
+}
+
+#[test]
+fn workflows_run_in_a_view_on_maintenance() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    // No run yet: 0 says how to start one; w lists them.
+    key(&mut a, KeyCode::Char('0'));
+    assert!(screen(&mut a).contains("w on Maintenance starts one"));
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('w'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Start a workflow") && s.contains("apt-maintenance"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
+    key(&mut a, KeyCode::Esc);
+    // The tabs are four now.
+    let tabs = screen(&mut a).lines().nth(1).unwrap().to_string();
+    assert!(
+        !tabs.contains("Workflows") && !tabs.contains("Updates"),
+        "{tabs}"
+    );
 }

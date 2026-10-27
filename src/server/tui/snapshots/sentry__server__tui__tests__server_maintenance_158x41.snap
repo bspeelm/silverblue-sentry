@@ -2,7 +2,7 @@
 source: src/server/tui/tests.rs
 expression: body(&s)
 ---
- 1 Overview   2 Services 1   3 Containers 1   5 Audit 7   6 Maintenance 8   0 Workflows
+ 1 Overview   2 Services 1   3 Containers 1   5 Audit 7   6 Maintenance 8
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Recommended · 11 · R reviews it all with Claude ─────────────────────────────────────────┐┌ Details ───────────────────────────────────────────────────────┐
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                          ││                                                                │
 └──────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  do it   p  plan   t  track   R  review   x  drop/ignore   v  log   z  later   c  look up   e  edit   ?  help   q  quit
+ j/k  select   Enter  do it   p  plan   t  track   R  review   w  workflow   x  drop/ignore   v  log   z  later   c  look up   e  edit   ?  help   q  quit

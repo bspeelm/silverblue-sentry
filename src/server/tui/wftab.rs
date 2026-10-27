@@ -1,58 +1,15 @@
-//! The Workflows tab: the list when nothing runs; steps, log and the current step's card while
-//! a run is in progress.
+//! The Run view: a workflow in progress (its steps, its log and the current step's card).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::server::workflow::{LogKind, Session};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::{self, TableSpec, inner, panel, trunc};
-use crate::workflows::Entry;
+use crate::tui::widgets::{inner, panel, trunc};
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
-
-pub fn draw_list(f: &mut Frame, area: Rect, t: &Theme, dir: &str, entries: &[Entry], cur: usize) {
-    let b = panel(t, "Workflows", dir);
-    let r = inner(&b, area);
-    f.render_widget(b, area);
-    let rows: Vec<Row> = entries
-        .iter()
-        .map(|e| {
-            let (state, c) = match e.blocked() {
-                None => ("ready".to_string(), t.green),
-                Some(why) => (why, t.yellow),
-            };
-            let (steps, desc) = match &e.wf {
-                Ok(w) => (w.steps.len().to_string(), w.description.clone()),
-                Err(_) => ("-".into(), String::new()),
-            };
-            Row::new(vec![
-                Cell::from(e.name.clone()).style(t.fg()),
-                Cell::from(steps).style(t.dim()),
-                Cell::from(state).style(t.s(c)),
-                Cell::from(desc).style(t.dim()),
-            ])
-        })
-        .collect();
-    widgets::table(
-        f,
-        r,
-        t,
-        TableSpec {
-            header: vec!["Workflow", "Steps", "State", "What it does"],
-            widths: vec![
-                Constraint::Length(20),
-                Constraint::Length(6),
-                Constraint::Length(24),
-                Constraint::Fill(1),
-            ],
-            rows,
-            selected: Some(cur),
-        },
-    );
-}
 
 pub fn draw_session(f: &mut Frame, area: Rect, t: &Theme, s: &Session) {
     let [left, right] =
