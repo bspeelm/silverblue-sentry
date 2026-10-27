@@ -375,7 +375,17 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
         if v.s.maint.value.is_none() {
             String::new()
         } else {
-            format!("{} · R reviews it all with Claude", recs.len())
+            match &v.s.review {
+                Some(r) => format!(
+                    "{} · last review {}: R opens it",
+                    recs.len(),
+                    r.head
+                        .updated
+                        .or(r.head.created)
+                        .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
+                ),
+                None => format!("{} · R reviews it all with Claude", recs.len()),
+            }
         },
     );
     let r = inner(&b, area);
@@ -775,6 +785,84 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
         },
         _ => Vec::new(),
     }
+}
+
+/// What a review is given: every item's standing, the rules' recommendations, what
+/// discovery found, updates and reboots waiting, cadences, the ledger and the notes.
+pub fn review_context(v: &View, r: &Remote) -> String {
+    let mut s = format!("Server `{}`.\n\nTracked items:\n", r.name);
+    for st in rows(v) {
+        let it = item_of(v, &st.id);
+        let flags: Vec<&str> = st.flags.iter().map(|f| f.word()).collect();
+        s.push_str(&format!(
+            "- {} ({} risk): pinned {}, running {}, newest {} [{}]{}{}{}{}{}\n",
+            st.id,
+            st.risk.as_str(),
+            st.pinned.as_deref().unwrap_or("?"),
+            st.running.as_deref().unwrap_or("?"),
+            st.latest.as_deref().unwrap_or("?"),
+            flags.join(", "),
+            it.and_then(|i| i.source.as_deref())
+                .map_or(String::new(), |x| format!("; source {x}")),
+            it.and_then(|i| i.hold.as_deref())
+                .map_or(String::new(), |x| format!("; held because: {x}")),
+            it.and_then(|i| i.constraint.as_deref())
+                .map_or(String::new(), |x| format!("; constraint: {x}")),
+            st.review_by
+                .map_or(String::new(), |d| format!("; review by {d}")),
+            v.plans.get(&st.id).map_or(String::new(), |p| format!(
+                "; has a plan → {} ({})",
+                p.head.to.as_deref().unwrap_or("retire"),
+                p.head.status.word()
+            )),
+        ));
+    }
+    s.push_str("\nWhat sentry-server's rules recommend:\n");
+    for x in recs(v) {
+        s.push_str(&format!("- [{}] {}: {}\n", x.level.word(), x.title, x.why));
+    }
+    if let Some(a) = &v.s.apt.value {
+        s.push_str(&format!(
+            "\nPackages: {} update(s) waiting; held back: {}; reboot {}.\n",
+            a.upgrades.len(),
+            if a.kept_back.is_empty() {
+                "none".into()
+            } else {
+                a.kept_back.join(" ")
+            },
+            a.reboot_since.map_or("not required".into(), |t| format!(
+                "required for {} day(s) (running {}, newest {})",
+                (a.now - t) / 86_400,
+                a.running_kernel,
+                a.newest_kernel.as_deref().unwrap_or("?")
+            ))
+        ));
+    }
+    if !v.cfg.maintenance.cadence.is_empty() {
+        let c: Vec<String> = v
+            .cfg
+            .maintenance
+            .cadence
+            .iter()
+            .map(|(k, d)| format!("{k} every {} day(s)", d.0.as_secs() / 86_400))
+            .collect();
+        s.push_str(&format!("Routine workflows: {}.\n", c.join(", ")));
+    }
+    let ledger = if maint::log::dir(&r.name).join("LOG.md").exists() {
+        ledger_path(&r.name)
+    } else {
+        "none yet (no maintenance has been logged on this server)".into()
+    };
+    s.push_str(&format!(
+        "\nMaintenance ledger (start there, then read the entries that bear on this): {ledger}\n"
+    ));
+    if !v.cfg.maintenance.notes.is_empty() {
+        s.push_str(&format!(
+            "Notes about this server you may read: {}\n",
+            v.cfg.maintenance.notes.join(", ")
+        ));
+    }
+    s
 }
 
 /// What Claude is told about an item (for its plan).

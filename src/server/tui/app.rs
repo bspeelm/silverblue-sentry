@@ -60,6 +60,10 @@ pub enum Effect {
     PlanOpen(String),
     /// Open the maintenance log, marking this item's entries.
     LogOpen(Option<String>),
+    /// The latest maintenance review (or the box to write one).
+    ReviewOpen,
+    /// Claude writes a maintenance review (after the confirm box), with this request.
+    ReviewWrite(String),
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(crate::server::config::MaintItem),
     /// Don't suggest it again: (discovery key, its id).
@@ -231,6 +235,8 @@ pub struct App {
     revise_input: Option<String>,
     /// The Maintenance row selected (`maint::row_key`): kept when the list changes under it.
     maint_sel: Option<String>,
+    /// The Review view (`R` on Maintenance), scrolled this far.
+    review_view: Option<usize>,
     /// The Log view (`v` on Maintenance, `:log`).
     pub log_view: Option<planview::LogView>,
     /// The suspended command runs Claude's read requests.
@@ -300,6 +306,7 @@ impl App {
             plan_view: None,
             revise_input: None,
             log_view: None,
+            review_view: None,
             maint_sel: None,
             suspend_reads: None,
             run_seq: 0,
@@ -334,6 +341,7 @@ impl App {
             self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
             crate::server::maint::plan::migrate(&self.remote.name);
             self.store.plans = crate::server::maint::plan::list(&self.remote.name);
+            self.store.review = crate::server::maint::review::latest(&self.remote.name);
             self.store.log = crate::server::maint::log::list(&self.remote.name);
             self.last_change_at = self
                 .store
@@ -751,6 +759,10 @@ impl App {
             self.log_view_key(k);
             return;
         }
+        if self.review_view.is_some() && self.modal.is_none() {
+            self.review_view_key(k);
+            return;
+        }
         if self.plan_view.is_some()
             && self.modal.is_none()
             && self.chooser.is_none()
@@ -998,6 +1010,17 @@ impl App {
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
                 Effect::LogOpen(item) => self.open_log(item),
+                Effect::ReviewOpen => {
+                    if self.store.review.is_some() || self.writing_review() {
+                        self.review_view = Some(0);
+                    } else {
+                        self.review_box();
+                    }
+                }
+                Effect::ReviewWrite(prompt) => {
+                    let doc = crate::server::maint::review::ReviewDoc::new(&self.remote.name);
+                    self.start_writer(planview::Writer::review(doc), prompt, None);
+                }
                 Effect::Track(item) => {
                     let id = item.id.clone();
                     match crate::server::maint::tracked::track(&self.remote.name, item) {
@@ -1950,13 +1973,28 @@ impl App {
 
     /// Start (or continue) Claude writing a plan in the background; the Plan view shows it.
     fn write_plan(&mut self, id: String, doc: PlanDoc, prompt: String, resume: Option<String>) {
+        self.start_writer(planview::Writer::new(&id, doc), prompt, resume);
+    }
+
+    fn writing_review(&self) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| w.review.is_some() && w.running())
+    }
+
+    /// Claude writes (a plan or a review) in the background; its view opens.
+    fn start_writer(&mut self, mut w: planview::Writer, prompt: String, resume: Option<String>) {
         if self.writer.as_ref().is_some_and(|w| w.running()) {
-            return self.toast("Claude is already writing a plan: wait for it, or C-c in its view");
+            return self.toast("Claude is already writing: wait for it, or C-c in its view");
         }
-        let mut w = planview::Writer::new(&id, doc);
-        self.plan_view = Some((id.clone(), 0));
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = planview::profile(&self.remote, &os, &kernel, self.store.sudo.value);
+        let profile = if w.review.is_some() {
+            self.review_view = Some(0);
+            planview::review_profile(&self.remote, &os, &kernel, self.store.sudo.value)
+        } else {
+            self.plan_view = Some((w.item.clone(), 0));
+            planview::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+        };
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let rid = self.run_seq;
@@ -1981,10 +2019,98 @@ impl App {
     fn writer_follow(&mut self, prompt: String) {
         match self.writer.as_ref() {
             Some(w) if !w.running() => {
-                let (id, doc, session) = (w.item.clone(), w.doc.clone(), w.session.clone());
-                self.write_plan(id, doc, prompt, session);
+                let session = w.session.clone();
+                let next = match &w.review {
+                    Some(r) => planview::Writer::review(r.clone()),
+                    None => planview::Writer::new(&w.item, w.doc.clone()),
+                };
+                self.start_writer(next, prompt, session);
             }
-            _ => self.toast("the plan isn't being written any more"),
+            _ => self.toast("it isn't being written any more"),
+        }
+    }
+
+    /// `R` with no review yet, or `R` in the Review view: what Claude will do, then yes.
+    fn review_box(&mut self) {
+        if !claude::available() {
+            return self.toast("reviews are written by Claude Code, which isn't installed");
+        }
+        let v = self.view();
+        let prompt = planview::review_request(&super::maint::review_context(&v, &self.remote));
+        let t = self.theme;
+        let notes = &self.remote.cfg.maintenance.notes;
+        let lines = vec![
+            Line::styled(
+                format!(
+                    "Claude reviews the maintenance of {}: every tracked item, what isn't \
+                     tracked, updates and reboots waiting, the maintenance log, and upstream's \
+                     release notes, then writes what to do now, soon and routinely, and why.",
+                    self.remote.name
+                ),
+                t.fg(),
+            ),
+            Line::raw(""),
+            Line::styled(
+                format!(
+                    "It reads the web, your notes ({}), and {} read-only through the gateway; \
+                     reads that need root are asked for first. Saved in {}.",
+                    if notes.is_empty() {
+                        "none".to_string()
+                    } else {
+                        notes.join(", ")
+                    },
+                    self.remote.name,
+                    crate::server::maint::review::dir(&self.remote.name).display()
+                ),
+                t.dim(),
+            ),
+            Line::raw(""),
+            Line::styled(
+                "Sent to Claude through your Claude Code login (Anthropic). Nothing on the \
+                 server changes.",
+                t.s(t.yellow),
+            ),
+        ];
+        self.modal = Some(Modal {
+            title: "Review maintenance with Claude".into(),
+            color: t.mag,
+            lines,
+            yes: Some(("review".into(), vec![Effect::ReviewWrite(prompt)])),
+        });
+    }
+
+    /// Keys in the Review view: scroll, R writes a new one, C-c stops it, Esc goes back.
+    fn review_view_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let Some(scroll) = self.review_view else {
+            return;
+        };
+        self.dirty = true;
+        let writing = self.writing_review();
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.review_view = None,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pid) = self
+                    .writer
+                    .as_ref()
+                    .filter(|w| w.review.is_some())
+                    .and_then(|w| w.live.map(|(_, p)| p))
+                {
+                    let _ = kill(pid);
+                    self.toast("stopped");
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.review_view = Some(scroll + 1),
+            KeyCode::Up | KeyCode::Char('k') => self.review_view = Some(scroll.saturating_sub(1)),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.review_view = Some(scroll + 20),
+            KeyCode::PageUp => self.review_view = Some(scroll.saturating_sub(20)),
+            KeyCode::Home | KeyCode::Char('g') => self.review_view = Some(0),
+            KeyCode::End | KeyCode::Char('G') => self.review_view = Some(usize::MAX / 2),
+            KeyCode::Char('R') if !writing => {
+                self.review_view = None;
+                self.review_box();
+            }
+            _ => {}
         }
     }
 
@@ -1993,6 +2119,31 @@ impl App {
         let Some(w) = self.writer.as_mut() else {
             return;
         };
+        if let Some(mut rd) = w.review.clone() {
+            rd.head.session = w.session.clone().or(rd.head.session);
+            let msg = match (&w.answer, &w.err) {
+                (Some(a), _) if !a.trim().is_empty() => {
+                    rd.take_answer(a);
+                    "the maintenance review is saved".to_string()
+                }
+                (_, err) => format!(
+                    "no review: {}",
+                    err.clone()
+                        .unwrap_or_else(|| "Claude gave no answer".into())
+                ),
+            };
+            w.review = Some(rd.clone());
+            if rd.head.status == PlanStatus::Ready {
+                if !self.offline
+                    && let Err(e) = crate::server::maint::review::save(&rd)
+                {
+                    return self.toast(&format!("couldn't save the review: {e}"));
+                }
+                self.store.review = Some(rd);
+            }
+            self.toast(&msg);
+            return self.offer_reads(ReadsFor::Plan);
+        }
         let mut doc = w.doc.clone();
         doc.head.session = w.session.clone().or(doc.head.session);
         // Waiting for reads that need root: no plan yet; ask for them.
@@ -2837,7 +2988,10 @@ impl App {
             ),
             _ => tabs::draw(f, body, self.tab, &self.view()),
         }
-        if let Some(lv) = &self.log_view {
+        if let Some(scroll) = self.review_view {
+            let w = self.writer.as_ref().filter(|w| w.review.is_some());
+            super::planview::draw_review(f, body, &t, self.store.review.as_ref(), w, scroll);
+        } else if let Some(lv) = &self.log_view {
             let d = crate::server::maint::log::dir(&self.remote.name)
                 .display()
                 .to_string();
@@ -3074,6 +3228,20 @@ impl App {
             }
         } else if let Some(c) = self.chat.as_ref().filter(|_| self.modal.is_none()) {
             chatmod::keys(c)
+        } else if self.review_view.is_some() && self.modal.is_none() {
+            if self.writing_review() {
+                vec![
+                    ("j/k", "scroll"),
+                    ("C-c", "stop"),
+                    ("Esc", "back (it carries on)"),
+                ]
+            } else {
+                vec![
+                    ("j/k PgUp/Dn", "scroll"),
+                    ("R", "review again"),
+                    ("Esc", "back"),
+                ]
+            }
         } else if let Some(lv) = self.log_view.as_ref().filter(|_| self.modal.is_none()) {
             if lv.open.is_some() {
                 vec![("j/k PgUp/Dn", "scroll"), ("Esc", "back to the list")]
@@ -3235,6 +3403,15 @@ impl App {
         self.store.workflows = e.iter().map(|x| x.name.clone()).collect();
         self.wf_entries = e;
         self.keep_maint_selection();
+    }
+    /// Tests: the request waiting in a box (a review's).
+    pub fn consent_text_any(&self) -> Option<String> {
+        match self.modal.as_ref()?.yes.as_ref()?.1.first()? {
+            Effect::ReviewWrite(p) => Some(p.clone()),
+            Effect::PlanWrite(_, _, p) => Some(p.clone()),
+            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
+            _ => None,
+        }
     }
     /// Tests: the question waiting in the consent box.
     pub fn consent_text(&self) -> Option<String> {

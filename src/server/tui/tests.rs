@@ -1838,3 +1838,49 @@ fn the_risk_is_coloured_only_where_something_needs_doing() {
     assert_eq!(risk_fg(row_of("web")), t.yellow, "medium, coloured");
     assert_eq!(risk_fg(row_of("engine")), t.dim, "held and not due: dim");
 }
+
+#[test]
+fn claude_reviews_the_maintenance_and_it_is_kept() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('R'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Review maintenance with Claude") && s.contains("reviews"),
+        "{s}"
+    );
+    let prompt = a.consent_text_any().expect("the request");
+    assert!(
+        prompt.contains("- web (medium risk): pinned 1.4.2"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("[soon] os: end of life soon"),
+        "the rules' list too: {prompt}"
+    );
+    assert!(
+        prompt.contains("## Now:") && prompt.contains("Maintenance ledger"),
+        "{prompt}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Maintenance review") && s.contains("appears here"),
+        "{s}"
+    );
+    a.writer_answered("Reading first.\n# Maintenance review · myserver\n\n## Now\n- web: plan 1.5.2 (security)\n\n## Soon\n- os: end of life");
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Now") && s.contains("web: plan 1.5.2 (security)"),
+        "{s}"
+    );
+    assert!(!s.contains("Reading first"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        screen(&mut a).contains("last review"),
+        "the panel says there's one"
+    );
+    key(&mut a, KeyCode::Char('R'));
+    assert!(screen(&mut a).contains("web: plan 1.5.2"), "R opens it");
+}

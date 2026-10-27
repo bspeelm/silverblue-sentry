@@ -155,6 +155,8 @@ pub struct Store {
     pub log: Vec<maint::log::LogEntry>,
     /// The server's workflow names.
     pub workflows: Vec<String>,
+    /// The latest maintenance review.
+    pub review: Option<maint::review::ReviewDoc>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,

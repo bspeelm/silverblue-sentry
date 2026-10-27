@@ -84,8 +84,12 @@ servers:
     # from the server), only when you ask. Nothing changes here: a change goes through the
     # item's workflow, one item at a time.
     maintenance:
-      # Local files Claude may read when you ask it to assess a change (runbooks, notes).
+      # Local files Claude may read when planning or reviewing (runbooks, notes).
       notes: [~/notes/myserver-runbook.md]
+      # Routine workflows and how often they should run: recommended when the maintenance
+      # log says they last ran longer ago than that.
+      cadence:
+        apt-maintenance: 30d
       items:
         - id: web
           image: {service: web}          # the pin is read from the compose file

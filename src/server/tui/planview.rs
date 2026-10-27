@@ -20,6 +20,8 @@ use crate::tui::theme::Theme;
 pub struct Writer {
     pub item: String,
     pub doc: PlanDoc,
+    /// Writing a maintenance review instead of a plan.
+    pub review: Option<crate::server::maint::review::ReviewDoc>,
     /// Stream id and pid of the running turn.
     pub live: Option<(u64, u32)>,
     pub started: Instant,
@@ -40,6 +42,7 @@ impl Writer {
         Self {
             item: item.to_string(),
             doc,
+            review: None,
             live: None,
             started: Instant::now(),
             web: 0,
@@ -50,6 +53,15 @@ impl Writer {
             err: None,
             session,
         }
+    }
+
+    /// A maintenance review, written the same way as a plan.
+    pub fn review(doc: crate::server::maint::review::ReviewDoc) -> Self {
+        let session = doc.head.session.clone();
+        let mut w = Self::new(REVIEW, PlanDoc::default());
+        w.session = session;
+        w.review = Some(doc);
+        w
     }
 
     pub fn running(&self) -> bool {
@@ -108,6 +120,49 @@ impl Writer {
             s % 60
         )
     }
+}
+
+/// The writer's item name while it writes a review.
+pub const REVIEW: &str = "(review)";
+
+/// Claude's instructions for a maintenance review.
+pub fn review_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
+    let mut p = profile(r, os, kernel, sudo);
+    let name = &r.name;
+    p.system = format!(
+        "You review the maintenance of the server `{name}` ({os}, kernel {kernel}) for the user's \
+sentry-server: what to maintain next, and why. The review is saved as a Markdown file and acted \
+on later, item by item.\n\
+Start with the maintenance ledger named in the request (every earlier maintenance run, a \
+one-line summary and tags each) and read the entries that bear on what's pending. Then use the \
+standing of every tracked item given, release notes and advisories for anything with newer \
+versions (WebFetch and WebSearch; never curl), the notes files named (Read), and the server \
+read-only, ONLY as `sentry-server exec {name} -- <command> <args>` (one command per call, no \
+pipes; allowed: {}). If a read needs root and is refused, it's queued for the user; make every \
+read you need first, and if any was queued answer with only `READS PENDING` and one line saying \
+what you're waiting for.\n\
+Then answer with ONLY the review document: no preamble, no remarks after it. Its title is \
+`# Maintenance review · {name}`, then the sections the request lists. Be concrete: name the item, \
+the version, the workflow, and why now or why it can wait. You never change anything on the \
+server yourself.",
+        crate::server::gateway::summary()
+    );
+    p
+}
+
+/// What a review is asked.
+pub fn review_request(context: &str) -> String {
+    format!(
+        "{context}\n\nReview the maintenance of this server. Sections:\n\
+         ## Summary: two or three lines on where things stand.\n\
+         ## Now: what to do first, one bullet each: the item, what to do (plan it to which \
+         version, run which workflow), and why it can't wait.\n\
+         ## Soon: the same, for the next weeks.\n\
+         ## Routine: regular maintenance due, and what can simply wait (say why).\n\
+         ## The list: what to start or stop tracking, sources to add, risk levels, holds and \
+         review dates to revisit.\n\
+         ## Watch: ends of life, upstream changes or anything else to look at again, with dates."
+    )
 }
 
 /// Claude's instructions for writing a plan: not Ask Claude's (no length cap, no chat).
@@ -344,6 +399,82 @@ pub fn markdown(t: &Theme, text: &str) -> Vec<Line<'static>> {
         }
     }
     out
+}
+
+/// The Review view: the latest maintenance review, or Claude's progress while it writes.
+pub fn draw_review(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    doc: Option<&crate::server::maint::review::ReviewDoc>,
+    writer: Option<&Writer>,
+    scroll: usize,
+) {
+    f.render_widget(Clear, area);
+    let [head, rule, body] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let writing = writer.is_some_and(|w| w.running());
+    let mut l1 = vec![Span::styled(
+        " Maintenance review ",
+        Style::new()
+            .fg(t.ink)
+            .bg(t.mag)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(d) = doc {
+        l1.push(Span::styled(
+            format!(
+                "  {}",
+                d.head
+                    .updated
+                    .or(d.head.created)
+                    .map_or(String::new(), |u| u.strftime("%Y-%m-%d %H:%M").to_string())
+            ),
+            t.fg(),
+        ));
+    }
+    let l2 = match writer.filter(|w| w.running()) {
+        Some(w) => Line::styled(format!(" {}", w.progress()), t.s(t.cyan)),
+        None => Line::styled(
+            " what to maintain next, and why · R writes a new one",
+            t.dim(),
+        ),
+    };
+    f.render_widget(Paragraph::new(vec![Line::from(l1), l2]), head);
+    f.render_widget(
+        Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
+        rule,
+    );
+    let lines = match doc {
+        Some(d) if !writing => markdown(t, &d.body),
+        Some(d) => {
+            let mut l = vec![
+                Line::styled(
+                    "  Claude is writing a new review; the last one is below.",
+                    t.s(t.cyan),
+                ),
+                Line::raw(""),
+            ];
+            l.extend(markdown(t, &d.body));
+            l
+        }
+        None if writing => vec![Line::styled(
+            "  The review appears here when Claude has gathered what it needs and written it.",
+            t.dim(),
+        )],
+        None => vec![Line::styled("  No review yet: R writes one.", t.dim())],
+    };
+    let top = scroll.min(lines.len().saturating_sub(body.height as usize));
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((top as u16, 0)),
+        body,
+    );
 }
 
 /// The Log view: the maintenance ledger as a list, or one entry as a document.

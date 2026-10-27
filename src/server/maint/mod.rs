@@ -8,6 +8,7 @@ pub mod local;
 pub mod log;
 pub mod plan;
 pub mod recommend;
+pub mod review;
 pub mod tracked;
 pub mod upstream;
 pub mod version;
