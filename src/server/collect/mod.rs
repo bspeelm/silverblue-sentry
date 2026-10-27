@@ -221,32 +221,46 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
 /// Every maintenance item's standing: the server's side read now, upstream from the cache
 /// (looked up only when asked).
 pub fn maint_status(r: &Remote) -> Vec<crate::server::maint::eval::Status> {
+    if r.cfg.maintenance.items.is_empty() {
+        return Vec::new();
+    }
     maint_read(r).0
 }
 
-/// Each item's standing, with the server's side it was judged from.
+/// Each item's standing, the server's side it was judged from, and what discovery found.
 pub fn maint_read(
     r: &Remote,
 ) -> (
     Vec<crate::server::maint::eval::Status>,
     std::collections::BTreeMap<String, crate::server::maint::local::Local>,
+    crate::server::maint::discover::Found,
 ) {
     use crate::server::maint;
-    let items = &r.cfg.maintenance.items;
-    if items.is_empty() {
-        return Default::default();
-    }
-    let local = maint::local::read(r, &r.cfg);
+    let cfg = &r.cfg;
+    let read = maint::local::read(r, cfg);
     let lookups = maint::upstream::load(&r.name).map(|c| c.data);
     let today = jiff::Zoned::now().date();
     let st = maint::eval::evaluate(
-        items,
-        &local,
+        &cfg.maintenance.items,
+        &read.local,
         lookups.as_ref(),
         &maint::load_state(&r.name),
         today,
     );
-    (st, local)
+    let facts = maint::discover::read_facts(r, cfg).ok();
+    let workflows: Vec<String> = crate::server::workflow::list_for(&r.name)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    let found = maint::discover::find(
+        cfg,
+        &read.compose,
+        read.docker.as_ref(),
+        facts.as_ref(),
+        &maint::tracked::load(&r.name).ignore,
+        &workflows,
+    );
+    (st, read.local, found)
 }
 
 /// One collector by name, as JSON (`sentry-server collect <server> <kind>`).

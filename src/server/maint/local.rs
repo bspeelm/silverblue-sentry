@@ -104,13 +104,25 @@ fn compose_text(r: &Remote, file: &str) -> Result<String, String> {
     }
 }
 
+/// What one read found: each item's state, and what discovery compares the list with.
+pub struct Read {
+    pub local: BTreeMap<String, Local>,
+    /// Each compose project's file text, when it could be read.
+    pub compose: BTreeMap<String, Option<String>>,
+    pub docker: Option<docker::Docker>,
+}
+
 /// Read every item's state.
-pub fn read(r: &Remote, cfg: &Server) -> BTreeMap<String, Local> {
+pub fn read(r: &Remote, cfg: &Server) -> Read {
     let items = &cfg.maintenance.items;
     let mut out: BTreeMap<String, Local> = BTreeMap::new();
-    let wants_docker = items.iter().any(|i| i.image.is_some());
-    let docker = wants_docker.then(|| docker::collect(r));
-    let mut composes: BTreeMap<String, Result<String, String>> = BTreeMap::new();
+    let docker = Some(docker::collect(r));
+    // Every project's file (discovery wants the services nothing tracks too).
+    let mut composes: BTreeMap<String, Result<String, String>> = cfg
+        .compose
+        .iter()
+        .map(|c| (c.file.clone(), compose_text(r, &c.file)))
+        .collect();
     let pkgs: Vec<&str> = items
         .iter()
         .flat_map(|i| i.apt.iter().map(String::as_str))
@@ -201,7 +213,20 @@ pub fn read(r: &Remote, cfg: &Server) -> BTreeMap<String, Local> {
         }
         out.insert(it.id.clone(), l);
     }
-    out
+    Read {
+        local: out,
+        compose: cfg
+            .compose
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    composes.get(&c.file).and_then(|t| t.clone().ok()),
+                )
+            })
+            .collect(),
+        docker: docker.and_then(Result::ok),
+    }
 }
 
 /// The vars a workflow gets for an item (`p` on the Maintenance tab): a compose service and its

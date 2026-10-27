@@ -1,6 +1,6 @@
-//! The Maintenance tab: what's pinned or held on purpose, how it stands against upstream, and
-//! the deliberate way to change it (assess with Claude, plan with its workflow, or look again
-//! later).
+//! The Maintenance tab: what to maintain next and why (recommendations, on top), then
+//! everything tracked, how it stands against upstream, and the deliberate way to change it
+//! (a plan Claude writes, applied with its workflow; or look again later).
 
 use std::collections::BTreeMap;
 
@@ -12,11 +12,11 @@ use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
 use super::app::Effect;
 use super::tabs::View;
-use crate::claude::Ask;
 use crate::fmt;
 use crate::server::config::{MaintItem, Risk};
 use crate::server::maint::eval::{Flag, Status};
 use crate::server::maint::plan::{Head, PlanDoc, PlanStatus};
+use crate::server::maint::recommend::{self, Action, Level, Rec};
 use crate::server::maint::{self, local};
 use crate::server::remote::Remote;
 use crate::tui::widgets::{self, TableSpec, inner, panel};
@@ -39,10 +39,108 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Status> {
         .collect()
 }
 
+/// What to maintain next (filtered like the items).
+pub fn recs(v: &View) -> Vec<Rec> {
+    let empty = Vec::new();
+    let mut r = recommend::recommend(&recommend::Inputs {
+        items: &v.cfg.maintenance.items,
+        statuses: v.s.maint.value.as_ref().unwrap_or(&empty),
+        plans: v.plans,
+        found: &v.s.maint_found,
+        apt: v.s.apt.value.as_ref(),
+        log: &v.s.log,
+        cadence: &v.cfg.maintenance.cadence,
+        workflows: &v.s.workflows,
+        snooze: &v.s.maint_state.snooze,
+        now: v.now,
+    });
+    r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
+    r
+}
+
+/// The selected row: a recommendation (they come first) or an item.
+pub enum Sel<'a> {
+    Rec(Rec),
+    Item(&'a Status, &'a MaintItem),
+}
+
+pub fn pick<'a>(v: &View<'a>) -> Option<Sel<'a>> {
+    let r = recs(v);
+    if let Some(x) = r.get(v.cur) {
+        return Some(Sel::Rec(x.clone()));
+    }
+    let s = rows(v).get(v.cur - r.len()).copied()?;
+    let it = item_of(v, &s.id)?;
+    Some(Sel::Item(s, it))
+}
+
+fn item_of<'a>(v: &View<'a>, id: &str) -> Option<&'a MaintItem> {
+    v.cfg.maintenance.items.iter().find(|i| i.id == id)
+}
+
+fn status_of<'a>(v: &View<'a>, id: &str) -> Option<&'a Status> {
+    v.s.maint.value.as_ref()?.iter().find(|s| s.id == id)
+}
+
+/// The item the selected row is about.
 pub fn selected<'a>(v: &View<'a>) -> Option<(&'a Status, &'a MaintItem)> {
-    let s = rows(v).get(v.cur).copied()?;
-    let it = v.cfg.maintenance.items.iter().find(|i| i.id == s.id)?;
-    Some((s, it))
+    match pick(v)? {
+        Sel::Item(s, it) => Some((s, it)),
+        Sel::Rec(r) => {
+            let id = r.item?;
+            Some((status_of(v, &id)?, item_of(v, &id)?))
+        }
+    }
+}
+
+/// Rows on the tab: recommendations, then items.
+pub fn count(v: &View) -> usize {
+    recs(v).len() + rows(v).len()
+}
+
+/// What the row at `cur` is, to find it again after the list changes: a recommendation's
+/// key, or `item:<id>`.
+pub fn row_key(v: &View) -> Option<String> {
+    match pick(v)? {
+        Sel::Rec(r) => Some(format!("rec:{}:{}", r.key, r.title)),
+        Sel::Item(s, _) => Some(format!("item:{}", s.id)),
+    }
+}
+
+/// The row with that key now, if it's still there.
+pub fn row_with(v: &View, key: &str) -> Option<usize> {
+    if let Some(id) = key.strip_prefix("item:") {
+        return row_of(v, id);
+    }
+    recs(v)
+        .iter()
+        .position(|r| format!("rec:{}:{}", r.key, r.title) == key)
+}
+
+/// Where an item's row is (for jumping to it).
+pub fn row_of(v: &View, id: &str) -> Option<usize> {
+    Some(recs(v).len() + rows(v).iter().position(|s| s.id == id)?)
+}
+
+fn level_color(v: &View, l: Level) -> Color {
+    match l {
+        Level::Now => v.t.red,
+        Level::Soon => v.t.yellow,
+        Level::Routine => v.t.cyan,
+        Level::Tidy => v.t.dim,
+    }
+}
+
+/// What Enter does on a recommendation, in words.
+fn action_words(a: &Action) -> String {
+    match a {
+        Action::Plan(id) => format!("Enter: Claude writes a plan for {id}"),
+        Action::OpenPlan(id) => format!("Enter: open the plan for {id}"),
+        Action::Run(wf) => format!("Enter: start {wf}"),
+        Action::Track(_) => "Enter or t: track it · x: ignore it".into(),
+        Action::Remove(id) => format!("Enter: stop tracking {id}"),
+        Action::Look(_) => "Enter: go to the item".into(),
+    }
 }
 
 fn risk_color(v: &View, t: Risk) -> Color {
@@ -114,19 +212,14 @@ fn needs_attention(v: &View, s: &Status) -> bool {
 
 /// The count on the tab: security fixes, end of life, drift and reviews due.
 pub fn badge(v: &View) -> Option<(String, Color)> {
-    let st = v.s.maint.value.as_ref()?;
-    let urgent = st
-        .iter()
-        .filter(|s| s.has(Flag::Security) || s.has(Flag::Eol))
-        .count();
-    let due = st
-        .iter()
-        .filter(|s| s.has(Flag::Drift) || s.has(Flag::ReviewDue) || s.has(Flag::EolSoon))
-        .count();
-    match (urgent, due) {
+    v.s.maint.value.as_ref()?;
+    let r = recs(v);
+    let now = r.iter().filter(|x| x.level == Level::Now).count();
+    let soon = r.iter().filter(|x| x.level == Level::Soon).count();
+    match (now, soon) {
         (0, 0) => None,
-        (0, d) => Some((format!(" {d}"), v.t.yellow)),
-        (u, d) => Some((format!(" {}", u + d), v.t.red)),
+        (0, n) => Some((format!(" {n}"), v.t.yellow)),
+        (n, m) => Some((format!(" {}", n + m), v.t.red)),
     }
 }
 
@@ -134,6 +227,16 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
     let [list_a, detail_a] =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(area);
+    // What to maintain next, on top; everything tracked below.
+    let recs = if v.s.maint.value.is_some() {
+        recs(v)
+    } else {
+        Vec::new()
+    };
+    let rec_h = (recs.len().clamp(1, 10) + 3) as u16;
+    let [rec_a, list_a] =
+        Layout::vertical([Constraint::Length(rec_h), Constraint::Fill(1)]).areas(list_a);
+    draw_recs(f, rec_a, v, &recs);
     let up = v
         .upstream
         .map_or("upstream not looked up (c)".to_string(), |at| {
@@ -224,17 +327,98 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 Constraint::Length(10),
             ],
             rows: rows_,
-            selected: Some(v.cur),
+            selected: v.cur.checked_sub(recs.len()),
         },
     );
     let b = panel(t, "Details", "");
     let r = inner(&b, detail_a);
     f.render_widget(b, detail_a);
-    let lines = match selected(v) {
-        Some((s, it)) => detail(v, s, it),
+    let lines = match pick(v) {
+        Some(Sel::Item(s, it)) => detail(v, s, it),
+        Some(Sel::Rec(x)) => {
+            let mut l = vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", x.level.word()),
+                        ratatui::style::Style::new()
+                            .fg(t.ink)
+                            .bg(level_color(v, x.level)),
+                    ),
+                    Span::styled(format!(" {}", x.title), t.fg()),
+                ]),
+                Line::raw(""),
+                Line::styled(x.why.clone(), t.fg()),
+                Line::raw(""),
+                Line::styled(action_words(&x.action), t.s(t.cyan)),
+                Line::styled("z: look again later", t.dim()),
+            ];
+            if let Some((s, it)) = x
+                .item
+                .as_deref()
+                .and_then(|id| Some((status_of(v, id)?, item_of(v, id)?)))
+            {
+                l.push(Line::raw(""));
+                l.extend(detail(v, s, it));
+            }
+            l
+        }
         None => vec![Line::styled("nothing matches", t.dim())],
     };
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
+}
+
+fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
+    let t = v.t;
+    let b = panel(
+        t,
+        "Recommended",
+        if v.s.maint.value.is_none() {
+            String::new()
+        } else {
+            format!("{} · R reviews it all with Claude", recs.len())
+        },
+    );
+    let r = inner(&b, area);
+    f.render_widget(b, area);
+    if v.s.maint.value.is_none() {
+        f.render_widget(Paragraph::new(Line::styled("reading…", t.dim())), r);
+        return;
+    }
+    if recs.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                "✓ nothing to maintain right now",
+                t.s(t.green),
+            )),
+            r,
+        );
+        return;
+    }
+    let rows: Vec<Row> = recs
+        .iter()
+        .map(|x| {
+            Row::new(vec![
+                Cell::from(x.level.word()).style(t.s(level_color(v, x.level))),
+                Cell::from(x.title.clone()).style(t.fg()),
+                Cell::from(x.why.clone()).style(t.dim()),
+            ])
+        })
+        .collect();
+    widgets::table(
+        f,
+        r,
+        t,
+        TableSpec {
+            header: vec!["", "What", "Why"],
+            widths: vec![
+                Constraint::Length(8),
+                Constraint::Fill(3),
+                Constraint::Fill(4),
+            ],
+            rows,
+            selected: (v.cur < recs.len()).then_some(v.cur),
+        },
+    );
 }
 
 fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
@@ -390,15 +574,15 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         }
     }
     l.push(Line::raw(""));
-    let mut keys = vec!["A assess"];
+    let mut keys = Vec::new();
     if it.workflow.is_some() || it.retire.as_ref().is_some_and(|r| r.workflow.is_some()) {
         keys.push(if v.plans.contains_key(&s.id) {
             "Enter opens the plan · P plans again"
         } else {
-            "p plan"
+            "p: Claude plans it"
         });
     }
-    keys.extend(["z review later", "e edit config"]);
+    keys.extend(["z review later", "v its log", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
     l
 }
@@ -411,11 +595,67 @@ fn workflow_of(it: &MaintItem) -> Option<&str> {
         .or(it.workflow.as_deref())
 }
 
-/// Keys on the tab.
+/// Keys on the tab: on a recommendation, Enter does what it recommends; the item keys work
+/// on the item it's about.
 pub fn key(c: char, v: &View) -> Vec<Effect> {
-    let Some((s, it)) = selected(v) else {
-        return Vec::new();
-    };
+    match pick(v) {
+        Some(Sel::Rec(r)) => rec_key(c, v, r),
+        Some(Sel::Item(s, it)) => item_key(c, v, s, it),
+        None => Vec::new(),
+    }
+}
+
+fn later(key: &str, what: &str) -> Vec<Effect> {
+    let today = jiff::Zoned::now().date();
+    let choices = [7, 30, 90]
+        .into_iter()
+        .map(|d| {
+            let until = today
+                .checked_add(jiff::Span::new().days(d))
+                .unwrap_or(today);
+            (
+                format!("look again in {d} days ({until})"),
+                vec![Effect::Snooze(key.to_string(), until)],
+            )
+        })
+        .collect();
+    vec![Effect::Choose(format!("{what}: later"), choices)]
+}
+
+fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
+    let found = &v.s.maint_found;
+    match (c, &r.action) {
+        ('\n', Action::Plan(id)) => match status_of(v, id).zip(item_of(v, id)) {
+            Some((s, it)) => item_key('P', v, s, it),
+            None => Vec::new(),
+        },
+        ('\n', Action::OpenPlan(id)) => vec![Effect::PlanOpen(id.clone())],
+        ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
+        ('\n' | 't', Action::Track(n)) => match found.candidates.get(*n) {
+            Some(c) => vec![Effect::Track(c.item.clone())],
+            None => Vec::new(),
+        },
+        ('x', Action::Track(n)) => match found.candidates.get(*n) {
+            Some(c) => vec![Effect::Ignore(c.key.clone(), c.item.id.clone())],
+            None => Vec::new(),
+        },
+        ('\n' | 'x', Action::Remove(id)) => vec![Effect::Untrack(id.clone())],
+        ('\n', Action::Look(id)) if !id.is_empty() => vec![Effect::MaintJump(id.clone())],
+        ('z', _) => later(&r.key, &r.title),
+        // Plan keys work on the item the recommendation is about.
+        ('p' | 'P' | 'x', _) => match r
+            .item
+            .as_deref()
+            .and_then(|id| Some((status_of(v, id)?, item_of(v, id)?)))
+        {
+            Some((s, it)) => item_key(c, v, s, it),
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
     match c {
         'z' => {
             let today = jiff::Zoned::now().date();
@@ -537,24 +777,7 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
     }
 }
 
-/// `A` on the tab: an assessment, with release notes from the web and the notes files.
-pub fn ask(v: &View, r: &Remote) -> Option<Ask> {
-    let (s, it) = selected(v)?;
-    Some(Ask::new(
-        format!("{} · assess {}", r.name, s.id),
-        context(v, r, s, it),
-        "Assess moving this item. Read the release notes between the pinned version and the \
-         newest (use the web), and the notes files above. Answer in four parts:\n\
-         **What changed**: breaking changes, one-way migrations, security fixes, and anything that \
-         touches how this server uses it.\n\
-         **Does the hold still apply**: is the reason it's held still true?\n\
-         **Recommendation**: wait, or which version, and how risky the change really is.\n\
-         **Steps**: in the terms of its workflow (what to check before, what to watch after, how \
-         to roll back). Don't change anything yourself.",
-    ))
-}
-
-/// What Claude is told about an item (for `A` and `p`).
+/// What Claude is told about an item (for its plan).
 pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
     let newer: Vec<String> = s
         .newer

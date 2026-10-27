@@ -151,7 +151,23 @@ fn maint_payload() -> Payload {
         &Default::default(),
         jiff::civil::date(2026, 10, 26),
     );
-    Payload::Maint(st, local)
+    let found = crate::server::maint::discover::Found {
+        candidates: vec![crate::server::maint::discover::Candidate {
+            key: "image:cache".into(),
+            what: "compose service cache (example/cache:7.2)".into(),
+            item: crate::server::config::MaintItem {
+                id: "cache".into(),
+                image: Some(crate::server::config::ImageRef {
+                    service: Some("cache".into()),
+                    ..Default::default()
+                }),
+                source: Some("docker:example/cache".into()),
+                ..Default::default()
+            },
+        }],
+        gone: Vec::new(),
+    };
+    Payload::Maint(st, local, found)
 }
 
 fn data(a: &mut App, k: Kind, p: Payload) {
@@ -265,6 +281,14 @@ fn app() -> App {
             .collect(),
     );
     a
+}
+
+/// Select a maintenance item's row (recommendations come first).
+fn goto_item(a: &mut App, id: &str) {
+    a.apply(
+        vec![super::app::Effect::MaintJump(id.into())],
+        Instant::now(),
+    );
 }
 
 fn key(a: &mut App, c: KeyCode) {
@@ -1267,6 +1291,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    goto_item(&mut a, "web");
     let s = screen(&mut a);
     assert!(
         s.contains("security · 2 newer") && s.contains("⚠ v1.5.2"),
@@ -1386,21 +1411,57 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         },
     );
     assert!(screen(&mut a).contains("plan: wait"));
+    goto_item(&mut a, "web");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("Claude advises waiting: r revises it"));
     key(&mut a, KeyCode::Esc);
-    // z offers later review dates; A asks with web access named in the consent box.
+    // z offers later dates; A isn't an assessment here any more (plans assess, R reviews).
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 30 days"));
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('A'));
+    assert!(screen(&mut a).contains("p has Claude plan an item"));
+}
+
+#[test]
+fn recommendations_come_first_and_enter_does_what_they_say() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
     let s = screen(&mut a);
+    assert!(s.contains("Recommended · 6"), "{s}");
+    assert!(s.contains("soon     os: end of life soon"), "{s}");
+    assert!(s.contains("tidy     Track cache"), "{s}");
     assert!(
-        s.contains("read the web (release notes)") && s.contains("~/notes/runbook.md"),
-        "{s}"
+        s.contains("Enter: Claude writes a plan for os"),
+        "the selected one says what Enter does: {s}"
     );
+    // The reboot pending a week: Enter starts the workflow that reboots (its start box).
+    key(&mut a, KeyCode::Char('j'));
+    let s = screen(&mut a);
+    assert!(s.contains("Enter: start apt-maintenance"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("Start apt-maintenance on myserver"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // z puts one off.
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('z'));
+    assert!(screen(&mut a).contains("look again in 7 days"));
+    key(&mut a, KeyCode::Esc);
+    // A tidy one: Track, x ignores (offline nothing is written; the box text is what counts).
+    let n = (0..10)
+        .find(|_| {
+            let found = screen(&mut a).contains("Enter or t: track it");
+            if !found {
+                key(&mut a, KeyCode::Char('j'));
+            }
+            found
+        })
+        .is_some();
+    assert!(n, "reached the Track row");
 }
 
 #[test]

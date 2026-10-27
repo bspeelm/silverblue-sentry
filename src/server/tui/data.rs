@@ -59,6 +59,7 @@ pub enum Payload {
     Maint(
         Vec<maint::eval::Status>,
         BTreeMap<String, maint::local::Local>,
+        maint::discover::Found,
     ),
     Upstream(jiff::Timestamp),
 }
@@ -148,6 +149,12 @@ pub struct Store {
     pub maint_state: maint::State,
     /// Open plans, by item (`servers/<name>/plans/<item>.md`).
     pub plans: BTreeMap<String, maint::plan::PlanDoc>,
+    /// What discovery found: untracked things, tracked ones gone.
+    pub maint_found: maint::discover::Found,
+    /// The maintenance log, newest first (for cadences).
+    pub log: Vec<maint::log::LogEntry>,
+    /// The server's workflow names.
+    pub workflows: Vec<String>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,
@@ -199,9 +206,10 @@ impl Store {
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
             Payload::Report(v) => self.report.set(Ok(v)),
-            Payload::Maint(st, local) => {
+            Payload::Maint(st, local, found) => {
                 self.maint.set(Ok(st));
                 self.maint_local = Some(local);
+                self.maint_found = found;
             }
             Payload::Upstream(at) => self.upstream_at = Some(at),
         }
@@ -284,8 +292,8 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Report => Payload::Report(audit::latest(&r.name).map(Box::new)),
         Kind::Audit => Payload::Report(Some(Box::new(audit::run(r)?.0))),
         Kind::Maint => {
-            let (st, local) = collect::maint_read(r);
-            Payload::Maint(st, local)
+            let (st, local, found) = collect::maint_read(r);
+            Payload::Maint(st, local, found)
         }
         Kind::Upstream => {
             maint::upstream::refresh(&r.name, &r.cfg);

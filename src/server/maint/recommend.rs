@@ -285,7 +285,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                 level: Level::Routine,
                 key: format!("wf:{apt_wf}:updates"),
                 title: format!("{} package update(s) waiting", a.upgrades.len()),
-                why: format!("{} apply them.", apt_wf),
+                why: format!("{apt_wf} applies them."),
                 action: Action::Run(apt_wf.into()),
                 item: None,
             });

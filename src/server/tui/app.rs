@@ -60,6 +60,16 @@ pub enum Effect {
     PlanOpen(String),
     /// Open the maintenance log, marking this item's entries.
     LogOpen(Option<String>),
+    /// Track what discovery found (written to servers/<name>/items.toml).
+    Track(crate::server::config::MaintItem),
+    /// Don't suggest it again: (discovery key, its id).
+    Ignore(String, String),
+    /// Stop tracking an item (one of sentry-server's own; a YAML one is edited there).
+    Untrack(String),
+    /// Start a workflow (its start box first).
+    StartWorkflow(String),
+    /// Select an item's row on Maintenance.
+    MaintJump(String),
     /// Claude writes the plan (after the confirm box): item, the new plan, the request.
     PlanWrite(String, PlanDoc, String),
     /// Look at a maintenance item again later (`z`).
@@ -219,6 +229,8 @@ pub struct App {
     plan_view: Option<(String, usize)>,
     /// What to change in the plan (`r` in the Plan view), being typed.
     revise_input: Option<String>,
+    /// The Maintenance row selected (`maint::row_key`): kept when the list changes under it.
+    maint_sel: Option<String>,
     /// The Log view (`v` on Maintenance, `:log`).
     pub log_view: Option<planview::LogView>,
     /// The suspended command runs Claude's read requests.
@@ -288,6 +300,7 @@ impl App {
             plan_view: None,
             revise_input: None,
             log_view: None,
+            maint_sel: None,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
@@ -321,9 +334,13 @@ impl App {
             self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
             crate::server::maint::plan::migrate(&self.remote.name);
             self.store.plans = crate::server::maint::plan::list(&self.remote.name);
-            self.last_change_at = crate::server::maint::log::list(&self.remote.name)
+            self.store.log = crate::server::maint::log::list(&self.remote.name);
+            self.last_change_at = self
+                .store
+                .log
                 .first()
                 .and_then(|e| e.head.ended.or(e.head.started));
+            self.load_wf_entries();
         }
         self.enter(self.tab, now);
     }
@@ -466,6 +483,7 @@ impl App {
                 if k == Kind::Probe {
                     self.check_back();
                 }
+                self.keep_maint_selection();
                 let n = self.rows();
                 let c = &mut self.cursors[self.tab.index()];
                 *c = (*c).min(n.saturating_sub(1));
@@ -689,6 +707,22 @@ impl App {
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
         self.dirty = true;
+        self.on_key_inner(k, now);
+        if self.tab == Tab::Maint {
+            self.maint_sel = super::maint::row_key(&self.view());
+        }
+    }
+
+    /// The list changed under the cursor: put it back on the row it was on.
+    fn keep_maint_selection(&mut self) {
+        if let Some(key) = &self.maint_sel
+            && let Some(i) = super::maint::row_with(&self.view(), key)
+        {
+            self.cursors[Tab::Maint.index()] = i;
+        }
+    }
+
+    fn on_key_inner(&mut self, k: KeyEvent, now: Instant) {
         if self.cmdline.is_some() {
             self.cmdline_key(k, now);
             return;
@@ -964,6 +998,47 @@ impl App {
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
                 Effect::LogOpen(item) => self.open_log(item),
+                Effect::Track(item) => {
+                    let id = item.id.clone();
+                    match crate::server::maint::tracked::track(&self.remote.name, item) {
+                        Ok(()) => {
+                            self.reload_config();
+                            self.toast(&format!(
+                                "tracking {id} (servers/{}/items.toml)",
+                                self.remote.name
+                            ));
+                        }
+                        Err(e) => self.toast(&format!("couldn't track it: {e}")),
+                    }
+                }
+                Effect::Ignore(key, id) => {
+                    match crate::server::maint::tracked::ignore(&self.remote.name, &key) {
+                        Ok(()) => {
+                            self.store.maint_found.candidates.retain(|c| c.key != key);
+                            self.toast(&format!("{id} won't be suggested again"));
+                        }
+                        Err(e) => self.toast(&format!("couldn't save it: {e}")),
+                    }
+                }
+                Effect::Untrack(id) => {
+                    match crate::server::maint::tracked::untrack(&self.remote.name, &id) {
+                        Ok(true) => {
+                            self.reload_config();
+                            self.toast(&format!("{id}: no longer tracked"));
+                        }
+                        Ok(false) => self.toast(&format!(
+                            "{id} is in server_config.yaml: remove it there (e opens it)"
+                        )),
+                        Err(e) => self.toast(&format!("couldn't save it: {e}")),
+                    }
+                }
+                Effect::StartWorkflow(name) => self.command(&format!("wf {name}"), now),
+                Effect::MaintJump(id) => {
+                    if let Some(i) = super::maint::row_of(&self.view(), &id) {
+                        self.cursors[Tab::Maint.index()] = i;
+                        self.maint_sel = Some(format!("item:{id}"));
+                    }
+                }
                 Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
                 Effect::PlanWrite(id, doc, prompt) => self.write_plan(id, doc, prompt, None),
                 Effect::Snooze(id, until) => {
@@ -1200,6 +1275,7 @@ impl App {
 
     fn load_wf_entries(&mut self) {
         self.wf_entries = workflow::list_for(&self.remote.name);
+        self.store.workflows = self.wf_entries.iter().map(|e| e.name.clone()).collect();
         let d = workflow::dir_for(&self.remote.name);
         let home = std::env::var("HOME").unwrap_or_default();
         let shown = d.display().to_string();
@@ -1285,6 +1361,7 @@ impl App {
             if let Err(e) = log::write(&entry) {
                 self.toast(&format!("couldn't write the maintenance log: {e}"));
             }
+            self.store.log = log::list(&self.remote.name);
             self.fetch(Kind::Maint);
         }
         if done {
@@ -2288,21 +2365,6 @@ impl App {
             ));
         }
         lines.push(Line::raw(""));
-        if self.tab == Tab::Maint {
-            let notes = &self.remote.cfg.maintenance.notes;
-            lines.push(Line::styled(
-                format!(
-                    "For an assessment Claude may also read the web (release notes) and these \
-                     local files: {}",
-                    if notes.is_empty() {
-                        "none".to_string()
-                    } else {
-                        notes.join(", ")
-                    }
-                ),
-                t.s(t.yellow),
-            ));
-        }
         lines.push(Line::styled(
             format!(
                 "Claude may run read-only commands on {} through `sentry-server exec` (nothing \
@@ -3170,7 +3232,9 @@ fn kill(pid: u32) -> std::io::Result<()> {
 #[cfg(test)]
 impl App {
     pub fn set_wf_entries(&mut self, e: Vec<Entry>) {
+        self.store.workflows = e.iter().map(|x| x.name.clone()).collect();
         self.wf_entries = e;
+        self.keep_maint_selection();
     }
     /// Tests: the question waiting in the consent box.
     pub fn consent_text(&self) -> Option<String> {

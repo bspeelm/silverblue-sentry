@@ -98,7 +98,9 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
         Tab::Audit if v.s.report.value.is_none() => "the audit report is still loading",
         Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
         Tab::Services if v.s.units.value.is_none() => "the services are still loading",
-        Tab::Maint if v.s.maint.value.is_none() => "the maintenance items are still loading",
+        Tab::Maint => {
+            "on Maintenance, p has Claude plan an item (it assesses it first) and R reviews everything"
+        }
         _ => "nothing selected to ask about here",
     }
 }
@@ -230,7 +232,8 @@ pub fn ask_for(
                 },
             ))
         }
-        Tab::Maint => super::maint::ask(v, r),
+        // Plans assess each change (p); R reviews everything.
+        Tab::Maint => None,
         Tab::Workflows => match wf {
             Some(s) => Some(ask_step(&h, r, s)),
             None => entry.map(|e| ask_workflow(&h, v, r, e)),

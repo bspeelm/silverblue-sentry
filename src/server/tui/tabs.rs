@@ -79,7 +79,7 @@ pub fn rows(tab: Tab, v: &View) -> usize {
         Tab::Containers => container_list(v).len(),
         Tab::Updates => upgrade_list(v).len(),
         Tab::Audit => findings(v).len(),
-        Tab::Maint => super::maint::rows(v).len(),
+        Tab::Maint => super::maint::count(v),
         Tab::Workflows => 0,
     }
 }
@@ -103,10 +103,11 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
         ],
         Tab::Maint => vec![
             ("j/k", "select"),
-            ("A", "assess"),
+            ("Enter", "do it"),
             ("p", "plan"),
-            ("Enter", "open plan"),
-            ("x", "drop plan"),
+            ("t", "track"),
+            ("R", "review"),
+            ("x", "drop/ignore"),
             ("v", "log"),
             ("z", "later"),
             ("c", "look up"),
@@ -192,7 +193,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
-        (Tab::Maint, 'z' | 'p' | 'P' | 'x') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         (Tab::Maint, 'v') => vec![Effect::LogOpen(
             super::maint::selected(v).map(|(s, _)| s.id.clone()),
