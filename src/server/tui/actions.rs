@@ -26,9 +26,7 @@ fn root(r: &Remote, mode: Option<SudoMode>, argv: &[&str]) -> Result<(Cmd, bool)
 pub fn uses_root(tab: Tab, c: char) -> bool {
     matches!(
         (tab, c),
-        (Tab::Services, 'R' | 'x')
-            | (Tab::Containers, 'R' | 'p' | 'u')
-            | (Tab::Updates, 'C' | 'U' | 'B')
+        (Tab::Services, 'R' | 'x') | (Tab::Containers, 'R' | 'p' | 'u')
     )
 }
 
@@ -287,51 +285,6 @@ pub fn containers(v: &View, r: &Remote, c: char, name: &str, project: Option<&st
     }
 }
 
-pub fn updates(v: &View, r: &Remote, c: char) -> Vec<Effect> {
-    match c {
-        'C' => confirm(
-            v,
-            r,
-            spec(
-                "Refresh package lists",
-                "Download the current package lists (apt-get update), then simulate the upgrade again.".into(),
-                &["apt-get", "update"],
-                "refresh",
-                &[Kind::Apt],
-            ),
-        ),
-        'U' => {
-            let Some(a) = &v.s.apt.value else {
-                return vec![Effect::Toast("no update list yet".into())];
-            };
-            if a.upgrades.is_empty() {
-                return vec![Effect::Toast("nothing to upgrade".into())];
-            }
-            let names: Vec<&str> = a.upgrades.iter().map(|p| p.name.as_str()).collect();
-            let mut s = spec(
-                "Upgrade packages",
-                format!("Install {} update(s): {}.", names.len(), names.join(" ")),
-                &["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y", "dist-upgrade"],
-                "upgrade",
-                &[Kind::Apt, Kind::Units, Kind::Docker],
-            );
-            let mut warns = Vec::new();
-            if !a.removals.is_empty() {
-                warns.push(format!("It also removes: {}.", a.removals.join(" ")));
-            }
-            if a.upgrades.iter().any(|p| p.name.starts_with("docker") || p.name.starts_with("containerd")) {
-                warns.push("Docker itself is upgraded: containers restart.".into());
-            }
-            if !warns.is_empty() {
-                s.warn = Some(warns.join(" "));
-            }
-            confirm(v, r, s)
-        }
-        'B' => reboot(v, r),
-        _ => Vec::new(),
-    }
-}
-
 pub fn reboot(v: &View, r: &Remote) -> Vec<Effect> {
     let why =
         v.s.apt
@@ -434,7 +387,6 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("p", "pull"),
             ("u", "up -d"),
         ],
-        Tab::Updates => vec![("C", "refresh lists"), ("U", "upgrade"), ("B", "reboot")],
         Tab::Audit | Tab::Maint | Tab::Workflows => Vec::new(),
     }
 }

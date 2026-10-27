@@ -94,7 +94,6 @@ const ON_SERVER: &str =
 /// Why `A` had nothing to ask about, when it doesn't.
 pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
     match tab {
-        Tab::Updates if v.s.apt.value.is_none() => "the updates are still loading",
         Tab::Audit if v.s.report.value.is_none() => "the audit report is still loading",
         Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
         Tab::Services if v.s.units.value.is_none() => "the services are still loading",
@@ -103,6 +102,46 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
         }
         _ => "nothing selected to ask about here",
     }
+}
+
+/// The packages waiting: is it safe to upgrade now? (`A` on the updates recommendation.)
+pub fn ask_updates(v: &View, r: &Remote) -> Option<Ask> {
+    let h = header(v, r);
+    let a = v.s.apt.value.as_ref()?;
+    let pkgs: Vec<String> = a
+        .upgrades
+        .iter()
+        .map(|p| {
+            format!(
+                "{} {} → {} ({})",
+                p.name,
+                p.old.as_deref().unwrap_or("new"),
+                p.new,
+                p.origin
+            )
+        })
+        .collect();
+    Some(Ask::new(
+        format!("{} · updates", r.name),
+        format!(
+            "{h}Updates (simulated): {}\nheld back: {}\nreboot required: {}; running {}, newest installed {}",
+            if pkgs.is_empty() {
+                "none".into()
+            } else {
+                pkgs.join("; ")
+            },
+            a.kept_back.join(" "),
+            a.reboot_since.map_or("no".into(), |s| format!(
+                "for {}",
+                crate::fmt::age(a.now - s)
+            )),
+            a.running_kernel,
+            a.newest_kernel.as_deref().unwrap_or("?")
+        ),
+        "Is it safe to upgrade and reboot now? Anything to watch out for with these \
+         packages on this server (services, containers, the GPU driver)?"
+            .to_string(),
+    ))
 }
 
 /// An audit finding: how to fix it (Enter on its recommendation, or `A`).
@@ -182,61 +221,19 @@ pub fn ask_for(
                 )),
             ))
         }
-        Tab::Updates => {
-            let a = v.s.apt.value.as_ref()?;
-            let selected = super::tabs::selected_upgrade(v).map_or(String::new(), |p| {
-                format!(
-                    "\nSelected: {} {} → {} ({})",
-                    p.name,
-                    p.old.as_deref().unwrap_or("new"),
-                    p.new,
-                    p.origin
-                )
-            });
-            let pkgs: Vec<String> = a
-                .upgrades
-                .iter()
-                .map(|p| {
-                    format!(
-                        "{} {} → {} ({})",
-                        p.name,
-                        p.old.as_deref().unwrap_or("new"),
-                        p.new,
-                        p.origin
-                    )
-                })
-                .collect();
-            Some(Ask::new(
-                format!("{} · updates", r.name),
-                format!(
-                    "{h}Updates (simulated): {}\nheld back: {}\nreboot required: {}; running {}, newest installed {}{selected}",
-                    if pkgs.is_empty() {
-                        "none".into()
-                    } else {
-                        pkgs.join("; ")
-                    },
-                    a.kept_back.join(" "),
-                    a.reboot_since.map_or("no".into(), |s| format!(
-                        "for {}",
-                        crate::fmt::age(a.now - s)
-                    )),
-                    a.running_kernel,
-                    a.newest_kernel.as_deref().unwrap_or("?")
-                ),
-                if selected.is_empty() {
-                    "Is it safe to upgrade and reboot now? Anything to watch out for with these \
-                     packages on this server (services, containers, the GPU driver)?"
-                        .to_string()
-                } else {
-                    "What does the selected update change, and is it safe to install on this \
-                     server now? Then: anything to watch out for with the rest (services, \
-                     containers, the GPU driver), and is a reboot needed?"
-                        .to_string()
-                },
-            ))
-        }
-        // Plans assess each change (p); R reviews everything.
-        Tab::Maint => None,
+        // A finding: fix it; updates or the reboot: safe now? Items: plans assess them (p).
+        Tab::Maint => match super::maint::pick(v)? {
+            super::maint::Sel::Rec(x) => match &x.action {
+                crate::server::maint::recommend::Action::Fix(id) => {
+                    Some(ask_finding(v, r, super::maint::finding(v, id)?))
+                }
+                _ if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" => {
+                    ask_updates(v, r)
+                }
+                _ => None,
+            },
+            super::maint::Sel::Item(..) => None,
+        },
         Tab::Workflows => match wf {
             Some(s) => Some(ask_step(&h, r, s)),
             None => entry.map(|e| ask_workflow(&h, v, r, e)),

@@ -344,7 +344,12 @@ fn overview_status_rows_jump_to_their_tab() {
     assert!(s.contains("1 of 3 containers not running"), "{s}");
     assert!(s.contains("sda ok 31°C") && s.contains("sdc asleep"), "{s}");
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Updates, "first row: reboot → Updates");
+    assert_eq!(a.tab, Tab::Maint, "first row: reboot → Maintenance");
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("A reboot has been pending") && s.contains("● reboot required"),
+        "its recommendation is selected, with the updates detail: {s}"
+    );
 }
 
 #[test]
@@ -375,7 +380,10 @@ fn tabs_and_badges() {
     let tabs = s.lines().nth(1).unwrap();
     assert!(tabs.contains("2 Services 1"), "one failed unit: {tabs}");
     assert!(tabs.contains("3 Containers 1"), "db is down: {tabs}");
-    assert!(tabs.contains("4 Updates 4 ↻"), "{tabs}");
+    assert!(
+        !tabs.contains("Updates"),
+        "updates live on Maintenance: {tabs}"
+    );
     key(&mut a, KeyCode::Char('l'));
     assert_eq!(a.tab, Tab::Services);
     key(&mut a, KeyCode::Char('h'));
@@ -515,28 +523,25 @@ fn password_sudo_hands_over_the_terminal() {
         Kind::Sudo,
         Payload::Sudo(crate::server::remote::SudoMode::Password),
     );
-    key(&mut a, KeyCode::Char('4'));
-    key(&mut a, KeyCode::Char('U'));
+    key(&mut a, KeyCode::Char(Tab::Services.key()));
+    key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("Install 4 update(s)") && s.contains("It also removes: oldpkg"),
-        "{s}"
-    );
     assert!(s.contains("terminal is handed over"), "{s}");
     key(&mut a, KeyCode::Char('y'));
-    let (cmd, banner) = a.take_suspend().expect("suspends");
+    let (cmd, _banner) = a.take_suspend().expect("suspends");
     assert!(
         cmd.remote_line()
-            .contains("sudo env DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade")
+            .contains("sudo systemctl restart app.service"),
+        "{}",
+        cmd.remote_line()
     );
     assert!(!cmd.remote_line().contains("sudo -n"));
-    assert!(banner.contains("Upgrade packages on myserver"));
     data(
         &mut a,
         Kind::Sudo,
         Payload::Sudo(crate::server::remote::SudoMode::Absent),
     );
-    key(&mut a, KeyCode::Char('C'));
+    key(&mut a, KeyCode::Char('R'));
     assert!(render_to_string(&mut a, 158, 41).contains("has no sudo"));
 }
 
@@ -960,29 +965,37 @@ fn live_ask_boxes() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = App::new(Remote::new(n, s), tx);
     a.start(Instant::now());
-    for tab in [Tab::Updates, Tab::Workflows] {
-        let t0 = Instant::now();
-        a.enter(tab, Instant::now());
-        // Ask straight away (as you would), then again once the tab has loaded.
-        key(&mut a, KeyCode::Char('A'));
-        println!("{tab:?} at once:\n{}", render_to_string(&mut a, 158, 41));
-        key(&mut a, KeyCode::Esc);
-        while t0.elapsed() < std::time::Duration::from_secs(20) {
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
             if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 a.on_event(ev, Instant::now());
             }
             a.tick(Instant::now());
-            if tab != Tab::Updates || a.store.apt.value.is_some() {
-                break;
-            }
         }
-        println!("{tab:?} loaded after {:?}", t0.elapsed());
-        key(&mut a, KeyCode::Char('A'));
-        let s = render_to_string(&mut a, 158, 41);
-        println!("{s}");
-        assert!(s.contains("Ask Claude"), "{tab:?}: no consent box");
-        key(&mut a, KeyCode::Esc);
-    }
+    };
+    // Updates: A on their recommendation, once Maintenance has loaded.
+    a.enter(Tab::Maint, Instant::now());
+    pump(&mut a, 15);
+    a.apply(
+        vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Char('A'));
+    let s = render_to_string(&mut a, 158, 41);
+    println!("{s}");
+    assert!(
+        s.contains("Ask Claude"),
+        "no consent box on the updates recommendation"
+    );
+    key(&mut a, KeyCode::Esc);
+    // A workflow, before it starts.
+    a.enter(Tab::Workflows, Instant::now());
+    pump(&mut a, 1);
+    key(&mut a, KeyCode::Char('A'));
+    let s = render_to_string(&mut a, 158, 41);
+    println!("{s}");
+    assert!(s.contains("Ask Claude"), "no consent box on Workflows");
 }
 
 #[test]
@@ -1048,10 +1061,15 @@ fn ask_works_on_workflows_and_updates() {
         "no run in progress: asks about the selected workflow\n{s}"
     );
     key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char(Tab::Updates.key()));
+    // Updates live on Maintenance now: A on their recommendation.
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
+        Instant::now(),
+    );
     key(&mut a, KeyCode::Char('A'));
-    let s = screen(&mut a);
-    assert!(s.contains("Ask Claude") && s.contains("Selected:"), "{s}");
+    let prompt = a.consent_text().expect("consent");
+    assert!(prompt.contains("Updates (simulated)"), "{prompt}");
 }
 
 /// Against a disposable sshd whose sudo asks for a password (never the real server): a sudo

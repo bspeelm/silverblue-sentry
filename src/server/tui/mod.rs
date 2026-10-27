@@ -45,18 +45,16 @@ pub enum Tab {
     Overview,
     Services,
     Containers,
-    Updates,
     Audit,
     Maint,
     Workflows,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Overview,
         Tab::Services,
         Tab::Containers,
-        Tab::Updates,
         Tab::Audit,
         Tab::Maint,
         Tab::Workflows,
@@ -67,7 +65,6 @@ impl Tab {
             Tab::Overview => '1',
             Tab::Services => '2',
             Tab::Containers => '3',
-            Tab::Updates => '4',
             Tab::Audit => '5',
             Tab::Maint => '6',
             Tab::Workflows => '0',
@@ -79,7 +76,6 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Services => "Services",
             Tab::Containers => "Containers",
-            Tab::Updates => "Updates",
             Tab::Audit => "Audit",
             Tab::Maint => "Maintenance",
             Tab::Workflows => "Workflows",

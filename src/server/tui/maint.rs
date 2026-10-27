@@ -119,6 +119,11 @@ pub fn row_key(v: &View) -> Option<String> {
     }
 }
 
+/// The key of the row at index `i` (after a jump).
+pub fn row_key_at(v: &View, i: usize) -> Option<String> {
+    recs(v).get(i).map(|r| format!("rec:{}:{}", r.key, r.title))
+}
+
 /// The row with that key now, if it's still there.
 pub fn row_with(v: &View, key: &str) -> Option<usize> {
     if let Some(id) = key.strip_prefix("item:") {
@@ -373,6 +378,11 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             {
                 l.push(Line::raw(""));
                 l.extend(detail(v, s, it));
+            }
+            // Updates and the reboot: what's waiting, as the Updates tab showed it.
+            if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" {
+                l.push(Line::raw(""));
+                l.extend(super::tabs::updates_lines(v));
             }
             if let Action::Fix(id) = &x.action
                 && let Some(f) = finding(v, id)

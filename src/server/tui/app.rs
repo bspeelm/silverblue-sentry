@@ -74,6 +74,8 @@ pub enum Effect {
     StartWorkflow(String),
     /// Ask Claude how to fix an audit finding (the consent box first).
     FixFinding(String),
+    /// Select the first Maintenance recommendation whose key starts with this.
+    MaintFind(String),
     /// Select an item's row on Maintenance.
     MaintJump(String),
     /// Claude writes the plan (after the confirm box): item, the new plan, the request.
@@ -194,7 +196,7 @@ pub struct App {
     keys: Keymap,
     pub store: Store,
     pub tab: Tab,
-    cursors: [usize; 7],
+    cursors: [usize; 6],
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
@@ -263,7 +265,7 @@ pub struct App {
     /// A workflow's vars being asked for.
     var_input: Option<VarInput>,
     /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 7],
+    filters: [String; 6],
     filtering: bool,
     pub quit: bool,
     pub dirty: bool,
@@ -283,7 +285,7 @@ impl App {
             keys,
             store: Store::default(),
             tab: Tab::Overview,
-            cursors: [0; 7],
+            cursors: [0; 6],
             modal: None,
             modal_no: None,
             toast: None,
@@ -380,12 +382,12 @@ impl App {
                 self.fetch(Kind::Journal);
             }
             Tab::Containers => self.fetch(Kind::Docker),
-            Tab::Updates => self.fetch_apt_if_stale(),
             Tab::Audit => self.fetch(Kind::Report),
             Tab::Maint => {
                 self.fetch(Kind::Maint);
                 self.fetch(Kind::Docker);
                 self.fetch(Kind::Report);
+                self.fetch_apt_if_stale();
                 // Upstream changes slowly: looked up again at most daily without `c`.
                 let stale = self
                     .store
@@ -1059,6 +1061,17 @@ impl App {
                     }
                 }
                 Effect::StartWorkflow(name) => self.command(&format!("wf {name}"), now),
+                Effect::MaintFind(prefix) => {
+                    let v = self.view();
+                    if let Some(i) = super::maint::recs(&v)
+                        .iter()
+                        .position(|r| r.key.starts_with(&prefix))
+                    {
+                        let key = super::maint::row_key_at(&v, i);
+                        self.cursors[Tab::Maint.index()] = i;
+                        self.maint_sel = key;
+                    }
+                }
                 Effect::FixFinding(id) => {
                     if !claude::available() {
                         self.toast("Claude Code isn't installed (or not on PATH)");

@@ -77,7 +77,6 @@ pub fn rows(tab: Tab, v: &View) -> usize {
         Tab::Overview => status_rows(v).len(),
         Tab::Services => unit_rows(v).len(),
         Tab::Containers => container_list(v).len(),
-        Tab::Updates => upgrade_list(v).len(),
         Tab::Audit => findings(v).len(),
         Tab::Maint => super::maint::count(v),
         Tab::Workflows => 0,
@@ -94,7 +93,6 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("c", "cpu/mem"),
             ("r", "refresh"),
         ],
-        Tab::Updates => vec![("j/k", "select"), ("c", "check again")],
         Tab::Audit => vec![
             ("j/k", "select"),
             ("Enter", "details"),
@@ -131,7 +129,6 @@ pub fn refresh(tab: Tab) -> Vec<Effect> {
         .collect(),
         Tab::Services => vec![Effect::Fetch(Kind::Units), Effect::Fetch(Kind::Journal)],
         Tab::Containers => vec![Effect::Fetch(Kind::Docker)],
-        Tab::Updates => vec![Effect::Fetch(Kind::Apt)],
         Tab::Audit => vec![Effect::Fetch(Kind::Report)],
         Tab::Maint => vec![Effect::Fetch(Kind::Maint)],
         Tab::Workflows => Vec::new(),
@@ -144,7 +141,6 @@ pub fn check(tab: Tab) -> Vec<Effect> {
             Effect::Fetch(Kind::Stats),
             Effect::Toast("docker stats…".into()),
         ],
-        Tab::Updates => vec![Effect::Fetch(Kind::Apt)],
         Tab::Audit => vec![Effect::Fetch(Kind::Audit)],
         // Check everything: audit the server and look upstream up again.
         Tab::Maint => vec![
@@ -158,16 +154,23 @@ pub fn check(tab: Tab) -> Vec<Effect> {
 
 pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
     match tab {
-        Tab::Overview => status_rows(v)
-            .get(v.cur)
-            .and_then(|r| r.goto)
-            .map(|t| vec![Effect::Goto(t)])
-            .unwrap_or_default(),
+        Tab::Overview => match status_rows(v).get(v.cur) {
+            Some(StatusRow {
+                goto: Some(t),
+                pick,
+                ..
+            }) => {
+                let mut e = vec![Effect::Goto(*t)];
+                e.extend(pick.map(|p| Effect::MaintFind(p.into())));
+                e
+            }
+            _ => Vec::new(),
+        },
         Tab::Services => unit_detail(v),
         Tab::Containers => container_detail(v),
         Tab::Audit => finding_detail(v),
         Tab::Maint => super::maint::key('\n', v),
-        Tab::Updates | Tab::Workflows => Vec::new(),
+        Tab::Workflows => Vec::new(),
     }
 }
 
@@ -194,7 +197,6 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             Some(ct) => actions::containers(v, r, c, &ct.name, ct.compose.as_deref()),
             None => Vec::new(),
         },
-        (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
         (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         (Tab::Maint, 'R') => vec![Effect::ReviewOpen],
@@ -209,7 +211,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
 pub fn filterable(tab: Tab) -> bool {
     matches!(
         tab,
-        Tab::Services | Tab::Containers | Tab::Updates | Tab::Audit | Tab::Maint
+        Tab::Services | Tab::Containers | Tab::Audit | Tab::Maint
     )
 }
 
@@ -231,17 +233,6 @@ pub fn badge(tab: Tab, v: &View) -> Option<(String, Color)> {
                     .filter(|c| c.down() || c.health.as_deref() == Some("unhealthy"))
                     .count();
             (n > 0).then(|| (format!(" {n}"), t.red))
-        }
-        Tab::Updates => {
-            let a = v.s.apt.value.as_ref()?;
-            let sec = a.upgrades.iter().any(|p| p.kind == PkgKind::Security);
-            let reboot = if a.reboot_since.is_some() { " ↻" } else { "" };
-            (!a.upgrades.is_empty() || a.reboot_since.is_some()).then(|| {
-                (
-                    format!(" {}{reboot}", a.upgrades.len()),
-                    if sec { t.red } else { t.yellow },
-                )
-            })
         }
         Tab::Audit => {
             let r = v.s.report.value.as_ref()?.as_ref()?;
@@ -267,7 +258,6 @@ pub fn draw(f: &mut Frame, area: Rect, tab: Tab, v: &View) {
         Tab::Overview => overview(f, area, v),
         Tab::Services => services(f, area, v),
         Tab::Containers => containers(f, area, v),
-        Tab::Updates => updates(f, area, v),
         Tab::Audit => audit(f, area, v),
         Tab::Maint => super::maint::draw(f, area, v),
         Tab::Workflows => {}
@@ -313,6 +303,8 @@ struct StatusRow {
     icon: &'static str,
     text: String,
     goto: Option<Tab>,
+    /// On Maintenance: the recommendation to select (a key prefix).
+    pick: Option<&'static str>,
 }
 
 fn status_rows(v: &View) -> Vec<StatusRow> {
@@ -323,12 +315,14 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
         icon: "✓",
         text,
         goto,
+        pick: None,
     };
     let bad = |c, text: String, goto| StatusRow {
         color: c,
         icon: "●",
         text,
         goto,
+        pick: None,
     };
     let mut out = Vec::new();
     if let Some((_, why)) = &s.unreachable {
@@ -357,8 +351,11 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
                         t.yellow
                     },
                     format!("reboot required for {}{k}", fmt::age(a.now - since)),
-                    Some(Tab::Updates),
+                    Some(Tab::Maint),
                 ));
+                if let Some(r) = out.last_mut() {
+                    r.pick = Some("reboot");
+                }
             }
             let sec = a
                 .upgrades
@@ -372,16 +369,22 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
                         "{sec} security update(s) waiting ({} in all)",
                         a.upgrades.len()
                     ),
-                    Some(Tab::Updates),
+                    Some(Tab::Maint),
                 ));
+                if let Some(r) = out.last_mut() {
+                    r.pick = Some("wf:apt-maintenance");
+                }
             } else if !a.upgrades.is_empty() {
                 out.push(bad(
                     t.yellow,
                     format!("{} update(s) waiting", a.upgrades.len()),
-                    Some(Tab::Updates),
+                    Some(Tab::Maint),
                 ));
+                if let Some(r) = out.last_mut() {
+                    r.pick = Some("wf:apt-maintenance");
+                }
             } else {
-                out.push(ok("packages up to date".into(), Some(Tab::Updates)));
+                out.push(ok("packages up to date".into(), Some(Tab::Maint)));
             }
         }
         None => out.push(StatusRow {
@@ -392,7 +395,8 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
                 .err
                 .as_ref()
                 .map_or("reading updates…".into(), |e| format!("updates: {e}")),
-            goto: Some(Tab::Updates),
+            goto: Some(Tab::Maint),
+            pick: None,
         }),
     }
     if let Some(u) = &s.units.value {
@@ -491,6 +495,7 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
             icon: "·",
             text: format!("containers: {e}"),
             goto: Some(Tab::Containers),
+            pick: None,
         });
     }
     match s.report.value.as_ref().map(|r| r.as_deref()) {
@@ -513,6 +518,7 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
             icon: "·",
             text: "no audit yet: c on Audit".into(),
             goto: Some(Tab::Audit),
+            pick: None,
         }),
         None => {}
     }
@@ -1089,17 +1095,12 @@ fn container_detail(v: &View) -> Vec<Effect> {
 
 // ---------- Updates ----------
 
-fn updates(f: &mut Frame, area: Rect, v: &View) {
+/// What's waiting in packages: reboot, refresh times, held back, then each update (security
+/// first). The details of the updates and reboot recommendations on Maintenance.
+pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
     let t = v.t;
     let Some(a) = &v.s.apt.value else {
-        let b = panel(t, "Updates", "");
-        let r = inner(&b, area);
-        f.render_widget(b, area);
-        f.render_widget(
-            Paragraph::new(waiting(v, &v.s.apt, "apt (simulated upgrade)")),
-            r,
-        );
-        return;
+        return vec![waiting(v, &v.s.apt, "apt (simulated upgrade)")];
     };
     let mut info = Vec::new();
     match a.reboot_since {
@@ -1159,70 +1160,31 @@ fn updates(f: &mut Frame, area: Rect, v: &View) {
             t.s(t.yellow),
         ));
     }
-    let [top, rest] = Layout::vertical([
-        Constraint::Length(info.len() as u16 + 2),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    let b = panel(
-        t,
-        "Updates",
-        "simulated with apt-get -s; nothing is installed from here yet",
-    );
-    let r = inner(&b, top);
-    f.render_widget(b, top);
-    f.render_widget(Paragraph::new(info).wrap(Wrap { trim: false }), r);
-    let b = panel(t, "Packages", format!("{} to upgrade", a.upgrades.len()));
-    let r = inner(&b, rest);
-    f.render_widget(b, rest);
-    let rows: Vec<Row> = upgrade_list(v)
-        .into_iter()
-        .map(|p| {
+    if !a.upgrades.is_empty() {
+        info.push(Line::raw(""));
+        info.push(Line::styled(
+            format!("{} update(s), simulated with apt-get -s:", a.upgrades.len()),
+            t.dim(),
+        ));
+        let mut pkgs: Vec<&Pkg> = a.upgrades.iter().collect();
+        pkgs.sort_by(|x, y| x.kind.cmp(&y.kind).then(x.name.cmp(&y.name)));
+        for p in pkgs {
             let (k, c) = match p.kind {
                 PkgKind::Security => ("security", t.red),
                 PkgKind::Updates => ("update", t.fg),
                 PkgKind::Other => ("vendor", t.cyan),
             };
-            Row::new(vec![
-                Cell::from(p.name.clone()).style(t.fg()),
-                Cell::from(p.old.clone().unwrap_or_else(|| "(new)".into())).style(t.dim()),
-                Cell::from(p.new.clone()).style(t.fg()),
-                Cell::from(k).style(t.s(c)),
-                Cell::from(p.origin.clone()).style(t.dim()),
-            ])
-        })
-        .collect();
-    widgets::table(
-        f,
-        r,
-        t,
-        TableSpec {
-            header: vec!["Package", "Installed", "New", "Kind", "From"],
-            widths: vec![
-                Constraint::Fill(2),
-                Constraint::Fill(2),
-                Constraint::Fill(2),
-                Constraint::Length(9),
-                Constraint::Fill(2),
-            ],
-            rows,
-            selected: Some(v.cur),
-        },
-    );
-}
-
-/// Packages in table order (security first), filtered.
-fn upgrade_list<'a>(v: &View<'a>) -> Vec<&'a Pkg> {
-    let Some(a) = &v.s.apt.value else {
-        return Vec::new();
-    };
-    let mut pkgs: Vec<&Pkg> = a
-        .upgrades
-        .iter()
-        .filter(|p| v.matches(&[&p.name, &p.new, &p.origin]))
-        .collect();
-    pkgs.sort_by(|x, y| x.kind.cmp(&y.kind).then(x.name.cmp(&y.name)));
-    pkgs
+            info.push(Line::from(vec![
+                Span::styled(format!("{k:<9}"), t.s(c)),
+                Span::styled(p.name.clone(), t.fg()),
+                Span::styled(
+                    format!(" {} → {}", p.old.as_deref().unwrap_or("(new)"), p.new),
+                    t.dim(),
+                ),
+            ]));
+        }
+    }
+    info
 }
 
 // ---------- Audit ----------
@@ -1382,10 +1344,6 @@ pub fn status_text(v: &View) -> Vec<String> {
         .into_iter()
         .map(|r| format!("{} {}", r.icon, r.text))
         .collect()
-}
-
-pub fn selected_upgrade<'a>(v: &View<'a>) -> Option<&'a Pkg> {
-    upgrade_list(v).get(v.cur).copied()
 }
 
 pub fn selected_finding<'a>(v: &View<'a>) -> Option<&'a Finding> {
