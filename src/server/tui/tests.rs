@@ -46,6 +46,7 @@ fn cfg() -> Server {
         maintenance: crate::server::config::Maintenance {
             notes: vec!["~/notes/runbook.md".into()],
             items: maint_items(),
+            ..Default::default()
         },
         ..Default::default()
     }

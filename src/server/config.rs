@@ -51,9 +51,12 @@ pub struct Server {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct Maintenance {
-    /// Local files Claude may read when assessing a change (runbooks, notes).
+    /// Local files Claude may read when planning or reviewing (runbooks, notes).
     pub notes: Vec<String>,
     pub items: Vec<MaintItem>,
+    /// How often a routine workflow should run (`apt-maintenance: 30d`): recommended when
+    /// the maintenance log says it last ran longer ago than that.
+    pub cadence: BTreeMap<String, Dur>,
 }
 
 /// One thing kept at a deliberate version: an image, held packages, or an app on the host.
@@ -111,7 +114,7 @@ pub struct Retire {
 
 /// How risky a change to it is: low (routine), medium (have a rollback ready), high (can
 /// break things or can't be undone: back up first, in a window). Shown, and told to Claude.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Risk {
     #[serde(alias = "green")]

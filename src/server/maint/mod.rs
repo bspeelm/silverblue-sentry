@@ -2,10 +2,13 @@
 //! server_config.yaml), what's newer upstream, and when to look again. Nothing here changes
 //! the server: changes go through a workflow, one item at a time.
 
+pub mod discover;
 pub mod eval;
 pub mod local;
 pub mod log;
 pub mod plan;
+pub mod recommend;
+pub mod tracked;
 pub mod upstream;
 pub mod version;
 

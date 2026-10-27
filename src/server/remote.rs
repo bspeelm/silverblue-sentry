@@ -60,11 +60,13 @@ pub struct Remote {
 }
 
 impl Remote {
+    /// A server, with the maintenance items sentry-server tracks for it added to its config.
     pub fn new(name: &str, cfg: &Server) -> Self {
+        let tracked = super::maint::tracked::load(name);
         Self {
             name: name.to_string(),
             host: config::host(cfg.ssh_target(name)),
-            cfg: Arc::new(cfg.clone()),
+            cfg: Arc::new(super::maint::tracked::merged(cfg, &tracked)),
             inventory: false,
         }
     }
