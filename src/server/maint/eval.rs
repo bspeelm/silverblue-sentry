@@ -9,7 +9,7 @@ use super::local::Local;
 use super::upstream::{self, Eol, Lookups, Release};
 use super::{State, version};
 use crate::audit::{Finding, Sev};
-use crate::server::config::{MaintItem, Tier};
+use crate::server::config::{MaintItem, Risk};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +56,7 @@ impl Flag {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub id: String,
-    pub tier: Tier,
+    pub risk: Risk,
     pub pinned: Option<String>,
     pub running: Option<String>,
     /// The newest upstream release that counts (or apt's candidate).
@@ -100,7 +100,7 @@ fn one(
     let l = l.cloned().unwrap_or_default();
     let mut s = Status {
         id: it.id.clone(),
-        tier: it.tier,
+        risk: it.risk,
         pinned: l.pinned.clone(),
         running: l.running.clone(),
         review_by: state.snooze.get(&it.id).copied().or(it.review_by),
@@ -347,7 +347,7 @@ mod tests {
         let engine = MaintItem {
             id: "engine".into(),
             apt: vec!["engine-pkg".into()],
-            tier: Tier::Red,
+            risk: Risk::High,
             ..Default::default()
         };
         let legacy = MaintItem {

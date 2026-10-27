@@ -74,7 +74,9 @@ pub struct MaintItem {
     pub source: Option<String>,
     /// Which upstream tags count, as a glob (`*-alpine`); default: plain version numbers.
     pub tag: Option<String>,
-    pub tier: Tier,
+    /// How risky a change to it is (`tier:` and green/amber/red are still read).
+    #[serde(alias = "tier")]
+    pub risk: Risk,
     /// Why it's held where it is.
     pub hold: Option<String>,
     /// What limits the choice of version.
@@ -107,22 +109,26 @@ pub struct Retire {
     pub workflow: Option<String>,
 }
 
-/// How careful a change to it must be: shown, and named to Claude when assessing.
+/// How risky a change to it is: low (routine), medium (have a rollback ready), high (can
+/// break things or can't be undone: back up first, in a window). Shown, and told to Claude.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum Tier {
-    Green,
+pub enum Risk {
+    #[serde(alias = "green")]
+    Low,
     #[default]
-    Amber,
-    Red,
+    #[serde(alias = "amber")]
+    Medium,
+    #[serde(alias = "red")]
+    High,
 }
 
-impl Tier {
+impl Risk {
     pub fn as_str(self) -> &'static str {
         match self {
-            Tier::Green => "green",
-            Tier::Amber => "amber",
-            Tier::Red => "red",
+            Risk::Low => "low",
+            Risk::Medium => "medium",
+            Risk::High => "high",
         }
     }
 }
@@ -475,5 +481,21 @@ mod tests {
         assert_eq!(pick(&f, Some("b")).unwrap().0, "b");
         assert!(pick(&f, Some("c")).is_err());
         assert_eq!(host("a"), host("a"));
+    }
+
+    #[test]
+    fn risk_reads_the_old_tier_names_too() {
+        let (f, w) = parse(
+            "servers:\n  s:\n    maintenance:\n      items:\n        - {id: a, version_cmd: x, tier: red}\n        - {id: b, version_cmd: x, risk: low}\n        - {id: c, version_cmd: x}\n",
+        )
+        .unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let r: Vec<Risk> = f.servers["s"]
+            .maintenance
+            .items
+            .iter()
+            .map(|i| i.risk)
+            .collect();
+        assert_eq!(r, [Risk::High, Risk::Low, Risk::Medium]);
     }
 }

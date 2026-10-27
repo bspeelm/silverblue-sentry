@@ -29,7 +29,9 @@ pub struct LogHead {
     pub result: String,
     pub from: Option<String>,
     pub to: Option<String>,
-    pub tier: Option<String>,
+    /// low, medium or high (older entries say green/amber/red under `tier`).
+    #[serde(alias = "tier")]
+    pub risk: Option<String>,
     pub started: Option<jiff::Timestamp>,
     pub ended: Option<jiff::Timestamp>,
     pub duration_s: Option<i64>,
@@ -40,7 +42,7 @@ pub struct LogHead {
     /// The plan it applied (in plans/done/), and the run's own directory (step logs).
     pub plan: Option<String>,
     pub run: Option<String>,
-    /// `server:myserver item:web kind:image workflow:compose-bump result:done tier:red …`
+    /// `server:myserver item:web kind:image workflow:compose-bump result:done risk:high …`
     pub tags: Vec<String>,
     /// One line for the ledger: the note's first line, or what went wrong.
     pub summary: String,
@@ -80,7 +82,7 @@ pub struct LogEntry {
 pub struct ItemInfo {
     pub item: String,
     pub kind: String,
-    pub tier: String,
+    pub risk: String,
     pub from: Option<String>,
     pub to: Option<String>,
     pub plan: Option<PathBuf>,
@@ -117,7 +119,7 @@ impl LogEntry {
         if let Some(i) = info {
             h.item = Some(i.item.clone());
             h.kind = i.kind.clone();
-            h.tier = Some(i.tier.clone());
+            h.risk = Some(i.risk.clone());
             h.from = i.from.clone();
             h.to = i.to.clone();
             h.plan = i.plan.as_ref().map(|p| p.display().to_string());
@@ -164,7 +166,7 @@ impl LogEntry {
             Some(format!("kind:{}", h.kind)),
             Some(format!("workflow:{}", h.workflow)),
             Some(format!("result:{}", h.result)),
-            h.tier.as_ref().map(|t| format!("tier:{t}")),
+            h.risk.as_ref().map(|t| format!("risk:{t}")),
             h.to.as_ref().map(|t| format!("to:{t}")),
             (!h.failed.is_empty()).then(|| "had:failed-steps".to_string()),
             (!h.by_hand.is_empty()).then(|| "had:manual-steps".to_string()),
@@ -347,7 +349,7 @@ pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
          `kind` (image, packages, app, retire, release, system), `workflow`, `result` (done, \
          abandoned), `from`/`to`, `started`/`ended`, the steps that `failed`, were done \
          `by_hand` or `skipped`, the `plan` it applied, a one-line `summary`, and `tags` \
-         (`item:`, `kind:`, `workflow:`, `result:`, `tier:`, `to:`, `service:`, \
+         (`item:`, `kind:`, `workflow:`, `result:`, `risk:`, `to:`, `service:`, \
          `had:failed-steps`, `had:manual-steps`).\n\n\
          | When | Item | Kind | Change | Workflow | Result | Summary | Tags | Entry |\n\
          |---|---|---|---|---|---|---|---|---|\n"
@@ -424,7 +426,7 @@ mod tests {
         let info = ItemInfo {
             item: "web".into(),
             kind: "image".into(),
-            tier: "red".into(),
+            risk: "high".into(),
             from: Some("1.4.2".into()),
             to: Some("1.5.2".into()),
             plan: Some("/p/plans/done/web-1.md".into()),
@@ -449,7 +451,7 @@ mod tests {
             "kind:image",
             "workflow:compose-bump",
             "result:done",
-            "tier:red",
+            "risk:high",
             "to:1.5.2",
             "had:manual-steps",
             "service:web",

@@ -14,7 +14,7 @@ use super::app::Effect;
 use super::tabs::View;
 use crate::claude::Ask;
 use crate::fmt;
-use crate::server::config::{MaintItem, Tier};
+use crate::server::config::{MaintItem, Risk};
 use crate::server::maint::eval::{Flag, Status};
 use crate::server::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::server::maint::{self, local};
@@ -31,7 +31,7 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Status> {
             let flags: Vec<&str> = s.flags.iter().map(|f| f.word()).collect();
             v.matches(&[
                 &s.id,
-                s.tier.as_str(),
+                s.risk.as_str(),
                 &flags.join(" "),
                 s.pinned.as_deref().unwrap_or(""),
             ])
@@ -45,11 +45,11 @@ pub fn selected<'a>(v: &View<'a>) -> Option<(&'a Status, &'a MaintItem)> {
     Some((s, it))
 }
 
-fn tier_color(v: &View, t: Tier) -> Color {
+fn risk_color(v: &View, t: Risk) -> Color {
     match t {
-        Tier::Green => v.t.green,
-        Tier::Amber => v.t.yellow,
-        Tier::Red => v.t.red,
+        Risk::Low => v.t.green,
+        Risk::Medium => v.t.yellow,
+        Risk::High => v.t.red,
     }
 }
 
@@ -192,9 +192,9 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             };
             Row::new(vec![
                 Cell::from(s.id.clone()).style(t.fg()),
-                // The tier in colour only where it matters now: something to act on.
-                Cell::from(s.tier.as_str()).style(if needs_attention(v, s) {
-                    t.s(tier_color(v, s.tier))
+                // The risk in colour only where it matters now: something to act on.
+                Cell::from(s.risk.as_str()).style(if needs_attention(v, s) {
+                    t.s(risk_color(v, s.risk))
                 } else {
                     t.dim()
                 }),
@@ -212,11 +212,11 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
         t,
         TableSpec {
             header: vec![
-                "Item", "Tier", "Pinned", "Running", "Latest", "State", "Review",
+                "Item", "Risk", "Pinned", "Running", "Latest", "State", "Review",
             ],
             widths: vec![
                 Constraint::Fill(2),
-                Constraint::Length(5),
+                Constraint::Length(6),
                 Constraint::Fill(2),
                 Constraint::Length(14),
                 Constraint::Fill(2),
@@ -242,8 +242,8 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     let mut l = vec![Line::from(vec![
         Span::styled(s.id.clone(), t.s(t.cyan)),
         Span::styled(
-            format!("  {} tier", s.tier.as_str()),
-            t.s(tier_color(v, s.tier)),
+            format!("  {} risk", s.risk.as_str()),
+            t.s(risk_color(v, s.risk)),
         ),
     ])];
     let kv = |k: &str, val: String, c: Color| {
@@ -548,7 +548,7 @@ pub fn ask(v: &View, r: &Remote) -> Option<Ask> {
          **What changed**: breaking changes, one-way migrations, security fixes, and anything that \
          touches how this server uses it.\n\
          **Does the hold still apply**: is the reason it's held still true?\n\
-         **Recommendation**: wait, or which version, and which tier the change really is.\n\
+         **Recommendation**: wait, or which version, and how risky the change really is.\n\
          **Steps**: in the terms of its workflow (what to check before, what to watch after, how \
          to roll back). Don't change anything yourself.",
     ))
@@ -625,15 +625,15 @@ pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
         )
     };
     let ctx = format!(
-        "Server `{}`. Maintenance item `{}`: {what}, tier {} (green: routine, amber: has a rollback \
-         step, red: can break the server or needs a window).\nsource: {}\npinned: {}\nrunning: {}\n\
+        "Server `{}`. Maintenance item `{}`: {what}, risk {} (low: routine; medium: have a rollback \
+         ready; high: can break the server or can't be undone, needs a backup and a window).\nsource: {}\npinned: {}\nrunning: {}\n\
          newest upstream: {}\nnewer releases: {}\nheld because: {}\nconstraint: {}\nreview by: {}\n\
          end of life: {}\nworkflow that changes it: {}\nwhat runs it: {}\nthis item in the maintenance log: {}\n\
          maintenance ledger (every run on this server, with a one-line summary and tags each; \
          start there and read the entries that bear on this): {ledger}{notes}",
         r.name,
         s.id,
-        s.tier.as_str(),
+        s.risk.as_str(),
         it.source.as_deref().unwrap_or("apt / none"),
         s.pinned.as_deref().unwrap_or("?"),
         s.running.as_deref().unwrap_or("?"),

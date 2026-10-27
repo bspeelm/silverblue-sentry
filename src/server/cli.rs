@@ -339,7 +339,7 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
     let st = super::collect::maint_status(&r);
     println!(
         "{:<16} {:<6} {:<22} {:<22} {:<22} flags",
-        "item", "tier", "pinned", "running", "latest"
+        "item", "risk", "pinned", "running", "latest"
     );
     let cut = |s: &Option<String>| -> String {
         let s = s.as_deref().unwrap_or("-");
@@ -354,7 +354,7 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
         println!(
             "{:<16} {:<6} {:<22} {:<22} {:<22} {}",
             x.id,
-            x.tier.as_str(),
+            x.risk.as_str(),
             cut(&x.pinned),
             cut(&x.running),
             cut(&x.latest),

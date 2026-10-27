@@ -90,13 +90,13 @@ servers:
         - id: web
           image: {service: web}          # the pin is read from the compose file
           source: github:example/web     # or docker:repo, ghcr:owner/image
-          tier: amber                    # green | amber | red: how careful a change must be
+          risk: medium                   # low | medium | high: how risky a change to it is
           hold: "1.5 migrates the database one way; wait for 1.5.2"
           review_by: 2027-01-15          # findings about it wait until then (z moves it)
           workflow: compose-bump         # p plans the change with it
         - id: engine
           apt: [engine-pkg, engine-cli]  # held packages: installed vs apt's candidate
-          tier: red
+          risk: high
           hold: "an engine update restarts every container"
           eol: docker-engine/29          # endoflife.date product/cycle
         - id: app

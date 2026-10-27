@@ -52,7 +52,7 @@ fn cfg() -> Server {
 }
 
 fn maint_items() -> Vec<crate::server::config::MaintItem> {
-    use crate::server::config::{ImageRef, MaintItem, Retire, Tier};
+    use crate::server::config::{ImageRef, MaintItem, Retire, Risk};
     vec![
         MaintItem {
             id: "web".into(),
@@ -69,7 +69,7 @@ fn maint_items() -> Vec<crate::server::config::MaintItem> {
         MaintItem {
             id: "engine".into(),
             apt: vec!["engine-pkg".into()],
-            tier: Tier::Red,
+            risk: Risk::High,
             hold: Some("restarts every container".into()),
             ..Default::default()
         },
@@ -85,7 +85,7 @@ fn maint_items() -> Vec<crate::server::config::MaintItem> {
         MaintItem {
             id: "os".into(),
             eol: Some("debian/12".into()),
-            tier: Tier::Red,
+            risk: Risk::High,
             ..Default::default()
         },
     ]
@@ -1745,7 +1745,7 @@ fn a_read_from_before_the_last_change_says_so() {
 }
 
 #[test]
-fn the_tier_is_coloured_only_where_something_needs_doing() {
+fn the_risk_is_coloured_only_where_something_needs_doing() {
     let mut a = app();
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     let backend = ratatui::backend::TestBackend::new(158, 41);
@@ -1761,10 +1761,10 @@ fn the_tier_is_coloured_only_where_something_needs_doing() {
             })
             .unwrap()
     };
-    let tier_fg = |y: u16| {
+    let risk_fg = |y: u16| {
         let x = (0..158)
             .find(|&x| {
-                ["amber", "red"].iter().any(|w| {
+                ["medium", "high"].iter().any(|w| {
                     (0..w.len() as u16)
                         .all(|i| buf[(x + i, y)].symbol() == &w[i as usize..i as usize + 1])
                 })
@@ -1772,7 +1772,7 @@ fn the_tier_is_coloured_only_where_something_needs_doing() {
             .unwrap();
         buf[(x, y)].fg
     };
-    // web: a security release → its tier in colour; engine: held, nothing due → dimmed.
-    assert_eq!(tier_fg(row_of("web")), t.yellow, "amber, coloured");
-    assert_eq!(tier_fg(row_of("engine")), t.dim, "held and not due: dim");
+    // web: a security release → its risk in colour; engine: held, nothing due → dimmed.
+    assert_eq!(risk_fg(row_of("web")), t.yellow, "medium, coloured");
+    assert_eq!(risk_fg(row_of("engine")), t.dim, "held and not due: dim");
 }

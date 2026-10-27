@@ -158,7 +158,7 @@ pub fn request(
         "{context}\n\nThe workflow that will apply it ({workflow}), step by step:\n{steps}{}\n\n\
          Write the execution plan for {goal}. Sections, each with the exact commands:\n\
          ## Assessment: what changes (breaking changes, one-way migrations, security fixes), \
-         whether the reason it's held still applies, and the real tier.\n\
+         whether the reason it's held still applies, and how risky it really is (low, medium, high).\n\
          ## History: what the maintenance log says that bears on this (the entries you read, \
          by file name), or that it has nothing relevant.\n\
          ## Before: checks and backups to make first.\n\

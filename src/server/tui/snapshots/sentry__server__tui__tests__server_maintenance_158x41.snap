@@ -6,11 +6,11 @@ expression: body(&s)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Maintenance · 4 items · upstream not looked up (c) ──────────────────────────────────────┐┌ Details ───────────────────────────────────────────────────────┐
-│ Item        Tier  Pinned       Running        Latest      State               Review     ││ web  amber tier                                                │
-│ web         amber 1.4.2        =              v1.5.2      security · 2 newer  2027-01-15 ││ pinned    1.4.2                                                │
-│ engine      red   5:24.3.1-1   =              5:24.4.0-1  held · 1 newer                 ││ latest    v1.5.2                                               │
-│ legacy      amber -            -              -           to retire                      ││ review    2027-01-15                                           │
-│ os          red   12           -              12.12       eol soon                       ││                                                                │
+│ Item        Risk   Pinned      Running        Latest      State               Review     ││ web  medium risk                                               │
+│ web         medium 1.4.2       =              v1.5.2      security · 2 newer  2027-01-15 ││ pinned    1.4.2                                                │
+│ engine      high   5:24.3.1-1  =              5:24.4.0-1  held · 1 newer                 ││ latest    v1.5.2                                               │
+│ legacy      medium -           -              -           to retire                      ││ review    2027-01-15                                           │
+│ os          high   12          -              12.12       eol soon                       ││                                                                │
 │                                                                                          ││ Held because                                                   │
 │                                                                                          ││ 1.5 migrates the database one way                              │
 │                                                                                          ││                                                                │

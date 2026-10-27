@@ -1267,7 +1267,7 @@ impl App {
             log::ItemInfo {
                 item: c.item.clone(),
                 kind: it.map_or("system", item_kind).to_string(),
-                tier: it.map_or("amber", |i| i.tier.as_str()).to_string(),
+                risk: it.map_or("medium", |i| i.risk.as_str()).to_string(),
                 from: c.from.clone(),
                 to: c.to.clone(),
                 plan: plan_path,
@@ -1366,7 +1366,7 @@ impl App {
                         .map(|item| crate::server::maint::log::ItemInfo {
                             item: item.clone(),
                             kind: entry.head.kind.clone(),
-                            tier: entry.head.tier.clone().unwrap_or_default(),
+                            risk: entry.head.risk.clone().unwrap_or_default(),
                             from: entry.head.from.clone(),
                             to: entry.head.to.clone(),
                             plan: entry.head.plan.clone().map(Into::into),
