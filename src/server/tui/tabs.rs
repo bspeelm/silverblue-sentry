@@ -98,6 +98,7 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("p", "plan"),
             ("Enter", "open plan"),
             ("x", "drop plan"),
+            ("v", "log"),
             ("z", "later"),
             ("c", "look up"),
             ("e", "edit"),
@@ -184,6 +185,9 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
         (Tab::Maint, 'z' | 'p' | 'P' | 'x') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
+        (Tab::Maint, 'v') => vec![Effect::LogOpen(
+            super::maint::selected(v).map(|(s, _)| s.id.clone()),
+        )],
         _ => Vec::new(),
     }
 }

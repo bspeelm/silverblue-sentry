@@ -1586,12 +1586,22 @@ fn live_plan() {
     // Leave the Plan view and move about meanwhile: it's still written and saved.
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char(Tab::Overview.key()));
-    for _ in 0..200 {
+    let mut asked = false;
+    for _ in 0..300 {
         pump(&mut a, 3);
-        if !a.writing() {
+        // Claude stopped for reads that need root: skip them here (no password in a test);
+        // it then writes the plan without them.
+        if let Some(reads) = a.take_reads_box() {
+            println!("Claude asked to read with sudo first: {reads:?}");
+            asked = true;
+            key(&mut a, KeyCode::Char('n'));
+            continue;
+        }
+        if !a.writing() && a.store.plans.contains_key(&item) {
             break;
         }
     }
+    println!("asked for reads before writing: {asked}");
     pump(&mut a, 1);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Enter);
@@ -1651,4 +1661,64 @@ fn live_claude_reads() {
         .unwrap();
     println!("{sent}");
     assert!(sent.contains("$ sudo docker ps -aq   (exit 0)") && sent.contains("aaa111"));
+}
+
+#[test]
+fn the_maintenance_log_can_be_reviewed() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('v'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Maintenance log") && s.contains("Nothing logged yet"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(a.log_view.is_none());
+    // With entries: the ledger as a list, the item's entries marked; Enter opens one.
+    let entry = |text: &str| crate::server::maint::log::LogEntry::parse(text).unwrap();
+    let web = entry(
+        "+++\nserver = \"myserver\"\nitem = \"web\"\nkind = \"image\"\nworkflow = \"compose-bump\"\n\
+         result = \"done\"\nfrom = \"1.4.2\"\nto = \"1.5.1\"\nended = \"2026-10-20T10:00:00Z\"\n\
+         summary = \"health check slow; fine\"\ntags = [\"item:web\", \"result:done\"]\n+++\n\n\
+         # web 1.4.2 → 1.5.1 · compose-bump · done\n\n## Summary\n\nhealth check slow; fine\n\n\
+         ## Steps\n\n| # | Step | Result |\n|---|---|---|\n| 1 | Change the pin (`pin`) | ok |",
+    );
+    let apt = entry(
+        "+++\nserver = \"myserver\"\nkind = \"system\"\nworkflow = \"apt-maintenance\"\n\
+         result = \"abandoned\"\nended = \"2026-10-25T09:00:00Z\"\nsummary = \"mirror down\"\n+++\n\n# apt",
+    );
+    a.log_view = Some(super::planview::LogView {
+        entries: vec![apt, web],
+        cur: 1,
+        open: None,
+        item: Some("web".into()),
+    });
+    let s = screen(&mut a);
+    assert!(s.contains("2 run(s)") && s.contains("mirror down"), "{s}");
+    assert!(
+        s.contains("● 2026-10-20 10:00") && s.contains("1.4.2 → 1.5.1"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("2026-10-20-1000-web-compose-bump.md") && s.contains("item:web result:done"),
+        "{s}"
+    );
+    assert!(
+        s.contains("health check slow; fine") && s.contains("Change the pin"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("2 run(s)"), "back to the list");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.log_view.is_none());
+    // :log from anywhere.
+    for c in ":log".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(a.log_view.is_some());
 }

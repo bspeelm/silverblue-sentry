@@ -58,6 +58,8 @@ pub enum Effect {
     ReadsSkipped,
     /// Open an item's plan in the Plan view.
     PlanOpen(String),
+    /// Open the maintenance log, marking this item's entries.
+    LogOpen(Option<String>),
     /// Claude writes the plan (after the confirm box): item, the new plan, the request.
     PlanWrite(String, PlanDoc, String),
     /// Look at a maintenance item again later (`z`).
@@ -213,6 +215,8 @@ pub struct App {
     plan_view: Option<(String, usize)>,
     /// What to change in the plan (`r` in the Plan view), being typed.
     revise_input: Option<String>,
+    /// The Log view (`v` on Maintenance, `:log`).
+    pub log_view: Option<planview::LogView>,
     /// The suspended command runs Claude's read requests.
     suspend_reads: Option<(Vec<Vec<String>>, ReadsFor)>,
     run_seq: u64,
@@ -277,6 +281,7 @@ impl App {
             writer: None,
             plan_view: None,
             revise_input: None,
+            log_view: None,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
@@ -695,6 +700,10 @@ impl App {
             self.log_note_key(k);
             return;
         }
+        if self.log_view.is_some() && self.modal.is_none() {
+            self.log_view_key(k);
+            return;
+        }
         if self.plan_view.is_some()
             && self.modal.is_none()
             && self.chooser.is_none()
@@ -941,6 +950,7 @@ impl App {
                     self.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::LogOpen(item) => self.open_log(item),
                 Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
                 Effect::PlanWrite(id, doc, prompt) => self.write_plan(id, doc, prompt, None),
                 Effect::Snooze(id, until) => {
@@ -1932,6 +1942,54 @@ impl App {
         );
     }
 
+    fn open_log(&mut self, item: Option<String>) {
+        let entries = if self.offline {
+            Vec::new()
+        } else {
+            crate::server::maint::log::list(&self.remote.name)
+        };
+        // Start on the item's newest entry when there is one.
+        let cur = item
+            .as_ref()
+            .and_then(|i| entries.iter().position(|e| e.head.item.as_ref() == Some(i)))
+            .unwrap_or(0);
+        self.log_view = Some(planview::LogView {
+            entries,
+            cur,
+            open: None,
+            item,
+        });
+    }
+
+    /// Keys in the Log view: j/k pick a run, Enter opens it, Esc goes back a level.
+    fn log_view_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some(lv) = self.log_view.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        let n = lv.entries.len();
+        match (&mut lv.open, k.code) {
+            (Some(_), KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace) => lv.open = None,
+            (Some(s), KeyCode::Down | KeyCode::Char('j')) => *s += 1,
+            (Some(s), KeyCode::Up | KeyCode::Char('k')) => *s = s.saturating_sub(1),
+            (Some(s), KeyCode::PageDown | KeyCode::Char(' ')) => *s += 20,
+            (Some(s), KeyCode::PageUp) => *s = s.saturating_sub(20),
+            (Some(s), KeyCode::Home | KeyCode::Char('g')) => *s = 0,
+            (Some(s), KeyCode::End | KeyCode::Char('G')) => *s = usize::MAX / 2,
+            (Some(_), _) => {}
+            (None, KeyCode::Esc | KeyCode::Char('q')) => self.log_view = None,
+            (None, KeyCode::Down | KeyCode::Char('j')) => {
+                lv.cur = (lv.cur + 1).min(n.saturating_sub(1))
+            }
+            (None, KeyCode::Up | KeyCode::Char('k')) => lv.cur = lv.cur.saturating_sub(1),
+            (None, KeyCode::Home | KeyCode::Char('g')) => lv.cur = 0,
+            (None, KeyCode::End | KeyCode::Char('G')) => lv.cur = n.saturating_sub(1),
+            (None, KeyCode::Enter) if n > 0 => lv.open = Some(0),
+            _ => {}
+        }
+    }
+
     /// Keys in the Plan view: scroll, apply (Enter), revise (r), drop (x), back (Esc).
     fn plan_view_key(&mut self, k: KeyEvent, now: Instant) {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -2120,6 +2178,7 @@ impl App {
                 self.on_key(k, now);
             }
             (Some("audit"), Some("now")) => self.apply(vec![Effect::Fetch(Kind::Audit)], now),
+            (Some("log"), _) => self.open_log(None),
             (Some("workflow" | "wf"), name) => {
                 self.enter(Tab::Workflows, now);
                 if let Some(n) = name {
@@ -2658,7 +2717,17 @@ impl App {
             ),
             _ => tabs::draw(f, body, self.tab, &self.view()),
         }
-        if let Some((id, scroll)) = &self.plan_view {
+        if let Some(lv) = &self.log_view {
+            let d = crate::server::maint::log::dir(&self.remote.name)
+                .display()
+                .to_string();
+            let home = std::env::var("HOME").unwrap_or_default();
+            let d = match d.strip_prefix(&home) {
+                Some(r) if !home.is_empty() => format!("~{r}"),
+                _ => d,
+            };
+            super::planview::draw_log(f, body, &t, lv, &d);
+        } else if let Some((id, scroll)) = &self.plan_view {
             let path = crate::server::maint::plan::path(&self.remote.name, id)
                 .display()
                 .to_string();
@@ -2885,6 +2954,12 @@ impl App {
             }
         } else if let Some(c) = self.chat.as_ref().filter(|_| self.modal.is_none()) {
             chatmod::keys(c)
+        } else if let Some(lv) = self.log_view.as_ref().filter(|_| self.modal.is_none()) {
+            if lv.open.is_some() {
+                vec![("j/k PgUp/Dn", "scroll"), ("Esc", "back to the list")]
+            } else {
+                vec![("j/k", "select"), ("Enter", "open"), ("Esc", "back")]
+            }
         } else if let Some((id, _)) = self
             .plan_view
             .as_ref()
