@@ -146,9 +146,11 @@ pub fn check(tab: Tab) -> Vec<Effect> {
         ],
         Tab::Updates => vec![Effect::Fetch(Kind::Apt)],
         Tab::Audit => vec![Effect::Fetch(Kind::Audit)],
+        // Check everything: audit the server and look upstream up again.
         Tab::Maint => vec![
+            Effect::Fetch(Kind::Audit),
             Effect::Fetch(Kind::Upstream),
-            Effect::Toast("looking up newer versions…".into()),
+            Effect::Toast("auditing the server and looking up newer versions…".into()),
         ],
         t => refresh(t),
     }
@@ -1319,7 +1321,7 @@ fn audit(f: &mut Frame, area: Rect, v: &View) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
 }
 
-fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
+pub fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         x.message.clone(),
         t.s(if x.expected {

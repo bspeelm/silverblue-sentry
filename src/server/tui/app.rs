@@ -72,6 +72,8 @@ pub enum Effect {
     Untrack(String),
     /// Start a workflow (its start box first).
     StartWorkflow(String),
+    /// Ask Claude how to fix an audit finding (the consent box first).
+    FixFinding(String),
     /// Select an item's row on Maintenance.
     MaintJump(String),
     /// Claude writes the plan (after the confirm box): item, the new plan, the request.
@@ -383,6 +385,7 @@ impl App {
             Tab::Maint => {
                 self.fetch(Kind::Maint);
                 self.fetch(Kind::Docker);
+                self.fetch(Kind::Report);
                 // Upstream changes slowly: looked up again at most daily without `c`.
                 let stale = self
                     .store
@@ -1056,6 +1059,18 @@ impl App {
                     }
                 }
                 Effect::StartWorkflow(name) => self.command(&format!("wf {name}"), now),
+                Effect::FixFinding(id) => {
+                    if !claude::available() {
+                        self.toast("Claude Code isn't installed (or not on PATH)");
+                    } else {
+                        let v = self.view();
+                        if let Some(f) = super::maint::finding(&v, &id) {
+                            let ask = super::ask::ask_finding(&v, &self.remote, f);
+                            let text = ask.prompt();
+                            self.modal = Some(self.consent(&text, AskTurn::First(ask)));
+                        }
+                    }
+                }
                 Effect::MaintJump(id) => {
                     if let Some(i) = super::maint::row_of(&self.view(), &id) {
                         self.cursors[Tab::Maint.index()] = i;
@@ -2536,7 +2551,8 @@ impl App {
     fn ask_turn(&mut self, turn: AskTurn) {
         match turn {
             AskTurn::First(ask) => {
-                self.chat_assess = self.tab == Tab::Maint;
+                // Questions in the chat are never assessments now (plans assess).
+                self.chat_assess = false;
                 self.assess_item = if self.chat_assess {
                     super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
                 } else {

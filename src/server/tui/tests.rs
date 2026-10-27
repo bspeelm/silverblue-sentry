@@ -1431,37 +1431,35 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     let s = screen(&mut a);
-    assert!(s.contains("Recommended · 6"), "{s}");
+    assert!(s.contains("Recommended ·"), "{s}");
     assert!(s.contains("soon     os: end of life soon"), "{s}");
     assert!(s.contains("tidy     Track cache"), "{s}");
+    // Security updates are 'now', first; Enter starts the workflow that applies them.
     assert!(
-        s.contains("Enter: Claude writes a plan for os"),
-        "the selected one says what Enter does: {s}"
+        s.contains("now      4 package update(s) waiting, 1 fo"),
+        "{s}"
     );
-    // The reboot pending a week: Enter starts the workflow that reboots (its start box).
-    key(&mut a, KeyCode::Char('j'));
-    let s = screen(&mut a);
-    assert!(s.contains("Enter: start apt-maintenance"), "{s}");
+    assert!(
+        s.contains("Enter: start apt-maintenance"),
+        "the first row is selected: {s}"
+    );
     key(&mut a, KeyCode::Enter);
-    let s = screen(&mut a);
-    assert!(s.contains("Start apt-maintenance on myserver"), "{s}");
+    assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
     key(&mut a, KeyCode::Esc);
     // z puts one off.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 7 days"));
     key(&mut a, KeyCode::Esc);
-    // A tidy one: Track, x ignores (offline nothing is written; the box text is what counts).
-    let n = (0..10)
-        .find(|_| {
-            let found = screen(&mut a).contains("Enter or t: track it");
-            if !found {
-                key(&mut a, KeyCode::Char('j'));
-            }
-            found
-        })
-        .is_some();
-    assert!(n, "reached the Track row");
+    // A tidy one: Track.
+    let reached = (0..20).any(|_| {
+        let here = screen(&mut a).contains("Enter or t: track it");
+        if !here {
+            key(&mut a, KeyCode::Char('j'));
+        }
+        here
+    });
+    assert!(reached, "reached the Track row");
 }
 
 #[test]
@@ -1906,4 +1904,37 @@ fn live_recommend() {
     for g in &found.gone {
         println!("gone: {} · {}", g.id, g.why);
     }
+}
+
+#[test]
+fn audit_findings_are_recommendations() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    let s = screen(&mut a);
+    // The fixture report's findings, by severity; its srv:maint:* ones aren't repeated.
+    assert!(!s.contains("srv:maint:"), "{s}");
+    let rows: Vec<&str> = s.lines().filter(|l| l.contains("│ now ")).collect();
+    assert!(!rows.is_empty(), "high findings are 'now': {s}");
+    // Walk to the first finding and open it.
+    let mut found = false;
+    for _ in 0..30 {
+        if screen(&mut a).contains("Enter: ask Claude how to fix it") {
+            found = true;
+            break;
+        }
+        key(&mut a, KeyCode::Char('j'));
+    }
+    assert!(found, "a finding row");
+    let s = screen(&mut a);
+    assert!(
+        s.contains("What it is") || s.contains("what") || s.contains("Why"),
+        "its explanation: {s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let prompt = a
+        .consent_text()
+        .expect("the fix question in the consent box");
+    assert!(prompt.contains("Audit finding ("), "{prompt}");
+    key(&mut a, KeyCode::Esc);
 }

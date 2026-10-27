@@ -105,6 +105,26 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
     }
 }
 
+/// An audit finding: how to fix it (Enter on its recommendation, or `A`).
+pub fn ask_finding(v: &View, r: &Remote, f: &crate::audit::Finding) -> Ask {
+    let h = header(v, r);
+    Ask::new(
+        format!("{} · {}", r.name, f.message),
+        format!(
+            "{h}Audit finding ({}, {}): {}\nid: {}\nwhat: {}\nwhy: {}\nsuggested: {}\nevidence: {}",
+            f.severity.as_str(),
+            f.category,
+            f.message,
+            f.id,
+            f.what,
+            f.why,
+            f.fix,
+            f.evidence
+        ),
+        fix_question(ON_SERVER),
+    )
+}
+
 /// What `A` asks on each tab, from what's selected there. `entry`: the workflow selected on
 /// the Workflows tab when none is running.
 pub fn ask_for(
@@ -124,24 +144,7 @@ pub fn ask_for(
                 "How is this server doing? What needs attention, and what should I do first?",
             ))
         }
-        Tab::Audit => {
-            let f = super::tabs::selected_finding(v)?;
-            Some(Ask::new(
-                format!("{} · {}", r.name, f.message),
-                format!(
-                    "{h}Audit finding ({}, {}): {}\nid: {}\nwhat: {}\nwhy: {}\nsuggested: {}\nevidence: {}",
-                    f.severity.as_str(),
-                    f.category,
-                    f.message,
-                    f.id,
-                    f.what,
-                    f.why,
-                    f.fix,
-                    f.evidence
-                ),
-                fix_question(ON_SERVER),
-            ))
-        }
+        Tab::Audit => Some(ask_finding(v, r, super::tabs::selected_finding(v)?)),
         Tab::Services => {
             let u = super::tabs::selected_unit(v)?;
             Some(Ask::new(

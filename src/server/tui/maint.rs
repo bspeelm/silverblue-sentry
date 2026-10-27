@@ -53,9 +53,21 @@ pub fn recs(v: &View) -> Vec<Rec> {
         workflows: &v.s.workflows,
         snooze: &v.s.maint_state.snooze,
         now: v.now,
+        findings: report(v).map_or(&[][..], |r| &r.findings[..]),
+        audited: report(v).and_then(|r| r.snapshot.taken_at),
     });
     r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
     r
+}
+
+/// The latest audit report, when there is one.
+fn report<'a>(v: &View<'a>) -> Option<&'a crate::server::audit::Report> {
+    v.s.report.value.as_ref()?.as_deref()
+}
+
+/// A finding of the latest audit, by id.
+pub fn finding<'a>(v: &View<'a>, id: &str) -> Option<&'a crate::audit::Finding> {
+    report(v)?.findings.iter().find(|f| f.id == id)
 }
 
 /// The selected row: a recommendation (they come first) or an item.
@@ -140,6 +152,8 @@ fn action_words(a: &Action) -> String {
         Action::Track(_) => "Enter or t: track it · x: ignore it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
         Action::Look(_) => "Enter: go to the item".into(),
+        Action::Fix(_) => "Enter: ask Claude how to fix it · x: it's expected here".into(),
+        Action::Audit => "Enter (or c): audit the server now".into(),
     }
 }
 
@@ -359,6 +373,12 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             {
                 l.push(Line::raw(""));
                 l.extend(detail(v, s, it));
+            }
+            if let Action::Fix(id) = &x.action
+                && let Some(f) = finding(v, id)
+            {
+                l.push(Line::raw(""));
+                l.extend(super::tabs::finding_lines(t, f));
             }
             l
         }
@@ -651,6 +671,12 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         },
         ('\n' | 'x', Action::Remove(id)) => vec![Effect::Untrack(id.clone())],
         ('\n', Action::Look(id)) if !id.is_empty() => vec![Effect::MaintJump(id.clone())],
+        ('\n', Action::Fix(id)) => vec![Effect::FixFinding(id.clone())],
+        ('x', Action::Fix(id)) => vec![Effect::Expected(id.clone(), true)],
+        ('\n', Action::Audit) => vec![
+            Effect::Fetch(super::data::Kind::Audit),
+            Effect::Toast("auditing the server…".into()),
+        ],
         ('z', _) => later(&r.key, &r.title),
         // Plan keys work on the item the recommendation is about.
         ('p' | 'P' | 'x', _) => match r

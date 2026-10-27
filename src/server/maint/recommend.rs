@@ -45,6 +45,10 @@ pub enum Action {
     Remove(String),
     /// Look at the item (its details; nothing to run).
     Look(String),
+    /// An audit finding: ask Claude how to fix it (finding id).
+    Fix(String),
+    /// Audit the server now.
+    Audit,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,7 +74,13 @@ pub struct Inputs<'a> {
     /// Recommendations put off until a date (`z`), by key.
     pub snooze: &'a BTreeMap<String, jiff::civil::Date>,
     pub now: jiff::Timestamp,
+    /// The latest audit's findings, and when it was taken (None: no audit yet).
+    pub findings: &'a [crate::audit::Finding],
+    pub audited: Option<jiff::Timestamp>,
 }
+
+/// An audit older than this is due again.
+const AUDIT_EVERY_DAYS: i64 = 7;
 
 fn days(secs: i64) -> i64 {
     secs / 86_400
@@ -280,11 +290,29 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
     if let Some(a) = i.apt {
         let has = |w: &str| i.workflows.iter().any(|x| x == w);
         let apt_wf = "apt-maintenance";
-        if !a.upgrades.is_empty() && has(apt_wf) && !by_cadence.contains(&apt_wf) {
+        let security = a
+            .upgrades
+            .iter()
+            .filter(|p| p.kind == crate::server::collect::apt::Kind::Security)
+            .count();
+        // Security updates can't wait for the routine run.
+        if !a.upgrades.is_empty() && has(apt_wf) && (security > 0 || !by_cadence.contains(&apt_wf))
+        {
             out.push(Rec {
-                level: Level::Routine,
+                level: if security > 0 {
+                    Level::Now
+                } else {
+                    Level::Routine
+                },
                 key: format!("wf:{apt_wf}:updates"),
-                title: format!("{} package update(s) waiting", a.upgrades.len()),
+                title: if security > 0 {
+                    format!(
+                        "{} package update(s) waiting, {security} for security",
+                        a.upgrades.len()
+                    )
+                } else {
+                    format!("{} package update(s) waiting", a.upgrades.len())
+                },
                 why: format!("{apt_wf} applies them."),
                 action: Action::Run(apt_wf.into()),
                 item: None,
@@ -311,6 +339,49 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                 });
             }
         }
+    }
+    // The audit's findings (health and security), by severity. What the rules above already
+    // say (items: srv:maint:*; updates and reboots) isn't repeated.
+    let covered = |id: &str| {
+        ["srv:maint:", "srv:updates:", "srv:reboot-required"]
+            .iter()
+            .any(|p| id.starts_with(p))
+    };
+    for f in i.findings.iter().filter(|f| !f.expected && !covered(&f.id)) {
+        use crate::audit::Sev;
+        out.push(Rec {
+            level: match f.severity {
+                Sev::High => Level::Now,
+                Sev::Medium => Level::Soon,
+                Sev::Low => Level::Tidy,
+            },
+            key: format!("finding:{}", f.id),
+            title: f.message.clone(),
+            why: if f.why.is_empty() {
+                f.what.clone()
+            } else {
+                f.why.clone()
+            },
+            action: Action::Fix(f.id.clone()),
+            item: None,
+        });
+    }
+    // The audit itself: due again after a week.
+    let age = i.audited.map(|t| days(i.now.as_second() - t.as_second()));
+    if age.is_none_or(|d| d >= AUDIT_EVERY_DAYS) {
+        out.push(Rec {
+            level: Level::Routine,
+            key: "audit".into(),
+            title: "Audit the server".into(),
+            why: match age {
+                Some(d) => format!("The last audit was {d} days ago."),
+                None => {
+                    "No audit yet: services, containers, disks, SMART, listeners, updates.".into()
+                }
+            },
+            action: Action::Audit,
+            item: None,
+        });
     }
     // Discovery.
     for (n, c) in i.found.candidates.iter().enumerate() {
@@ -426,6 +497,33 @@ mod tests {
         ];
         let workflows = vec!["apt-maintenance".to_string(), "compose-bump".to_string()];
         let snooze = BTreeMap::new();
+        let finding = |id: &str, sev, msg: &str| crate::audit::Finding {
+            id: id.into(),
+            severity: sev,
+            message: msg.into(),
+            why: "because".into(),
+            ..Default::default()
+        };
+        let mut expected = finding("srv:disk:/srv", crate::audit::Sev::High, "/srv is 96% full");
+        expected.expected = true;
+        let findings = vec![
+            finding(
+                "srv:service-down:app.service",
+                crate::audit::Sev::High,
+                "app.service is failed",
+            ),
+            finding(
+                "srv:maint:security:web",
+                crate::audit::Sev::High,
+                "duplicate of the item",
+            ),
+            expected,
+            finding(
+                "srv:fail2ban:sshd",
+                crate::audit::Sev::Low,
+                "sshd: 3 banned",
+            ),
+        ];
         let inputs = Inputs {
             items: &items,
             statuses: &statuses,
@@ -437,6 +535,8 @@ mod tests {
             workflows: &workflows,
             snooze: &snooze,
             now,
+            findings: &findings,
+            audited: Some(now),
         };
         let r = recommend(&inputs);
         let got: Vec<(Level, &str)> = r.iter().map(|x| (x.level, x.title.as_str())).collect();
@@ -444,6 +544,7 @@ mod tests {
             got,
             [
                 (Level::Now, "Apply the plan for planned (→ 1.2)"),
+                (Level::Now, "app.service is failed"),
                 (Level::Now, "web: security fix upstream (1.0 → 1.2)"),
                 (
                     Level::Soon,
@@ -453,11 +554,24 @@ mod tests {
                 (Level::Routine, "db: 1.0 → 1.2 (1 newer)"),
                 (Level::Tidy, "Track ui"),
                 (Level::Tidy, "old is gone"),
+                (Level::Tidy, "sshd: 3 banned"),
             ]
         );
-        assert_eq!(r[3].why, "Last done 37 days ago; due every 30 days.");
+        assert_eq!(r[4].why, "Last done 37 days ago; due every 30 days.");
         assert_eq!(r[0].action, Action::OpenPlan("planned".into()));
-        assert_eq!(r[5].action, Action::Track(0));
+        assert_eq!(
+            r[1].action,
+            Action::Fix("srv:service-down:app.service".into())
+        );
+        assert_eq!(r[6].action, Action::Track(0));
+        // No audit for a week: it's recommended.
+        let old: jiff::Timestamp = "2026-10-10T12:00:00Z".parse().unwrap();
+        let r = recommend(&Inputs {
+            audited: Some(old),
+            ..inputs
+        });
+        let a = r.iter().find(|x| x.action == Action::Audit).unwrap();
+        assert_eq!(a.why, "The last audit was 17 days ago.");
         // z: put off until a date.
         let mut snooze = BTreeMap::new();
         snooze.insert(
@@ -466,7 +580,7 @@ mod tests {
         );
         let r = recommend(&Inputs {
             snooze: &snooze,
-            ..inputs
+            ..Inputs { ..inputs }
         });
         assert!(!r.iter().any(|x| x.title == "Run apt-maintenance"));
     }
