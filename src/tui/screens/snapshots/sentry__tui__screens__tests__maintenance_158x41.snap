@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   0 Upgrade ↑
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Recommended · 1 · no audit yet ────────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
@@ -11,14 +11,14 @@ expression: body(&s)
 │                                                                                    │ │ The kernel changes: quick-update runs the NVIDIA kmod procedure     │
 │                                                                                    │ │ (two reboots).                                                      │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ Enter: start quick-update, the workflow on Upgrade (0): the same    │
-│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ run as starting it there, which shows there (each step asks first)  │
-│   version 44.20261002.0 · 2026-10-02                                               │ │ z: look again later                                                 │
-│   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │                                                                     │
-│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │ OS → 44.20261023.0: 216 upgraded, 0 added, 0 removed, 24 advisories │
-│                                                                                    │ │   kernel → 7.2.11-200.fc44: the NVIDIA kmod ritual                  │
-│   fedora:fedora/44/x86_64/silverblue                                               │ │ Last check never · c checks again                                   │
-│   version 44.20261001.0 · 2026-10-01                                               │ │                                                                     │
+┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ Enter: install these updates (it asks before each step)             │
+│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ Same as quick-update on the Upgrade screen (0), where you can watch │
+│   version 44.20261002.0 · 2026-10-02                                               │ │ it.                                                                 │
+│   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │ z: look again later                                                 │
+│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │                                                                     │
+│                                                                                    │ │ OS → 44.20261023.0: 216 upgraded, 0 added, 0 removed, 24 advisories │
+│   fedora:fedora/44/x86_64/silverblue                                               │ │   kernel → 7.2.11-200.fc44: the NVIDIA kmod ritual                  │
+│   version 44.20261001.0 · 2026-10-01                                               │ │ Last check never · c checks again                                   │
 │   layered  akmods brave-browser ghostty kmodtool mpv steam-devices xorg-x11-drv-…  │ │                                                                     │
 │   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │                                                                     │
 │                                                                                    │ │                                                                     │

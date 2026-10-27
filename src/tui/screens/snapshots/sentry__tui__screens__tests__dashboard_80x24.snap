@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Proc   3 Net 12   4 Cont   5 Flat   6 Maint 1   0 Upgr
+ 1 Dashboard   2 Proc   3 Net 12   4 Cont   5 Flat   6 Maint 1   0 Upgr ↑
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · i9-14900K · 24c/32t ───────────────────────────────────────────────────┐

@@ -540,6 +540,12 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
     }
     l.push(Line::raw(""));
     l.push(Line::styled(action_words(&r.action), t.s(t.cyan)));
+    if let Do::Run(wf) = &r.action {
+        l.push(Line::styled(
+            format!("Same as {wf} on the Upgrade screen (0), where you can watch it."),
+            t.dim(),
+        ));
+    }
     l.push(Line::styled("z: look again later", t.dim()));
     match &r.action {
         Do::Fix(id) => {
@@ -586,10 +592,10 @@ fn action_words(a: &Do) -> String {
         .into(),
         Do::Audit => "Enter: audit now (read-only, about a second)".into(),
         Do::CheckUpdates => "Enter: check OS, Flatpak and toolbox updates".into(),
-        Do::Run(wf) => format!(
-            "Enter: start {wf}, the workflow on Upgrade (0): the same run as starting it there, \
-             which shows there (each step asks first)"
-        ),
+        Do::Run(wf) if wf == local::UPDATE_WORKFLOW => {
+            "Enter: install these updates (it asks before each step)".into()
+        }
+        Do::Run(wf) => format!("Enter: start {wf} (it asks before each step)"),
         Do::Reboot => "Enter: reboot (asks first)".into(),
         Do::Cleanup => "Enter: the cleanup checklist (pick, preview, confirm)".into(),
         Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),

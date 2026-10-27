@@ -54,6 +54,14 @@ pub fn load_infos() -> Vec<WfInfo> {
         .collect()
 }
 
+/// What's waiting to be installed, as Maintenance says it (None: nothing).
+pub fn updates_waiting(v: &View) -> Option<String> {
+    super::maint::recs(v)
+        .into_iter()
+        .find(|r| r.key == "updates")
+        .map(|r| r.title)
+}
+
 pub fn on_enter(_v: &View) -> Vec<Effect> {
     vec![Effect::Fetch(Fetch::Workflows), Effect::Wf(WfCmd::Arm)]
 }
@@ -491,13 +499,33 @@ impl Upgrade {
                 }
                 None => ("never run".into(), t.dim),
             };
+            // New updates since the last run: that run being done doesn't mean nothing's left.
+            let waiting = (e.name == crate::maint::local::UPDATE_WORKFLOW)
+                .then(|| updates_waiting(v))
+                .flatten();
+            let lc = if waiting.is_some() && lc == t.green {
+                t.dim
+            } else {
+                lc
+            };
             let mut lines = vec![Line::from(head)];
             lines.extend(
                 wrap(&desc, r.width as usize)
                     .into_iter()
                     .map(|l| Line::styled(l, t.dim())),
             );
-            lines.push(Line::styled(last, t.s(lc)));
+            if waiting.is_some() && info.last.is_some() {
+                lines.push(Line::styled(format!("last time: {last}"), t.s(lc)));
+            } else {
+                lines.push(Line::styled(last, t.s(lc)));
+            }
+            if let Some(w) = waiting {
+                let w = w.strip_prefix("Updates waiting: ").unwrap_or(&w);
+                lines.push(Line::styled(
+                    format!("↑ waiting now: {w} · Enter installs"),
+                    t.s(t.yellow),
+                ));
+            }
             let h = lines.len() as u16;
             let rect = Rect {
                 y,
@@ -585,8 +613,8 @@ impl Upgrade {
                 lines.push(Line::styled(r.title, t.s(t.yellow)));
             }
             for l in wrap(
-                "This is the update workflow: Enter here and Enter on \"Updates waiting\" on \
-                 Maintenance (6) start the same run, and it shows here either way.",
+                "Maintenance (6) lists these updates too. Enter there does the same as Enter \
+                 here.",
                 r.width as usize,
             ) {
                 lines.push(Line::styled(l, t.dim()));

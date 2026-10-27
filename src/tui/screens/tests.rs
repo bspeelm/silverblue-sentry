@@ -214,7 +214,7 @@ fn updates_are_applied_by_quick_update() {
     let mut a = app(ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("start quick-update, the workflow on Upgrade (0)"),
+        s.contains("Same as quick-update on the Upgrade screen (0)"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);

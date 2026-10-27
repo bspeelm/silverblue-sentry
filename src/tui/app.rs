@@ -2589,11 +2589,12 @@ impl App {
                 });
                 (n > 0).then(|| (format!(" {n}"), t.red))
             }
-            ScreenId::Upgrade => self
-                .wf
-                .as_ref()
-                .filter(|s| !s.done())
-                .map(|_| (" ●".into(), t.yellow)),
+            ScreenId::Upgrade => match self.wf.as_ref().filter(|s| !s.done()) {
+                Some(_) => Some((" ●".into(), t.yellow)),
+                // Updates waiting: quick-update has something to do.
+                None => super::screens::upgrade::updates_waiting(&self.view())
+                    .map(|_| (" ↑".into(), t.yellow)),
+            },
             _ => None,
         }
     }
