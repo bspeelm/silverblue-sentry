@@ -281,6 +281,9 @@ fn event_loop<U: Ui>(term: &mut Term, app: &mut U, rx: &Receiver<U::Ev>) -> anyh
                 cmd.interactive()
             })?;
             app.after_suspend(status);
+            // The screen was cleared coming back: draw it now, not at the next change (which
+            // may be a long way off while a workflow waits for Enter).
+            drawn = false;
             continue;
         }
         if app.quitting() {
