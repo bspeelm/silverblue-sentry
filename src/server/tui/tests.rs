@@ -1928,3 +1928,46 @@ fn workflows_run_in_a_view_on_maintenance() {
         "{tabs}"
     );
 }
+
+#[test]
+fn an_item_without_a_workflow_is_planned_and_done_by_hand() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    goto_item(&mut a, "engine");
+    assert!(
+        screen(&mut a).contains("p: Claude plans it (no workflow: you run its steps)"),
+        "{}",
+        screen(&mut a)
+    );
+    key(&mut a, KeyCode::Char('p'));
+    // No newer releases known in the fixture, or a choice of them: either way a note next.
+    let s = screen(&mut a);
+    if s.contains("let Claude recommend a version") {
+        key(&mut a, KeyCode::Char('1'));
+    }
+    let s = screen(&mut a);
+    assert!(s.contains("plan engine"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('y'));
+    a.writer_answered(
+        "TARGET: 29.9.2\n# Plan: engine\n\n## Change\n```sh\nsudo apt-get install docker-ce\n```",
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("ready to apply"), "{s}");
+    // Enter: nothing runs; it asks whether it's been done by hand.
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("engine: done by hand?") && s.contains("you run its steps yourself"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    assert!(a.wf.is_none(), "no workflow started");
+    let s = screen(&mut a);
+    assert!(
+        s.contains("for the maintenance log, what to know next time"),
+        "{s}"
+    );
+    assert!(!a.store.plans.contains_key("engine"), "the plan is closed");
+}

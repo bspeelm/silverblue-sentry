@@ -91,16 +91,24 @@ pub fn request(
     goal: &str,
     note: Option<&str>,
 ) -> String {
+    let how = if workflow.is_empty() {
+        "No workflow applies it: the user runs every step by hand, in a terminal on the server, \
+         from this plan. So the Change section is the complete procedure, one command at a time, \
+         with what each prints when it worked, and where to stop if it didn't."
+            .to_string()
+    } else {
+        format!("The workflow that will apply it ({workflow}), step by step:\n{steps}")
+    };
     format!(
-        "{context}\n\nThe workflow that will apply it ({workflow}), step by step:\n{steps}{}\n\n\
+        "{context}\n\n{how}{}\n\n\
          Write the execution plan for {goal}. Sections, each with the exact commands:\n\
          ## Assessment: what changes (breaking changes, one-way migrations, security fixes), \
          whether the reason it's held still applies, and how risky it really is (low, medium, high).\n\
          ## History: what the maintenance log says that bears on this (the entries you read, \
          by file name), or that it has nothing relevant.\n\
          ## Before: checks and backups to make first.\n\
-         ## Change: the workflow's steps above, in order; what to expect at each confirm card, \
-         and any manual commands between them.\n\
+         ## Change: the workflow's steps above, in order (or, without one, the whole procedure); \
+         what to expect at each step, and any manual commands between them.\n\
          ## Verify: what to check afterwards and what good looks like.\n\
          ## Roll back: how to undo it, and when it can't be undone.\n\
          ## When: whether it needs a window, and the expected downtime.",

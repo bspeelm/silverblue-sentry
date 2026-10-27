@@ -209,6 +209,59 @@ impl LogEntry {
         }
     }
 
+    /// A change made by hand from a plan (no workflow run): what it was, the plan, the note.
+    pub fn by_hand(
+        server: &str,
+        item: &str,
+        kind: &str,
+        from: Option<String>,
+        to: Option<String>,
+        plan: Option<&Path>,
+        note: Option<&str>,
+    ) -> Self {
+        let now = jiff::Timestamp::now();
+        let mut h = LogHead {
+            server: server.to_string(),
+            item: Some(item.to_string()),
+            kind: kind.to_string(),
+            workflow: "by-hand".into(),
+            result: "done".into(),
+            from,
+            to,
+            started: Some(now),
+            ended: Some(now),
+            plan: plan.map(|p| p.display().to_string()),
+            ..Default::default()
+        };
+        h.tags = [
+            Some(if server.is_empty() {
+                "machine:local".to_string()
+            } else {
+                format!("server:{server}")
+            }),
+            Some(format!("item:{item}")),
+            Some(format!("kind:{kind}")),
+            Some("workflow:by-hand".to_string()),
+            Some("result:done".to_string()),
+            h.to.as_ref().map(|t| format!("to:{t}")),
+            Some("had:manual-steps".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let mut body = format!("# {}\n\n## Summary\n\n", title(&h));
+        body.push_str(note.filter(|n| !n.trim().is_empty()).unwrap_or("(no note)"));
+        body.push_str("\n\n## Steps\n\nCarried out by hand from the plan (no workflow run).\n");
+        if let Some(p) = &h.plan {
+            body.push_str(&format!("\n## Records\n\n- Plan applied: `{p}`\n"));
+        }
+        h.summary = summarize(note, &h);
+        Self {
+            head: h,
+            body: body.trim_end().to_string(),
+        }
+    }
+
     pub fn to_md(&self) -> String {
         format!(
             "{FENCE}\n{}{FENCE}\n\n{}\n",
@@ -311,6 +364,12 @@ pub fn write(entry: &LogEntry) -> anyhow::Result<PathBuf> {
     paths::write_atomic(&p, entry.to_md().as_bytes())?;
     write_index(&entry.head.server)?;
     Ok(p)
+}
+
+/// Write `new` in place of `old` (a note added to an entry that has no run to match on).
+pub fn write_replacing(old: &LogEntry, new: &LogEntry) -> anyhow::Result<PathBuf> {
+    let _ = std::fs::remove_file(dir(&old.head.server).join(old.file_name()));
+    write(new)
 }
 
 /// Every entry, newest first.
@@ -434,6 +493,29 @@ mod tests {
             ],
         };
         (wf, st)
+    }
+
+    #[test]
+    fn a_change_by_hand_is_logged_with_its_plan() {
+        let e = LogEntry::by_hand(
+            "myserver",
+            "gpu-driver",
+            "packages",
+            Some("550".into()),
+            Some("580".into()),
+            Some(Path::new("/p/plans/done/gpu-driver-1.md")),
+            Some("rebooted twice"),
+        );
+        assert_eq!(e.head.workflow, "by-hand");
+        assert!(e.head.tags.contains(&"workflow:by-hand".to_string()));
+        assert!(e.body.contains("rebooted twice") && e.body.contains("gpu-driver-1.md"));
+        assert_eq!(e.head.summary, "rebooted twice");
+        assert_eq!(LogEntry::parse(&e.to_md()).unwrap(), e);
+        assert!(
+            e.file_name().ends_with("-gpu-driver-by-hand.md"),
+            "{}",
+            e.file_name()
+        );
     }
 
     #[test]

@@ -626,13 +626,13 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     }
     l.push(Line::raw(""));
     let mut keys = Vec::new();
-    if it.workflow.is_some() || it.retire.as_ref().is_some_and(|r| r.workflow.is_some()) {
-        keys.push(if v.plans.contains_key(&s.id) {
-            "Enter opens the plan · P plans again"
-        } else {
-            "p: Claude plans it"
-        });
-    }
+    keys.push(
+        match (v.plans.contains_key(&s.id), workflow_of(it).is_some()) {
+            (true, _) => "Enter opens the plan · P plans again",
+            (false, true) => "p: Claude plans it",
+            (false, false) => "p: Claude plans it (no workflow: you run its steps)",
+        },
+    );
     keys.extend(["z review later", "v its log", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
     l
@@ -746,12 +746,8 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
             ))]
         }
         'p' | 'P' => {
-            let Some(wf) = workflow_of(it) else {
-                return vec![Effect::Toast(format!(
-                    "{} has no workflow: (or retire: workflow:) in server_config.yaml",
-                    s.id
-                ))];
-            };
+            // No workflow: a plan done by hand (every step a command the user runs).
+            let wf = workflow_of(it).unwrap_or("");
             let l = local::Local {
                 pinned: s.pinned.clone(),
                 repo: v

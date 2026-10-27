@@ -88,6 +88,8 @@ pub enum Effect {
     PlanNote(String, PlanDoc),
     /// Drop an item's plan (`x`, after a confirm).
     PlanDrop(String),
+    /// A plan without a workflow, carried out by hand: close it and log the change.
+    PlanDoneByHand(String),
     /// Open server_config.yaml in $EDITOR, then reload it.
     EditConfig,
     /// Send a turn to Claude (after the consent box).
@@ -1037,6 +1039,7 @@ impl App {
                     self.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::PlanDoneByHand(id) => self.plan_done_by_hand(&id),
                 Effect::LogOpen(item) => self.open_log(item),
                 Effect::ReviewOpen => {
                     if self.store.review.is_some() || self.writing_review() {
@@ -1474,6 +1477,27 @@ impl App {
                 if note.is_empty() {
                     return;
                 }
+                // Done by hand (no run): the same entry, with the note.
+                if entry.head.run.is_none() {
+                    let h = &entry.head;
+                    let with_note = crate::server::maint::log::LogEntry::by_hand(
+                        &h.server,
+                        h.item.as_deref().unwrap_or("?"),
+                        &h.kind,
+                        h.from.clone(),
+                        h.to.clone(),
+                        h.plan.as_deref().map(std::path::Path::new),
+                        Some(note),
+                    );
+                    if !self.offline
+                        && let Err(e) =
+                            crate::server::maint::log::write_replacing(&entry, &with_note)
+                    {
+                        return self.toast(&format!("couldn't write the note: {e}"));
+                    }
+                    self.last_log = Some(with_note);
+                    return self.toast("noted in the maintenance log");
+                }
                 let Some(s) = self.wf.as_ref() else { return };
                 // Rebuilt with the note (it replaces the entry written when the run ended).
                 let info =
@@ -1908,7 +1932,7 @@ impl App {
         let steps = self
             .wf_entries
             .iter()
-            .find(|e| e.name == doc.head.workflow)
+            .find(|e| !doc.head.workflow.is_empty() && e.name == doc.head.workflow)
             .and_then(|e| e.wf.as_ref().ok())
             .map(|w| {
                 w.steps
@@ -2412,6 +2436,45 @@ impl App {
         }
     }
 
+    /// A plan carried out by hand: it moves to plans/done/, and the change is logged (the
+    /// note box follows, as after a run).
+    fn plan_done_by_hand(&mut self, id: &str) {
+        use crate::server::maint::{log, plan};
+        let Some(doc) = self.store.plans.remove(id) else {
+            return;
+        };
+        self.plan_view = None;
+        let path = if self.offline {
+            Some(plan::path(&self.remote.name, id))
+        } else {
+            plan::close(&doc, PlanStatus::Done).ok()
+        };
+        let entry = log::LogEntry::by_hand(
+            &self.remote.name,
+            id,
+            self.remote
+                .cfg
+                .maintenance
+                .items
+                .iter()
+                .find(|i| i.id == id)
+                .map_or("system", item_kind),
+            doc.head.from.clone(),
+            doc.head.to.clone(),
+            path.as_deref(),
+            None,
+        );
+        if !self.offline {
+            if let Err(e) = log::write(&entry) {
+                self.toast(&format!("couldn't write the maintenance log: {e}"));
+            }
+            self.store.log = log::list(&self.remote.name);
+            self.fetch(Kind::Maint);
+        }
+        self.last_change_at = Some(jiff::Timestamp::now());
+        self.log_note = Some((entry, String::new()));
+    }
+
     /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
     fn apply_plan(&mut self, id: &str, now: Instant) {
         let Some(d) = self.store.plans.get(id).cloned() else {
@@ -2423,6 +2486,32 @@ impl App {
                 return self.toast("Claude advises waiting: r revises it, or p plans again");
             }
             s => return self.toast(&format!("this plan is {}: p plans again", s.word())),
+        }
+        if d.head.workflow.is_empty() {
+            // Done by hand: the plan is the procedure; afterwards it's marked done and logged.
+            let t = self.theme;
+            self.modal = Some(Modal {
+                title: format!("{id}: done by hand?"),
+                color: t.yellow,
+                lines: vec![
+                    Line::styled(
+                        "No workflow runs this plan: you run its steps yourself, in a terminal \
+                         on the server (the Change section, in order).",
+                        t.fg(),
+                    ),
+                    Line::raw(""),
+                    Line::styled(
+                        "When you've carried it out, say so here: the plan moves to plans/done/ \
+                         and the change goes in the maintenance log, with a note.",
+                        t.dim(),
+                    ),
+                ],
+                yes: Some((
+                    "it's done".into(),
+                    vec![Effect::PlanDoneByHand(id.to_string())],
+                )),
+            });
+            return;
         }
         self.plan_view = None;
         let effects = vec![Effect::Wf(WfCmd::BeginPrefilled(
