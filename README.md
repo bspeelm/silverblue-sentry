@@ -177,6 +177,16 @@ On Services, Containers, Updates and Audit, `/` filters the list (any column, ca
 
 A reboot, from `B` or a workflow step, waits in place: sentry-server polls the server's boot id and says when it's back, then a workflow carries on. **`A` asks Claude** about whatever is selected. Claude reaches the server only through `sentry-server exec <server> -- <command>`, an allowlist of read-only commands with no shell, and ssh itself is denied. Whatever it proposes, you run after a confirm box.
 
+### Deliberate maintenance
+
+Pinning everything is fine for a while; eventually the pins have to move. `maintenance:` in the config lists what you keep at a deliberate version: compose images, held packages, apps on the host, an OS release's end of life, and things you mean to retire. Each item says why it's held, what limits the choice and when to look at it again. sentry-server then keeps that list honest without ever upgrading anything by itself:
+
+1. **Track** (tab `6`, `sentry-server maint`): pinned vs running vs the newest upstream release, looked up from your machine. Newer releases whose notes mention a security fix are marked; so are drift (what runs isn't the pin), end of life and review dates that have passed. A held item doesn't nag until its review date.
+2. **Assess** (`A`): Claude reads the release notes between your pin and the candidates, plus your own notes files, checks the server through the read-only gateway, and says what changed, whether the hold still applies, which version (or "wait"), how risky it really is, and how to roll back.
+3. **Apply** (`p`): the item's workflow starts with the chosen version filled in, one item at a time, every step behind its confirm card; the run is logged against the item. `z` moves the review date instead.
+
+A server's own workflows (`~/.config/sentry/servers/<name>/workflows/`) are where its specific procedure lives: what to check before, the exact pin change, how to verify and roll back.
+
 Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint [server]`, `maint [server] [--refresh]` (each maintenance item's standing; see `maintenance:` in the sample config). Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
 
 ## Config
