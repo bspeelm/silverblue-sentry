@@ -2,10 +2,12 @@
 //! reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
 //! server's under `~/.config/sentry/servers/<name>/`. Local only, never in git.
 
+pub mod local;
 pub mod log;
 pub mod plan;
 pub mod retention;
 pub mod review;
+pub mod snooze;
 
 use std::path::PathBuf;
 
@@ -29,5 +31,25 @@ pub fn label(server: &str) -> &str {
         "this machine"
     } else {
         server
+    }
+}
+
+/// How soon a recommendation should be acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Level {
+    Now,
+    Soon,
+    Routine,
+    Tidy,
+}
+
+impl Level {
+    pub fn word(self) -> &'static str {
+        match self {
+            Level::Now => "now",
+            Level::Soon => "soon",
+            Level::Routine => "routine",
+            Level::Tidy => "tidy",
+        }
     }
 }

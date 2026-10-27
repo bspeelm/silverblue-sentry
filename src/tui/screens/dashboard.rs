@@ -19,13 +19,14 @@ use crate::tui::widgets::{bar, graph, inner, panel, trunc};
 pub struct Dashboard {
     /// Selected Status row (j/k); Enter opens the tab behind it.
     sel: Option<usize>,
-    /// Tab behind each Status row, from the last render.
-    targets: Vec<ScreenId>,
+    /// Tab behind each Status row, from the last render, and the Maintenance
+    /// recommendation to select there (its key prefix).
+    targets: Vec<(ScreenId, Option<&'static str>)>,
 }
 
 pub fn hints() -> Hints {
     vec![
-        ("1-0", "screens"),
+        ("1-6 0", "screens"),
         ("c", "check updates"),
         ("r", "measure disks"),
         ("j/k Enter", "open a status row"),
@@ -66,7 +67,8 @@ impl Dashboard {
                 Vec::new()
             }
             Action::Enter => match self.sel.and_then(|i| self.targets.get(i)) {
-                Some(id) => vec![Effect::Goto(*id)],
+                Some((_, Some(pick))) => vec![Effect::MaintFind((*pick).into())],
+                Some((id, None)) => vec![Effect::Goto(*id)],
                 None => vec![Effect::Toast(
                     "j/k selects a Status row; Enter opens it".into(),
                 )],
@@ -529,7 +531,12 @@ fn draw_net(f: &mut Frame, area: Rect, v: &View) {
 }
 
 /// Draws the Status panel; returns the tab each row links to.
-fn draw_status(f: &mut Frame, area: Rect, v: &View, sel: Option<usize>) -> Vec<ScreenId> {
+fn draw_status(
+    f: &mut Frame,
+    area: Rect,
+    v: &View,
+    sel: Option<usize>,
+) -> Vec<(ScreenId, Option<&'static str>)> {
     let t = v.t;
     let block = panel(t, "Status", "");
     let r = inner(&block, area);
@@ -578,6 +585,18 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View, sel: Option<usize>) -> Vec<S
     {
         rows.push(("", "kernel changes".into(), t.yellow, "kmod ritual".into()));
     }
+    if let Some(s) =
+        v.d.ostree
+            .get()
+            .and_then(|o| o.deployments.iter().find(|d| d.staged && !d.booted))
+    {
+        rows.push((
+            "reboot",
+            format!("into {}", s.version),
+            t.yellow,
+            "staged".into(),
+        ));
+    }
 
     match v.d.reports.get().and_then(|r| r.last()) {
         Some(last) => {
@@ -600,7 +619,7 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View, sel: Option<usize>) -> Vec<S
             "findings",
             "no audit yet".into(),
             t.dim,
-            "Enter on 7".into(),
+            "c on Maintenance".into(),
         )),
     }
     match v.d.units.get() {
@@ -674,17 +693,19 @@ fn draw_status(f: &mut Frame, area: Rect, v: &View, sel: Option<usize>) -> Vec<S
     }
 
     let mut targets = Vec::new();
-    let mut last = ScreenId::Upd;
+    let mut last = (ScreenId::Maint, Some("updates"));
     let lines: Vec<Line> = rows
         .into_iter()
         .enumerate()
         .map(|(i, (k, val, c, note))| {
             last = match k {
-                "updates" => ScreenId::Upd,
-                "findings" | "failed units" => ScreenId::Audit,
-                "jobs due" => ScreenId::Jobs,
-                "workflow" => ScreenId::Upgrade,
-                "recorder" => ScreenId::Hist,
+                "updates" => (ScreenId::Maint, Some("updates")),
+                "reboot" => (ScreenId::Maint, Some("reboot")),
+                "findings" => (ScreenId::Maint, Some("finding:")),
+                "failed units" => (ScreenId::Maint, Some("finding:unit-failed")),
+                "jobs due" => (ScreenId::Maint, Some("job:")),
+                "workflow" => (ScreenId::Upgrade, None),
+                "recorder" => (ScreenId::Hist, None),
                 _ => last, // continuation rows (kernel note) go where their parent goes
             };
             targets.push(last);

@@ -200,6 +200,9 @@ pub struct DataStore {
     pub recorder: Option<crate::recorder::Live>,
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
+    /// Recommendations put off with `z` (`maint.toml`), and Claude's plans (`plans/`).
+    pub snoozes: crate::maint::snooze::Snoozes,
+    pub plans: std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
 
     pub inflight: HashSet<Fetch>,
     pub os_version: String,
@@ -210,6 +213,8 @@ impl DataStore {
     pub fn new() -> Self {
         let mut d = Self::blank(crate::paths::os_version(), ostree::booted_kernel());
         d.baseline = Baseline::effective(&Config::load().0);
+        d.snoozes = crate::maint::snooze::load();
+        d.plans = crate::maint::plan::list(crate::maint::LOCAL);
         d.ostree_checked =
             cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
         // Cached results are shown immediately with their age; never refreshed automatically.
@@ -257,6 +262,8 @@ impl DataStore {
             history: Slot::default(),
             recorder: None,
             baseline: Baseline::default(),
+            snoozes: Default::default(),
+            plans: Default::default(),
             inflight: HashSet::new(),
             os_version,
             kernel,

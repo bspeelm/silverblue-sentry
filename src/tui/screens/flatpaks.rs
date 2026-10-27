@@ -221,7 +221,7 @@ impl Flatpaks {
             if !stale.is_empty() {
                 spans.push(Span::styled(
                     format!(
-                        " · old extensions (not removed by --unused): {} · remove them in Cleanup (9)",
+                        " · old extensions (not removed by --unused): {} · remove them in Cleanup (C on Maintenance)",
                         stale.join(", ")
                     ),
                     t.dim(),

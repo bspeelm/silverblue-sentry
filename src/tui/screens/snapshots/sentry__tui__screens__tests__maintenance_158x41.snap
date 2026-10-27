@@ -1,0 +1,44 @@
+---
+source: src/tui/screens/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Recommended · 1 · no audit yet ────────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│          What                            Why                                       │ │ soon  Updates waiting: OS 44.20261023.0                             │
+│ soon     Updates waiting: OS 44.20261023 The kernel changes: quick-update runs the │ │                                                                     │
+│                                                                                    │ │ The kernel changes: quick-update runs the NVIDIA kmod procedure     │
+│                                                                                    │ │ (two reboots).                                                      │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ Enter: start the quick-update workflow (each step asks first)       │
+│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ z: look again later                                                 │
+│   version 44.20261002.0 · 2026-10-02                                               │ │                                                                     │
+│   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │ OS → 44.20261023.0: 216 upgraded, 0 added, 0 removed, 24 advisories │
+│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │   kernel → 7.2.11-200.fc44: the NVIDIA kmod ritual                  │
+│                                                                                    │ │ Last check never · c checks again                                   │
+│   fedora:fedora/44/x86_64/silverblue                                               │ │                                                                     │
+│   version 44.20261001.0 · 2026-10-01                                               │ │                                                                     │
+│   layered  akmods brave-browser ghostty kmodtool mpv steam-devices xorg-x11-drv-…  │ │                                                                     │
+│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│   fedora:fedora/44/x86_64/silverblue    pinned                                     │ │                                                                     │
+│   version 44.20260720.0 · 2026-07-20                                               │ │                                                                     │
+│   layered  akmods brave-browser code kmodtool steam-devices xorg-x11-drv-nvidia-…  │ │                                                                     │
+│   local    kmod-nvidia-7.1.4-200.fc44.x86_64-3:610.43.03-1.fc44.x86_64 rpmfusion…  │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│ ────────────────────────────────────────────────────────────────────────────────── │ │                                                                     │
+│ 216 package updates → 44.20261023.0  24 advisories  not checked yet                │ │                                                                     │
+│   kernel                      7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-core                 7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-devel                7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-devel-matched        7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-modules              7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-modules-core         7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   kernel-modules-extra        7.2.8-200.fc44 → 7.2.11-200.fc44                     │ │                                                                     │
+│   … 209 more                                                                       │ │                                                                     │
+│ ! kernel → 7.2.11-200.fc44 · nvidia kmod ritual (quick-update runs it)             │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  do it   z  later   c  check all   F  audit report   J  jobs   C  cleanup   v  log   A  ask Claude   ?  help   q  quit

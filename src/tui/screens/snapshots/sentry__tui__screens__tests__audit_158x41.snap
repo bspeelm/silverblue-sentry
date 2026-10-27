@@ -2,9 +2,10 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit !1   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 3   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+ Maintenance › Audit report  Esc back
 ┌ Findings · 2026-10-23.json (2/2) ────────────────────────────────────────────┐  ┌ Diff · 2026-09-23 → 2026-10-23 ──────────────────────────────────────────┐
 │ Worth a look on this machine.                                                │  │ Changed: 1 listeners (reachable) · 2 flatpak                             │
 │ f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = … │  │                                                                          │
@@ -25,14 +26,13 @@ expression: body(&s)
 │                                                                              │  │   not collected in the previous report: nothing to compare               │
 │                                                                              │  │                                                                          │
 │                                                                              │  │ units                                                                    │
-│                                                                              │  │   not collected in the previous report: nothing to compare               │
-│ 1 to check · 1 to review · 2 info                                            │  │                                                                          │
-│ ──────────────────────────────────────────────────────────────────────────── │  │ containers                                                               │
-│ What   com.visualstudio.code can now access every file you can read, outside │  │   not collected in the previous report: nothing to compare               │
-│        its sandbox.                                                          │  │                                                                          │
-│ Why    This permission is new since the audit on 2026-09-23: an app update   │  │ kargs                                                                    │
-│        or an override added it.                                              │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
-│ To do  Check `flatpak info --show-permissions com.visualstudio.code`. To     │  │                                                                          │
+│ 1 to check · 1 to review · 2 info                                            │  │   not collected in the previous report: nothing to compare               │
+│ ──────────────────────────────────────────────────────────────────────────── │  │                                                                          │
+│ What   com.visualstudio.code can now access every file you can read, outside │  │ containers                                                               │
+│        its sandbox.                                                          │  │   not collected in the previous report: nothing to compare               │
+│ Why    This permission is new since the audit on 2026-09-23: an app update   │  │                                                                          │
+│        or an override added it.                                              │  │ kargs                                                                    │
+│ To do  Check `flatpak info --show-permissions com.visualstudio.code`. To     │  │   nvidia-drm.modeset=1  quiet  rhgb  (unchanged)                         │
 │        take it back: Flatseal (Flatpaks tab, o) or `flatpak override --user  │  │                                                                          │
 │        --nofilesystem=host com.visualstudio.code`. If you expect it, press   │  │                                                                          │
 │        b.                                                                    │  │                                                                          │
@@ -41,4 +41,4 @@ expression: body(&s)
 │        [Context] filesystems=host;                                           │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   f  fix (with Claude)   b  expected on/off   B  hide similar   Enter  run audit   [ ]  browse reports   A  ask Claude   ?  help   q  quit
+ Esc  back   j/k  select   f  fix (with Claude)   b  expected on/off   B  hide similar   Enter  run audit   A  ask Claude   ?  help   q  quit

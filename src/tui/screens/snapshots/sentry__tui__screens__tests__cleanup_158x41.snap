@@ -2,9 +2,10 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs 3   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 2   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+ Maintenance › Cleanup  Esc back
 ┌ Reclaimable · from dry-run ────────────────────────────────────────────────┐  ┌ Preview · rpm-ostree cleanup -m ───────────────────────────────────────────┐
 │     ITEM                                                        SIZE       │  │ sentry job cleanup-ostree --only repomd                                    │
 │ [x] rpm-ostree cleanup -m                                          214 MiB │  │ would remove rpm-ostree cleanup -m                                         │
@@ -36,9 +37,8 @@ expression: body(&s)
 │                                                                            │  │                                                                            │
 │                                                                            │  │                                                                            │
 │                                                                            │  │                                                                            │
-│                                                                            │  │                                                                            │
 │ ────────────────────────────────────────────────────────────────────────── │  │                                                                            │
 │ selected                                                         ≈ 1.0 GiB │  │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘  └────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Space  toggle   Enter  preview & confirm   r  re-plan   A  ask Claude   ?  help   q  quit
+ Esc  back   j/k  select   Space  toggle   Enter  preview & confirm   r  re-plan   A  ask Claude   ?  help   q  quit

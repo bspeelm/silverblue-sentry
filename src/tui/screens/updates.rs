@@ -1,189 +1,23 @@
-//! Updates: rpm-ostree deployments + pending update (from rpm-ostree's cached-update), cached
-//! Flatpak updates. `u` upgrades (kmod ritual stage 1 when the kernel changes), `f` flatpak
-//! update, `R` rollback — each behind a confirm modal, then streamed.
+//! Updates and deployments, for Maintenance: the deployments panel (booted, staged, pinned,
+//! rollback, and the pending update from rpm-ostree's cached-update), what's waiting for the
+//! updates recommendation, rollback behind its confirm, and `A` on pending updates.
+//! Updates are applied by the `quick-update` workflow, not from here.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row};
+use ratatui::widgets::Paragraph;
 
-use super::{Hints, View};
-use crate::collectors::ostree::{Ostree, UpgradePlan, upgrade_plan};
+use super::View;
+use crate::collectors::ostree::Ostree;
 use crate::exec::Cmd;
 use crate::fmt;
 use crate::tui::app::{Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
-use crate::tui::keys::Action;
 use crate::tui::theme::Theme;
-use crate::tui::widgets::{TableSpec, inner, panel, table, trunc};
+use crate::tui::widgets::{inner, panel, trunc};
 
-#[derive(Default)]
-pub struct Updates;
-
-pub fn on_enter(v: &View) -> Vec<Effect> {
-    let mut e = vec![Effect::Fetch(Fetch::Ostree)];
-    if v.d.flatpak.get().is_none() {
-        // Installed versions, for "old → new" in the Flatpak pane.
-        e.push(Effect::Fetch(Fetch::Flatpak));
-    }
-    e
-}
-
-pub fn hints(_v: &View) -> Hints {
-    vec![
-        ("c", "check now"),
-        ("u", "upgrade"),
-        ("f", "flatpak update"),
-        ("R", "rollback"),
-        ("r", "refresh"),
-    ]
-}
-
-fn upgrade_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
-    let u = o.update.as_ref();
-    let summary = u.map_or(String::new(), |u| {
-        format!(
-            "{} → {} · {} packages",
-            o.booted().map_or("?", |b| &b.version),
-            u.version.as_deref().unwrap_or("?"),
-            u.upgraded.len() + u.added.len()
-        )
-    });
-    let then = vec![Fetch::Ostree];
-    match upgrade_plan(o) {
-        UpgradePlan::NoUpdate => vec![Effect::Toast(
-            "no pending rpm-ostree update — press c to check".into(),
-        )],
-        UpgradePlan::Routine => {
-            let cmd = Cmd::host("rpm-ostree").arg("upgrade").timeout(None);
-            vec![Effect::Confirm(Modal {
-                title: "rpm-ostree upgrade".into(),
-                color: t.yellow,
-                lines: vec![
-                    Line::styled(summary, t.fg()),
-                    Line::styled(format!("$ {}", cmd.display()), t.dim()),
-                    Line::styled(
-                        "Stages a new deployment; the running system is untouched until reboot.",
-                        t.dim(),
-                    ),
-                ],
-                yes: Some((
-                    "stage upgrade".into(),
-                    vec![Effect::Run(RunSpec {
-                        queue: Vec::new(),
-                        title: "rpm-ostree upgrade".into(),
-                        cmd,
-                        then,
-                        ok_toast: "staged · reboot required".into(),
-                    })],
-                )),
-            })]
-        }
-        UpgradePlan::Ritual(kmod) => {
-            // A kernel change is a multi-reboot procedure: one tracked, resumable place for it.
-            let new_k = u
-                .and_then(|u| u.new_kernel.clone())
-                .unwrap_or_else(|| "?".into());
-            vec![Effect::Confirm(Modal {
-                title: "Kernel changes · use quick-update".into(),
-                color: t.yellow,
-                lines: vec![
-                    Line::styled(summary, t.fg()),
-                    Line::styled(format!("kernel {} → {new_k}", o.booted_kernel), t.yellow),
-                    Line::styled(
-                        "The NVIDIA kmod has to be rebuilt for the new kernel: drop the old kmod, reboot, build and layer the new one, reboot.",
-                        t.fg(),
-                    ),
-                    Line::styled(format!("Old kmod: {kmod}"), t.dim()),
-                    Line::styled(
-                        "quick-update runs that sequence step by step, survives the reboots, and shows where you are.",
-                        t.dim(),
-                    ),
-                ],
-                yes: Some((
-                    "start quick-update".into(),
-                    vec![Effect::StartWorkflow("quick-update".into())],
-                )),
-            })]
-        }
-        UpgradePlan::Ambiguous(kmods) => {
-            let mut lines = vec![
-                Line::styled(
-                    "STOP: the kernel changes but there is not exactly one layered kmod-nvidia.",
-                    t.red,
-                ),
-                Line::styled(
-                    "Read LocalPackages in `rpm-ostree status` and uninstall the exact string by hand.",
-                    t.fg(),
-                ),
-            ];
-            lines.extend(
-                kmods
-                    .into_iter()
-                    .map(|k| Line::styled(format!("  {k}"), t.dim())),
-            );
-            vec![Effect::Confirm(crate::tui::app::info_modal(
-                t,
-                "rpm-ostree upgrade · blocked",
-                lines,
-            ))]
-        }
-    }
-}
-
-fn flatpak_effects(v: &View) -> Vec<Effect> {
-    let t = v.t;
-    let n = v.d.fp_updates.get().map(|c| c.data.len());
-    // A sandbox started before the update keeps a stale runtime bind-mount.
-    let running = Cmd::host("flatpak")
-        .args(["ps", "--columns=application"])
-        .timeout(Some(std::time::Duration::from_secs(3)))
-        .output()
-        .unwrap_or_default();
-    let running: Vec<&str> = running
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let cmd = Cmd::host("flatpak")
-        .args(["update", "-y", "--noninteractive"])
-        .timeout(None);
-    let mut lines = vec![
-        Line::styled(format!("$ {}", cmd.display()), t.fg()),
-        Line::styled(
-            n.map_or("pending updates unknown (press c to check)".into(), |n| {
-                format!("{n} pending (from last check)")
-            }),
-            t.dim(),
-        ),
-    ];
-    if !running.is_empty() {
-        lines.push(Line::styled(
-            format!(
-                "Running sandboxes: {} — quit them first (Steam especially).",
-                running.join(", ")
-            ),
-            t.yellow,
-        ));
-    }
-    vec![Effect::Confirm(Modal {
-        title: "flatpak update".into(),
-        color: t.yellow,
-        lines,
-        yes: Some((
-            "update".into(),
-            vec![Effect::Run(RunSpec {
-                queue: Vec::new(),
-                title: "flatpak update".into(),
-                cmd,
-                then: vec![Fetch::Flatpak, Fetch::FlatpakUpdates],
-                ok_toast: "flatpak: updated".into(),
-            })],
-        )),
-    })]
-}
-
-fn rollback_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
+pub fn rollback_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
     let target = o.deployments.iter().find(|d| !d.booted && !d.staged);
     let cmd = Cmd::host("rpm-ostree").arg("rollback").timeout(None);
     vec![Effect::Confirm(Modal {
@@ -216,40 +50,9 @@ fn rollback_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
     })]
 }
 
-impl Updates {
-    pub fn handle(&mut self, a: Action, v: &View) -> Vec<Effect> {
-        match a {
-            Action::Check => vec![
-                Effect::Fetch(Fetch::OstreeCheck),
-                Effect::Fetch(Fetch::FlatpakUpdates),
-                Effect::Toast("checking rpm-ostree and flatpak updates…".into()),
-            ],
-            Action::Refresh => vec![Effect::Fetch(Fetch::Ostree), Effect::Fetch(Fetch::Flatpak)],
-            Action::Char('u') => match v.d.ostree.get() {
-                Some(o) => upgrade_effects(v.t, o),
-                None => vec![Effect::Toast("rpm-ostree status not loaded yet".into())],
-            },
-            Action::Char('f') => flatpak_effects(v),
-            Action::Char('R') => match v.d.ostree.get() {
-                Some(o) => rollback_effects(v.t, o),
-                None => Vec::new(),
-            },
-            _ => Vec::new(),
-        }
-    }
-
-    pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
-        let [left, right] = Layout::horizontal([Constraint::Ratio(1, 2); 2])
-            .spacing(2)
-            .areas(area);
-        draw_ostree(f, left, v);
-        draw_flatpak(f, right, v);
-    }
-}
-
-fn draw_ostree(f: &mut Frame, area: Rect, v: &View) {
+pub fn draw_deployments(f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
-    let block = panel(t, "rpm-ostree", "deployments");
+    let block = panel(t, "Deployments", "rpm-ostree");
     let r = inner(&block, area);
     f.render_widget(block, area);
     let Some(o) = v.d.ostree.get() else {
@@ -353,7 +156,7 @@ fn draw_ostree(f: &mut Frame, area: Rect, v: &View) {
             if u.kernel_changed {
                 lines.push(Line::styled(
                     format!(
-                        "! kernel → {} · nvidia kmod ritual (u stages step 1)",
+                        "! kernel → {} · nvidia kmod ritual (quick-update runs it)",
                         u.new_kernel.as_deref().unwrap_or("?")
                     ),
                     t.s(t.yellow),
@@ -364,85 +167,88 @@ fn draw_ostree(f: &mut Frame, area: Rect, v: &View) {
     f.render_widget(Paragraph::new(lines), r);
 }
 
-fn draw_flatpak(f: &mut Frame, area: Rect, v: &View) {
+/// What's waiting, for the updates recommendation's details: the OS update, Flatpaks
+/// (old → new) and toolbox packages, and when they were checked.
+pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
     let t = v.t;
-    let block = panel(t, "Flatpak", "remote-ls --updates");
-    let r = inner(&block, area);
-    f.render_widget(block, area);
-    let [list, foot] = Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(r);
-    let checking = v.d.loading(Fetch::FlatpakUpdates);
-    match v.d.fp_updates.get() {
-        None => {
-            let msg = if checking {
-                "checking…".to_string()
-            } else {
-                v.d.fp_updates
-                    .err
-                    .as_ref()
-                    .map_or("never checked · press c".into(), |e| e.text())
-            };
-            f.render_widget(Paragraph::new(msg).style(t.dim()), list);
+    let now = jiff::Timestamp::now();
+    let mut l = Vec::new();
+    match v.d.ostree.get().and_then(|o| o.update.as_ref()) {
+        Some(u) => {
+            l.push(Line::styled(
+                format!(
+                    "OS → {}: {} upgraded, {} added, {} removed, {} advisories",
+                    u.version.as_deref().unwrap_or("?"),
+                    u.upgraded.len(),
+                    u.added.len(),
+                    u.removed.len(),
+                    u.advisories
+                ),
+                t.s(t.yellow),
+            ));
+            if u.kernel_changed {
+                l.push(Line::styled(
+                    format!(
+                        "  kernel → {}: the NVIDIA kmod ritual",
+                        u.new_kernel.as_deref().unwrap_or("?")
+                    ),
+                    t.s(t.yellow),
+                ));
+            }
         }
-        Some(c) => {
-            let installed = v.d.flatpak.get();
-            let rows: Vec<Row> = c
-                .data
-                .iter()
-                .map(|u| {
-                    let old = installed
-                        .and_then(|fp| fp.apps.iter().find(|a| a.id == u.id))
-                        .map(|a| a.version.clone());
-                    let ver = match (old, u.version.is_empty()) {
-                        (Some(o), false) if o != u.version => format!("{o} → {}", u.version),
-                        // OCI remotes (fedora) rebuild under the same version: the digest changed.
-                        (Some(o), false) if o == u.version => format!("{o} (rebuild)"),
-                        (_, false) => u.version.clone(),
-                        (_, true) => "runtime".into(),
-                    };
-                    Row::new(vec![
-                        Cell::from(u.id.clone()),
-                        Cell::from(u.origin.clone()).style(t.dim()),
-                        Cell::from(ver),
-                    ])
-                })
-                .collect();
-            table(
-                f,
-                list,
-                t,
-                TableSpec {
-                    header: vec!["APP", "ORIGIN", "VERSION"],
-                    widths: vec![
-                        Constraint::Fill(3),
-                        Constraint::Length(9),
-                        Constraint::Fill(2),
-                    ],
-                    rows,
-                    selected: None,
-                },
-            );
-            let age = if checking {
-                "checking…".into()
-            } else {
-                format!("checked {}", fmt::ago(c.age_secs(jiff::Timestamp::now())))
+        None => l.push(Line::styled("OS: no update known", t.dim())),
+    }
+    if let Some(c) = v.d.fp_updates.get() {
+        l.push(Line::styled(
+            format!(
+                "Flatpak: {} (checked {})",
+                c.data.len(),
+                fmt::ago(c.age_secs(now))
+            ),
+            t.fg(),
+        ));
+        let installed = v.d.flatpak.get();
+        for u in c.data.iter().take(12) {
+            let old = installed
+                .and_then(|fp| fp.apps.iter().find(|a| a.id == u.id))
+                .map(|a| a.version.clone());
+            let ver = match (old, u.version.is_empty()) {
+                (Some(o), false) if o != u.version => format!("{o} → {}", u.version),
+                // OCI remotes (fedora) rebuild under the same version: the digest changed.
+                (Some(o), false) if o == u.version => format!("{o} (rebuild)"),
+                (_, false) => u.version.clone(),
+                (_, true) => "runtime".into(),
             };
-            let stale = c.age_secs(jiff::Timestamp::now()) as u64
-                > v.cfg.cache.update_check_max_age.0.as_secs();
-            f.render_widget(
-                Paragraph::new(vec![
-                    Line::default(),
-                    Line::from(vec![
-                        Span::styled(format!("{} updates · ", c.data.len()), t.dim()),
-                        Span::styled(age, t.s(if stale { t.yellow } else { t.dim })),
-                    ]),
-                ]),
-                foot,
-            );
+            l.push(Line::styled(format!("  {}  {ver}", u.id), t.dim()));
+        }
+        if c.data.len() > 12 {
+            l.push(Line::styled(
+                format!("  … {} more", c.data.len() - 12),
+                t.dim(),
+            ));
         }
     }
+    if let Some(c) = v.d.tbx_updates.get() {
+        for (name, b) in &c.data {
+            if !b.updates.is_empty() {
+                l.push(Line::styled(
+                    format!("Toolbox {name}: {} package(s)", b.updates.len()),
+                    t.fg(),
+                ));
+            }
+        }
+    }
+    let checked = v.d.ostree_checked.map_or("never".into(), |ts| {
+        fmt::ago(now.as_second() - ts.as_second())
+    });
+    l.push(Line::styled(
+        format!("Last check {checked} · c checks again"),
+        t.dim(),
+    ));
+    l
 }
 
-/// `A` on Updates: what's pending, for a risk read before applying.
+/// `A` on the updates recommendation: what's pending, for a risk read before applying.
 pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
     let o = v.d.ostree.get().ok_or("rpm-ostree status not loaded yet")?;
     let mut lines = vec![format!(
@@ -498,6 +304,7 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
 mod tests {
     use super::*;
     use crate::collectors::ostree::parse;
+    use crate::collectors::ostree::{UpgradePlan, upgrade_plan};
 
     fn status(kmods: &[&str], kernel: bool) -> Ostree {
         let pkg = if kernel { "kernel-core" } else { "mesa-libGL" };

@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2   3 12   4 !   5   6   7   8   9   0
+ 1 Dashboard   2 Proc   3 Net 12   4 Cont   5 Flat   6 Maint 1   0 Upgr
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · i9-14900K · 24c/32t ───────────────────────────────────────────────────┐
@@ -16,7 +16,7 @@ expression: body(&s)
 ┌ Memory ──────────────────────────────┐ ┌ Status ─────────────────────────────┐
 │ mem   20.0 / 64.0 GiB                │ │ updates       216 os · ? fp · ? tb  │
 │ █████████░░░░░░░░░░░░░░░░░░░░░  31%  │ │               kernel changes  kmod… │
-│                                      │ │ findings      no audit yet  Enter … │
+│                                      │ │ findings      no audit yet  c on M… │
 └──────────────────────────────────────┘ └─────────────────────────────────────┘
 ┌ Disks ───────────────────────────────┐ ┌ Network · enp4s0 ───────────────────┐
 │ /sysroot  btrfs          131G / 463G │ │ ↓ 0 B/s   ↑ 0 B/s                   │
@@ -24,4 +24,4 @@ expression: body(&s)
 │ breakdown not measured · press r     │ │ recorder off · history needs `sentr │
 └──────────────────────────────────────┘ └─────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- 1-0  screens   c  check updates   A  ask Claude   ?  help   q  quit
+ 1-6 0  screens   c  check updates   A  ask Claude   ?  help   q  quit

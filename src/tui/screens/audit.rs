@@ -34,10 +34,6 @@ pub struct Audit {
     diff_h: usize,
 }
 
-pub fn on_enter(_v: &View) -> Vec<Effect> {
-    vec![Effect::Fetch(Fetch::Reports)]
-}
-
 pub fn hints(v: &View) -> Hints {
     if v.d.reports.get().is_none_or(|r| r.is_empty()) {
         return vec![("Enter", "run audit")];
@@ -71,8 +67,97 @@ pub fn audit_run() -> Effect {
     })
 }
 
+/// `b`: mark the finding expected, or un-mark it if it already is.
+pub fn expected_toggle(v: &View, f: &Finding) -> Effect {
+    let edit = if !f.listeners.is_empty() {
+        BaselineEdit::Listeners(f.listeners.clone())
+    } else {
+        match f.id.strip_prefix("listener:") {
+            Some(k) => BaselineEdit::Listener(k.to_string()),
+            None => BaselineEdit::Finding(f.id.clone()),
+        }
+    };
+    if is_expected(f, &v.d.baseline) {
+        Effect::Unbaseline(edit)
+    } else {
+        Effect::Baseline(edit)
+    }
+}
+
+/// `B`: treat every finding like this one as expected (a baseline pattern), asked first.
+pub fn pattern_effects(v: &View, f: &Finding) -> Vec<Effect> {
+    let Some((edit, what)) = pattern_for(f) else {
+        return vec![Effect::Toast(
+            "no broader pattern for this finding — use b".into(),
+        )];
+    };
+    let t = v.t;
+    vec![Effect::Confirm(Modal {
+        title: "Baseline pattern".into(),
+        color: t.yellow,
+        lines: vec![
+            Line::styled(format!("Treat {what} as expected?"), t.fg()),
+            Line::styled(format!("baseline.toml ← {}", edit.value()), t.dim()),
+            Line::styled(
+                "Future audits suppress matching findings. Edit the file to undo.",
+                t.dim(),
+            ),
+        ],
+        yes: Some(("add pattern".into(), vec![Effect::Baseline(edit)])),
+    })]
+}
+
+/// What / Why / To do / Fix for a finding, wrapped to `width`, then its evidence.
+pub fn finding_lines(
+    t: &crate::tui::theme::Theme,
+    fd: &Finding,
+    width: usize,
+    fix_key: &str,
+) -> Vec<Line<'static>> {
+    let tw = width.saturating_sub(7).max(10);
+    let mut d = Vec::new();
+    // Label in a 7-column gutter; wrapped text stays aligned under the first line.
+    let mut sec = |label: &str, text: &str| {
+        for (k, l) in wrap(text, tw).into_iter().enumerate() {
+            d.push(Line::from(vec![
+                Span::styled(
+                    format!("{:<7}", if k == 0 { label } else { "" }),
+                    t.s(t.cyan),
+                ),
+                Span::styled(l, t.fg()),
+            ]));
+        }
+    };
+    // Reports from before what/why/fix existed: message + evidence only.
+    sec(
+        "What",
+        if fd.what.is_empty() {
+            &fd.message
+        } else {
+            &fd.what
+        },
+    );
+    sec("Why", &fd.why);
+    sec("To do", &fd.fix);
+    let fixes = crate::audit::fix::fixes(fd);
+    let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
+    if crate::claude::available() {
+        let mut l = format!("press {fix_key}: Claude looks into it and tells you what to run");
+        if !labels.is_empty() {
+            l.push_str(&format!(" (known fixes: {})", labels.join(" · ")));
+        }
+        sec("Fix", &l);
+    } else if !labels.is_empty() {
+        sec("Fix", &format!("press {fix_key}: {}", labels.join(" · ")));
+    }
+    for l in fd.evidence.lines().take(8) {
+        d.push(Line::styled(format!("       {l}"), t.dim()));
+    }
+    d
+}
+
 /// `f`: the finding's fixes as a confirm box (one) or a numbered choice (several).
-fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
+pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
     use crate::audit::fix::{self, Act};
     let t = v.t;
     let fixes = fix::fixes(f);
@@ -322,42 +407,8 @@ impl Audit {
                     }
                     Action::Char('f') => return fix_effects(v, f),
                     // `b` toggles: marks the finding expected, or un-marks it if it already is.
-                    Action::Char('b') => {
-                        let edit = if !f.listeners.is_empty() {
-                            BaselineEdit::Listeners(f.listeners.clone())
-                        } else {
-                            match f.id.strip_prefix("listener:") {
-                                Some(k) => BaselineEdit::Listener(k.to_string()),
-                                None => BaselineEdit::Finding(f.id.clone()),
-                            }
-                        };
-                        return vec![if is_expected(f, &v.d.baseline) {
-                            Effect::Unbaseline(edit)
-                        } else {
-                            Effect::Baseline(edit)
-                        }];
-                    }
-                    Action::Char('B') => {
-                        let Some((edit, what)) = pattern_for(f) else {
-                            return vec![Effect::Toast(
-                                "no broader pattern for this finding — use b".into(),
-                            )];
-                        };
-                        let t = v.t;
-                        return vec![Effect::Confirm(Modal {
-                            title: "Baseline pattern".into(),
-                            color: t.yellow,
-                            lines: vec![
-                                Line::styled(format!("Treat {what} as expected?"), t.fg()),
-                                Line::styled(format!("baseline.toml ← {}", edit.value()), t.dim()),
-                                Line::styled(
-                                    "Future audits suppress matching findings. Edit the file to undo.",
-                                    t.dim(),
-                                ),
-                            ],
-                            yes: Some(("add pattern".into(), vec![Effect::Baseline(edit)])),
-                        })];
-                    }
+                    Action::Char('b') => return vec![expected_toggle(v, f)],
+                    Action::Char('B') => return pattern_effects(v, f),
                     _ => {}
                 }
             }
@@ -433,48 +484,9 @@ impl Audit {
         };
         let keys = "f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
-        let tw = (r.width as usize).saturating_sub(7).max(10);
-        let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
-            let mut d = Vec::new();
-            // Label in a 7-column gutter; wrapped text stays aligned under the first line.
-            let mut sec = |label: &str, text: &str| {
-                for (k, l) in wrap(text, tw).into_iter().enumerate() {
-                    d.push(Line::from(vec![
-                        Span::styled(
-                            format!("{:<7}", if k == 0 { label } else { "" }),
-                            t.s(t.cyan),
-                        ),
-                        Span::styled(l, t.fg()),
-                    ]));
-                }
-            };
-            // Reports from before what/why/fix existed: message + evidence only.
-            sec(
-                "What",
-                if fd.what.is_empty() {
-                    &fd.message
-                } else {
-                    &fd.what
-                },
-            );
-            sec("Why", &fd.why);
-            sec("To do", &fd.fix);
-            let fixes = crate::audit::fix::fixes(fd);
-            let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
-            if crate::claude::available() {
-                let mut l = "press f: Claude looks into it and tells you what to run".to_string();
-                if !labels.is_empty() {
-                    l.push_str(&format!(" (known fixes: {})", labels.join(" · ")));
-                }
-                sec("Fix", &l);
-            } else if !labels.is_empty() {
-                sec("Fix", &format!("press f: {}", labels.join(" · ")));
-            }
-            for l in fd.evidence.lines().take(8) {
-                d.push(Line::styled(format!("       {l}"), t.dim()));
-            }
-            d
-        });
+        let detail: Vec<Line> = rows
+            .get(sel)
+            .map_or(Vec::new(), |fd| finding_lines(t, fd, r.width as usize, "f"));
         let detail_rows = detail.len();
         let ev_h = (detail_rows as u16 + 1).clamp(4, r.height / 2);
         let [head, list, summary, evidence] = Layout::vertical([

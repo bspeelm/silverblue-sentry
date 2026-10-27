@@ -23,10 +23,6 @@ pub struct Jobs {
     pub cur: Cursor,
 }
 
-pub fn on_enter(_v: &View) -> Vec<Effect> {
-    vec![Effect::Fetch(Fetch::Jobs)]
-}
-
 pub fn hints() -> Hints {
     vec![
         ("j/k", "select"),
@@ -76,7 +72,7 @@ pub fn plan_modal(t: &Theme, job: JobId, p: &Plan) -> Modal {
         }
         if !on && i.runnable() {
             lines.push(Line::styled(
-                "    opt-in: select it on Cleanup (9)",
+                "    opt-in: select it in Cleanup (C on Maintenance)",
                 t.dim(),
             ));
         }

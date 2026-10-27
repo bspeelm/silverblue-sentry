@@ -159,12 +159,20 @@ fn dashboard_narrow() {
     insta::assert_snapshot!("dashboard_80x24", body(&s));
 }
 
+/// Maintenance with one of its views open (`F` report, `J` jobs, `C` cleanup).
+fn maint_view(d: DataStore, k: char) -> App {
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
+    key(&mut a, KeyCode::Char(k));
+    a
+}
+
 #[test]
-fn updates_shows_kernel_ritual() {
-    let s = render_to_string(&mut app(ScreenId::Upd), 158, 41);
+fn maintenance_ranks_updates_and_shows_deployments() {
+    let s = render_to_string(&mut app(ScreenId::Maint), 158, 41);
     assert!(s.contains("kmod ritual"), "{s}");
-    assert!(s.contains("pinned"));
-    insta::assert_snapshot!("updates_158x41", body(&s));
+    assert!(s.contains("pinned") && s.contains("Deployments"), "{s}");
+    assert!(s.contains("Updates waiting"), "{s}");
+    insta::assert_snapshot!("maintenance_158x41", body(&s));
 }
 
 #[test]
@@ -173,7 +181,6 @@ fn other_screens_snapshot() {
         (ScreenId::Net, "network"),
         (ScreenId::Cont, "containers"),
         (ScreenId::Flat, "flatpaks"),
-        (ScreenId::Audit, "audit_empty"),
     ] {
         let s = render_to_string(&mut app(id), 158, 41);
         insta::assert_snapshot!(format!("{name}_158x41"), body(&s));
@@ -186,7 +193,7 @@ fn navigation_and_modals() {
     key(&mut a, KeyCode::Char('3'));
     assert_eq!(a.screen, ScreenId::Net);
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.screen, ScreenId::Upd);
+    assert_eq!(a.screen, ScreenId::Cont);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
     assert_eq!(a.screen, ScreenId::Proc);
@@ -203,22 +210,12 @@ fn navigation_and_modals() {
 }
 
 #[test]
-fn upgrade_on_kernel_change_offers_quick_update() {
-    let mut a = app(ScreenId::Upd);
-    key(&mut a, KeyCode::Char('u'));
+fn updates_are_applied_by_quick_update() {
+    let mut a = app(ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Kernel changes · use quick-update"), "{s}");
-    assert!(
-        s.contains("kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64"),
-        "{s}"
-    );
-    assert!(s.contains("start quick-update"), "{s}");
-    assert!(
-        !s.contains("--uninstall"),
-        "no standalone ritual step 1 any more"
-    );
-    key(&mut a, KeyCode::Char('n'));
-    assert!(!render_to_string(&mut a, 158, 41).contains("use quick-update"));
+    assert!(s.contains("start the quick-update workflow"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.screen, ScreenId::Upgrade, "Enter starts it on Upgrade");
 }
 
 #[test]
@@ -319,18 +316,18 @@ fn audit_reports() -> Vec<crate::audit::store::Stored> {
 
 #[test]
 fn audit_screen() {
-    let mut a = app(ScreenId::Audit);
+    let mut a = maint_view(store(), 'F');
     let empty = render_to_string(&mut a, 158, 41);
     assert!(empty.contains("No audit yet."), "{empty}");
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
-    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    let mut a = maint_view(d, 'F');
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("audit_158x41", body(&s));
     assert!(
-        s.contains("7 Audit !1"),
-        "badge counts findings to check: {s}"
+        s.contains("6 Maintenance 3"),
+        "badge counts what's now or soon: {s}"
     );
     // Browse to the first report: no diff yet.
     key(&mut a, KeyCode::Char('['));
@@ -430,12 +427,8 @@ fn jobs_and_cleanup_screens() {
             notes: vec![],
         },
     ]));
-    let mut a = App::for_test(Config::default(), d, ScreenId::Jobs);
+    let mut a = maint_view(d, 'J');
     let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("8 Jobs 3"),
-        "due badge: never-run + overdue jobs: {s}"
-    );
     for want in [
         "cleanup-podman",
         "DUE",
@@ -445,7 +438,8 @@ fn jobs_and_cleanup_screens() {
     ] {
         assert!(s.contains(want), "{want}: {s}");
     }
-    key(&mut a, KeyCode::Char('9'));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('C'));
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("cleanup_158x41", body(&s));
     // Toggle the opt-in item: the total grows by nothing (no estimate) but it's now checked.
@@ -675,12 +669,9 @@ fn ask_claude_context_per_tab() {
         (ScreenId::Dash, "sentry's dashboard status"),
         (ScreenId::Proc, "no process selected"), // processes aren't sampled in the fixture store
         (ScreenId::Net, "known service:"),
-        (ScreenId::Upd, "KERNEL CHANGES"),
+        (ScreenId::Maint, "A finding from sentry's audit"),
         (ScreenId::Cont, "A podman container"),
         (ScreenId::Flat, "permissions = metadata + overrides"),
-        (ScreenId::Audit, "sentry's generic explanation"),
-        (ScreenId::Jobs, "--dry-run` shows its exact plan"),
-        (ScreenId::Clean, "plans still loading"),
         (ScreenId::Upgrade, "no workflow selected"),
         (ScreenId::Hist, "no recorder data"),
     ];
@@ -710,7 +701,7 @@ fn chat_pane_and_consent_render() {
     );
     c.on_exit(0);
     c.session = Some("s1".into());
-    let mut a = App::for_test(Config::default(), store(), ScreenId::Audit);
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Maint);
     a.set_chat(c);
     let s = render_to_string(&mut a, 120, 30);
     assert!(
@@ -766,7 +757,7 @@ fn jobs_enter_on_cleanup_opens_cleanup_focused() {
             notes: vec![],
         },
     ]));
-    let mut a = App::for_test(Config::default(), d, ScreenId::Jobs);
+    let mut a = maint_view(d, 'J');
     // cleanup-podman is the 5th job row.
     for _ in 0..4 {
         key(&mut a, KeyCode::Char('j'));
@@ -787,10 +778,52 @@ fn dashboard_rows_jump_to_tabs() {
     key(&mut a, KeyCode::Char('j'));
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
+    assert_eq!(a.screen, ScreenId::Maint);
     assert!(
-        s.contains("rpm-ostree · deployments"),
-        "first row opens Updates: {s}"
+        s.contains("soon  Updates waiting"),
+        "the updates row selects its recommendation: {s}"
     );
+    // The findings row (after updates and the kernel note) lands on a finding.
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Dash);
+    render_to_string(&mut a, 158, 41);
+    for _ in 0..3 {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("What   "), "a finding's details: {s}");
+}
+
+#[test]
+fn maintenance_keys_and_views() {
+    let mut d = store();
+    d.reports.set(Ok(audit_reports()));
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("x  expected"),
+        "a finding is selected first: {s}"
+    );
+    // z: put it off (a choice of 7/30/90 days).
+    key(&mut a, KeyCode::Char('z'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("in 30 days"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // x marks it expected: it leaves the list.
+    let before = render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('x'));
+    let after = render_to_string(&mut a, 158, 41);
+    assert_ne!(before, after);
+    // The views open and Esc comes back.
+    for (k, title) in [('F', "Audit report"), ('J', "Jobs"), ('C', "Cleanup")] {
+        key(&mut a, KeyCode::Char(k));
+        let s = render_to_string(&mut a, 158, 41);
+        assert!(s.contains(&format!("Maintenance › {title}")), "{k}: {s}");
+        key(&mut a, KeyCode::Esc);
+        assert!(render_to_string(&mut a, 158, 41).contains("Recommended"));
+    }
 }
 
 #[test]
@@ -800,7 +833,7 @@ fn audit_fix_key() {
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
-    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    let mut a = maint_view(d, 'F');
     // Row 1 is "com.visualstudio.code gained filesystem=host": one fix → confirm box.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -845,7 +878,7 @@ fn audit_fix_with_claude() {
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
-    let mut a = App::for_test(Config::default(), d, ScreenId::Audit);
+    let mut a = maint_view(d, 'F');
     render_to_string(&mut a, 158, 41);
     // `f` shows what would be sent (finding + sentry's known fixes) before anything leaves.
     key(&mut a, KeyCode::Char('f'));

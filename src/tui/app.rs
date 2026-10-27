@@ -15,6 +15,7 @@ use ratatui::widgets::Paragraph;
 
 use super::data::{DataStore, Fetch};
 use super::keys::{Action, Keymap};
+use super::screens::maint::Sub;
 use super::screens::{Screens, View};
 use super::theme::Theme;
 use super::wf::{Exec, Session};
@@ -67,6 +68,12 @@ pub enum Effect {
     StartWorkflow(String),
     /// The maintenance log (`v`, `:log`).
     LogOpen,
+    /// Maintenance with the first recommendation whose key starts with this selected.
+    MaintFind(String),
+    /// Put a recommendation off for this many days (`z`).
+    Snooze(String, i64),
+    /// A saved plan (`plans/<workflow>.md`), in the Plan view.
+    PlanOpen(String),
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -1299,12 +1306,21 @@ impl App {
             (Some("help" | "h"), _) => self.show_help(),
             (Some("job"), Some(name)) => match crate::jobs::JobId::from_name(name) {
                 Some(j) => {
-                    self.enter(ScreenId::Jobs, now);
+                    self.open_maint_view(Sub::Jobs, now);
                     self.data.fetch(Fetch::Plan(j), &self.cfg, &self.tx);
                 }
                 None => self.toast(format!("unknown job {name}")),
             },
-            (Some("job"), None) => self.enter(ScreenId::Jobs, now),
+            (Some("job" | "jobs"), None) => self.open_maint_view(Sub::Jobs, now),
+            (Some("audit"), None) => self.open_maint_view(Sub::Report, now),
+            (Some("cleanup"), None) => self.open_maint_view(Sub::Cleanup, now),
+            (Some("rollback"), None) => match self.data.ostree.get() {
+                Some(o) => {
+                    let e = super::screens::updates::rollback_effects(&self.theme, o);
+                    self.apply(e, now);
+                }
+                None => self.toast("rpm-ostree status isn't loaded yet"),
+            },
             (Some("workflow" | "wf"), name) => self.workflow_command(name, now),
             (Some("log"), None) => self.open_log(),
             (Some(name), None) => match ScreenId::from_name(name) {
@@ -1461,8 +1477,27 @@ impl App {
                 Effect::LogOpen => self.open_log(),
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
-                    self.enter(ScreenId::Clean, now);
+                    self.enter(ScreenId::Maint, now);
                 }
+                Effect::MaintFind(prefix) => {
+                    self.screens.find_maint(&prefix);
+                    self.enter(ScreenId::Maint, now);
+                }
+                Effect::Snooze(key, days) => {
+                    let today = jiff::Zoned::now().date();
+                    let until = today
+                        .checked_add(jiff::Span::new().days(days))
+                        .unwrap_or(today);
+                    if self.records
+                        && let Err(e) = crate::maint::snooze::set(&key, until, today)
+                    {
+                        self.toast(format!("couldn't save it: {e}"));
+                    } else {
+                        self.data.snoozes.insert(key, until);
+                        self.toast(format!("put off until {until} (maint.toml)"));
+                    }
+                }
+                Effect::PlanOpen(wf) => self.toast(format!("no plan for {wf} yet")),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -1694,6 +1729,11 @@ impl App {
             info.as_ref(),
             note,
         )
+    }
+
+    fn open_maint_view(&mut self, s: Sub, now: Instant) {
+        self.screens.maint.open(s);
+        self.enter(ScreenId::Maint, now);
     }
 
     fn open_log(&mut self) {
@@ -1996,15 +2036,12 @@ impl App {
     fn badge(&self, id: ScreenId) -> Option<(String, Color)> {
         let t = &self.theme;
         match id {
-            ScreenId::Upd => {
-                let os = self.data.ostree.get().and_then(|o| o.update.as_ref());
-                let fp = self.data.fp_updates.get().map_or(0, |c| c.data.len());
-                match os {
-                    Some(u) if u.kernel_changed => Some((" !".into(), t.yellow)),
-                    Some(_) => Some((" ↑".into(), t.yellow)),
-                    None if fp > 0 => Some((format!(" {fp}"), t.yellow)),
-                    None => None,
-                }
+            ScreenId::Maint => {
+                let (n, level) = super::screens::maint::badge(&self.view())?;
+                Some((
+                    format!(" {n}"),
+                    super::screens::maint::level_color(t, level),
+                ))
             }
             ScreenId::Cont => {
                 let n = crate::collectors::toolbox::total(&self.data.tbx_updates.get()?.data);
@@ -2018,16 +2055,6 @@ impl App {
                         .count()
                 });
                 (n > 0).then(|| (format!(" {n}"), t.red))
-            }
-            ScreenId::Audit => {
-                let r = self.data.reports.get()?.last()?;
-                let c = r.report.counts(&self.data.baseline);
-                (c.high > 0).then(|| (format!(" !{}", c.high), t.red))
-            }
-            ScreenId::Jobs => {
-                let runs = self.data.job_runs.get()?;
-                let n = runs.due_jobs(&self.cfg, jiff::Timestamp::now()).len();
-                (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
             ScreenId::Upgrade => self
                 .wf

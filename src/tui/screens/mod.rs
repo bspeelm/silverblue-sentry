@@ -8,9 +8,10 @@ mod dashboard;
 mod flatpaks;
 pub mod history;
 pub mod jobs;
+pub mod maint;
 mod network;
 mod processes;
-mod updates;
+pub mod updates;
 pub mod upgrade;
 
 use ratatui::Frame;
@@ -94,12 +95,9 @@ pub struct Screens {
     dash: dashboard::Dashboard,
     proc: processes::Processes,
     net: network::Network,
-    upd: updates::Updates,
     cont: containers::Containers,
     flat: flatpaks::Flatpaks,
-    audit: audit::Audit,
-    jobs: jobs::Jobs,
-    clean: cleanup::Cleanup,
+    pub maint: maint::Maint,
     upgrade: upgrade::Upgrade,
     hist: history::History,
 }
@@ -107,12 +105,9 @@ pub struct Screens {
 impl Screens {
     pub fn on_enter(&self, id: ScreenId, v: &View) -> Vec<Effect> {
         match id {
-            ScreenId::Upd => updates::on_enter(v),
             ScreenId::Cont => containers::on_enter(v),
             ScreenId::Flat => flatpaks::on_enter(v),
-            ScreenId::Audit => audit::on_enter(v),
-            ScreenId::Jobs => jobs::on_enter(v),
-            ScreenId::Clean => cleanup::on_enter(v),
+            ScreenId::Maint => maint::on_enter(v, self.maint.view),
             ScreenId::Upgrade => upgrade::on_enter(v),
             ScreenId::Hist => history::on_enter(v),
             _ => Vec::new(),
@@ -124,12 +119,9 @@ impl Screens {
             ScreenId::Dash => self.dash.handle(a, v),
             ScreenId::Proc => self.proc.handle(a, v),
             ScreenId::Net => self.net.handle(a, v),
-            ScreenId::Upd => self.upd.handle(a, v),
             ScreenId::Cont => self.cont.handle(a, v),
             ScreenId::Flat => self.flat.handle(a, v),
-            ScreenId::Audit => self.audit.handle(a, v),
-            ScreenId::Jobs => self.jobs.handle(a, v),
-            ScreenId::Clean => self.clean.handle(a, v),
+            ScreenId::Maint => self.maint.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, v),
             ScreenId::Hist => self.hist.handle(a, v),
         }
@@ -140,12 +132,9 @@ impl Screens {
             ScreenId::Dash => self.dash.render(f, area, v),
             ScreenId::Proc => self.proc.render(f, area, v),
             ScreenId::Net => self.net.render(f, area, v),
-            ScreenId::Upd => self.upd.render(f, area, v),
             ScreenId::Cont => self.cont.render(f, area, v),
             ScreenId::Flat => self.flat.render(f, area, v),
-            ScreenId::Audit => self.audit.render(f, area, v),
-            ScreenId::Jobs => self.jobs.render(f, area, v),
-            ScreenId::Clean => self.clean.render(f, area, v),
+            ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
         }
@@ -156,12 +145,9 @@ impl Screens {
             ScreenId::Dash => dashboard::hints(),
             ScreenId::Proc => processes::hints(),
             ScreenId::Net => network::hints(),
-            ScreenId::Upd => updates::hints(v),
             ScreenId::Cont => containers::hints(),
             ScreenId::Flat => flatpaks::hints(),
-            ScreenId::Audit => audit::hints(v),
-            ScreenId::Jobs => jobs::hints(),
-            ScreenId::Clean => cleanup::hints(),
+            ScreenId::Maint => maint::hints(v, &self.maint),
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Hist => history::hints(),
         }
@@ -173,21 +159,26 @@ impl Screens {
             ScreenId::Dash => dashboard::ask(v),
             ScreenId::Proc => self.proc.ask(v),
             ScreenId::Net => self.net.ask(v),
-            ScreenId::Upd => updates::ask(v),
             ScreenId::Cont => self.cont.ask(v),
             ScreenId::Flat => self.flat.ask(v),
-            ScreenId::Audit => self.audit.ask(v),
-            ScreenId::Jobs => self.jobs.ask(v),
-            ScreenId::Clean => self.clean.ask(v),
+            ScreenId::Maint => self.maint.ask(v),
             ScreenId::Upgrade => self.upgrade.ask(v),
             ScreenId::Hist => self.hist.ask(v),
         }
     }
 
+    /// The Cleanup view inside Maintenance, with only this job's items selected.
     pub fn focus_cleanup(&mut self, job: crate::jobs::JobId) {
-        self.clean.focus = Some(job);
-        self.clean.jump = true;
-        self.clean.reset_checks();
+        self.maint.clean.focus = Some(job);
+        self.maint.clean.jump = true;
+        self.maint.clean.reset_checks();
+        self.maint.open(maint::Sub::Cleanup);
+    }
+
+    /// Maintenance with the first recommendation whose key starts with `prefix` selected.
+    pub fn find_maint(&mut self, prefix: &str) {
+        self.maint.view = None;
+        self.maint.find = Some(prefix.to_string());
     }
 
     pub fn select_workflow(&mut self, i: usize) {
@@ -200,9 +191,7 @@ impl Screens {
             ScreenId::Net => self.net.cur.sel = 0,
             ScreenId::Cont => self.cont.cur.sel = 0,
             ScreenId::Flat => self.flat.cur.sel = 0,
-            ScreenId::Audit => self.audit.cur.sel = 0,
-            ScreenId::Jobs => self.jobs.cur.sel = 0,
-            ScreenId::Clean => self.clean.cur.sel = 0,
+            ScreenId::Maint => self.maint.cur.sel = 0,
             ScreenId::Upgrade => self.upgrade.cur.sel = 0,
             _ => {}
         }

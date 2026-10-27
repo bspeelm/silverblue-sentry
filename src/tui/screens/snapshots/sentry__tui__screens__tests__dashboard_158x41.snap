@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Updates !   5 Containers   6 Flatpaks   7 Audit   8 Jobs   9 Cleanup   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · i9-14900K · 24c/32t ──────────────────────────────────────────────────────────────────────────┐  ┌ Memory ───────────────────────────────────────────┐
@@ -28,7 +28,7 @@ expression: body(&s)
 ┌ Disks ──────────────────────────────────────────┐  ┌ Network · enp4s0 ────────────────────────────────┐  ┌ Status ─────────────────────────────────────────┐
 │ /sysroot  btrfs                     131G / 463G │  │ ↓ 0 B/s   ↑ 0 B/s                                │  │ updates       216 os · ? fp · ? tb  never · pr… │
 │ ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  28% │  │                                                  │  │               kernel changes  kmod ritual       │
-│ /boot  ext4                         997M / 1.9G │  │   ▄▆▇██▆▄▁       ▁▄▆██▇▆▃        ▂▅▇██▇▅▂        │  │ findings      no audit yet  Enter on 7          │
+│ /boot  ext4                         997M / 1.9G │  │   ▄▆▇██▆▄▁       ▁▄▆██▇▆▃        ▂▅▇██▇▅▂        │  │ findings      no audit yet  c on Maintenance    │
 │ ██████████████████████░░░░░░░░░░░░░░░░░░░░  51% │  │ ▅█████████▅▁   ▂▆█████████▄    ▃▇████████▇▃    ▄ │  │ failed units  1  systemd-remount-fs             │
 │ /boot/efi  vfat                    13.2M / 599M │  │ ████████████▄ ▅█████████████▃▂▆████████████▆▂▃██ │  │ jobs due      —                                 │
 │ █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   2% │  │ ▁▆█▆   ▅█▇▂  ▄██▄  ▂▇█▅   ▆█▆▁  ▄█▇▃  ▃▇█▄  ▁▆█▆ │  │ workflow      none                              │
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                 │  │ recorder off · history needs `sentry record`     │  │                                                 │
 └─────────────────────────────────────────────────┘  └──────────────────────────────────────────────────┘  └─────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1-0  screens   c  check updates   r  measure disks   j/k Enter  open a status row   A  ask Claude   ?  help   q  quit
+ 1-6 0  screens   c  check updates   r  measure disks   j/k Enter  open a status row   A  ask Claude   ?  help   q  quit

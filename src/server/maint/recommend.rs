@@ -11,24 +11,7 @@ use super::plan::{PlanDoc, PlanStatus};
 use crate::server::collect::apt::Apt;
 use crate::server::config::{MaintItem, Risk};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
-    Now,
-    Soon,
-    Routine,
-    Tidy,
-}
-
-impl Level {
-    pub fn word(self) -> &'static str {
-        match self {
-            Level::Now => "now",
-            Level::Soon => "soon",
-            Level::Routine => "routine",
-            Level::Tidy => "tidy",
-        }
-    }
-}
+pub use crate::maint::Level;
 
 /// What Enter does on a recommendation.
 #[derive(Debug, Clone, PartialEq)]
