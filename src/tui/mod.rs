@@ -79,18 +79,20 @@ pub enum ScreenId {
     Cont,
     Flat,
     Maint,
+    Clean,
     Upgrade,
     Hist,
 }
 
 impl ScreenId {
-    pub const ALL: [ScreenId; 8] = [
+    pub const ALL: [ScreenId; 9] = [
         ScreenId::Dash,
         ScreenId::Proc,
         ScreenId::Net,
         ScreenId::Cont,
         ScreenId::Flat,
         ScreenId::Maint,
+        ScreenId::Clean,
         ScreenId::Upgrade,
         ScreenId::Hist,
     ];
@@ -103,6 +105,7 @@ impl ScreenId {
             ScreenId::Cont => '4',
             ScreenId::Flat => '5',
             ScreenId::Maint => '6',
+            ScreenId::Clean => '7',
             ScreenId::Upgrade => '0',
             ScreenId::Hist => 'H',
         }
@@ -116,6 +119,7 @@ impl ScreenId {
             ScreenId::Cont => "Containers",
             ScreenId::Flat => "Flatpaks",
             ScreenId::Maint => "Maintenance",
+            ScreenId::Clean => "Cleanup",
             ScreenId::Upgrade => "Upgrade",
             ScreenId::Hist => "History",
         }
@@ -129,6 +133,7 @@ impl ScreenId {
             ScreenId::Cont => "Cont",
             ScreenId::Flat => "Flat",
             ScreenId::Maint => "Maint",
+            ScreenId::Clean => "Clean",
             ScreenId::Upgrade => "Upgr",
             ScreenId::Hist => "Hist",
         }
@@ -143,6 +148,7 @@ impl ScreenId {
             ScreenId::Cont => "containers",
             ScreenId::Flat => "flatpaks",
             ScreenId::Maint => "maintenance",
+            ScreenId::Clean => "cleanup",
             ScreenId::Upgrade => "upgrade",
             ScreenId::Hist => "history",
         }

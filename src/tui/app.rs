@@ -1439,7 +1439,6 @@ impl App {
             },
             (Some("job" | "jobs"), None) => self.open_maint_view(Sub::Jobs, now),
             (Some("audit"), None) => self.open_maint_view(Sub::Report, now),
-            (Some("cleanup"), None) => self.open_maint_view(Sub::Cleanup, now),
             (Some("rollback"), None) => match self.data.ostree.get() {
                 Some(o) => {
                     let e = super::screens::updates::rollback_effects(&self.theme, o);
@@ -1603,7 +1602,7 @@ impl App {
                 Effect::LogOpen => self.open_log(),
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
-                    self.enter(ScreenId::Maint, now);
+                    self.enter(ScreenId::Clean, now);
                 }
                 Effect::MaintFind(prefix) => {
                     self.screens.find_maint(&prefix);

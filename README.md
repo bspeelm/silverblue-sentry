@@ -85,7 +85,8 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `3` | Network | listeners as `baseline` / `local` / `client` / `NEW`; `e` marks one expected |
 | `4` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags, and pending dnf updates inside each toolbox (`old → new`). `c` checks (stopped toolboxes are started, then stopped again), `u`/`U` upgrade one/all, `Enter` opens a shell, `s` stops, `d` removes |
 | `5` | Flatpaks | permission flags from metadata + overrides, GL.nvidia pair check, `o` opens Flatseal |
-| `6` | Maintenance | what to do on this machine next (below), the deployments, and the selected recommendation's details. Views: `F` the audit report, `J` jobs, `C` cleanup, `v` the maintenance log, `R` Claude's review |
+| `6` | Maintenance | what to do on this machine next (below), the deployments, and the selected recommendation's details. Views: `F` the audit report, `J` jobs, `v` the maintenance log, `R` Claude's review |
+| `7` | Cleanup | reclaimable space from dry runs (old deployments, unused Flatpak runtimes, podman leftovers, `~/.cache`); `Space` toggles, `Enter` previews, confirms and runs the selection, `r` re-plans |
 | `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip (asks first unless the step is optional), `a` abandon, `R` roll back, `L` the step's log, `v` the maintenance log, `p` a plan by Claude. On a failed step: `r` retry, `d` done by hand (asks first for a failed check), `f` fix with Claude; `A` on a run that has ended asks what happened |
 | `H` | History | recorder data over 6h/24h/72h (`[`/`]`), `←`/`→` to scrub; the tab appears once `sentry record` has run |
 
@@ -96,10 +97,10 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 - **Updates waiting** (the OS, Flatpaks, toolboxes; the details show what changes, old → new, and whether the kernel changes): `Enter` starts `quick-update`, the one path that does Flatpaks, toolboxes, the OS and, when the kernel changes, the NVIDIA kmod ritual. It's the same workflow listed on Upgrade (`0`): starting it from either screen is the same run, shown on Upgrade, and while it runs Maintenance shows the run instead of the updates. `p` has Claude plan it first.
 - **A deployment staged** and waiting for a reboot (now after 14 days): `Enter` reboots after a confirm.
 - **Jobs due** by their cadence, or that failed: the audit, the update check, the cleanups. Cadence is a reminder; nothing runs by itself.
-- **Space to reclaim** from the cleanup dry runs (now when a disk is past 90%): `Enter` opens the cleanup checklist (`Space` toggles, `Enter` confirms and runs the selection).
+- **Space to reclaim** from the cleanup dry runs (now when a disk is past 90%): `Enter` opens Cleanup (`7`).
 - **A workflow left in progress**, and **plans ready** to apply.
 
-`z` puts one off for 7, 30 or 90 days (`maint.toml`). `c` checks everything: the audit, OS, Flatpak and toolbox updates, and what cleanup could free. The views keep what the old screens did: `F` the full audit report (marked `check` / `review` / `info`, known services named and grouped, the diff against the previous audit, `[`/`]` to browse reports, `b` expected on/off), `J` the jobs (last run, cadence, due; `Enter` shows the plan, then runs; `e` edits the cadence), `C` the cleanup checklist. `:audit`, `:jobs`, `:cleanup` open them; `:rollback` rolls back to the previous deployment behind its confirm.
+`z` puts one off for 7, 30 or 90 days (`maint.toml`). `c` checks everything: the audit, OS, Flatpak and toolbox updates, and what cleanup could free. The views keep what the old screens did: `F` the full audit report (marked `check` / `review` / `info`, known services named and grouped, the diff against the previous audit, `[`/`]` to browse reports, `b` expected on/off), `J` the jobs (last run, cadence, due; `Enter` shows the plan, then runs; `e` edits the cadence). `C` goes to Cleanup. `:audit` and `:jobs` open the views; `:rollback` rolls back to the previous deployment behind its confirm.
 
 `A` asks Claude about the selected thing (see below). Vim keys work everywhere: `j/k`, `gg/G`, `C-d/C-u`, `h/l` (previous/next screen), `/` filter with `n/N`, and `:` commands (`:q`, `:net`, `:job audit`, `:workflow quick-update`, `:log`). `C-h`/`C-l` switch panes and `C-j`/`C-k` scroll logs. `?` shows the keys for the current screen.
 

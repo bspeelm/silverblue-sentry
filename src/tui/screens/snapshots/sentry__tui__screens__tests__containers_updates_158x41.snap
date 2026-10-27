@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Containers 5 /devbox   5 Flatpaks   6 Maintenance   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers 5 /devbox   5 Flatpaks   6 Maintenance   7 Cleanup   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 NAME                     KIND       STATUS    AGE        $HOME  UPDATES  IMAGE

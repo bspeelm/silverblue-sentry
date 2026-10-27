@@ -441,8 +441,7 @@ fn jobs_and_cleanup_screens() {
     ] {
         assert!(s.contains(want), "{want}: {s}");
     }
-    key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char('C'));
+    key(&mut a, KeyCode::Char('7'));
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("cleanup_158x41", body(&s));
     // Toggle the opt-in item: the total grows by nothing (no estimate) but it's now checked.
@@ -820,13 +819,16 @@ fn maintenance_keys_and_views() {
     let after = render_to_string(&mut a, 158, 41);
     assert_ne!(before, after);
     // The views open and Esc comes back.
-    for (k, title) in [('F', "Audit report"), ('J', "Jobs"), ('C', "Cleanup")] {
+    for (k, title) in [('F', "Audit report"), ('J', "Jobs")] {
         key(&mut a, KeyCode::Char(k));
         let s = render_to_string(&mut a, 158, 41);
         assert!(s.contains(&format!("Maintenance › {title}")), "{k}: {s}");
         key(&mut a, KeyCode::Esc);
         assert!(render_to_string(&mut a, 158, 41).contains("Recommended"));
     }
+    // Cleanup is its own screen: C goes there.
+    key(&mut a, KeyCode::Char('C'));
+    assert_eq!(a.screen, ScreenId::Clean);
 }
 
 #[test]

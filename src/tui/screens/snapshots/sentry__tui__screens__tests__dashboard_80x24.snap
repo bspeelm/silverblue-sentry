@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Proc   3 Net 12   4 Cont   5 Flat   6 Maint 1   0 Upgr ↑
+ 1 Dashboard   2 Proc   3 Net 12   4 Cont   5 Flat   6 Maint 1   7 Clean   0 Upg
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · i9-14900K · 24c/32t ───────────────────────────────────────────────────┐
@@ -24,4 +24,4 @@ expression: body(&s)
 │ breakdown not measured · press r     │ │ recorder off · history needs `sentr │
 └──────────────────────────────────────┘ └─────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- 1-6 0  screens   c  check updates   A  ask Claude   ?  help   q  quit
+ 1-7 0  screens   c  check updates   A  ask Claude   ?  help   q  quit

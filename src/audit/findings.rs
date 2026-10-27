@@ -316,7 +316,7 @@ fn flatpaks(r: &Report, prev: Option<&Report>, out: &mut Vec<Finding>) {
             )
             .what("Runtimes no installed app uses any more.")
             .why("They only take disk space.")
-            .fix("Cleanup (C on Maintenance) removes them (`flatpak uninstall --unused`).")
+            .fix("Cleanup (7) removes them (`flatpak uninstall --unused`).")
             .evidence(unused.join("\n"))
             .done(),
         );
@@ -329,7 +329,7 @@ fn flatpaks(r: &Report, prev: Option<&Report>, out: &mut Vec<Finding>) {
                 F::new(format!("flatpak-gl-stale:{ext}"), Sev::Low, "flatpak", format!("Old {kind}.nvidia-{ver} driver extension"))
                     .what(format!("Flatpak's copy of an older NVIDIA driver ({ver}); the host runs {driver}."))
                     .why("Left behind after a driver update; `flatpak uninstall --unused` doesn't remove these. Several hundred MB each.")
-                    .fix("Cleanup (C on Maintenance) offers to remove it.")
+                    .fix("Cleanup (7) offers to remove it.")
                     .evidence(ext)
                     .done(),
             );
@@ -491,7 +491,7 @@ pub fn derive(r: &Report, prev: Option<&Report>, b: &Baseline, cfg: &Config) -> 
             F::new("cache-size", Sev::Low, "cache", format!("~/.cache is {}", fmt::bytes(c.bytes)))
                 .what(format!("Your cache folder is over the {} MB threshold.", cfg.audit.cache_warn_mb))
                 .why("Caches are safe to delete but grow without limit.")
-                .fix("Cleanup (C on Maintenance) lists the biggest folders; add names to [cleanup.cache] delete_dirs in config.toml to let it clear them.")
+                .fix("Cleanup (7) lists the biggest folders; add names to [cleanup.cache] delete_dirs in config.toml to let it clear them.")
                 .evidence(top.join("\n"))
                 .done(),
         );

@@ -72,7 +72,7 @@ pub fn plan_modal(t: &Theme, job: JobId, p: &Plan) -> Modal {
         }
         if !on && i.runnable() {
             lines.push(Line::styled(
-                "    opt-in: select it in Cleanup (C on Maintenance)",
+                "    opt-in: select it in Cleanup (7)",
                 t.dim(),
             ));
         }

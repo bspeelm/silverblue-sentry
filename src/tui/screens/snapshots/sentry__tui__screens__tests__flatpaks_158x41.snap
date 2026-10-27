@@ -2,7 +2,7 @@
 source: src/tui/screens/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   0 Upgrade ↑
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   7 Cleanup   0 Upgrade ↑
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 APPLICATION                              ORIGIN     VERSION        FLAGS
@@ -39,6 +39,6 @@ org.gnome.font-viewer                    fedora     50.0           —
 
 
 permissions read live from metadata + overrides · overrides: 1 (* marks apps with one)
-host driver 615.71.09 · GL ✓ · GL32 ✓ · old extensions (not removed by --unused): GL.nvidia-610-57-04 · remove them in Cleanup (C on Maintenance)
+host driver 615.71.09 · GL ✓ · GL32 ✓ · old extensions (not removed by --unused): GL.nvidia-610-57-04 · remove them in Cleanup (7)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  j/k  select   Enter  permissions   o  open in Flatseal   c  rescan perms   A  ask Claude   ?  help   q  quit

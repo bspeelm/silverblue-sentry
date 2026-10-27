@@ -1,15 +1,15 @@
 //! Maintenance (`6`): what to do on this machine next, ranked (`maint::local`): the audit's
 //! findings, updates and a staged reboot, jobs due by their cadence, space to reclaim, a
 //! workflow left in progress, plans ready to apply. Beside it the deployments and the
-//! selected recommendation's details. The audit report, the jobs and the cleanup checklist
-//! open as views here (`F`, `J`, `C`); Esc comes back.
+//! selected recommendation's details. The audit report and the jobs open as views here
+//! (`F`, `J`); Esc comes back. Cleanup has its own screen (`7`, or `C` here).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
-use super::{Cursor, Hints, View, audit, cleanup, jobs, updates};
+use super::{Cursor, Hints, View, audit, jobs, updates};
 use crate::audit::Finding;
 use crate::maint::Level;
 use crate::maint::local::{self, Action as Do, Inputs, Rec, RunInfo};
@@ -25,7 +25,6 @@ pub enum Sub {
     /// The audit report: findings, the diff against the previous one, `[`/`]` to browse.
     Report,
     Jobs,
-    Cleanup,
 }
 
 impl Sub {
@@ -33,7 +32,6 @@ impl Sub {
         match self {
             Sub::Report => "Audit report",
             Sub::Jobs => "Jobs",
-            Sub::Cleanup => "Cleanup",
         }
     }
 }
@@ -48,10 +46,9 @@ pub struct Maint {
     pub view: Option<Sub>,
     pub audit: audit::Audit,
     pub jobs: jobs::Jobs,
-    pub clean: cleanup::Cleanup,
 }
 
-pub fn on_enter(v: &View, view: Option<Sub>) -> Vec<Effect> {
+pub fn on_enter(v: &View) -> Vec<Effect> {
     let mut e = vec![
         Effect::Fetch(Fetch::Reports),
         Effect::Fetch(Fetch::Jobs),
@@ -62,9 +59,6 @@ pub fn on_enter(v: &View, view: Option<Sub>) -> Vec<Effect> {
         // Installed versions, for "old → new" in the updates' details.
         e.push(Effect::Fetch(Fetch::Flatpak));
     }
-    if view == Some(Sub::Cleanup) {
-        e.extend(cleanup::on_enter(v));
-    }
     e
 }
 
@@ -73,7 +67,6 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         let mut h = match s {
             Sub::Report => audit::hints(v),
             Sub::Jobs => jobs::hints(),
-            Sub::Cleanup => cleanup::hints(),
         };
         h.insert(0, ("Esc", "back"));
         return h;
@@ -226,7 +219,6 @@ impl Maint {
             return match s {
                 Sub::Report => self.audit.handle(a, v),
                 Sub::Jobs => self.jobs.handle(a, v),
-                Sub::Cleanup => self.clean.handle(a, v),
             };
         }
         let recs = recs(v);
@@ -259,10 +251,7 @@ impl Maint {
                 self.view = Some(Sub::Jobs);
                 return Vec::new();
             }
-            Action::Char('C') => {
-                self.view = Some(Sub::Cleanup);
-                return cleanup::on_enter(v);
-            }
+            Action::Char('C') => return vec![Effect::Goto(crate::tui::ScreenId::Clean)],
             Action::Char('v') => return vec![Effect::LogOpen],
             Action::Char('R') => return vec![Effect::ReviewOpen],
             _ => {}
@@ -368,10 +357,7 @@ impl Maint {
                     )),
                 })]
             }
-            Do::Cleanup => {
-                self.view = Some(Sub::Cleanup);
-                cleanup::on_enter(v)
-            }
+            Do::Cleanup => vec![Effect::Goto(crate::tui::ScreenId::Clean)],
             Do::Jobs(j) => {
                 self.view = Some(Sub::Jobs);
                 self.jobs.cur.sel = crate::jobs::JobId::ALL
@@ -400,7 +386,6 @@ impl Maint {
             match s {
                 Sub::Report => self.audit.render(f, body, v),
                 Sub::Jobs => self.jobs.render(f, body, v),
-                Sub::Cleanup => self.clean.render(f, body, v),
             }
             return;
         }
@@ -483,7 +468,6 @@ impl Maint {
             return match s {
                 Sub::Report => self.audit.ask(v),
                 Sub::Jobs => self.jobs.ask(v),
-                Sub::Cleanup => self.clean.ask(v),
             };
         }
         let r = self.selected(v);
@@ -494,7 +478,6 @@ impl Maint {
             }
             Some(Do::Run(wf)) if wf == local::UPDATE_WORKFLOW => updates::ask(v),
             Some(Do::Reboot) => updates::ask(v),
-            Some(Do::Cleanup) => self.clean.ask(v),
             Some(Do::Jobs(_)) => self.jobs.ask(v),
             _ => {
                 let lines: Vec<String> = recs(v)
@@ -597,7 +580,7 @@ fn action_words(a: &Do) -> String {
         }
         Do::Run(wf) => format!("Enter: start {wf} (it asks before each step)"),
         Do::Reboot => "Enter: reboot (asks first)".into(),
-        Do::Cleanup => "Enter: the cleanup checklist (pick, preview, confirm)".into(),
+        Do::Cleanup => "Enter: open Cleanup (7): pick what goes, see it, confirm".into(),
         Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),
         Do::OpenRun => "Enter: open the run on Upgrade (0)".into(),
         Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),

@@ -98,6 +98,7 @@ pub struct Screens {
     cont: containers::Containers,
     flat: flatpaks::Flatpaks,
     pub maint: maint::Maint,
+    clean: cleanup::Cleanup,
     upgrade: upgrade::Upgrade,
     hist: history::History,
 }
@@ -107,7 +108,8 @@ impl Screens {
         match id {
             ScreenId::Cont => containers::on_enter(v),
             ScreenId::Flat => flatpaks::on_enter(v),
-            ScreenId::Maint => maint::on_enter(v, self.maint.view),
+            ScreenId::Maint => maint::on_enter(v),
+            ScreenId::Clean => cleanup::on_enter(v),
             ScreenId::Upgrade => upgrade::on_enter(v),
             ScreenId::Hist => history::on_enter(v),
             _ => Vec::new(),
@@ -122,6 +124,7 @@ impl Screens {
             ScreenId::Cont => self.cont.handle(a, v),
             ScreenId::Flat => self.flat.handle(a, v),
             ScreenId::Maint => self.maint.handle(a, v),
+            ScreenId::Clean => self.clean.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, v),
             ScreenId::Hist => self.hist.handle(a, v),
         }
@@ -135,6 +138,7 @@ impl Screens {
             ScreenId::Cont => self.cont.render(f, area, v),
             ScreenId::Flat => self.flat.render(f, area, v),
             ScreenId::Maint => self.maint.render(f, area, v),
+            ScreenId::Clean => self.clean.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
         }
@@ -148,6 +152,7 @@ impl Screens {
             ScreenId::Cont => containers::hints(),
             ScreenId::Flat => flatpaks::hints(),
             ScreenId::Maint => maint::hints(v, &self.maint),
+            ScreenId::Clean => cleanup::hints(),
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Hist => history::hints(),
         }
@@ -162,17 +167,17 @@ impl Screens {
             ScreenId::Cont => self.cont.ask(v),
             ScreenId::Flat => self.flat.ask(v),
             ScreenId::Maint => self.maint.ask(v),
+            ScreenId::Clean => self.clean.ask(v),
             ScreenId::Upgrade => self.upgrade.ask(v),
             ScreenId::Hist => self.hist.ask(v),
         }
     }
 
-    /// The Cleanup view inside Maintenance, with only this job's items selected.
+    /// Cleanup with only this job's items selected.
     pub fn focus_cleanup(&mut self, job: crate::jobs::JobId) {
-        self.maint.clean.focus = Some(job);
-        self.maint.clean.jump = true;
-        self.maint.clean.reset_checks();
-        self.maint.open(maint::Sub::Cleanup);
+        self.clean.focus = Some(job);
+        self.clean.jump = true;
+        self.clean.reset_checks();
     }
 
     /// Maintenance with the first recommendation whose key starts with `prefix` selected.
@@ -197,6 +202,7 @@ impl Screens {
             ScreenId::Cont => self.cont.cur.sel = 0,
             ScreenId::Flat => self.flat.cur.sel = 0,
             ScreenId::Maint => self.maint.cur.sel = 0,
+            ScreenId::Clean => self.clean.cur.sel = 0,
             ScreenId::Upgrade => self.upgrade.cur.sel = 0,
             _ => {}
         }

@@ -26,7 +26,7 @@ pub struct Dashboard {
 
 pub fn hints() -> Hints {
     vec![
-        ("1-6 0", "screens"),
+        ("1-7 0", "screens"),
         ("c", "check updates"),
         ("r", "measure disks"),
         ("j/k Enter", "open a status row"),
