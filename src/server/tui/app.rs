@@ -13,10 +13,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::data::{Kind, Store};
+use super::planview;
 use super::tabs::{self, View};
 use super::{Ev, Tab};
 use crate::claude::{self, Ask, Proposed};
 use crate::exec::{Cmd, ExecError, StreamMsg};
+use crate::server::maint::plan::{PlanDoc, PlanStatus};
 use crate::server::remote::{Remote, SudoMode};
 use crate::server::workflow::{self, Exec, Session};
 use crate::tui::chat::{self as chatmod, Chat, Job};
@@ -52,12 +54,14 @@ pub enum Effect {
     Inventory,
     /// Run the reads Claude asked for with sudo (after a confirm), and send it the output.
     SudoReads(Vec<Vec<String>>, ReadsFor),
-    /// Open the selected maintenance item's plan conversation (`o`).
-    OpenPlan,
+    /// Open an item's plan in the Plan view.
+    PlanOpen(String),
+    /// Claude writes the plan (after the confirm box): item, the new plan, the request.
+    PlanWrite(String, PlanDoc, String),
     /// Look at a maintenance item again later (`z`).
     Snooze(String, jiff::civil::Date),
     /// Ask for an optional note, then save the plan (`p`).
-    PlanNote(String, crate::server::maint::Plan),
+    PlanNote(String, PlanDoc),
     /// Drop an item's plan (`x`, after a confirm).
     PlanDrop(String),
     /// Open server_config.yaml in $EDITOR, then reload it.
@@ -72,8 +76,6 @@ pub enum Effect {
 pub enum AskTurn {
     First(Ask),
     Follow(String),
-    /// A follow-up to the plan being written in the background (outputs Claude asked for).
-    PlanFollow(String),
 }
 
 /// Where the answer to read requests goes back to.
@@ -81,13 +83,6 @@ pub enum AskTurn {
 pub enum ReadsFor {
     Chat,
     Plan,
-}
-
-/// A plan Claude writes in the background (`p`): saved when each of its turns ends.
-struct PlanJob {
-    item: String,
-    plan: crate::server::maint::Plan,
-    chat: Chat,
 }
 
 /// A workflow's `[vars]` being asked for, one at a time, before it starts.
@@ -201,14 +196,13 @@ pub struct App {
     /// The item it assesses (its answer is saved when a turn ends).
     assess_item: Option<String>,
     /// A plan waiting for its note: (item, plan, the note typed so far).
-    plan_note: Option<(String, crate::server::maint::Plan, String)>,
-    /// A plan whose request waits in the consent box.
-    plan_pending: Option<(String, crate::server::maint::Plan)>,
-    /// The plan whose conversation is open in the chat (saved, and revised by follow-ups, as
-    /// each turn ends).
-    plan_draft: Option<(String, crate::server::maint::Plan)>,
-    /// A plan Claude writes in the background.
-    plan_job: Option<PlanJob>,
+    plan_note: Option<(String, PlanDoc, String)>,
+    /// Claude writing a plan, in the background.
+    writer: Option<planview::Writer>,
+    /// The Plan view: the item shown, and lines scrolled from the top.
+    plan_view: Option<(String, usize)>,
+    /// What to change in the plan (`r` in the Plan view), being typed.
+    revise_input: Option<String>,
     /// The suspended command runs Claude's read requests.
     suspend_reads: Option<(Vec<Vec<String>>, ReadsFor)>,
     run_seq: u64,
@@ -266,9 +260,9 @@ impl App {
             chat_assess: false,
             assess_item: None,
             plan_note: None,
-            plan_pending: None,
-            plan_draft: None,
-            plan_job: None,
+            writer: None,
+            plan_view: None,
+            revise_input: None,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
@@ -300,6 +294,8 @@ impl App {
             self.store.upstream_at =
                 crate::server::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
+            crate::server::maint::plan::migrate(&self.remote.name);
+            self.store.plans = crate::server::maint::plan::list(&self.remote.name);
         }
         self.enter(self.tab, now);
     }
@@ -464,8 +460,8 @@ impl App {
     }
 
     fn on_run(&mut self, id: u64, m: StreamMsg) {
-        if let Some(j) = self.plan_job.as_mut()
-            && j.chat.live.is_some_and(|(cid, _)| cid == id)
+        if let Some(w) = self.writer.as_mut()
+            && w.live.is_some_and(|(wid, _)| wid == id)
         {
             match m {
                 StreamMsg::Line {
@@ -473,13 +469,16 @@ impl App {
                     text,
                 } => {
                     for e in claude::parse_line(&text) {
-                        j.chat.on_event(e);
+                        w.on_event(e);
                     }
                 }
-                StreamMsg::Line { stderr: true, text } => j.chat.on_raw(text),
+                StreamMsg::Line { .. } => {}
                 StreamMsg::Exit { code, .. } => {
-                    j.chat.on_exit(code);
-                    self.plan_job_turn_ended();
+                    w.live = None;
+                    if w.answer.is_none() && w.err.is_none() && code != 0 {
+                        w.err = Some(format!("claude exited with {code}"));
+                    }
+                    self.writer_turn_ended();
                 }
             }
             self.dirty = true;
@@ -501,7 +500,6 @@ impl App {
                 StreamMsg::Exit { code, .. } => {
                     c.on_exit(code);
                     self.save_assessment();
-                    self.save_plan_draft();
                     self.offer_reads(ReadsFor::Chat);
                 }
             }
@@ -641,16 +639,11 @@ impl App {
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
             upstream: self.store.upstream_at,
             planning: self
-                .plan_job
+                .writer
                 .as_ref()
-                .filter(|j| j.chat.running())
-                .map(|j| j.item.clone())
-                .or_else(|| {
-                    self.plan_draft
-                        .as_ref()
-                        .filter(|_| self.chat.as_ref().is_some_and(|c| c.running()))
-                        .map(|(id, _)| id.clone())
-                }),
+                .filter(|w| w.running())
+                .map(|w| w.item.clone()),
+            plans: &self.store.plans,
         }
     }
 
@@ -678,6 +671,18 @@ impl App {
         }
         if self.plan_note.is_some() {
             self.plan_note_key(k);
+            return;
+        }
+        if self.revise_input.is_some() {
+            self.revise_key(k);
+            return;
+        }
+        if self.plan_view.is_some()
+            && self.modal.is_none()
+            && self.chooser.is_none()
+            && self.pane.is_none()
+        {
+            self.plan_view_key(k, now);
             return;
         }
         // The chat takes raw keys (Backspace, any character) before the keymap, which knows
@@ -831,8 +836,6 @@ impl App {
                 self.apply(e, now);
             }
             Action::Ask => {
-                // A plan request declined earlier mustn't ride along with this question.
-                self.plan_pending = None;
                 if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
@@ -904,14 +907,16 @@ impl App {
                     self.plan_note = Some((id, plan, String::new()));
                 }
                 Effect::PlanDrop(id) => {
-                    if !self.offline
-                        && let Err(e) = crate::server::maint::drop_plan(&self.remote.name, &id)
+                    if let Some(doc) = self.store.plans.remove(&id)
+                        && !self.offline
                     {
-                        self.toast(&format!("couldn't drop it: {e}"));
+                        let _ = crate::server::maint::plan::close(&doc, PlanStatus::Dropped);
                     }
-                    self.store.maint_state.plans.remove(&id);
-                    self.toast(&format!("{id}: plan dropped"));
+                    self.plan_view = None;
+                    self.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
+                Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::PlanWrite(id, doc, prompt) => self.write_plan(id, doc, prompt, None),
                 Effect::Snooze(id, until) => {
                     match crate::server::maint::snooze(&self.remote.name, &id, until) {
                         Ok(()) => {
@@ -954,7 +959,6 @@ impl App {
                     self.suspend = Some((cmd, banner, Vec::new()));
                     self.suspend_reads = Some((reads, to));
                 }
-                Effect::OpenPlan => self.open_plan(),
                 Effect::Inventory => {
                     let cmd = self
                         .remote
@@ -1196,13 +1200,15 @@ impl App {
         c.at = jiff::Timestamp::now();
         // A plan carried out is done with; an abandoned run leaves it for next time.
         let done = c.result == "done";
-        if done {
-            self.store.maint_state.plans.remove(&c.item);
-        }
+        let applied = if done {
+            self.store.plans.remove(&c.item)
+        } else {
+            None
+        };
         if !self.offline {
             let _ = crate::server::maint::log_change(&self.remote.name, &c);
-            if done {
-                let _ = crate::server::maint::drop_plan(&self.remote.name, &c.item);
+            if let Some(doc) = applied {
+                let _ = crate::server::maint::plan::close(&doc, PlanStatus::Done);
             }
             self.fetch(Kind::Maint);
         }
@@ -1594,33 +1600,15 @@ impl App {
         }
     }
 
-    fn keep_plan(&mut self, id: &str, plan: crate::server::maint::Plan) {
-        if !self.offline
-            && let Err(e) = crate::server::maint::save_plan(&self.remote.name, id, plan.clone())
-        {
-            return self.toast(&format!("couldn't save the plan: {e}"));
-        }
-        let msg = if plan.wait {
-            format!("plan for {id} saved: Claude advises waiting (L shows why)")
-        } else {
-            format!(
-                "planned {id} → {} · L shows the plan, Enter runs it",
-                plan.to.as_deref().unwrap_or("retire")
-            )
-        };
-        self.store.maint_state.plans.insert(id.to_string(), plan);
-        self.toast(&msg);
-    }
-
-    /// `p`, after the note: Claude assesses the item and writes the plan (after the consent box).
-    fn ask_for_plan(&mut self, id: String, plan: crate::server::maint::Plan) {
+    /// `p`, after the note: what Claude is asked, in a confirm box; yes starts the writer.
+    fn ask_for_plan(&mut self, id: String, doc: PlanDoc) {
         if self.wf_entries.is_empty() && !self.offline {
             self.load_wf_entries();
         }
         let steps = self
             .wf_entries
             .iter()
-            .find(|e| e.name == plan.workflow)
+            .find(|e| e.name == doc.head.workflow)
             .and_then(|e| e.wf.as_ref().ok())
             .map(|w| {
                 w.steps
@@ -1641,7 +1629,7 @@ impl App {
                     .collect::<Vec<_>>()
                     .join("\n")
             })
-            .unwrap_or_else(|| format!("(workflow {} not found)", plan.workflow));
+            .unwrap_or_else(|| format!("(workflow {} not found)", doc.head.workflow));
         let v = self.view();
         let Some((s, it)) =
             v.s.maint
@@ -1652,33 +1640,134 @@ impl App {
         else {
             return self.toast("that item is gone");
         };
-        let ask = super::maint::plan_ask(
-            &v,
-            &self.remote,
-            s,
-            it,
+        let goal = match (&doc.head.to, it.retire.is_some()) {
+            (_, true) => format!("retiring {id}"),
+            (Some(t), _) => format!(
+                "moving {id} from {} to {t}",
+                s.pinned.as_deref().unwrap_or("?")
+            ),
+            (None, _) => format!(
+                "moving {id} from {} to the version you recommend",
+                s.pinned.as_deref().unwrap_or("?")
+            ),
+        };
+        let prompt = planview::request(
+            &super::maint::context(&v, &self.remote, s, it),
+            &doc.head.workflow,
             &steps,
-            plan.to.as_deref(),
-            plan.note.as_deref(),
+            &goal,
+            doc.head.note.as_deref(),
         );
-        let text = ask.prompt();
-        self.modal = Some(self.consent(&text, AskTurn::First(ask)));
-        self.plan_pending = Some((id, plan));
+        let t = self.theme;
+        let notes = &self.remote.cfg.maintenance.notes;
+        let lines = vec![
+            Line::styled(format!("Claude writes the plan for {goal}."), t.fg()),
+            Line::raw(""),
+            Line::styled(
+                format!(
+                    "It reads the release notes on the web, your notes ({}), and {} read-only \
+                     through the gateway; reads that need root are asked for first. Its answer \
+                     is saved as {}.",
+                    if notes.is_empty() {
+                        "none".to_string()
+                    } else {
+                        notes.join(", ")
+                    },
+                    self.remote.name,
+                    crate::server::maint::plan::path(&self.remote.name, &id).display()
+                ),
+                t.dim(),
+            ),
+            Line::raw(""),
+            Line::styled(
+                "Sent to Claude through your Claude Code login (Anthropic). Nothing on the \
+                 server changes.",
+                t.s(t.yellow),
+            ),
+        ];
+        self.modal = Some(Modal {
+            title: format!("Plan {id} with Claude"),
+            color: t.mag,
+            lines,
+            yes: Some(("write it".into(), vec![Effect::PlanWrite(id, doc, prompt)])),
+        });
     }
 
-    /// A plan turn ended: the plan is Claude's answer, its version from the `TARGET:` line.
-    fn save_plan_draft(&mut self) {
-        let Some((id, plan)) = self.plan_draft.clone() else {
+    /// Start (or continue) Claude writing a plan in the background; the Plan view shows it.
+    fn write_plan(&mut self, id: String, doc: PlanDoc, prompt: String, resume: Option<String>) {
+        if self.writer.as_ref().is_some_and(|w| w.running()) {
+            return self.toast("Claude is already writing a plan: wait for it, or C-c in its view");
+        }
+        let mut w = planview::Writer::new(&id, doc);
+        self.plan_view = Some((id.clone(), 0));
+        let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
+        let profile = planview::profile(&self.remote, &os, &kernel, self.store.sudo.value);
+        let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
+        self.run_seq += 1;
+        let rid = self.run_seq;
+        if self.offline {
+            w.live = Some((rid, 0));
+            self.writer = Some(w);
+            return;
+        }
+        let tx = self.tx.clone();
+        match cmd.stream(move |m| {
+            let _ = tx.send(Ev::Run(rid, m));
+        }) {
+            Ok(pid) => {
+                w.live = Some((rid, pid));
+                self.writer = Some(w);
+            }
+            Err(e) => self.toast(&format!("couldn't start claude: {e}")),
+        }
+    }
+
+    /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
+    fn writer_turn_ended(&mut self) {
+        let Some(w) = self.writer.as_mut() else {
             return;
         };
-        if self.assess_item.as_deref() != Some(id.as_str()) {
-            return;
+        let mut doc = w.doc.clone();
+        doc.head.session = w.session.clone().or(doc.head.session);
+        let msg = match (&w.answer, &w.err) {
+            (Some(a), _) if !a.trim().is_empty() => {
+                doc.take_answer(a);
+                match doc.head.status {
+                    PlanStatus::Wait => format!("plan for {}: Claude advises waiting", w.item),
+                    _ => format!(
+                        "plan for {} saved: → {} · Enter applies it",
+                        w.item,
+                        doc.head.to.as_deref().unwrap_or("retire")
+                    ),
+                }
+            }
+            (_, err) => {
+                // A revision that failed keeps the plan it had.
+                if doc.body.trim().is_empty() {
+                    doc.head.status = PlanStatus::Failed;
+                    doc.body = format!(
+                        "Claude didn't write the plan: {}",
+                        err.clone().unwrap_or_else(|| "no answer".into())
+                    );
+                }
+                format!(
+                    "no plan for {}: {}",
+                    w.item,
+                    err.clone()
+                        .unwrap_or_else(|| "Claude gave no answer".into())
+                )
+            }
+        };
+        w.doc = doc.clone();
+        let item = w.item.clone();
+        if !self.offline
+            && let Err(e) = crate::server::maint::plan::save(&doc)
+        {
+            return self.toast(&format!("couldn't save the plan: {e}"));
         }
-        let Some(c) = self.chat.as_ref() else { return };
-        if let Some(plan) = plan_from_chat(c, plan) {
-            self.plan_draft = Some((id.clone(), plan.clone()));
-            self.keep_plan(&id, plan);
-        }
+        self.store.plans.insert(item, doc);
+        self.toast(&msg);
+        self.offer_reads(ReadsFor::Plan);
     }
 
     /// An assessment's turn ended: keep what Claude said, for `L` and the item's details.
@@ -1708,6 +1797,125 @@ impl App {
         );
     }
 
+    /// Keys in the Plan view: scroll, apply (Enter), revise (r), drop (x), back (Esc).
+    fn plan_view_key(&mut self, k: KeyEvent, now: Instant) {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let Some((id, scroll)) = self.plan_view.clone() else {
+            return;
+        };
+        self.dirty = true;
+        let set = |me: &mut Self, s: usize| me.plan_view = Some((id.clone(), s));
+        let writing = self
+            .writer
+            .as_ref()
+            .is_some_and(|w| w.item == id && w.running());
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.plan_view = None,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pid) = self
+                    .writer
+                    .as_ref()
+                    .filter(|w| w.item == id)
+                    .and_then(|w| w.live.map(|(_, p)| p))
+                {
+                    let _ = kill(pid);
+                    self.toast("stopped: the plan keeps what it had");
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => set(self, scroll + 1),
+            KeyCode::Up | KeyCode::Char('k') => set(self, scroll.saturating_sub(1)),
+            KeyCode::PageDown | KeyCode::Char(' ') => set(self, scroll + 20),
+            KeyCode::PageUp => set(self, scroll.saturating_sub(20)),
+            KeyCode::Home | KeyCode::Char('g') => set(self, 0),
+            KeyCode::End | KeyCode::Char('G') => set(self, usize::MAX / 2),
+            _ if writing => {
+                self.toast("Claude is writing it · C-c stops · Esc goes back (it carries on)")
+            }
+            KeyCode::Enter => self.apply_plan(&id, now),
+            KeyCode::Char('r') => match self.store.plans.get(&id) {
+                Some(d) if d.head.session.is_some() => self.revise_input = Some(String::new()),
+                Some(_) => {
+                    self.toast("this plan has no Claude session to continue: p writes a new one")
+                }
+                None => {}
+            },
+            KeyCode::Char('x') if self.store.plans.contains_key(&id) => {
+                let t = self.theme;
+                self.modal = Some(Modal {
+                    title: "Drop the plan".into(),
+                    color: t.yellow,
+                    lines: vec![Line::styled(
+                        format!(
+                            "Drop the plan for {id}? It moves to plans/done/; nothing on the server changes."
+                        ),
+                        t.fg(),
+                    )],
+                    yes: Some(("drop".into(), vec![Effect::PlanDrop(id.clone())])),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
+    fn apply_plan(&mut self, id: &str, now: Instant) {
+        let Some(d) = self.store.plans.get(id).cloned() else {
+            return;
+        };
+        match d.head.status {
+            PlanStatus::Ready => {}
+            PlanStatus::Wait => {
+                return self.toast("Claude advises waiting: r revises it, or p plans again");
+            }
+            s => return self.toast(&format!("this plan is {}: p plans again", s.word())),
+        }
+        self.plan_view = None;
+        let effects = vec![Effect::Wf(WfCmd::BeginPrefilled(
+            d.head.workflow.clone(),
+            d.head.vars.clone(),
+            Some(crate::server::maint::Change {
+                at: jiff::Timestamp::now(),
+                item: id.to_string(),
+                from: d.head.from.clone(),
+                to: d.head.to.clone(),
+                workflow: d.head.workflow.clone(),
+                result: String::new(),
+            }),
+        ))];
+        self.apply(effects, now);
+    }
+
+    /// `r` in the Plan view: what to change, then Claude rewrites the plan in its session.
+    fn revise_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some(buf) = self.revise_input.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        match k.code {
+            KeyCode::Char(c) => buf.push(c),
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Esc => self.revise_input = None,
+            KeyCode::Enter => {
+                let what = self.revise_input.take().unwrap_or_default();
+                let Some((id, _)) = self.plan_view.clone() else {
+                    return;
+                };
+                let Some(doc) = self.store.plans.get(&id).cloned() else {
+                    return;
+                };
+                if what.trim().is_empty() {
+                    return;
+                }
+                let session = doc.head.session.clone();
+                self.write_plan(id, doc, planview::revise(what.trim()), session);
+            }
+            _ => {}
+        }
+    }
+
     /// The plan's note: Enter saves the plan (an empty note is fine), Esc doesn't save it.
     fn plan_note_key(&mut self, k: KeyEvent) {
         use ratatui::crossterm::event::KeyCode;
@@ -1729,10 +1937,9 @@ impl App {
                     return;
                 };
                 let note = note.trim();
-                plan.note = (!note.is_empty()).then(|| note.to_string());
+                plan.head.note = (!note.is_empty()).then(|| note.to_string());
                 if !claude::available() {
-                    // No Claude: the plan is just the version and the note.
-                    return self.keep_plan(&id, plan);
+                    return self.toast("plans are written by Claude Code, which isn't installed");
                 }
                 self.ask_for_plan(id, plan);
             }
@@ -1864,23 +2071,7 @@ impl App {
     fn ask_turn(&mut self, turn: AskTurn) {
         match turn {
             AskTurn::First(ask) => {
-                if let Some((item, plan)) = self.plan_pending.take() {
-                    // `p`: Claude writes the plan in the background; nothing opens.
-                    let p = ask.prompt();
-                    let q = ask.question.lines().next().unwrap_or("").to_string();
-                    self.plan_job = Some(PlanJob {
-                        item: item.clone(),
-                        plan,
-                        chat: Chat::new(ask),
-                    });
-                    self.start_turn(ReadsFor::Plan, &p, q, None);
-                    self.toast(&format!(
-                        "Claude is writing the plan for {item} · it's saved when done (o opens it)"
-                    ));
-                    return;
-                }
                 self.chat_assess = self.tab == Tab::Maint;
-                self.plan_draft = None;
                 self.assess_item = if self.chat_assess {
                     super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
                 } else {
@@ -1895,16 +2086,12 @@ impl App {
                 let session = self.chat.as_ref().and_then(|c| c.session.clone());
                 self.start_turn(ReadsFor::Chat, &text, text.clone(), session);
             }
-            AskTurn::PlanFollow(text) => {
-                let session = self.plan_job.as_ref().and_then(|j| j.chat.session.clone());
-                self.start_turn(ReadsFor::Plan, &text, text.clone(), session);
-            }
         }
     }
 
     /// Send one turn to Claude, into the open chat or the background plan.
     fn start_turn(&mut self, to: ReadsFor, prompt: &str, shown: String, resume: Option<String>) {
-        let assess = to == ReadsFor::Plan || self.chat_assess;
+        let assess = self.chat_assess;
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         let profile = if assess {
             super::ask::assess_profile(&self.remote, &os, &kernel, self.store.sudo.value)
@@ -1914,11 +2101,8 @@ impl App {
         let cmd = claude::turn_cmd_with(prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
-        let chat = match to {
-            ReadsFor::Chat => self.chat.as_mut(),
-            ReadsFor::Plan => self.plan_job.as_mut().map(|j| &mut j.chat),
-        };
-        let Some(c) = chat else { return };
+        let _ = to;
+        let Some(c) = self.chat.as_mut() else { return };
         if self.offline {
             c.push(chatmod::Kind::You, shown);
             return;
@@ -1930,36 +2114,6 @@ impl App {
             Ok(pid) => c.begin_turn(&shown, id, pid),
             Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start claude: {e}")),
         }
-    }
-
-    /// A background plan's turn ended: save the plan, then any reads it asked for.
-    fn plan_job_turn_ended(&mut self) {
-        let Some(j) = self.plan_job.as_ref() else {
-            return;
-        };
-        let (item, plan) = (j.item.clone(), j.plan.clone());
-        match plan_from_chat(&j.chat, plan) {
-            Some(plan) => {
-                if let Some(j) = self.plan_job.as_mut() {
-                    j.plan = plan.clone();
-                }
-                self.keep_plan(&item, plan);
-            }
-            None => {
-                let err = j
-                    .chat
-                    .entries
-                    .iter()
-                    .rev()
-                    .find(|(k, _)| *k == chatmod::Kind::Err)
-                    .map(|(_, t)| t.clone());
-                self.toast(&format!(
-                    "no plan for {item}: {} (o shows the conversation)",
-                    err.unwrap_or_else(|| "Claude gave no answer".into())
-                ));
-            }
-        }
-        self.offer_reads(ReadsFor::Plan);
     }
 
     /// After a turn: if Claude asked to read things that need root, show them and ask.
@@ -2055,36 +2209,16 @@ impl App {
         }
         text.push_str("\nContinue from here.");
         match to {
-            ReadsFor::Plan if self.plan_job.is_some() => self.ask_turn(AskTurn::PlanFollow(text)),
+            ReadsFor::Plan => match self.writer.as_ref() {
+                Some(w) if !w.running() => {
+                    let (id, doc, session) = (w.item.clone(), w.doc.clone(), w.session.clone());
+                    self.write_plan(id, doc, planview::reads_back(&text), session);
+                }
+                _ => self.toast("the plan isn't being written any more: the output wasn't sent"),
+            },
             _ if self.chat.is_some() => self.ask_turn(AskTurn::Follow(text)),
             _ => self.toast("the conversation is closed: the output wasn't sent"),
         }
-    }
-
-    /// `o` on Maintenance: the selected item's plan conversation, in the chat.
-    fn open_plan(&mut self) {
-        let Some(id) = super::maint::selected(&self.view()).map(|(s, _)| s.id.clone()) else {
-            return;
-        };
-        if let Some(j) = self.plan_job.take_if(|j| j.item == id) {
-            self.chat = Some(j.chat);
-            self.plan_draft = Some((id.clone(), j.plan));
-        } else if let Some(p) = self.store.maint_state.plans.get(&id).cloned() {
-            // From an earlier session: the plan, and its conversation resumed on a follow-up.
-            let mut c = Chat::new(Ask::new(
-                format!("{} · plan {id}", self.remote.name),
-                "",
-                "",
-            ));
-            c.push(chatmod::Kind::Claude, p.text.clone());
-            c.session = p.session.clone();
-            self.chat = Some(c);
-            self.plan_draft = Some((id.clone(), p));
-        } else {
-            return self.toast(&format!("no plan for {id}: p makes one"));
-        }
-        self.chat_assess = true;
-        self.assess_item = Some(id);
     }
 
     fn chat_key(&mut self, k: KeyEvent) {
@@ -2134,17 +2268,6 @@ impl App {
             KeyCode::Home => c.scroll_top(),
             KeyCode::End => c.scroll_bottom(),
             KeyCode::Esc => {
-                // A plan's conversation goes on in the background (and is still saved).
-                if self.plan_draft.is_some() && self.plan_job.is_none() {
-                    let (item, plan) = self.plan_draft.take().expect("plan");
-                    let chat = self.chat.take().expect("chat");
-                    if chat.running() {
-                        self.plan_job = Some(PlanJob { item, plan, chat });
-                        self.toast("the plan is still being written · it's saved when done");
-                    }
-                    self.dirty = true;
-                    return;
-                }
                 if let Some((_, pid)) = c.live {
                     let _ = kill(pid);
                 }
@@ -2400,6 +2523,25 @@ impl App {
             ),
             _ => tabs::draw(f, body, self.tab, &self.view()),
         }
+        if let Some((id, scroll)) = &self.plan_view {
+            let path = crate::server::maint::plan::path(&self.remote.name, id)
+                .display()
+                .to_string();
+            let home = std::env::var("HOME").unwrap_or_default();
+            let path = match path.strip_prefix(&home) {
+                Some(r) if !home.is_empty() => format!("~{r}"),
+                _ => path,
+            };
+            super::planview::draw(
+                f,
+                body,
+                &t,
+                self.store.plans.get(id),
+                self.writer.as_ref().filter(|w| &w.item == id),
+                *scroll,
+                &path,
+            );
+        }
         self.draw_keybar(f, keybar);
         if let Some(c) = &self.chat {
             chatmod::draw(f, body, &t, c);
@@ -2508,13 +2650,25 @@ impl App {
             );
             return;
         }
+        if let Some(buf) = &self.revise_input {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("revise the plan: ", t.dim()),
+                    Span::styled(buf.clone(), t.fg()),
+                    Span::styled("▏", t.s(t.cyan)),
+                    Span::styled("   Enter send · Esc cancel", t.dim()),
+                ])),
+                area,
+            );
+            return;
+        }
         if let Some((id, plan, buf)) = &self.plan_note {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
                         format!(
                             "plan {id} → {} · a note (optional): ",
-                            plan.to.as_deref().unwrap_or("retire")
+                            plan.head.to.as_deref().unwrap_or("retire")
                         ),
                         t.dim(),
                     ),
@@ -2577,6 +2731,30 @@ impl App {
             }
         } else if let Some(c) = self.chat.as_ref().filter(|_| self.modal.is_none()) {
             chatmod::keys(c)
+        } else if let Some((id, _)) = self
+            .plan_view
+            .as_ref()
+            .filter(|_| self.modal.is_none() && self.chooser.is_none())
+        {
+            if self
+                .writer
+                .as_ref()
+                .is_some_and(|w| &w.item == id && w.running())
+            {
+                vec![
+                    ("j/k", "scroll"),
+                    ("C-c", "stop"),
+                    ("Esc", "back (it carries on)"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "apply"),
+                    ("r", "revise"),
+                    ("x", "drop"),
+                    ("j/k PgUp/Dn", "scroll"),
+                    ("Esc", "back"),
+                ]
+            }
         } else if self.chooser.is_some() {
             vec![("1-9", "choose"), ("Esc", "cancel")]
         } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
@@ -2681,61 +2859,6 @@ impl crate::tui::Ui for App {
     }
 }
 
-/// The plan from Claude's last answer in `c`: its text from the `TARGET:` line on, the
-/// version from that line (written the way the pin is), its session to resume. None when this
-/// turn had no answer.
-fn plan_from_chat(
-    c: &Chat,
-    mut plan: crate::server::maint::Plan,
-) -> Option<crate::server::maint::Plan> {
-    use crate::server::maint::{local, version};
-    // This turn's answer: what Claude said after the last thing the user said.
-    let start = c
-        .entries
-        .iter()
-        .rposition(|(k, _)| *k == chatmod::Kind::You)
-        .map_or(0, |i| i + 1);
-    let text = c.entries[start..]
-        .iter()
-        .filter(|(k, _)| *k == chatmod::Kind::Claude)
-        .map(|(_, t)| t.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if text.trim().is_empty() {
-        return None;
-    }
-    match super::maint::parse_target(&text) {
-        Some(None) => plan.wait = true,
-        Some(Some(t)) => {
-            plan.wait = false;
-            // A version only for a move (retiring has none); the image var follows it.
-            if plan.vars.contains_key("service") {
-                let l = local::Local {
-                    repo: plan.repo.clone(),
-                    pinned: plan.from.clone(),
-                    ..Default::default()
-                };
-                if let Some(repo) = l.repo.as_deref() {
-                    let tag = version::like_pin(&t, l.pinned.as_deref());
-                    plan.vars.insert("image".into(), format!("{repo}:{tag}"));
-                }
-                plan.to = Some(version::like_pin(&t, plan.from.as_deref()));
-            }
-        }
-        None => {}
-    }
-    // The plan itself starts at its TARGET line (before it: Claude saying what it reads).
-    plan.text = match text.lines().position(|l| {
-        l.trim_start_matches(['*', '#', '`', ' '])
-            .starts_with("TARGET")
-    }) {
-        Some(i) => text.lines().skip(i).collect::<Vec<_>>().join("\n"),
-        None => text,
-    };
-    plan.session = c.session.clone().or(plan.session);
-    Some(plan)
-}
-
 fn kill(pid: u32) -> std::io::Result<()> {
     let pid = rustix::process::Pid::from_raw(pid as i32)
         .ok_or_else(|| std::io::Error::other("bad pid"))?;
@@ -2757,19 +2880,27 @@ impl App {
     }
     /// Tests: Claude's turn ended (there's no claude process offline).
     pub fn turn_ended(&mut self) {
-        if self.plan_job.is_some() {
-            return self.plan_job_turn_ended();
-        }
         self.save_assessment();
-        self.save_plan_draft();
     }
-    /// Tests: a chat turn ended (online: reads Claude asked for are offered).
-    pub fn turn_ended_online_for_reads(&mut self) {
-        self.offer_reads(ReadsFor::Chat);
+    /// Tests: the plan writer answered.
+    pub fn writer_answered(&mut self, answer: &str) {
+        if let Some(w) = self.writer.as_mut() {
+            w.live = None;
+            w.answer = Some(answer.to_string());
+        }
+        self.writer_turn_ended();
+    }
+    /// Tests: whether Claude is still writing a plan.
+    pub fn writing(&self) -> bool {
+        self.writer.as_ref().is_some_and(|w| w.running())
     }
     /// Tests: open a conversation without asking Claude anything.
     pub fn open_chat(&mut self, c: Chat) {
         self.chat = Some(c);
+    }
+    /// Tests: a chat turn ended (online: reads Claude asked for are offered).
+    pub fn turn_ended_online_for_reads(&mut self) {
+        self.offer_reads(ReadsFor::Chat);
     }
     /// Tests: the reads waiting for a yes, if that box is open.
     pub fn take_reads_box(&mut self) -> Option<Vec<Vec<String>>> {
@@ -2782,10 +2913,6 @@ impl App {
             }
             _ => None,
         }
-    }
-    /// Tests: the background plan's conversation.
-    pub fn plan_chat_mut(&mut self) -> Option<&mut Chat> {
-        self.plan_job.as_mut().map(|j| &mut j.chat)
     }
     pub fn chat_mut(&mut self) -> Option<&mut Chat> {
         self.chat.as_mut()

@@ -4,6 +4,7 @@
 
 pub mod eval;
 pub mod local;
+pub mod plan;
 pub mod upstream;
 pub mod version;
 
@@ -99,6 +100,11 @@ pub fn drop_plan(server: &str, id: &str) -> anyhow::Result<()> {
     update(server, |st| {
         st.plans.remove(id);
     })
+}
+
+/// After the old plans became files.
+fn clear_old_plans(server: &str) -> anyhow::Result<()> {
+    update(server, |st| st.plans.clear())
 }
 
 pub fn save_assessment(server: &str, id: &str, text: &str) -> anyhow::Result<()> {

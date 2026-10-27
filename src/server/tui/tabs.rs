@@ -33,6 +33,8 @@ pub struct View<'a> {
     pub upstream: Option<jiff::Timestamp>,
     /// The maintenance item Claude is writing a plan for.
     pub planning: Option<String>,
+    /// Open plans, by item.
+    pub plans: &'a std::collections::BTreeMap<String, crate::server::maint::plan::PlanDoc>,
 }
 
 impl View<'_> {
@@ -94,10 +96,8 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("j/k", "select"),
             ("A", "assess"),
             ("p", "plan"),
-            ("Enter", "run plan"),
+            ("Enter", "open plan"),
             ("x", "drop plan"),
-            ("L", "show plan"),
-            ("o", "plan's chat"),
             ("z", "later"),
             ("c", "look up"),
             ("e", "edit"),
@@ -182,9 +182,8 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
-        (Tab::Maint, 'z' | 'p' | 'x' | 'L') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'x') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
-        (Tab::Maint, 'o') => vec![Effect::OpenPlan],
         _ => Vec::new(),
     }
 }

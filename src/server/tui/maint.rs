@@ -10,12 +10,13 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
-use super::app::{Effect, WfCmd};
+use super::app::Effect;
 use super::tabs::View;
 use crate::claude::Ask;
 use crate::fmt;
 use crate::server::config::{MaintItem, Tier};
 use crate::server::maint::eval::{Flag, Status};
+use crate::server::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::server::maint::{self, local};
 use crate::server::remote::Remote;
 use crate::tui::widgets::{self, TableSpec, inner, panel};
@@ -60,15 +61,16 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     if v.planning.as_deref() == Some(s.id.as_str()) {
         return ("planning…".into(), t.cyan);
     }
-    if let Some(p) = v.s.maint_state.plans.get(&s.id) {
-        if p.wait {
-            return ("plan: wait".into(), t.dim);
-        }
-        let to = p.to.clone().unwrap_or_else(|| "retire".into());
-        return (
-            format!("planned → {to}"),
-            if s.has(Flag::Security) { t.red } else { t.mag },
-        );
+    if let Some(p) = v.plans.get(&s.id) {
+        let to = p.head.to.clone().unwrap_or_else(|| "retire".into());
+        return match p.head.status {
+            PlanStatus::Wait => ("plan: wait".into(), t.dim),
+            PlanStatus::Failed => ("plan failed".into(), t.red),
+            _ => (
+                format!("planned → {to}"),
+                if s.has(Flag::Security) { t.red } else { t.mag },
+            ),
+        };
     }
     if s.has(Flag::Security) {
         (format!("security · {n} newer"), t.red)
@@ -299,50 +301,27 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         l.push(Line::raw(""));
         l.push(Line::styled(n.clone(), t.dim()));
     }
-    if let Some(p) = v.s.maint_state.plans.get(&s.id) {
+    if let Some(p) = v.plans.get(&s.id) {
+        let h = &p.head;
         l.push(Line::raw(""));
         l.push(Line::styled(
             format!(
-                "Plan: {} → {} with {}{}",
-                p.from.as_deref().unwrap_or("?"),
-                p.to.as_deref().unwrap_or("(retire)"),
-                p.workflow,
-                p.created.map_or(String::new(), |c| format!(
-                    " · made {}",
-                    c.strftime("%Y-%m-%d")
-                ))
+                "Plan: {} → {} with {} · {}",
+                h.from.as_deref().unwrap_or("?"),
+                h.to.as_deref().unwrap_or("(retire)"),
+                h.workflow,
+                h.status.word()
             ),
             t.s(t.mag),
         ));
-        if let Some(n) = &p.note {
+        if let Some(n) = &h.note {
             l.push(Line::styled(format!("note: {n}"), t.fg()));
         }
-        // Claude's plan: the start of its assessment.
-        let body: Vec<&str> = p
-            .text
-            .lines()
-            .filter(|x| {
-                !x.trim().is_empty() && !x.trim_start_matches(['*', '`']).starts_with("TARGET")
-            })
-            .take(5)
-            .collect();
-        for x in body {
-            l.push(Line::styled(x.to_string(), t.fg()));
-        }
-        l.push(Line::styled(
-            if p.wait {
-                "Claude advises waiting · L shows the plan · x drops it"
-            } else if p.text.is_empty() {
-                "Enter runs it · x drops it"
-            } else {
-                "L shows the plan · o its conversation · Enter runs it · x drops it"
-            },
-            t.dim(),
-        ));
+        l.push(Line::styled("Enter opens it", t.dim()));
     } else if v.planning.as_deref() == Some(s.id.as_str()) {
         l.push(Line::raw(""));
         l.push(Line::styled(
-            "Claude is writing the plan… (o watches it)",
+            "Claude is writing the plan… (Enter watches it)",
             t.s(t.cyan),
         ));
     }
@@ -350,7 +329,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         v.s.maint_state
             .assessments
             .get(&s.id)
-            .filter(|_| !v.s.maint_state.plans.contains_key(&s.id))
+            .filter(|_| !v.plans.contains_key(&s.id))
     {
         l.push(Line::raw(""));
         l.push(Line::styled(
@@ -391,7 +370,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     l.push(Line::raw(""));
     let mut keys = vec!["A assess"];
     if it.workflow.is_some() || it.retire.as_ref().is_some_and(|r| r.workflow.is_some()) {
-        keys.push(if v.s.maint_state.plans.contains_key(&s.id) {
+        keys.push(if v.plans.contains_key(&s.id) {
             "p re-plan"
         } else {
             "p plan"
@@ -452,14 +431,19 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
             let plan = |target: Option<&str>| {
                 vec![Effect::PlanNote(
                     s.id.clone(),
-                    maint::Plan {
-                        from: s.pinned.clone(),
-                        to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
-                        workflow: wf.to_string(),
-                        vars: local::vars_for(it, &l, target),
-                        created: Some(jiff::Timestamp::now()),
-                        repo: l.repo.clone(),
-                        ..Default::default()
+                    PlanDoc {
+                        head: Head {
+                            item: s.id.clone(),
+                            server: v.name.to_string(),
+                            from: s.pinned.clone(),
+                            to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
+                            workflow: wf.to_string(),
+                            vars: local::vars_for(it, &l, target),
+                            created: Some(jiff::Timestamp::now()),
+                            repo: l.repo.clone(),
+                            ..Default::default()
+                        },
+                        body: String::new(),
                     },
                 )]
             };
@@ -491,85 +475,26 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
                 choices,
             )]
         }
-        '\n' => match v.s.maint_state.plans.get(&s.id) {
-            Some(p) if p.wait || (p.to.is_none() && it.retire.is_none()) => {
-                vec![Effect::Toast(format!(
-                    "the plan for {} says to wait (L shows why); p plans again",
-                    s.id
-                ))]
-            }
-            Some(p) => vec![Effect::Wf(WfCmd::BeginPrefilled(
-                p.workflow.clone(),
-                p.vars.clone(),
-                Some(maint::Change {
-                    at: jiff::Timestamp::now(),
-                    item: s.id.clone(),
-                    from: p.from.clone(),
-                    to: p.to.clone(),
-                    workflow: p.workflow.clone(),
-                    result: String::new(),
-                }),
-            ))],
-            None => vec![Effect::Toast(format!("no plan for {}: p makes one", s.id))],
-        },
-        'x' => match v.s.maint_state.plans.get(&s.id) {
+        // Enter opens the item's plan (or the one being written).
+        '\n' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
+            vec![Effect::PlanOpen(s.id.clone())]
+        }
+        '\n' => vec![Effect::Toast(format!("no plan for {}: p makes one", s.id))],
+        'x' => match v.plans.get(&s.id) {
             Some(p) => vec![Effect::Confirm(super::app::Modal {
                 title: "Drop the plan".into(),
                 color: v.t.yellow,
                 lines: vec![Line::styled(
                     format!(
-                        "Drop the plan to move {} to {}? Nothing on the server changes.",
+                        "Drop the plan to move {} to {}? It moves to plans/done/; nothing on the server changes.",
                         s.id,
-                        p.to.as_deref().unwrap_or("(retire)")
+                        p.head.to.as_deref().unwrap_or("(retire)")
                     ),
                     v.t.fg(),
                 )],
                 yes: Some(("drop".into(), vec![Effect::PlanDrop(s.id.clone())])),
             })],
             None => vec![Effect::Toast(format!("no plan for {}", s.id))],
-        },
-        'L' => match v
-            .s
-            .maint_state
-            .plans
-            .get(&s.id)
-            .filter(|p| !p.text.is_empty())
-        {
-            Some(p) => vec![Effect::Info(
-                format!(
-                    "{} · plan → {}",
-                    s.id,
-                    if p.wait {
-                        "wait".to_string()
-                    } else {
-                        p.to.clone().unwrap_or_else(|| "retire".into())
-                    }
-                ),
-                p.text
-                    .lines()
-                    .map(|l| Line::styled(l.to_string(), v.t.fg()))
-                    .collect(),
-            )],
-            None => match v.s.maint_state.assessments.get(&s.id) {
-                Some(a) => vec![Effect::Info(
-                    format!(
-                        "{} · assessment{}",
-                        s.id,
-                        a.at.map_or(String::new(), |t| format!(
-                            " {}",
-                            t.strftime("%Y-%m-%d %H:%M")
-                        ))
-                    ),
-                    a.text
-                        .lines()
-                        .map(|l| Line::styled(l.to_string(), v.t.fg()))
-                        .collect(),
-                )],
-                None => vec![Effect::Toast(format!(
-                    "no plan or assessment for {} yet: p or A",
-                    s.id
-                ))],
-            },
         },
         _ => Vec::new(),
     }
@@ -592,78 +517,8 @@ pub fn ask(v: &View, r: &Remote) -> Option<Ask> {
     ))
 }
 
-/// `p`: Claude assesses the item and writes the execution plan that gets saved.
-/// `steps`: the item's workflow, step by step; `target`: the version chosen, or None for
-/// Claude to recommend one.
-pub fn plan_ask(
-    v: &View,
-    r: &Remote,
-    s: &Status,
-    it: &MaintItem,
-    steps: &str,
-    target: Option<&str>,
-    note: Option<&str>,
-) -> Ask {
-    let goal = match (target, it.retire.is_some()) {
-        (_, true) => format!("retiring {}", s.id),
-        (Some(t), _) => format!(
-            "moving {} from {} to {t}",
-            s.id,
-            s.pinned.as_deref().unwrap_or("?")
-        ),
-        (None, _) => format!(
-            "moving {} from {} to the version you recommend",
-            s.id,
-            s.pinned.as_deref().unwrap_or("?")
-        ),
-    };
-    let ctx = format!(
-        "{}\nThe workflow that will carry it out ({}), step by step:\n{steps}{}",
-        context(v, r, s, it),
-        workflow_of(it).unwrap_or("none"),
-        note.map_or(String::new(), |n| format!(
-            "\nThe user's note for this plan: {n}"
-        ))
-    );
-    Ask::new(
-        format!("{} · plan {}", r.name, s.id),
-        ctx,
-        format!(
-            "Write the execution plan for {goal}. First read the release notes in between (web) \
-             and the notes files, and check the server (read-only). The first line of your answer \
-             must be `TARGET: <version>` (the exact upstream tag), or `TARGET: wait` if it \
-             shouldn't move now. Then these sections, each with the exact commands:\n\
-             **Assessment**: what changes (breaking changes, one-way migrations, security fixes), \
-             whether the reason it's held still applies, and the real tier.\n\
-             **Before**: checks and backups to make first.\n\
-             **Change**: follow the workflow's steps above; say what to expect at each confirm \
-             card and any extra manual commands between them.\n\
-             **Verify**: what to check afterwards and what good looks like.\n\
-             **Roll back**: how to undo it, and when it can't be undone.\n\
-             **When**: whether it needs a window, and the expected downtime.\n\
-             Don't change anything on the server yourself."
-        ),
-    )
-}
-
-/// The version Claude chose: its `TARGET:` line (None for `wait` or no such line).
-pub fn parse_target(text: &str) -> Option<Option<String>> {
-    let line = text.lines().find_map(|l| {
-        let l = l
-            .trim()
-            .trim_matches(|c| c == '*' || c == '`' || c == '#')
-            .trim();
-        l.strip_prefix("TARGET:")
-            .or_else(|| l.strip_prefix("Target:"))
-    })?;
-    let t = line
-        .trim()
-        .trim_matches(|c: char| c == '*' || c == '`' || c.is_whitespace());
-    Some((!t.eq_ignore_ascii_case("wait") && !t.is_empty()).then(|| t.to_string()))
-}
-
 /// What Claude is told about an item (for `A` and `p`).
-fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
+pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
     let newer: Vec<String> = s
         .newer
         .iter()

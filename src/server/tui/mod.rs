@@ -6,6 +6,7 @@ mod app;
 mod ask;
 mod data;
 mod maint;
+mod planview;
 mod tabs;
 #[cfg(test)]
 mod tests;

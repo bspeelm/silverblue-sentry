@@ -1274,61 +1274,59 @@ fn maintenance_tab_plans_one_item_at_a_time() {
             && s.contains("1  let Claude recommend a version"),
         "{s}"
     );
-    assert!(s.contains("2  v1.5.2  2026-10-01  ⚠ security"), "{s}");
     key(&mut a, KeyCode::Char('2'));
     assert!(screen(&mut a).contains("plan web → 1.5.2 · a note (optional): ▏"));
     for c in "after Saturday's backup".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    // Claude writes the plan: the request names the goal, the workflow's steps and the note.
+    // A plan of its own, not Ask Claude: the box says what Claude will do and where it's saved.
     let s = screen(&mut a);
-    assert!(s.contains("Ask Claude"), "{s}");
-    let prompt = a.consent_text().expect("consent box");
     assert!(
-        prompt.contains("Write the execution plan for moving web from 1.4.2 to 1.5.2"),
-        "{prompt}"
+        s.contains("Plan web with Claude") && s.contains("plans/web.md"),
+        "{s}"
     );
-    assert!(
-        prompt.contains("1. a [confirm]") && prompt.contains("after Saturday's backup"),
-        "{prompt}"
-    );
-    assert!(prompt.contains("TARGET: <version>"));
+    assert!(!s.contains("Ask Claude"), "{s}");
     key(&mut a, KeyCode::Char('y'));
-    // It's written in the background: no chat opens, the item says so.
-    assert!(a.chat_mut().is_none(), "nothing opens");
-    assert!(screen(&mut a).contains("Claude is writing the plan for web"));
-    a.plan_chat_mut()
-        .unwrap()
-        .push(crate::tui::chat::Kind::Claude, "Reading the notes first.");
-    a.plan_chat_mut().unwrap().push(
-        crate::tui::chat::Kind::Claude,
-        "**TARGET: v1.5.1**\n**Assessment**: 1.5.2 regresses the export; 1.5.1 has the fix.\n**Before**: back up.",
-    );
-    a.turn_ended();
-    assert_eq!(a.tab, Tab::Maint, "still on Maintenance");
+    // The Plan view opens while Claude writes; no chat.
+    assert!(a.chat_mut().is_none());
     let s = screen(&mut a);
     assert!(
-        s.contains("planned → 1.5.1") && s.contains("Plan: 1.4.2 → 1.5.1 with compose-bump"),
+        s.contains(" Plan ") && s.contains("Claude is writing it"),
+        "{s}"
+    );
+    assert!(
+        s.contains("1.4.2 → 1.5.2") && s.contains("compose-bump"),
+        "{s}"
+    );
+    a.writer_answered(
+        "I'll read the notes first.\nTARGET: v1.5.1\n# Plan: web 1.4.2 → 1.5.1\n\n## Assessment\n1.5.2 regresses the export; 1.5.1 has the fix.\n\n## Before\n```sh\nsudo true\n```",
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("ready to apply") && s.contains("1.4.2 → 1.5.1"),
         "Claude's TARGET wins: {s}"
     );
     assert!(
-        s.contains("note: after Saturday's backup") && s.contains("1.5.2 regresses the export"),
+        s.contains("Assessment") && s.contains("│ sudo true"),
+        "rendered as a document: {s}"
+    );
+    assert!(
+        !s.contains("I'll read the notes first") && !s.contains("TARGET"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('L'));
+    assert!(s.contains("note: after Saturday's backup"), "{s}");
+    // Back to the list: the item says planned; Enter opens the plan again.
+    key(&mut a, KeyCode::Esc);
     let s = screen(&mut a);
     assert!(
-        s.contains("web · plan → 1.5.1") && !s.contains("Reading the notes first"),
+        s.contains("planned → 1.5.1")
+            && s.contains("Plan: 1.4.2 → 1.5.1 with compose-bump · ready"),
         "{s}"
     );
-    key(&mut a, KeyCode::Esc);
-    // o opens its conversation; Esc puts it away (it isn't killed: nothing runs here).
-    key(&mut a, KeyCode::Char('o'));
-    assert!(screen(&mut a).contains("Reading the notes first"));
-    key(&mut a, KeyCode::Esc);
-    assert!(a.chat_mut().is_none());
-    // Enter runs it: the workflow asks its vars with the plan's values filled in.
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("ready to apply"));
+    // Enter in the plan applies it: the workflow asks its vars with the plan's values.
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
@@ -1338,25 +1336,30 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("Service (service): web▏"));
     key(&mut a, KeyCode::Esc);
-    // The plan stays until it's carried out or dropped.
+    // The plan stays until it's applied or dropped.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     assert!(screen(&mut a).contains("planned → 1.5.1"));
     key(&mut a, KeyCode::Char('x'));
     key(&mut a, KeyCode::Char('y'));
     assert!(!screen(&mut a).contains("planned →"));
-    // A plan Claude says to wait on can't be run.
-    a.store.maint_state.plans.insert(
+    // A plan Claude says to wait on can't be applied.
+    a.store.plans.insert(
         "web".into(),
-        crate::server::maint::Plan {
-            workflow: "compose-bump".into(),
-            wait: true,
-            text: "TARGET: wait\nNot until 1.5.3.".into(),
-            ..Default::default()
+        crate::server::maint::plan::PlanDoc {
+            head: crate::server::maint::plan::Head {
+                item: "web".into(),
+                workflow: "compose-bump".into(),
+                status: crate::server::maint::plan::PlanStatus::Wait,
+                ..Default::default()
+            },
+            body: "# Plan\nNot until 1.5.3.".into(),
         },
     );
     assert!(screen(&mut a).contains("plan: wait"));
     key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("says to wait"));
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("Claude advises waiting: r revises it"));
+    key(&mut a, KeyCode::Esc);
     // z offers later review dates; A asks with web access named in the consent box.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
@@ -1492,17 +1495,17 @@ fn a_password_sudo_says_press_i() {
 
 #[test]
 fn claude_target_lines() {
-    use super::maint::parse_target;
+    use crate::server::maint::plan::target;
     assert_eq!(
-        parse_target("TARGET: v0.64.2\nrest"),
+        target("TARGET: v0.64.2\nrest"),
         Some(Some("v0.64.2".into()))
     );
     assert_eq!(
-        parse_target("**TARGET:** `2.11.7-alpine`"),
+        target("**TARGET:** `2.11.7-alpine`"),
         Some(Some("2.11.7-alpine".into()))
     );
-    assert_eq!(parse_target("## TARGET: wait"), Some(None));
-    assert_eq!(parse_target("no target here"), None);
+    assert_eq!(target("## TARGET: wait"), Some(None));
+    assert_eq!(target("no target here"), None);
 }
 
 /// Read-only against the real server: `p` on an item with Claude choosing the version; prints
@@ -1551,27 +1554,29 @@ fn live_plan() {
         a.chat_mut().is_none(),
         "written in the background, nothing opens"
     );
-    // Move about meanwhile: it's still saved.
+    // Leave the Plan view and move about meanwhile: it's still written and saved.
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char(Tab::Overview.key()));
     for _ in 0..200 {
         pump(&mut a, 3);
-        if a.plan_chat_mut().is_some_and(|c| !c.running()) {
+        if !a.writing() {
             break;
         }
     }
     pump(&mut a, 1);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Enter);
     println!("{}", render_to_string(&mut a, 158, 41));
-    let plan = a
-        .store
-        .maint_state
-        .plans
-        .get(&item)
-        .cloned()
-        .expect("a saved plan");
+    let plan = a.store.plans.get(&item).cloned().expect("a saved plan");
+    let path = crate::server::maint::plan::path(&name, &item);
     println!(
-        "to: {:?} wait: {} vars: {:?}\n{}",
-        plan.to, plan.wait, plan.vars, plan.text
+        "{}\n{}",
+        path.display(),
+        std::fs::read_to_string(&path).expect("the .md")
+    );
+    assert!(
+        plan.body.starts_with('#'),
+        "the document, not Claude's narration"
     );
 }
 
