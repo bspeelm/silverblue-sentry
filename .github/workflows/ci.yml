@@ -1,0 +1,72 @@
+# The gate from CLAUDE.md (make check), on every pull request and on main.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66 # 1.89.0 (rust-version in Cargo.toml)
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo check --all-targets
+
+  # Private strings (the repo secret PRIVATE_PATTERNS, one per line) must not be published.
+  # The logs are public: only file names and counts are printed, never what matched.
+  privacy:
+    name: privacy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: scan files, commit messages and the diff
+        env:
+          PATTERNS: ${{ secrets.PRIVATE_PATTERNS }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$PATTERNS" ]; then
+            echo "PRIVATE_PATTERNS isn't set (or this is a fork): skipped; make privacy-check runs locally"
+            exit 0
+          fi
+          f=$(mktemp)
+          printf '%s\n' "$PATTERNS" | grep -v '^$' > "$f"
+          fail=0
+          files=$(git ls-files -z | xargs -0 grep -I -l -i -F -f "$f" || true)
+          if [ -n "$files" ]; then echo "private strings in:"; echo "$files"; fail=1; fi
+          if [ -n "$BASE" ] && git cat-file -e "$BASE" 2>/dev/null; then
+            n=$(git log -p "$BASE..HEAD" | grep -a -c -i -F -f "$f" || true)
+            if [ "${n:-0}" != 0 ]; then echo "private strings in $n line(s) of this change's commits"; fail=1; fi
+          fi
+          rm -f "$f"
+          exit $fail
