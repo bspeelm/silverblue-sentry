@@ -49,7 +49,7 @@ install -Dm755 silverblue-sentry-0.3.0/sentry ~/.local/bin/sentry
 install -Dm755 silverblue-sentry-0.3.0/sentry-server ~/.local/bin/sentry-server   # optional: servers over ssh
 ```
 
-From source (a toolbox with `cargo` and `make` works fine; Rust 1.89+):
+From source (a toolbox with `cargo` and `make` works fine; Rust 1.95+):
 
 ```sh
 make install-binary      # builds sentry and sentry-server and copies them to ~/.local/bin
