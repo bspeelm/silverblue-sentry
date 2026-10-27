@@ -1,14 +1,19 @@
 //! Records shown as documents, in both programs: the maintenance log (its ledger as a list,
-//! an entry as a document) and the Markdown that plans, reviews and entries are written in.
+//! an entry as a document), Claude's plans and reviews (and their writer, which runs in the
+//! background), and the Markdown they're all written in.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::time::Instant;
+
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
+use crate::claude::Event;
 use crate::maint::log::LogEntry;
+use crate::maint::plan::{PlanDoc, PlanStatus};
 use crate::tui::theme::Theme;
 
 /// Enough Markdown for a plan: headings, bullets, code blocks, **bold**.
@@ -224,4 +229,325 @@ pub fn draw_log(f: &mut Frame, area: Rect, t: &Theme, lv: &LogView, dir: &str) {
             selected: Some(lv.cur),
         },
     );
+}
+
+/// Claude writing (or revising) one plan in the background.
+pub struct Writer {
+    pub item: String,
+    pub doc: PlanDoc,
+    /// Writing a maintenance review instead of a plan.
+    pub review: Option<crate::maint::review::ReviewDoc>,
+    /// Stream id and pid of the running turn.
+    pub live: Option<(u64, u32)>,
+    pub started: Instant,
+    pub web: usize,
+    pub files: usize,
+    pub server: usize,
+    /// Where its commands run, for the progress line ("server", "machine").
+    pub place: &'static str,
+    /// What it's doing now, in a few words.
+    pub doing: String,
+    /// The turn's final answer (the plan), or why there's none.
+    pub answer: Option<String>,
+    pub err: Option<String>,
+    pub session: Option<String>,
+}
+
+impl Writer {
+    pub fn new(item: &str, doc: PlanDoc) -> Self {
+        let session = doc.head.session.clone();
+        Self {
+            item: item.to_string(),
+            doc,
+            review: None,
+            live: None,
+            started: Instant::now(),
+            web: 0,
+            files: 0,
+            server: 0,
+            place: "server",
+            doing: "starting".into(),
+            answer: None,
+            err: None,
+            session,
+        }
+    }
+
+    /// A maintenance review, written the same way as a plan.
+    pub fn review(doc: crate::maint::review::ReviewDoc) -> Self {
+        let session = doc.head.session.clone();
+        let mut w = Self::new(REVIEW, PlanDoc::default());
+        w.session = session;
+        w.review = Some(doc);
+        w
+    }
+
+    pub fn running(&self) -> bool {
+        self.live.is_some()
+    }
+
+    pub fn on_event(&mut self, e: Event) {
+        match e {
+            Event::Init { session_id } => self.session = Some(session_id),
+            Event::Text(_) => self.doing = "writing".into(),
+            Event::ToolUse { name, input } => {
+                self.doing = match name.as_str() {
+                    "WebFetch" | "WebSearch" => {
+                        self.web += 1;
+                        "reading release notes".into()
+                    }
+                    "Read" => {
+                        self.files += 1;
+                        "reading your notes".into()
+                    }
+                    _ => {
+                        self.server += 1;
+                        let cmd = input
+                            .split(" -- ")
+                            .nth(1)
+                            .unwrap_or(&input)
+                            .chars()
+                            .take(40)
+                            .collect::<String>();
+                        format!("checking the {}: {cmd}", self.place)
+                    }
+                }
+            }
+            Event::ToolResult { .. } => {}
+            Event::Done {
+                is_error, result, ..
+            } => {
+                if is_error {
+                    self.err = Some(result);
+                } else {
+                    self.answer = Some(result);
+                }
+            }
+        }
+    }
+
+    pub fn progress(&self) -> String {
+        let s = self.started.elapsed().as_secs();
+        format!(
+            "{} · {} web page(s) · {} note file(s) · {} {} read(s) · {}:{:02}",
+            self.doing,
+            self.web,
+            self.files,
+            self.server,
+            self.place,
+            s / 60,
+            s % 60
+        )
+    }
+}
+
+/// The writer's item name while it writes a review.
+pub const REVIEW: &str = "(review)";
+
+/// The Plan view: the item's plan as a document, or Claude's progress while it writes.
+pub fn draw(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    doc: Option<&PlanDoc>,
+    writer: Option<&Writer>,
+    scroll: usize,
+    path: &str,
+) {
+    f.render_widget(Clear, area);
+    let [head, rule, body] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let d = writer.map(|w| &w.doc).or(doc);
+    let Some(d) = d else {
+        f.render_widget(Paragraph::new(Line::styled("no plan", t.dim())), body);
+        return;
+    };
+    let h = &d.head;
+    let (status, color) = match (writer.is_some_and(|w| w.running()), h.status) {
+        (true, _) => ("Claude is writing it", t.cyan),
+        (_, PlanStatus::Ready) => ("ready to apply", t.green),
+        (_, PlanStatus::Wait) => ("Claude advises waiting", t.yellow),
+        (_, PlanStatus::Failed) => ("writing it failed", t.red),
+        (_, s) => (s.word(), t.dim),
+    };
+    let target = h.to.clone().unwrap_or_else(|| {
+        if h.vars.contains_key("unit") {
+            "retire".into()
+        } else {
+            "?".into()
+        }
+    });
+    let mut l1 = vec![
+        Span::styled(
+            " Plan ",
+            Style::new()
+                .fg(t.ink)
+                .bg(t.mag)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  {}  {} → {}",
+                h.item,
+                h.from.as_deref().unwrap_or("?"),
+                target
+            ),
+            t.fg(),
+        ),
+        Span::styled(format!("  · {}", h.workflow), t.dim()),
+        Span::styled(format!("  · {status}"), t.s(color)),
+    ];
+    if let Some(u) = h.updated.or(h.created) {
+        l1.push(Span::styled(
+            format!("  · {}", u.strftime("%Y-%m-%d %H:%M")),
+            t.dim(),
+        ));
+    }
+    let l2 = match writer.filter(|w| w.running()) {
+        Some(w) => Line::styled(format!(" {}", w.progress()), t.s(t.cyan)),
+        None => Line::styled(
+            format!(
+                " {}{}",
+                path,
+                h.note
+                    .as_deref()
+                    .map_or(String::new(), |n| format!("  · note: {n}"))
+            ),
+            t.dim(),
+        ),
+    };
+    f.render_widget(Paragraph::new(vec![Line::from(l1), l2]), head);
+    f.render_widget(
+        Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
+        rule,
+    );
+    let lines = if d.body.trim().is_empty() {
+        vec![Line::styled(
+            if writer.is_some_and(|w| w.running()) {
+                "  The plan appears here when Claude has gathered what it needs and written it."
+            } else {
+                "  (empty)"
+            },
+            t.dim(),
+        )]
+    } else {
+        markdown(t, &d.body)
+    };
+    // Scroll is lines from the top; clamp so the last page stays full.
+    let max = lines.len().saturating_sub(body.height as usize);
+    let top = scroll.min(max);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((top as u16, 0)),
+        body,
+    );
+}
+
+/// The Review view: the latest maintenance review, or Claude's progress while it writes.
+pub fn draw_review(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    doc: Option<&crate::maint::review::ReviewDoc>,
+    writer: Option<&Writer>,
+    scroll: usize,
+) {
+    f.render_widget(Clear, area);
+    let [head, rule, body] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let writing = writer.is_some_and(|w| w.running());
+    let mut l1 = vec![Span::styled(
+        " Maintenance review ",
+        Style::new()
+            .fg(t.ink)
+            .bg(t.mag)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(d) = doc {
+        l1.push(Span::styled(
+            format!(
+                "  {}",
+                d.head
+                    .updated
+                    .or(d.head.created)
+                    .map_or(String::new(), |u| u.strftime("%Y-%m-%d %H:%M").to_string())
+            ),
+            t.fg(),
+        ));
+    }
+    let l2 = match writer.filter(|w| w.running()) {
+        Some(w) => Line::styled(format!(" {}", w.progress()), t.s(t.cyan)),
+        None => Line::styled(
+            " what to maintain next, and why · R writes a new one",
+            t.dim(),
+        ),
+    };
+    f.render_widget(Paragraph::new(vec![Line::from(l1), l2]), head);
+    f.render_widget(
+        Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
+        rule,
+    );
+    let lines = match doc {
+        Some(d) if !writing => markdown(t, &d.body),
+        Some(d) => {
+            let mut l = vec![
+                Line::styled(
+                    "  Claude is writing a new review; the last one is below.",
+                    t.s(t.cyan),
+                ),
+                Line::raw(""),
+            ];
+            l.extend(markdown(t, &d.body));
+            l
+        }
+        None if writing => vec![Line::styled(
+            "  The review appears here when Claude has gathered what it needs and written it.",
+            t.dim(),
+        )],
+        None => vec![Line::styled("  No review yet: R writes one.", t.dim())],
+    };
+    let top = scroll.min(lines.len().saturating_sub(body.height as usize));
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((top as u16, 0)),
+        body,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_counts_what_claude_reads() {
+        let mut w = Writer::new("web", PlanDoc::default());
+        w.on_event(Event::ToolUse {
+            name: "WebFetch".into(),
+            input: "{}".into(),
+        });
+        w.on_event(Event::ToolUse {
+            name: "Bash".into(),
+            input: "sentry-server exec myserver -- docker ps".into(),
+        });
+        assert!(
+            w.progress()
+                .starts_with("checking the server: docker ps · 1 web page(s)")
+        );
+        w.on_event(Event::Done {
+            is_error: false,
+            result: "TARGET: 1.5.2\n# Plan".into(),
+            cost: None,
+        });
+        assert_eq!(w.answer.as_deref(), Some("TARGET: 1.5.2\n# Plan"));
+    }
 }

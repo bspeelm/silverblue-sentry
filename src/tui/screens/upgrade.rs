@@ -24,6 +24,8 @@ use crate::workflows::state::{RunStatus, StepStatus};
 #[derive(Default)]
 pub struct Upgrade {
     pub cur: Cursor,
+    /// Values to start the next workflow with (a plan's), as the prompts' defaults.
+    pub preset: BTreeMap<String, String>,
 }
 
 /// A workflow file plus its most recent run (for the idle list).
@@ -63,6 +65,7 @@ pub fn hints(v: &View) -> Hints {
             ("Enter", "start"),
             ("e", "edit toml"),
             ("r", "reload"),
+            ("p", "plan with Claude"),
             ("v", "maintenance log"),
         ],
         Some(s) if s.done() => vec![
@@ -259,6 +262,8 @@ impl Upgrade {
         match a {
             Action::Refresh => vec![Effect::Fetch(Fetch::Workflows)],
             Action::Char('v') => vec![Effect::LogOpen],
+            Action::Char('p') => vec![Effect::PlanAsk(info.entry.name.clone(), false)],
+            Action::Char('P') => vec![Effect::PlanAsk(info.entry.name.clone(), true)],
             Action::Char('e') => vec![Effect::Wf(WfCmd::Edit(info.entry.path.clone()))],
             Action::Enter => {
                 if let Some(why) = info.entry.blocked() {
@@ -277,7 +282,8 @@ impl Upgrade {
                 let Ok(wf) = &info.entry.wf else {
                     return Vec::new();
                 };
-                let vars = match initial_vars(wf, &RealEnv, &BTreeMap::new()) {
+                let preset = std::mem::take(&mut self.preset);
+                let vars = match initial_vars(wf, &RealEnv, &preset) {
                     Ok(v) => v,
                     Err(e) => return vec![Effect::Toast(e)],
                 };

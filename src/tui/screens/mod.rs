@@ -185,6 +185,11 @@ impl Screens {
         self.upgrade.cur.sel = i;
     }
 
+    /// Start the next workflow with these values as the defaults (a plan's).
+    pub fn preset_workflow(&mut self, vars: std::collections::BTreeMap<String, String>) {
+        self.upgrade.preset = vars;
+    }
+
     pub fn reset_cursor(&mut self, id: ScreenId) {
         match id {
             ScreenId::Proc => self.proc.cur.sel = 0,

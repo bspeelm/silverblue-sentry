@@ -567,6 +567,9 @@ impl App {
                 StreamMsg::Line { stderr: true, text } => c.on_raw(text),
                 StreamMsg::Exit { code, .. } => {
                     c.on_exit(code);
+                    if c.hidden {
+                        self.toast("Claude answered · A opens the chat");
+                    }
                     self.save_assessment();
                     self.offer_reads(ReadsFor::Chat);
                 }
@@ -783,7 +786,7 @@ impl App {
         }
         // The chat takes raw keys (Backspace, any character) before the keymap, which knows
         // neither; boxes opened from the chat still come first.
-        if self.chat.is_some()
+        if self.chat.as_ref().is_some_and(|c| !c.hidden)
             && self.pane.is_none()
             && self.chooser.is_none()
             && self.modal.is_none()
@@ -949,7 +952,9 @@ impl App {
                 self.apply(e, now);
             }
             Action::Ask => {
-                if !claude::available() {
+                if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
+                    c.hidden = false;
+                } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
                     let v = self.view();
@@ -2605,6 +2610,10 @@ impl App {
                 };
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
+                // A hidden chat still answering is replaced: stop it first.
+                if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
+                    let _ = kill(pid);
+                }
                 self.chat = Some(Chat::new(ask));
                 self.start_turn(ReadsFor::Chat, &p, q, None);
             }
@@ -2794,13 +2803,11 @@ impl App {
             KeyCode::Home => c.scroll_top(),
             KeyCode::End => c.scroll_bottom(),
             KeyCode::Esc => {
-                if let Some((_, pid)) = c.live {
-                    let _ = kill(pid);
+                if c.esc() {
+                    self.chat = None;
+                } else {
+                    self.toast("Claude carries on · A brings the chat back");
                 }
-                if let Some((_, pid, _)) = &c.job {
-                    let _ = kill(*pid);
-                }
-                self.chat = None;
             }
             KeyCode::Enter if !c.running() && !c.input.trim().is_empty() => {
                 let text = std::mem::take(&mut c.input);
@@ -3077,7 +3084,7 @@ impl App {
             );
         }
         self.draw_keybar(f, keybar);
-        if let Some(c) = &self.chat {
+        if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
             chatmod::draw(f, body, &t, c);
         }
         if let Some(p) = &self.pane {
@@ -3282,7 +3289,11 @@ impl App {
             } else {
                 vec![("C-c", "stop it"), ("j/k", "scroll")]
             }
-        } else if let Some(c) = self.chat.as_ref().filter(|_| self.modal.is_none()) {
+        } else if let Some(c) = self
+            .chat
+            .as_ref()
+            .filter(|c| !c.hidden && self.modal.is_none())
+        {
             chatmod::keys(c)
         } else if self.review_view.is_some() && self.modal.is_none() {
             if self.writing_review() {
@@ -3352,8 +3363,12 @@ impl App {
                 h.push(("I", "read with sudo"));
             }
             // The Maintenance tab names its own `A` (assess).
-            if claude::available() && self.tab != Tab::Maint {
-                h.push(("A", "ask Claude"));
+            match self.chat.as_ref().filter(|c| c.hidden) {
+                Some(c) => h.push(("A", c.hidden_word())),
+                None if claude::available() && self.tab != Tab::Maint => {
+                    h.push(("A", "ask Claude"))
+                }
+                None => {}
             }
             h.extend([("?", "help"), ("q", "quit")]);
             h

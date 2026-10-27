@@ -83,13 +83,17 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         if matches!(r.action, Do::Fix(_)) {
             h.push(("x", "expected"));
         }
+        if matches!(r.action, Do::Run(_) | Do::OpenPlan(_)) {
+            h.push(("p", "plan"));
+        }
         h.push(("z", "later"));
     }
     h.extend([
         ("c", "check all"),
-        ("F", "audit report"),
+        ("F", "report"),
         ("J", "jobs"),
         ("C", "cleanup"),
+        ("R", "review"),
         ("v", "log"),
     ]);
     h
@@ -260,6 +264,7 @@ impl Maint {
                 return cleanup::on_enter(v);
             }
             Action::Char('v') => return vec![Effect::LogOpen],
+            Action::Char('R') => return vec![Effect::ReviewOpen],
             _ => {}
         }
         let Some(r) = recs.get(self.cur.sel) else {
@@ -267,6 +272,14 @@ impl Maint {
         };
         match a {
             Action::Enter => self.act(v, r),
+            Action::Char('p' | 'P') => match &r.action {
+                Do::Run(wf) | Do::OpenPlan(wf) => {
+                    vec![Effect::PlanAsk(wf.clone(), a == Action::Char('P'))]
+                }
+                _ => vec![Effect::Toast(
+                    "plans are for workflows: p on updates, or on Upgrade (0)".into(),
+                )],
+            },
             Action::Char('x') => match &r.action {
                 Do::Fix(id) => finding(v, id).map_or(Vec::new(), |f| {
                     vec![
@@ -579,5 +592,23 @@ fn action_words(a: &Do) -> String {
         Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),
         Do::OpenRun => "Enter: open the run (Upgrade)".into(),
         Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),
+    }
+}
+
+/// The machine's state for a plan or a review: deployments and what's waiting.
+pub fn context(v: &View) -> String {
+    updates::ask(v).map_or_else(|e| format!("(updates: {e})"), |a| a.context)
+}
+
+/// The recommendations, one line each, for a review.
+pub fn recs_text(v: &View) -> String {
+    let r: Vec<String> = recs(v)
+        .iter()
+        .map(|r| format!("- [{}] {}: {}", r.level.word(), r.title, r.why))
+        .collect();
+    if r.is_empty() {
+        "(nothing)".into()
+    } else {
+        r.join("\n")
     }
 }

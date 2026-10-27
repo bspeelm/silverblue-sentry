@@ -1122,3 +1122,68 @@ gate = "confirm"
     key(&mut a, KeyCode::Esc);
     assert!(!render_to_string(&mut a, 158, 41).contains("Maintenance log"));
 }
+
+#[test]
+fn esc_hides_a_running_chat_and_a_brings_it_back() {
+    use crate::claude::Ask;
+    use crate::tui::chat::Chat;
+    let mut c = Chat::new(Ask::new("dashboard", "ctx", "q"));
+    c.begin_turn("q", 1, u32::MAX);
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Dash);
+    a.set_chat(c);
+    assert!(render_to_string(&mut a, 158, 41).contains("hide (it carries on)"));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Claude · dashboard"), "hidden: {s}");
+    assert!(s.contains("Claude answering…"), "the A chip says so: {s}");
+    // Keys go to the screen again.
+    key(&mut a, KeyCode::Char('2'));
+    assert_eq!(a.screen, ScreenId::Proc);
+    key(&mut a, KeyCode::Char('A'));
+    assert!(render_to_string(&mut a, 158, 41).contains("Claude · dashboard"));
+}
+
+#[test]
+fn claude_plans_a_workflow_and_reviews_maintenance() {
+    let mut a = app(ScreenId::Maint);
+    // p on the updates recommendation: a note first, then what Claude will do.
+    key(&mut a, KeyCode::Char('p'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("plan quick-update · a note for Claude"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Plan quick-update with Claude"), "{s}");
+    assert!(
+        s.contains("Nothing on this") && s.contains("machine changes"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    // Claude's answer becomes the plan: TARGET sets the workflow's target var.
+    a.plan_written_for_test(
+        "release-rebase",
+        [("target".to_string(), "45".to_string())].into(),
+        "Reading the ledger.\nTARGET: 46\n# Plan: release-rebase 44 → 46\n\n## Before\n```sh\nrpm-ostree status\n```",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("ready to apply") && s.contains("→ 46"), "{s}");
+    assert!(
+        s.contains("rpm-ostree status") && !s.contains("Reading the ledger"),
+        "{s}"
+    );
+    assert!(s.contains("apply (start its workflow)"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // It's a recommendation now; x in its view asks before dropping it.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Plan ready: release-rebase"), "{s}");
+    a.apply_for_test(vec![crate::tui::app::Effect::PlanOpen(
+        "release-rebase".into(),
+    )]);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(render_to_string(&mut a, 158, 41).contains("Drop the plan for release-rebase"));
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
+    // R with no review yet: what Claude will do.
+    key(&mut a, KeyCode::Char('R'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Review maintenance with Claude"), "{s}");
+}

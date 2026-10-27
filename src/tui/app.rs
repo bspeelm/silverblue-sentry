@@ -74,6 +74,16 @@ pub enum Effect {
     Snooze(String, i64),
     /// A saved plan (`plans/<workflow>.md`), in the Plan view.
     PlanOpen(String),
+    /// `p` on a workflow: its plan if there is one (or `again`: a new one), else a note
+    /// for Claude, then what it'll do, then Claude writes it.
+    PlanAsk(String, bool),
+    PlanWrite(String, Option<String>),
+    /// Start the plan's workflow with its values.
+    PlanApply(String),
+    PlanDrop(String),
+    /// `R`: the latest review, or what writing one means.
+    ReviewOpen,
+    ReviewWrite,
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -92,6 +102,10 @@ pub enum Prompt {
     },
     /// For the maintenance log, when a run has ended: what to know next time.
     LogNote(Box<crate::maint::log::LogEntry>),
+    /// A note for Claude before it plans this workflow (optional).
+    PlanNote(String),
+    /// What to change in this workflow's plan.
+    PlanRevise(String),
 }
 
 impl Prompt {
@@ -103,6 +117,8 @@ impl Prompt {
                 "{} {} · for the log, what to know next time (optional): ",
                 e.head.workflow, e.head.result
             ),
+            Prompt::PlanNote(wf) => format!("plan {wf} · a note for Claude (optional): "),
+            Prompt::PlanRevise(wf) => format!("revise the plan for {wf}: "),
         }
     }
 }
@@ -246,6 +262,17 @@ pub struct App {
     wf_from: Option<String>,
     /// The Log view, over the screen.
     log_view: Option<super::docview::LogView>,
+    /// Claude writing a plan or a review in the background.
+    writer: Option<super::docview::Writer>,
+    /// The Plan view (workflow, scroll) and the Review view (scroll), over the screen.
+    plan_view: Option<(String, usize)>,
+    review_view: Option<usize>,
+    review: Option<crate::maint::review::ReviewDoc>,
+    /// A plan whose workflow is being started; the plan the current run applies, and where
+    /// it went when the run completed.
+    plan_pending: Option<String>,
+    wf_plan: Option<String>,
+    wf_plan_path: Option<std::path::PathBuf>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -298,6 +325,13 @@ impl App {
             wf_logged: None,
             wf_from: None,
             log_view: None,
+            writer: None,
+            plan_view: None,
+            review_view: None,
+            review: crate::maint::review::latest(crate::maint::LOCAL),
+            plan_pending: None,
+            wf_plan: None,
+            wf_plan_path: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -308,6 +342,36 @@ impl App {
     #[cfg(test)]
     pub fn set_chat(&mut self, c: super::chat::Chat) {
         self.chat = Some(c);
+    }
+
+    #[cfg(test)]
+    pub fn apply_for_test(&mut self, e: Vec<Effect>) {
+        self.apply(e, Instant::now());
+    }
+
+    /// Tests: Claude wrote this plan for `wf` (nothing is sent or saved).
+    #[cfg(test)]
+    pub fn plan_written_for_test(
+        &mut self,
+        wf: &str,
+        vars: BTreeMap<String, String>,
+        answer: &str,
+    ) {
+        let doc = crate::maint::plan::PlanDoc {
+            head: crate::maint::plan::Head {
+                item: wf.into(),
+                workflow: wf.into(),
+                vars,
+                ..Default::default()
+            },
+            body: String::new(),
+        };
+        self.start_writer(super::docview::Writer::new(wf, doc), String::new(), None);
+        if let Some(w) = self.writer.as_mut() {
+            w.live = None;
+            w.answer = Some(answer.into());
+        }
+        self.writer_turn_ended();
     }
 
     #[cfg(test)]
@@ -366,6 +430,13 @@ impl App {
             wf_logged: None,
             wf_from: None,
             log_view: None,
+            writer: None,
+            plan_view: None,
+            review_view: None,
+            review: None,
+            plan_pending: None,
+            wf_plan: None,
+            wf_plan_path: None,
         }
     }
 
@@ -568,6 +639,30 @@ impl App {
     }
 
     fn on_run_msg(&mut self, id: u64, msg: StreamMsg) {
+        if let Some(w) = self.writer.as_mut()
+            && w.live.is_some_and(|(wid, _)| wid == id)
+        {
+            match msg {
+                StreamMsg::Line {
+                    stderr: false,
+                    text,
+                } => {
+                    for e in crate::claude::parse_line(&text) {
+                        w.on_event(e);
+                    }
+                }
+                StreamMsg::Line { .. } => {}
+                StreamMsg::Exit { code, .. } => {
+                    w.live = None;
+                    if w.answer.is_none() && w.err.is_none() && code != 0 {
+                        w.err = Some(format!("claude exited with {code}"));
+                    }
+                    self.writer_turn_ended();
+                }
+            }
+            self.dirty = true;
+            return;
+        }
         if let Some(c) = self.chat.as_mut()
             && c.live.is_some_and(|(cid, _)| cid == id)
         {
@@ -581,7 +676,12 @@ impl App {
                     }
                 }
                 StreamMsg::Line { stderr: true, text } => c.on_raw(text),
-                StreamMsg::Exit { code, .. } => c.on_exit(code),
+                StreamMsg::Exit { code, .. } => {
+                    c.on_exit(code);
+                    if c.hidden {
+                        self.toast("Claude answered · A opens the chat");
+                    }
+                }
             }
             self.dirty = true;
             return;
@@ -711,7 +811,7 @@ impl App {
             }
             return;
         }
-        if self.chat.is_some() {
+        if self.chat.as_ref().is_some_and(|c| !c.hidden) {
             self.chat_key(k, now);
             return;
         }
@@ -723,6 +823,14 @@ impl App {
             if !lv.key(k.code) {
                 self.log_view = None;
             }
+            return;
+        }
+        if self.plan_view.is_some() {
+            self.plan_view_key(k, now);
+            return;
+        }
+        if self.review_view.is_some() {
+            self.review_view_key(k);
             return;
         }
         let Some(action) = self.keys.resolve(&k) else {
@@ -822,6 +930,10 @@ impl App {
 
     /// `A`: build the selected thing's question and show exactly what would be sent.
     fn ask(&mut self) {
+        if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
+            c.hidden = false;
+            return;
+        }
         if !crate::claude::available() {
             self.toast("Claude Code not found (expected ~/.local/bin/claude)");
             return;
@@ -940,13 +1052,11 @@ impl App {
             KeyCode::Home => c.scroll_top(),
             KeyCode::End => c.scroll_bottom(),
             KeyCode::Esc => {
-                if let Some((_, pid)) = c.live {
-                    let _ = kill(pid);
+                if c.esc() {
+                    self.chat = None;
+                } else {
+                    self.toast("Claude carries on · A brings the chat back");
                 }
-                if let Some((_, pid, _)) = &c.job {
-                    let _ = kill(*pid);
-                }
-                self.chat = None;
             }
             KeyCode::Enter if !c.running() && !c.input.trim().is_empty() => {
                 let text = std::mem::take(&mut c.input);
@@ -974,6 +1084,10 @@ impl App {
                     Some((first, _)) if ask.target.is_some() => format!("{first}."),
                     _ => ask.question.clone(),
                 };
+                // A hidden chat still answering is replaced: stop it first.
+                if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
+                    let _ = kill(pid);
+                }
                 self.chat = Some(super::chat::Chat::new(ask));
                 (p, q, None)
             }
@@ -1264,6 +1378,18 @@ impl App {
                     );
                 }
             }
+            Prompt::PlanNote(wf) => {
+                self.plan_box(&wf, (!text.is_empty()).then(|| text.to_string()))
+            }
+            Prompt::PlanRevise(_) if text.is_empty() => {}
+            Prompt::PlanRevise(wf) => {
+                let Some(doc) = self.data.plans.get(&wf).cloned() else {
+                    return;
+                };
+                let session = doc.head.session.clone();
+                let w = super::docview::Writer::new(&wf, doc);
+                self.start_writer(w, super::plans::revise(text), session);
+            }
             Prompt::LogNote(_) if text.is_empty() => {}
             Prompt::LogNote(_) => {
                 if self.wf.is_none() {
@@ -1497,7 +1623,52 @@ impl App {
                         self.toast(format!("put off until {until} (maint.toml)"));
                     }
                 }
-                Effect::PlanOpen(wf) => self.toast(format!("no plan for {wf} yet")),
+                Effect::PlanOpen(wf) => {
+                    if self.data.plans.contains_key(&wf) || self.writing_plan(&wf) {
+                        self.plan_view = Some((wf, 0));
+                    } else {
+                        self.toast(format!("no plan for {wf} yet: p writes one"));
+                    }
+                }
+                Effect::PlanAsk(wf, again) => {
+                    if !again && (self.data.plans.contains_key(&wf) || self.writing_plan(&wf)) {
+                        self.plan_view = Some((wf, 0));
+                    } else if !crate::claude::available() {
+                        self.toast("plans are written by Claude Code, which isn't installed");
+                    } else {
+                        self.input = Input::Prompt(Prompt::PlanNote(wf), String::new());
+                    }
+                }
+                Effect::PlanWrite(wf, note) => self.plan_write(&wf, note),
+                Effect::PlanApply(wf) => match self.data.plans.get(&wf) {
+                    Some(doc) => {
+                        self.screens.preset_workflow(doc.head.vars.clone());
+                        self.plan_pending = Some(wf.clone());
+                        self.plan_view = None;
+                        self.workflow_command(Some(&wf), now);
+                    }
+                    None => self.toast(format!("no plan for {wf}")),
+                },
+                Effect::PlanDrop(wf) => {
+                    if let Some(doc) = self.data.plans.remove(&wf)
+                        && self.records
+                    {
+                        let _ = crate::maint::plan::close(
+                            &doc,
+                            crate::maint::plan::PlanStatus::Dropped,
+                        );
+                    }
+                    self.plan_view = None;
+                    self.toast(format!("the plan for {wf} is dropped (plans/done/)"));
+                }
+                Effect::ReviewOpen => {
+                    if self.review.is_some() || self.writing_review() {
+                        self.review_view = Some(0);
+                    } else {
+                        self.review_box();
+                    }
+                }
+                Effect::ReviewWrite => self.review_write(),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -1551,6 +1722,8 @@ impl App {
                     Ok(s) => {
                         self.wf = Some(s);
                         self.wf_from = self.booted_version();
+                        self.wf_plan = self.plan_pending.take().filter(|p| *p == name);
+                        self.wf_plan_path = None;
                         // Entering the screen arms the session and runs the first auto step.
                         self.enter(ScreenId::Upgrade, now);
                         Ok(None)
@@ -1686,6 +1859,17 @@ impl App {
             return;
         }
         self.wf_logged = Some(s.run.dir.clone());
+        let done = s.run.state.status == crate::workflows::state::RunStatus::Done;
+        // A plan carried out is done with (it moves to plans/done/); an abandoned run leaves it.
+        if let Some(p) = self.wf_plan.take().filter(|_| done)
+            && let Some(doc) = self.data.plans.remove(&p)
+        {
+            self.wf_plan_path = if self.records {
+                crate::maint::plan::close(&doc, crate::maint::plan::PlanStatus::Done).ok()
+            } else {
+                Some(crate::maint::plan::path(crate::maint::LOCAL, &p))
+            };
+        }
         let entry = self.log_entry(None);
         if self.records {
             if let Err(e) = crate::maint::log::write(&entry) {
@@ -1708,18 +1892,23 @@ impl App {
         let s = self.wf.as_ref().expect("a session");
         let kind = log_kind(&s.wf.name);
         let to = self.booted_version();
-        let info = (kind != "system").then(|| ItemInfo {
-            item: "os".into(),
-            kind: kind.into(),
-            risk: if kind == "os-update" {
-                "medium"
+        let plan = self.wf_plan_path.clone();
+        let info = (kind != "system" || plan.is_some()).then(|| ItemInfo {
+            item: if kind == "system" {
+                s.wf.name.clone()
             } else {
+                "os".into()
+            },
+            kind: kind.into(),
+            risk: if kind == "kmod" || kind == "rebase" {
                 "high"
+            } else {
+                "medium"
             }
             .into(),
             from: self.wf_from.clone(),
             to: to.filter(|t| Some(t) != self.wf_from.as_ref()),
-            plan: None,
+            plan,
         });
         LogEntry::from_run(
             crate::maint::LOCAL,
@@ -1734,6 +1923,340 @@ impl App {
     fn open_maint_view(&mut self, s: Sub, now: Instant) {
         self.screens.maint.open(s);
         self.enter(ScreenId::Maint, now);
+    }
+
+    fn writing_plan(&self, wf: &str) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| w.review.is_none() && w.item == wf && w.running())
+    }
+
+    fn writing_review(&self) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| w.review.is_some() && w.running())
+    }
+
+    /// After the note: what Claude will do, in a confirm box; yes starts the writer.
+    fn plan_box(&mut self, wf: &str, note: Option<String>) {
+        let t = self.theme;
+        let notes = &self.cfg.maintenance.notes;
+        self.modal = Some(Modal {
+            title: format!("Plan {wf} with Claude"),
+            color: t.mag,
+            lines: vec![
+                Line::styled(
+                    format!(
+                        "Claude reads the maintenance log, your notes ({}), release notes on the \
+                         web and this machine (read-only), then writes how to run {wf} here: \
+                         the assessment, what to check and back up first, what to expect at each \
+                         step, how to verify and roll back.",
+                        if notes.is_empty() {
+                            "none: [maintenance] notes in config.toml".to_string()
+                        } else {
+                            notes.join(", ")
+                        }
+                    ),
+                    t.fg(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    format!(
+                        "Saved as {}; Enter in the Plan view starts {wf} with its values.",
+                        widgets::short_home(&crate::maint::plan::path(crate::maint::LOCAL, wf))
+                    ),
+                    t.dim(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    "Sent to Claude through your Claude Code login (Anthropic). Nothing on this \
+                     machine changes.",
+                    t.s(t.yellow),
+                ),
+            ],
+            yes: Some(("plan".into(), vec![Effect::PlanWrite(wf.to_string(), note)])),
+        });
+    }
+
+    fn plan_write(&mut self, wf: &str, note: Option<String>) {
+        use crate::maint::plan::{Head, PlanDoc, PlanStatus};
+        let Some(entry) = crate::workflows::find(wf) else {
+            return self.toast(format!("no workflow {wf}"));
+        };
+        let toml = std::fs::read_to_string(&entry.path).unwrap_or_default();
+        let vars = entry
+            .wf
+            .as_ref()
+            .ok()
+            .and_then(|w| {
+                crate::workflows::cli::initial_vars(
+                    w,
+                    &crate::workflows::cli::RealEnv,
+                    &BTreeMap::new(),
+                )
+                .ok()
+            })
+            .unwrap_or_default();
+        let doc = PlanDoc {
+            head: Head {
+                item: wf.to_string(),
+                status: PlanStatus::Writing,
+                from: self.booted_version(),
+                workflow: wf.to_string(),
+                vars,
+                note: note.clone(),
+                created: Some(jiff::Timestamp::now()),
+                ..Default::default()
+            },
+            body: String::new(),
+        };
+        let ctx = super::screens::maint::context(&self.view());
+        let prompt = super::plans::plan_request(&self.cfg, &ctx, wf, &toml, note.as_deref());
+        self.start_writer(super::docview::Writer::new(wf, doc), prompt, None);
+    }
+
+    /// `R` with no review yet, or `R` in the Review view: what Claude will do, then yes.
+    fn review_box(&mut self) {
+        if !crate::claude::available() {
+            return self.toast("reviews are written by Claude Code, which isn't installed");
+        }
+        let t = self.theme;
+        self.modal = Some(Modal {
+            title: "Review maintenance with Claude".into(),
+            color: t.mag,
+            lines: vec![
+                Line::styled(
+                    "Claude reviews what Maintenance recommends, the deployments and updates \
+                     waiting, the maintenance log and release notes, then writes what to do \
+                     now, soon and routinely, and why.",
+                    t.fg(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    format!(
+                        "It reads the web, your notes and this machine (read-only). Saved in {}.",
+                        widgets::short_home(&crate::maint::review::dir(crate::maint::LOCAL))
+                    ),
+                    t.dim(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    "Sent to Claude through your Claude Code login (Anthropic). Nothing on this \
+                     machine changes.",
+                    t.s(t.yellow),
+                ),
+            ],
+            yes: Some(("review".into(), vec![Effect::ReviewWrite])),
+        });
+    }
+
+    fn review_write(&mut self) {
+        let v = self.view();
+        let prompt = super::plans::review_request(
+            &self.cfg,
+            &super::screens::maint::recs_text(&v),
+            &super::screens::maint::context(&v),
+        );
+        let doc = crate::maint::review::ReviewDoc::new(crate::maint::LOCAL);
+        self.start_writer(super::docview::Writer::review(doc), prompt, None);
+    }
+
+    /// Claude writes (a plan or a review) in the background; its view opens.
+    fn start_writer(
+        &mut self,
+        mut w: super::docview::Writer,
+        prompt: String,
+        resume: Option<String>,
+    ) {
+        if self.writer.as_ref().is_some_and(|w| w.running()) {
+            return self.toast("Claude is already writing: wait for it, or C-c in its view");
+        }
+        w.place = "machine";
+        let profile = if w.review.is_some() {
+            self.review_view = Some(0);
+            super::plans::review_profile(&self.cfg)
+        } else {
+            self.plan_view = Some((w.item.clone(), 0));
+            super::plans::plan_profile(&self.cfg)
+        };
+        self.run_seq += 1;
+        let rid = self.run_seq;
+        if !self.records {
+            // Tests: nothing is sent.
+            w.live = Some((rid, 0));
+            self.writer = Some(w);
+            return;
+        }
+        let cmd = crate::claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
+        let tx = self.tx.clone();
+        match cmd.stream(move |m| {
+            let _ = tx.send(Event::Run(rid, m));
+        }) {
+            Ok(pid) => {
+                w.live = Some((rid, pid));
+                self.writer = Some(w);
+            }
+            Err(e) => self.toast(format!("couldn't start claude: {e}")),
+        }
+    }
+
+    /// The writer's turn ended: its answer becomes the plan (or the review), saved.
+    fn writer_turn_ended(&mut self) {
+        use crate::maint::plan::PlanStatus;
+        let Some(w) = self.writer.as_mut() else {
+            return;
+        };
+        if let Some(mut rd) = w.review.clone() {
+            rd.head.session = w.session.clone().or(rd.head.session);
+            let msg = match (&w.answer, &w.err) {
+                (Some(a), _) if !a.trim().is_empty() => {
+                    rd.take_answer(a);
+                    "the maintenance review is saved".to_string()
+                }
+                (_, err) => format!(
+                    "no review: {}",
+                    err.clone()
+                        .unwrap_or_else(|| "Claude gave no answer".into())
+                ),
+            };
+            w.review = Some(rd.clone());
+            if rd.head.status == PlanStatus::Ready {
+                if self.records
+                    && let Err(e) = crate::maint::review::save(&rd)
+                {
+                    return self.toast(format!("couldn't save the review: {e}"));
+                }
+                self.review = Some(rd);
+            }
+            return self.toast(msg);
+        }
+        let mut doc = w.doc.clone();
+        doc.head.session = w.session.clone().or(doc.head.session);
+        match (&w.answer, &w.err) {
+            (Some(a), _) if !a.trim().is_empty() => {
+                doc.take_answer(a);
+                // The version to move to, for a workflow that takes one (release-rebase).
+                if let Some(Some(t)) = crate::maint::plan::target(a)
+                    && !t.eq_ignore_ascii_case("now")
+                {
+                    if doc.head.vars.contains_key("target") {
+                        doc.head.vars.insert("target".into(), t.clone());
+                    }
+                    doc.head.to = Some(t);
+                }
+            }
+            (_, err) => {
+                doc.head.status = PlanStatus::Failed;
+                doc.body = format!(
+                    "Writing the plan failed: {}",
+                    err.clone()
+                        .unwrap_or_else(|| "Claude gave no answer".into())
+                );
+            }
+        }
+        w.doc = doc.clone();
+        if self.records
+            && let Err(e) = crate::maint::plan::save(&doc)
+        {
+            return self.toast(format!("couldn't save the plan: {e}"));
+        }
+        let wf = doc.head.item.clone();
+        let msg = match doc.head.status {
+            PlanStatus::Ready => format!("the plan for {wf} is saved: Enter in it applies it"),
+            PlanStatus::Wait => format!("Claude advises waiting with {wf} (the plan says why)"),
+            _ => format!("no plan for {wf}: see the Plan view"),
+        };
+        self.data.plans.insert(wf, doc);
+        self.toast(msg);
+    }
+
+    /// Keys in the Plan view: scroll, apply (Enter), revise (r), drop (x), back (Esc).
+    fn plan_view_key(&mut self, k: KeyEvent, now: Instant) {
+        use ratatui::crossterm::event::KeyModifiers;
+        let Some((wf, scroll)) = self.plan_view.clone() else {
+            return;
+        };
+        let writing = self.writing_plan(&wf);
+        let set = |me: &mut Self, s: usize| me.plan_view = Some((wf.clone(), s));
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.plan_view = None,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pid) = self
+                    .writer
+                    .as_ref()
+                    .filter(|w| w.item == wf)
+                    .and_then(|w| w.live.map(|(_, p)| p))
+                {
+                    let _ = kill(pid);
+                    self.toast("stopped");
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => set(self, scroll + 1),
+            KeyCode::Up | KeyCode::Char('k') => set(self, scroll.saturating_sub(1)),
+            KeyCode::PageDown | KeyCode::Char(' ') => set(self, scroll + 20),
+            KeyCode::PageUp => set(self, scroll.saturating_sub(20)),
+            KeyCode::Home | KeyCode::Char('g') => set(self, 0),
+            KeyCode::End | KeyCode::Char('G') => set(self, usize::MAX / 2),
+            KeyCode::Enter if !writing => match self.data.plans.get(&wf).map(|d| d.head.status) {
+                Some(crate::maint::plan::PlanStatus::Ready) => {
+                    self.apply(vec![Effect::PlanApply(wf)], now)
+                }
+                Some(crate::maint::plan::PlanStatus::Wait) => self.toast(
+                    "Claude advises waiting: r revises it, or start the workflow from Upgrade",
+                ),
+                _ => self.toast("this plan isn't ready: r revises it, P plans again"),
+            },
+            KeyCode::Char('r') if !writing => {
+                self.input = Input::Prompt(Prompt::PlanRevise(wf), String::new());
+            }
+            KeyCode::Char('x') if !writing => {
+                let t = self.theme;
+                self.modal = Some(Modal {
+                    title: format!("Drop the plan for {wf}"),
+                    color: t.red,
+                    lines: vec![Line::styled(
+                        "It moves to plans/done/ (kept, not applied).",
+                        t.fg(),
+                    )],
+                    yes: Some(("drop".into(), vec![Effect::PlanDrop(wf)])),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Keys in the Review view: scroll, R writes a new one, C-c stops it, Esc goes back.
+    fn review_view_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyModifiers;
+        let Some(scroll) = self.review_view else {
+            return;
+        };
+        let writing = self.writing_review();
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.review_view = None,
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(pid) = self
+                    .writer
+                    .as_ref()
+                    .filter(|w| w.review.is_some())
+                    .and_then(|w| w.live.map(|(_, p)| p))
+                {
+                    let _ = kill(pid);
+                    self.toast("stopped");
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.review_view = Some(scroll + 1),
+            KeyCode::Up | KeyCode::Char('k') => self.review_view = Some(scroll.saturating_sub(1)),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.review_view = Some(scroll + 20),
+            KeyCode::PageUp => self.review_view = Some(scroll.saturating_sub(20)),
+            KeyCode::Home | KeyCode::Char('g') => self.review_view = Some(0),
+            KeyCode::End | KeyCode::Char('G') => self.review_view = Some(usize::MAX / 2),
+            KeyCode::Char('R') if !writing => {
+                self.review_view = None;
+                self.review_box();
+            }
+            _ => {}
+        }
     }
 
     fn open_log(&mut self) {
@@ -1953,13 +2476,23 @@ impl App {
         if let Some(lv) = &self.log_view {
             let dir = crate::maint::log::dir(crate::maint::LOCAL);
             super::docview::draw_log(f, body, &t, lv, &widgets::short_home(&dir));
+        } else if let Some((wf, scroll)) = &self.plan_view {
+            let w = self
+                .writer
+                .as_ref()
+                .filter(|w| w.review.is_none() && &w.item == wf);
+            let path = widgets::short_home(&crate::maint::plan::path(crate::maint::LOCAL, wf));
+            super::docview::draw(f, body, &t, self.data.plans.get(wf), w, *scroll, &path);
+        } else if let Some(scroll) = self.review_view {
+            let w = self.writer.as_ref().filter(|w| w.review.is_some());
+            super::docview::draw_review(f, body, &t, self.review.as_ref(), w, scroll);
         }
         f.render_widget(
             Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)),
             keyrule,
         );
         self.draw_keybar(f, keybar);
-        if let Some(c) = &self.chat {
+        if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
             widgets::dim_backdrop(f.buffer_mut(), body);
             super::chat::draw(f, body, &t, c);
         }
@@ -2130,7 +2663,33 @@ impl App {
                 spans.push(Span::styled("   Enter save · Esc cancel", t.dim()));
             }
             Input::None => {
-                let hints: Vec<(&str, &str)> = if let Some(lv) = &self.log_view {
+                let hints: Vec<(&str, &str)> = if let Some((wf, _)) = &self.plan_view {
+                    if self.writing_plan(wf) {
+                        vec![
+                            ("j/k", "scroll"),
+                            ("C-c", "stop"),
+                            ("Esc", "back (it carries on)"),
+                        ]
+                    } else {
+                        vec![
+                            ("Enter", "apply (start its workflow)"),
+                            ("r", "revise"),
+                            ("x", "drop"),
+                            ("j/k", "scroll"),
+                            ("Esc", "back"),
+                        ]
+                    }
+                } else if self.review_view.is_some() {
+                    if self.writing_review() {
+                        vec![
+                            ("j/k", "scroll"),
+                            ("C-c", "stop"),
+                            ("Esc", "back (it carries on)"),
+                        ]
+                    } else {
+                        vec![("R", "review again"), ("j/k", "scroll"), ("Esc", "back")]
+                    }
+                } else if let Some(lv) = &self.log_view {
                     match lv.open {
                         Some(_) => vec![("j/k", "scroll"), ("Esc", "back")],
                         None => vec![("j/k", "select"), ("Enter", "open"), ("Esc", "close")],
@@ -2147,8 +2706,10 @@ impl App {
                     let v = self.view();
                     let mut h = self.screens.hints(self.screen, &v);
                     // `A` is global but invisible unless it's in the bar on every tab.
-                    if crate::claude::available() {
-                        h.push(("A", "ask Claude"));
+                    match self.chat.as_ref().filter(|c| c.hidden) {
+                        Some(c) => h.push(("A", c.hidden_word())),
+                        None if crate::claude::available() => h.push(("A", "ask Claude")),
+                        None => {}
                     }
                     h.extend([("?", "help"), ("q", "quit")]);
                     h

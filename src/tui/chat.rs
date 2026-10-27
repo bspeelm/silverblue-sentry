@@ -75,6 +75,8 @@ pub struct Chat {
     pub offer: Option<String>,
     /// Set for a chat about a failed workflow step.
     pub step: Option<StepState>,
+    /// Esc while Claude answers: out of sight, still running (`A` brings it back).
+    pub hidden: bool,
 }
 
 impl Chat {
@@ -92,6 +94,7 @@ impl Chat {
             got_done: false,
             proposals: Vec::new(),
             picking: false,
+            hidden: false,
             job: None,
             offer: None,
             step: ask.step().map(|_| StepState::Failed),
@@ -254,6 +257,26 @@ impl Chat {
 
     pub fn running(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// Esc: hide it while Claude (or a command for it) is still running; otherwise it's done
+    /// with (true: close it).
+    pub fn esc(&mut self) -> bool {
+        if self.running() || self.job.is_some() {
+            self.hidden = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// The `A` chip while the chat is hidden.
+    pub fn hidden_word(&self) -> &'static str {
+        if self.running() {
+            "Claude answering…"
+        } else {
+            "Claude answered"
+        }
     }
 }
 
@@ -449,7 +472,14 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     if idle && c.session.is_some() {
         k.push(("C", "continue in Claude Code"));
     }
-    k.push(("Esc", "close"));
+    k.push((
+        "Esc",
+        if c.running() || c.job.is_some() {
+            "hide (it carries on)"
+        } else {
+            "close"
+        },
+    ));
     if c.busy() {
         k.push(("C-c", "stop"));
     }

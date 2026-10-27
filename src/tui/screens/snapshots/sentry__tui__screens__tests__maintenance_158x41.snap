@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  do it   z  later   c  check all   F  audit report   J  jobs   C  cleanup   v  log   A  ask Claude   ?  help   q  quit
+ j/k  select   Enter  do it   p  plan   z  later   c  check all   F  report   J  jobs   C  cleanup   R  review   v  log   A  ask Claude   ?  help   q  quit
