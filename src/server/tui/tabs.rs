@@ -92,6 +92,9 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("j/k", "select"),
             ("A", "assess"),
             ("p", "plan"),
+            ("Enter", "run plan"),
+            ("x", "drop plan"),
+            ("L", "assessment"),
             ("z", "later"),
             ("c", "look up"),
             ("e", "edit"),
@@ -147,7 +150,8 @@ pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
         Tab::Services => unit_detail(v),
         Tab::Containers => container_detail(v),
         Tab::Audit => finding_detail(v),
-        Tab::Updates | Tab::Workflows | Tab::Maint => Vec::new(),
+        Tab::Maint => super::maint::key('\n', v),
+        Tab::Updates | Tab::Workflows => Vec::new(),
     }
 }
 
@@ -175,7 +179,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
-        (Tab::Maint, 'z' | 'p') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'x' | 'L') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         _ => Vec::new(),
     }

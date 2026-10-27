@@ -52,6 +52,10 @@ pub enum Effect {
     Inventory,
     /// Look at a maintenance item again later (`z`).
     Snooze(String, jiff::civil::Date),
+    /// Ask for an optional note, then save the plan (`p`).
+    PlanNote(String, crate::server::maint::Plan),
+    /// Drop an item's plan (`x`, after a confirm).
+    PlanDrop(String),
     /// Open server_config.yaml in $EDITOR, then reload it.
     EditConfig,
     /// Send a turn to Claude (after the consent box).
@@ -174,6 +178,10 @@ pub struct App {
     suspend_edit: bool,
     /// The open chat is an assessment (its follow-ups keep the web and notes access).
     chat_assess: bool,
+    /// The item it assesses (its answer is saved when a turn ends).
+    assess_item: Option<String>,
+    /// A plan waiting for its note: (item, plan, the note typed so far).
+    plan_note: Option<(String, crate::server::maint::Plan, String)>,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
@@ -227,6 +235,8 @@ impl App {
             wf_change: None,
             suspend_edit: false,
             chat_assess: false,
+            assess_item: None,
+            plan_note: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
@@ -256,6 +266,7 @@ impl App {
                 crate::server::inventory::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.upstream_at =
                 crate::server::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
+            self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
         }
         self.enter(self.tab, now);
     }
@@ -433,7 +444,10 @@ impl App {
                     }
                 }
                 StreamMsg::Line { stderr: true, text } => c.on_raw(text),
-                StreamMsg::Exit { code, .. } => c.on_exit(code),
+                StreamMsg::Exit { code, .. } => {
+                    c.on_exit(code);
+                    self.save_assessment();
+                }
             }
             self.dirty = true;
             return;
@@ -593,6 +607,10 @@ impl App {
         }
         if self.var_input.is_some() {
             self.var_key(k);
+            return;
+        }
+        if self.plan_note.is_some() {
+            self.plan_note_key(k);
             return;
         }
         // The chat takes raw keys (Backspace, any character) before the keymap, which knows
@@ -813,6 +831,18 @@ impl App {
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
+                Effect::PlanNote(id, plan) => {
+                    self.plan_note = Some((id, plan, String::new()));
+                }
+                Effect::PlanDrop(id) => {
+                    if !self.offline
+                        && let Err(e) = crate::server::maint::drop_plan(&self.remote.name, &id)
+                    {
+                        self.toast(&format!("couldn't drop it: {e}"));
+                    }
+                    self.store.maint_state.plans.remove(&id);
+                    self.toast(&format!("{id}: plan dropped"));
+                }
                 Effect::Snooze(id, until) => {
                     match crate::server::maint::snooze(&self.remote.name, &id, until) {
                         Ok(()) => {
@@ -1074,8 +1104,16 @@ impl App {
         }
         .into();
         c.at = jiff::Timestamp::now();
+        // A plan carried out is done with; an abandoned run leaves it for next time.
+        let done = c.result == "done";
+        if done {
+            self.store.maint_state.plans.remove(&c.item);
+        }
         if !self.offline {
             let _ = crate::server::maint::log_change(&self.remote.name, &c);
+            if done {
+                let _ = crate::server::maint::drop_plan(&self.remote.name, &c.item);
+            }
             self.fetch(Kind::Maint);
         }
     }
@@ -1466,6 +1504,69 @@ impl App {
         }
     }
 
+    /// An assessment's turn ended: keep what Claude said, for `L` and the item's details.
+    fn save_assessment(&mut self) {
+        let (Some(id), Some(c)) = (self.assess_item.clone(), self.chat.as_ref()) else {
+            return;
+        };
+        let text = c
+            .entries
+            .iter()
+            .filter(|(k, _)| *k == chatmod::Kind::Claude)
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.trim().is_empty() {
+            return;
+        }
+        if !self.offline {
+            let _ = crate::server::maint::save_assessment(&self.remote.name, &id, &text);
+        }
+        self.store.maint_state.assessments.insert(
+            id,
+            crate::server::maint::Assessment {
+                at: Some(jiff::Timestamp::now()),
+                text,
+            },
+        );
+    }
+
+    /// The plan's note: Enter saves the plan (an empty note is fine), Esc doesn't save it.
+    fn plan_note_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some((_, _, buf)) = self.plan_note.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        match k.code {
+            KeyCode::Char(c) => buf.push(c),
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Esc => {
+                self.plan_note = None;
+                self.toast("not planned");
+            }
+            KeyCode::Enter => {
+                let Some((id, mut plan, note)) = self.plan_note.take() else {
+                    return;
+                };
+                let note = note.trim();
+                plan.note = (!note.is_empty()).then(|| note.to_string());
+                let to = plan.to.clone().unwrap_or_else(|| "retire".into());
+                if !self.offline
+                    && let Err(e) =
+                        crate::server::maint::save_plan(&self.remote.name, &id, plan.clone())
+                {
+                    return self.toast(&format!("couldn't save the plan: {e}"));
+                }
+                self.store.maint_state.plans.insert(id.clone(), plan);
+                self.toast(&format!("planned {id} → {to} · Enter runs it, x drops it"));
+            }
+            _ => {}
+        }
+    }
+
     /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
     fn filter_key(&mut self, k: KeyEvent) {
         use ratatui::crossterm::event::KeyCode;
@@ -1591,6 +1692,11 @@ impl App {
         let (prompt, shown, resume) = match turn {
             AskTurn::First(ask) => {
                 self.chat_assess = self.tab == Tab::Maint;
+                self.assess_item = if self.chat_assess {
+                    super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
+                } else {
+                    None
+                };
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
                 self.chat = Some(Chat::new(ask));
@@ -2024,6 +2130,24 @@ impl App {
                 Paragraph::new(Line::from(vec![
                     Span::styled(format!(":{buf}"), t.fg()),
                     Span::styled("▏", t.s(t.cyan)),
+                ])),
+                area,
+            );
+            return;
+        }
+        if let Some((id, plan, buf)) = &self.plan_note {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "plan {id} → {} · a note (optional): ",
+                            plan.to.as_deref().unwrap_or("retire")
+                        ),
+                        t.dim(),
+                    ),
+                    Span::styled(buf.clone(), t.fg()),
+                    Span::styled("▏", t.s(t.cyan)),
+                    Span::styled("   Enter save · Esc cancel", t.dim()),
                 ])),
                 area,
             );

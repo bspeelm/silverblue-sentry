@@ -1270,10 +1270,28 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Char('p'));
     let s = screen(&mut a);
     assert!(
-        s.contains("Move web from 1.4.2 to") && s.contains("v1.5.2  2026-10-01  ⚠ security"),
+        s.contains("Plan: move web from 1.4.2 to") && s.contains("v1.5.2  2026-10-01  ⚠ security"),
         "{s}"
     );
     key(&mut a, KeyCode::Char('1'));
+    // p saves a plan (with an optional note); nothing starts.
+    assert!(screen(&mut a).contains("plan web → v1.5.2 · a note (optional): ▏"));
+    for c in "after Saturday's backup".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.tab, Tab::Maint, "still on Maintenance");
+    let s = screen(&mut a);
+    assert!(
+        s.contains("planned → v1.5.2") && s.contains("Plan: 1.4.2 → v1.5.2 with compose-bump"),
+        "{s}"
+    );
+    assert!(
+        s.contains("after Saturday's backup") && s.contains("Enter runs it · x drops it"),
+        "{s}"
+    );
+    // Enter runs it: the workflow asks its vars with the plan's values filled in.
+    key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
         s.contains("compose-bump 1/2 · Image (image): example/web:v1.5.2▏"),
@@ -1281,6 +1299,28 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     );
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("Service (service): web▏"));
+    key(&mut a, KeyCode::Esc);
+    // The plan stays until it's carried out or dropped.
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    assert!(screen(&mut a).contains("planned → v1.5.2"));
+    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Char('y'));
+    assert!(!screen(&mut a).contains("planned →"));
+    // A saved assessment shows in the details and in full with L.
+    a.store.maint_state.assessments.insert(
+        "web".into(),
+        crate::server::maint::Assessment {
+            at: None,
+            text: "**What changed**\nlots\n\n**Recommendation**\nGo to v1.5.2 in a window.".into(),
+        },
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Assessment (L shows it all)") && s.contains("Go to v1.5.2 in a window."),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('L'));
+    assert!(screen(&mut a).contains("web · assessment"));
     key(&mut a, KeyCode::Esc);
     // z offers later review dates; A asks with web access named in the consent box.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));

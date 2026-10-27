@@ -57,6 +57,13 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     let t = v.t;
     let n = s.newer.len();
     let held = s.has(Flag::Held);
+    if let Some(p) = v.s.maint_state.plans.get(&s.id) {
+        let to = p.to.clone().unwrap_or_else(|| "retire".into());
+        return (
+            format!("planned → {to}"),
+            if s.has(Flag::Security) { t.red } else { t.mag },
+        );
+    }
     if s.has(Flag::Security) {
         (format!("security · {n} newer"), t.red)
     } else if s.has(Flag::Eol) {
@@ -286,6 +293,45 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         l.push(Line::raw(""));
         l.push(Line::styled(n.clone(), t.dim()));
     }
+    if let Some(p) = v.s.maint_state.plans.get(&s.id) {
+        l.push(Line::raw(""));
+        l.push(Line::styled(
+            format!(
+                "Plan: {} → {} with {}{}",
+                p.from.as_deref().unwrap_or("?"),
+                p.to.as_deref().unwrap_or("(retire)"),
+                p.workflow,
+                p.created.map_or(String::new(), |c| format!(
+                    " · made {}",
+                    c.strftime("%Y-%m-%d")
+                ))
+            ),
+            t.s(t.mag),
+        ));
+        if let Some(n) = &p.note {
+            l.push(Line::styled(n.clone(), t.fg()));
+        }
+        l.push(Line::styled("Enter runs it · x drops it", t.dim()));
+    }
+    if let Some(a) = v.s.maint_state.assessments.get(&s.id) {
+        l.push(Line::raw(""));
+        l.push(Line::styled(
+            format!(
+                "Assessment{} (L shows it all)",
+                a.at.map_or(String::new(), |t| format!(" {}", t.strftime("%Y-%m-%d")))
+            ),
+            t.dim(),
+        ));
+        // Its recommendation if it has one, else its start.
+        let lines: Vec<&str> = a.text.lines().filter(|x| !x.trim().is_empty()).collect();
+        let from = lines
+            .iter()
+            .position(|x| x.to_lowercase().contains("recommendation"))
+            .unwrap_or(0);
+        for x in lines.iter().skip(from).take(4) {
+            l.push(Line::styled(x.to_string(), t.fg()));
+        }
+    }
     let hist = maint::history(v.name, &s.id);
     if !hist.is_empty() {
         l.push(Line::raw(""));
@@ -307,7 +353,11 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     l.push(Line::raw(""));
     let mut keys = vec!["A assess"];
     if it.workflow.is_some() || it.retire.as_ref().is_some_and(|r| r.workflow.is_some()) {
-        keys.push("p plan");
+        keys.push(if v.s.maint_state.plans.contains_key(&s.id) {
+            "p re-plan"
+        } else {
+            "p plan"
+        });
     }
     keys.extend(["z review later", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
@@ -361,23 +411,21 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
                     .and_then(|x| x.repo.clone()),
                 ..Default::default()
             };
-            let start = |target: Option<&str>| {
-                let vars = local::vars_for(it, &l, target);
-                vec![Effect::Wf(WfCmd::BeginPrefilled(
-                    wf.to_string(),
-                    vars,
-                    Some(maint::Change {
-                        at: jiff::Timestamp::now(),
-                        item: s.id.clone(),
+            let plan = |target: Option<&str>| {
+                vec![Effect::PlanNote(
+                    s.id.clone(),
+                    maint::Plan {
                         from: s.pinned.clone(),
                         to: target.map(str::to_string),
                         workflow: wf.to_string(),
-                        result: String::new(),
-                    }),
-                ))]
+                        vars: local::vars_for(it, &l, target),
+                        note: None,
+                        created: Some(jiff::Timestamp::now()),
+                    },
+                )]
             };
             if it.retire.is_some() || s.newer.is_empty() {
-                return start(None);
+                return plan(None);
             }
             let choices = s
                 .newer
@@ -393,19 +441,70 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
                                 .map_or(String::new(), |d| format!("  {d}")),
                             if r.security { "  ⚠ security" } else { "" }
                         ),
-                        start(Some(r.version.as_str())),
+                        plan(Some(r.version.as_str())),
                     )
                 })
                 .collect();
             vec![Effect::Choose(
                 format!(
-                    "Move {} from {} to",
+                    "Plan: move {} from {} to",
                     s.id,
                     s.pinned.as_deref().unwrap_or("?")
                 ),
                 choices,
             )]
         }
+        '\n' => match v.s.maint_state.plans.get(&s.id) {
+            Some(p) => vec![Effect::Wf(WfCmd::BeginPrefilled(
+                p.workflow.clone(),
+                p.vars.clone(),
+                Some(maint::Change {
+                    at: jiff::Timestamp::now(),
+                    item: s.id.clone(),
+                    from: p.from.clone(),
+                    to: p.to.clone(),
+                    workflow: p.workflow.clone(),
+                    result: String::new(),
+                }),
+            ))],
+            None => vec![Effect::Toast(format!("no plan for {}: p makes one", s.id))],
+        },
+        'x' => match v.s.maint_state.plans.get(&s.id) {
+            Some(p) => vec![Effect::Confirm(super::app::Modal {
+                title: "Drop the plan".into(),
+                color: v.t.yellow,
+                lines: vec![Line::styled(
+                    format!(
+                        "Drop the plan to move {} to {}? Nothing on the server changes.",
+                        s.id,
+                        p.to.as_deref().unwrap_or("(retire)")
+                    ),
+                    v.t.fg(),
+                )],
+                yes: Some(("drop".into(), vec![Effect::PlanDrop(s.id.clone())])),
+            })],
+            None => vec![Effect::Toast(format!("no plan for {}", s.id))],
+        },
+        'L' => match v.s.maint_state.assessments.get(&s.id) {
+            Some(a) => vec![Effect::Info(
+                format!(
+                    "{} · assessment{}",
+                    s.id,
+                    a.at.map_or(String::new(), |t| format!(
+                        " {}",
+                        t.strftime("%Y-%m-%d %H:%M")
+                    ))
+                ),
+                a.text
+                    .lines()
+                    .map(|l| Line::styled(l.to_string(), v.t.fg()))
+                    .collect(),
+            )],
+            None => vec![Effect::Toast(format!(
+                "no assessment of {} yet: A asks for one",
+                s.id
+            ))],
+        },
         _ => Vec::new(),
     }
 }

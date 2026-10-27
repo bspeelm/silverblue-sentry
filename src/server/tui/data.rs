@@ -144,6 +144,8 @@ pub struct Store {
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
     /// When upstream was last looked up.
     pub upstream_at: Option<jiff::Timestamp>,
+    /// Review dates, plans and assessments sentry-server keeps (`servers/<name>.maint.toml`).
+    pub maint_state: maint::State,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,
