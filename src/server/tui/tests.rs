@@ -1270,31 +1270,55 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Char('p'));
     let s = screen(&mut a);
     assert!(
-        s.contains("Plan: move web from 1.4.2 to") && s.contains("v1.5.2  2026-10-01  ⚠ security"),
+        s.contains("Plan: move web from 1.4.2 to")
+            && s.contains("1  let Claude recommend a version"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('1'));
-    // p saves a plan (with an optional note); nothing starts.
-    assert!(screen(&mut a).contains("plan web → v1.5.2 · a note (optional): ▏"));
+    assert!(s.contains("2  v1.5.2  2026-10-01  ⚠ security"), "{s}");
+    key(&mut a, KeyCode::Char('2'));
+    assert!(screen(&mut a).contains("plan web → 1.5.2 · a note (optional): ▏"));
     for c in "after Saturday's backup".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
+    // Claude writes the plan: the request names the goal, the workflow's steps and the note.
+    let s = screen(&mut a);
+    assert!(s.contains("Ask Claude"), "{s}");
+    let prompt = a.consent_text().expect("consent box");
+    assert!(
+        prompt.contains("Write the execution plan for moving web from 1.4.2 to 1.5.2"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("1. a [confirm]") && prompt.contains("after Saturday's backup"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("TARGET: <version>"));
+    key(&mut a, KeyCode::Char('y'));
+    a.chat_mut().unwrap().push(
+        crate::tui::chat::Kind::Claude,
+        "**TARGET: v1.5.1**\n**Assessment**: 1.5.2 regresses the export; 1.5.1 has the fix.\n**Before**: back up.",
+    );
+    a.turn_ended();
+    key(&mut a, KeyCode::Esc);
     assert_eq!(a.tab, Tab::Maint, "still on Maintenance");
     let s = screen(&mut a);
     assert!(
-        s.contains("planned → v1.5.2") && s.contains("Plan: 1.4.2 → v1.5.2 with compose-bump"),
-        "{s}"
+        s.contains("planned → 1.5.1") && s.contains("Plan: 1.4.2 → 1.5.1 with compose-bump"),
+        "Claude's TARGET wins: {s}"
     );
     assert!(
-        s.contains("after Saturday's backup") && s.contains("Enter runs it · x drops it"),
+        s.contains("note: after Saturday's backup") && s.contains("1.5.2 regresses the export"),
         "{s}"
     );
+    key(&mut a, KeyCode::Char('L'));
+    assert!(screen(&mut a).contains("web · plan → 1.5.1"));
+    key(&mut a, KeyCode::Esc);
     // Enter runs it: the workflow asks its vars with the plan's values filled in.
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
-        s.contains("compose-bump 1/2 · Image (image): example/web:v1.5.2▏"),
+        s.contains("compose-bump 1/2 · Image (image): example/web:1.5.1▏"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
@@ -1302,26 +1326,23 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Esc);
     // The plan stays until it's carried out or dropped.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
-    assert!(screen(&mut a).contains("planned → v1.5.2"));
+    assert!(screen(&mut a).contains("planned → 1.5.1"));
     key(&mut a, KeyCode::Char('x'));
     key(&mut a, KeyCode::Char('y'));
     assert!(!screen(&mut a).contains("planned →"));
-    // A saved assessment shows in the details and in full with L.
-    a.store.maint_state.assessments.insert(
+    // A plan Claude says to wait on can't be run.
+    a.store.maint_state.plans.insert(
         "web".into(),
-        crate::server::maint::Assessment {
-            at: None,
-            text: "**What changed**\nlots\n\n**Recommendation**\nGo to v1.5.2 in a window.".into(),
+        crate::server::maint::Plan {
+            workflow: "compose-bump".into(),
+            wait: true,
+            text: "TARGET: wait\nNot until 1.5.3.".into(),
+            ..Default::default()
         },
     );
-    let s = screen(&mut a);
-    assert!(
-        s.contains("Assessment (L shows it all)") && s.contains("Go to v1.5.2 in a window."),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Char('L'));
-    assert!(screen(&mut a).contains("web · assessment"));
-    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("plan: wait"));
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("says to wait"));
     // z offers later review dates; A asks with web access named in the consent box.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
@@ -1453,4 +1474,83 @@ fn a_password_sudo_says_press_i() {
         "{s}"
     );
     assert!(s.contains(" I  read with sudo"), "key bar: {s}");
+}
+
+#[test]
+fn claude_target_lines() {
+    use super::maint::parse_target;
+    assert_eq!(
+        parse_target("TARGET: v0.64.2\nrest"),
+        Some(Some("v0.64.2".into()))
+    );
+    assert_eq!(
+        parse_target("**TARGET:** `2.11.7-alpine`"),
+        Some(Some("2.11.7-alpine".into()))
+    );
+    assert_eq!(parse_target("## TARGET: wait"), Some(None));
+    assert_eq!(parse_target("no target here"), None);
+}
+
+/// Read-only against the real server: `p` on an item with Claude choosing the version; prints
+/// the saved plan. Use a scratch XDG_CONFIG_HOME (a copy of the config) so the plan isn't
+/// written to the real state file.
+/// `SENTRY_SERVER_LIVE=<name> SENTRY_ITEM=<id> XDG_CONFIG_HOME=<copy> cargo test live_plan -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_plan() {
+    let (Ok(name), Ok(item)) = (
+        std::env::var("SENTRY_SERVER_LIVE"),
+        std::env::var("SENTRY_ITEM"),
+    ) else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let pos = s
+        .maintenance
+        .items
+        .iter()
+        .position(|i| i.id == item)
+        .expect("item");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    pump(&mut a, 10);
+    for _ in 0..pos {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    key(&mut a, KeyCode::Char('p'));
+    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('y'));
+    for _ in 0..200 {
+        pump(&mut a, 3);
+        if a.chat_mut().is_some_and(|c| !c.running()) {
+            break;
+        }
+    }
+    pump(&mut a, 1);
+    key(&mut a, KeyCode::Esc);
+    println!("{}", render_to_string(&mut a, 158, 41));
+    let plan = a
+        .store
+        .maint_state
+        .plans
+        .get(&item)
+        .cloned()
+        .expect("a saved plan");
+    println!(
+        "to: {:?} wait: {} vars: {:?}\n{}",
+        plan.to, plan.wait, plan.vars, plan.text
+    );
 }

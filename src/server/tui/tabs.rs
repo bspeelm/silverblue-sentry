@@ -31,6 +31,8 @@ pub struct View<'a> {
     pub inventory: Option<jiff::Timestamp>,
     /// When upstream versions were last looked up.
     pub upstream: Option<jiff::Timestamp>,
+    /// The maintenance item Claude is writing a plan for.
+    pub planning: Option<String>,
 }
 
 impl View<'_> {

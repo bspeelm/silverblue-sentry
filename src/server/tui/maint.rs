@@ -57,7 +57,13 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     let t = v.t;
     let n = s.newer.len();
     let held = s.has(Flag::Held);
+    if v.planning.as_deref() == Some(s.id.as_str()) {
+        return ("planning…".into(), t.cyan);
+    }
     if let Some(p) = v.s.maint_state.plans.get(&s.id) {
+        if p.wait {
+            return ("plan: wait".into(), t.dim);
+        }
         let to = p.to.clone().unwrap_or_else(|| "retire".into());
         return (
             format!("planned → {to}"),
@@ -309,11 +315,40 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
             t.s(t.mag),
         ));
         if let Some(n) = &p.note {
-            l.push(Line::styled(n.clone(), t.fg()));
+            l.push(Line::styled(format!("note: {n}"), t.fg()));
         }
-        l.push(Line::styled("Enter runs it · x drops it", t.dim()));
+        // Claude's plan: the start of its assessment.
+        let body: Vec<&str> = p
+            .text
+            .lines()
+            .filter(|x| {
+                !x.trim().is_empty() && !x.trim_start_matches(['*', '`']).starts_with("TARGET")
+            })
+            .take(5)
+            .collect();
+        for x in body {
+            l.push(Line::styled(x.to_string(), t.fg()));
+        }
+        l.push(Line::styled(
+            if p.wait {
+                "Claude advises waiting · L shows the plan · x drops it"
+            } else if p.text.is_empty() {
+                "Enter runs it · x drops it"
+            } else {
+                "L shows the plan · Enter runs it · x drops it"
+            },
+            t.dim(),
+        ));
+    } else if v.planning.as_deref() == Some(s.id.as_str()) {
+        l.push(Line::raw(""));
+        l.push(Line::styled("Claude is writing the plan…", t.s(t.cyan)));
     }
-    if let Some(a) = v.s.maint_state.assessments.get(&s.id) {
+    if let Some(a) =
+        v.s.maint_state
+            .assessments
+            .get(&s.id)
+            .filter(|_| !v.s.maint_state.plans.contains_key(&s.id))
+    {
         l.push(Line::raw(""));
         l.push(Line::styled(
             format!(
@@ -416,35 +451,34 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
                     s.id.clone(),
                     maint::Plan {
                         from: s.pinned.clone(),
-                        to: target.map(str::to_string),
+                        to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
                         workflow: wf.to_string(),
                         vars: local::vars_for(it, &l, target),
-                        note: None,
                         created: Some(jiff::Timestamp::now()),
+                        repo: l.repo.clone(),
+                        ..Default::default()
                     },
                 )]
             };
             if it.retire.is_some() || s.newer.is_empty() {
                 return plan(None);
             }
-            let choices = s
-                .newer
-                .iter()
-                .take(9)
-                .map(|r| {
-                    (
-                        format!(
-                            "{}{}{}",
-                            r.version,
-                            r.date
-                                .as_deref()
-                                .map_or(String::new(), |d| format!("  {d}")),
-                            if r.security { "  ⚠ security" } else { "" }
-                        ),
-                        plan(Some(r.version.as_str())),
-                    )
-                })
-                .collect();
+            let choices =
+                std::iter::once(("let Claude recommend a version".to_string(), plan(None)))
+                    .chain(s.newer.iter().take(8).map(|r| {
+                        (
+                            format!(
+                                "{}{}{}",
+                                r.version,
+                                r.date
+                                    .as_deref()
+                                    .map_or(String::new(), |d| format!("  {d}")),
+                                if r.security { "  ⚠ security" } else { "" }
+                            ),
+                            plan(Some(r.version.as_str())),
+                        )
+                    }))
+                    .collect();
             vec![Effect::Choose(
                 format!(
                     "Plan: move {} from {} to",
@@ -455,6 +489,12 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
             )]
         }
         '\n' => match v.s.maint_state.plans.get(&s.id) {
+            Some(p) if p.wait || (p.to.is_none() && it.retire.is_none()) => {
+                vec![Effect::Toast(format!(
+                    "the plan for {} says to wait (L shows why); p plans again",
+                    s.id
+                ))]
+            }
             Some(p) => vec![Effect::Wf(WfCmd::BeginPrefilled(
                 p.workflow.clone(),
                 p.vars.clone(),
@@ -485,25 +525,48 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
             })],
             None => vec![Effect::Toast(format!("no plan for {}", s.id))],
         },
-        'L' => match v.s.maint_state.assessments.get(&s.id) {
-            Some(a) => vec![Effect::Info(
+        'L' => match v
+            .s
+            .maint_state
+            .plans
+            .get(&s.id)
+            .filter(|p| !p.text.is_empty())
+        {
+            Some(p) => vec![Effect::Info(
                 format!(
-                    "{} · assessment{}",
+                    "{} · plan → {}",
                     s.id,
-                    a.at.map_or(String::new(), |t| format!(
-                        " {}",
-                        t.strftime("%Y-%m-%d %H:%M")
-                    ))
+                    if p.wait {
+                        "wait".to_string()
+                    } else {
+                        p.to.clone().unwrap_or_else(|| "retire".into())
+                    }
                 ),
-                a.text
+                p.text
                     .lines()
                     .map(|l| Line::styled(l.to_string(), v.t.fg()))
                     .collect(),
             )],
-            None => vec![Effect::Toast(format!(
-                "no assessment of {} yet: A asks for one",
-                s.id
-            ))],
+            None => match v.s.maint_state.assessments.get(&s.id) {
+                Some(a) => vec![Effect::Info(
+                    format!(
+                        "{} · assessment{}",
+                        s.id,
+                        a.at.map_or(String::new(), |t| format!(
+                            " {}",
+                            t.strftime("%Y-%m-%d %H:%M")
+                        ))
+                    ),
+                    a.text
+                        .lines()
+                        .map(|l| Line::styled(l.to_string(), v.t.fg()))
+                        .collect(),
+                )],
+                None => vec![Effect::Toast(format!(
+                    "no plan or assessment for {} yet: p or A",
+                    s.id
+                ))],
+            },
         },
         _ => Vec::new(),
     }
@@ -512,6 +575,92 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
 /// `A` on the tab: an assessment, with release notes from the web and the notes files.
 pub fn ask(v: &View, r: &Remote) -> Option<Ask> {
     let (s, it) = selected(v)?;
+    Some(Ask::new(
+        format!("{} · assess {}", r.name, s.id),
+        context(v, r, s, it),
+        "Assess moving this item. Read the release notes between the pinned version and the \
+         newest (use the web), and the notes files above. Answer in four parts:\n\
+         **What changed**: breaking changes, one-way migrations, security fixes, and anything that \
+         touches how this server uses it.\n\
+         **Does the hold still apply**: is the reason it's held still true?\n\
+         **Recommendation**: wait, or which version, and which tier the change really is.\n\
+         **Steps**: in the terms of its workflow (what to check before, what to watch after, how \
+         to roll back). Don't change anything yourself.",
+    ))
+}
+
+/// `p`: Claude assesses the item and writes the execution plan that gets saved.
+/// `steps`: the item's workflow, step by step; `target`: the version chosen, or None for
+/// Claude to recommend one.
+pub fn plan_ask(
+    v: &View,
+    r: &Remote,
+    s: &Status,
+    it: &MaintItem,
+    steps: &str,
+    target: Option<&str>,
+    note: Option<&str>,
+) -> Ask {
+    let goal = match (target, it.retire.is_some()) {
+        (_, true) => format!("retiring {}", s.id),
+        (Some(t), _) => format!(
+            "moving {} from {} to {t}",
+            s.id,
+            s.pinned.as_deref().unwrap_or("?")
+        ),
+        (None, _) => format!(
+            "moving {} from {} to the version you recommend",
+            s.id,
+            s.pinned.as_deref().unwrap_or("?")
+        ),
+    };
+    let ctx = format!(
+        "{}\nThe workflow that will carry it out ({}), step by step:\n{steps}{}",
+        context(v, r, s, it),
+        workflow_of(it).unwrap_or("none"),
+        note.map_or(String::new(), |n| format!(
+            "\nThe user's note for this plan: {n}"
+        ))
+    );
+    Ask::new(
+        format!("{} · plan {}", r.name, s.id),
+        ctx,
+        format!(
+            "Write the execution plan for {goal}. First read the release notes in between (web) \
+             and the notes files, and check the server (read-only). The first line of your answer \
+             must be `TARGET: <version>` (the exact upstream tag), or `TARGET: wait` if it \
+             shouldn't move now. Then these sections, each with the exact commands:\n\
+             **Assessment**: what changes (breaking changes, one-way migrations, security fixes), \
+             whether the reason it's held still applies, and the real tier.\n\
+             **Before**: checks and backups to make first.\n\
+             **Change**: follow the workflow's steps above; say what to expect at each confirm \
+             card and any extra manual commands between them.\n\
+             **Verify**: what to check afterwards and what good looks like.\n\
+             **Roll back**: how to undo it, and when it can't be undone.\n\
+             **When**: whether it needs a window, and the expected downtime.\n\
+             Don't change anything on the server yourself."
+        ),
+    )
+}
+
+/// The version Claude chose: its `TARGET:` line (None for `wait` or no such line).
+pub fn parse_target(text: &str) -> Option<Option<String>> {
+    let line = text.lines().find_map(|l| {
+        let l = l
+            .trim()
+            .trim_matches(|c| c == '*' || c == '`' || c == '#')
+            .trim();
+        l.strip_prefix("TARGET:")
+            .or_else(|| l.strip_prefix("Target:"))
+    })?;
+    let t = line
+        .trim()
+        .trim_matches(|c: char| c == '*' || c == '`' || c.is_whitespace());
+    Some((!t.eq_ignore_ascii_case("wait") && !t.is_empty()).then(|| t.to_string()))
+}
+
+/// What Claude is told about an item (for `A` and `p`).
+fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
     let newer: Vec<String> = s
         .newer
         .iter()
@@ -620,18 +769,7 @@ pub fn ask(v: &View, r: &Remote) -> Option<Ask> {
             history.join("; ")
         },
     );
-    Some(Ask::new(
-        format!("{} · assess {}", r.name, s.id),
-        ctx,
-        "Assess moving this item. Read the release notes between the pinned version and the \
-         newest (use the web), and the notes files above. Answer in four parts:\n\
-         **What changed**: breaking changes, one-way migrations, security fixes, and anything that \
-         touches how this server uses it.\n\
-         **Does the hold still apply**: is the reason it's held still true?\n\
-         **Recommendation**: wait, or which version, and which tier the change really is.\n\
-         **Steps**: in the terms of its workflow (what to check before, what to watch after, how \
-         to roll back). Don't change anything yourself.",
-    ))
+    ctx
 }
 
 /// Notes paths as Claude Code sees them: `~` expanded and symlinks resolved (its permission

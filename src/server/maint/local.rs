@@ -220,6 +220,8 @@ pub fn vars_for(it: &MaintItem, l: &Local, target: Option<&str>) -> BTreeMap<Str
             }
         });
         if let (Some(repo), Some(t)) = (repo, target) {
+            // The image is tagged the way the pin is (`0.42.0`, not GitHub's `v0.42.0`).
+            let t = super::version::like_pin(t, l.pinned.as_deref());
             v.insert("image".into(), format!("{repo}:{t}"));
         }
     }

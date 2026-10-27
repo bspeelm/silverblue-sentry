@@ -182,6 +182,10 @@ pub struct App {
     assess_item: Option<String>,
     /// A plan waiting for its note: (item, plan, the note typed so far).
     plan_note: Option<(String, crate::server::maint::Plan, String)>,
+    /// A plan whose request waits in the consent box.
+    plan_pending: Option<(String, crate::server::maint::Plan)>,
+    /// The plan Claude is writing (saved, and revised by follow-ups, as each turn ends).
+    plan_draft: Option<(String, crate::server::maint::Plan)>,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
@@ -237,6 +241,8 @@ impl App {
             chat_assess: false,
             assess_item: None,
             plan_note: None,
+            plan_pending: None,
+            plan_draft: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
@@ -447,6 +453,7 @@ impl App {
                 StreamMsg::Exit { code, .. } => {
                     c.on_exit(code);
                     self.save_assessment();
+                    self.save_plan_draft();
                 }
             }
             self.dirty = true;
@@ -584,6 +591,11 @@ impl App {
                 .inventory_at
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
             upstream: self.store.upstream_at,
+            planning: self
+                .plan_draft
+                .as_ref()
+                .filter(|_| self.chat.as_ref().is_some_and(|c| c.running()))
+                .map(|(id, _)| id.clone()),
         }
     }
 
@@ -764,6 +776,8 @@ impl App {
                 self.apply(e, now);
             }
             Action::Ask => {
+                // A plan request declined earlier mustn't ride along with this question.
+                self.plan_pending = None;
                 if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
@@ -1504,6 +1518,141 @@ impl App {
         }
     }
 
+    fn keep_plan(&mut self, id: &str, plan: crate::server::maint::Plan) {
+        if !self.offline
+            && let Err(e) = crate::server::maint::save_plan(&self.remote.name, id, plan.clone())
+        {
+            return self.toast(&format!("couldn't save the plan: {e}"));
+        }
+        let msg = if plan.wait {
+            format!("plan for {id} saved: Claude advises waiting (L shows why)")
+        } else {
+            format!(
+                "planned {id} → {} · L shows the plan, Enter runs it",
+                plan.to.as_deref().unwrap_or("retire")
+            )
+        };
+        self.store.maint_state.plans.insert(id.to_string(), plan);
+        self.toast(&msg);
+    }
+
+    /// `p`, after the note: Claude assesses the item and writes the plan (after the consent box).
+    fn ask_for_plan(&mut self, id: String, plan: crate::server::maint::Plan) {
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
+        }
+        let steps = self
+            .wf_entries
+            .iter()
+            .find(|e| e.name == plan.workflow)
+            .and_then(|e| e.wf.as_ref().ok())
+            .map(|w| {
+                w.steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, st)| {
+                        format!(
+                            "{}. {} [{}]{}",
+                            i + 1,
+                            st.title,
+                            st.tag(),
+                            st.run.as_deref().map_or(String::new(), |c| format!(
+                                "\n   $ {}",
+                                c.replace('\n', "\n     ")
+                            ))
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_else(|| format!("(workflow {} not found)", plan.workflow));
+        let v = self.view();
+        let Some((s, it)) =
+            v.s.maint
+                .value
+                .as_ref()
+                .and_then(|st| st.iter().find(|s| s.id == id))
+                .zip(v.cfg.maintenance.items.iter().find(|i| i.id == id))
+        else {
+            return self.toast("that item is gone");
+        };
+        let ask = super::maint::plan_ask(
+            &v,
+            &self.remote,
+            s,
+            it,
+            &steps,
+            plan.to.as_deref(),
+            plan.note.as_deref(),
+        );
+        let text = ask.prompt();
+        self.modal = Some(self.consent(&text, AskTurn::First(ask)));
+        self.plan_pending = Some((id, plan));
+    }
+
+    /// A plan turn ended: the plan is Claude's answer, its version from the `TARGET:` line.
+    fn save_plan_draft(&mut self) {
+        let Some((id, mut plan)) = self.plan_draft.clone() else {
+            return;
+        };
+        if self.assess_item.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        let Some(c) = self.chat.as_ref() else { return };
+        // This turn's answer: what Claude said after the last thing the user said.
+        let start = c
+            .entries
+            .iter()
+            .rposition(|(k, _)| *k == chatmod::Kind::You)
+            .map_or(0, |i| i + 1);
+        let text = c.entries[start..]
+            .iter()
+            .filter(|(k, _)| *k == chatmod::Kind::Claude)
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.trim().is_empty() {
+            return;
+        }
+        match super::maint::parse_target(&text) {
+            Some(None) => plan.wait = true,
+            Some(Some(t)) => {
+                plan.wait = false;
+                if let Some(it) = self
+                    .remote
+                    .cfg
+                    .maintenance
+                    .items
+                    .iter()
+                    .find(|i| i.id == id)
+                    && it.retire.is_none()
+                {
+                    let l = crate::server::maint::local::Local {
+                        repo: plan.repo.clone(),
+                        pinned: plan.from.clone(),
+                        ..Default::default()
+                    };
+                    plan.vars = crate::server::maint::local::vars_for(it, &l, Some(&t));
+                    plan.to = Some(crate::server::maint::version::like_pin(
+                        &t,
+                        plan.from.as_deref(),
+                    ));
+                }
+            }
+            None => {}
+        }
+        // The plan itself starts at its TARGET line (before it: Claude saying what it reads).
+        plan.text = match text.lines().position(|l| {
+            l.trim_start_matches(['*', '#', '`', ' '])
+                .starts_with("TARGET")
+        }) {
+            Some(i) => text.lines().skip(i).collect::<Vec<_>>().join("\n"),
+            None => text,
+        };
+        self.plan_draft = Some((id.clone(), plan.clone()));
+        self.keep_plan(&id, plan);
+    }
+
     /// An assessment's turn ended: keep what Claude said, for `L` and the item's details.
     fn save_assessment(&mut self) {
         let (Some(id), Some(c)) = (self.assess_item.clone(), self.chat.as_ref()) else {
@@ -1553,15 +1702,11 @@ impl App {
                 };
                 let note = note.trim();
                 plan.note = (!note.is_empty()).then(|| note.to_string());
-                let to = plan.to.clone().unwrap_or_else(|| "retire".into());
-                if !self.offline
-                    && let Err(e) =
-                        crate::server::maint::save_plan(&self.remote.name, &id, plan.clone())
-                {
-                    return self.toast(&format!("couldn't save the plan: {e}"));
+                if !claude::available() {
+                    // No Claude: the plan is just the version and the note.
+                    return self.keep_plan(&id, plan);
                 }
-                self.store.maint_state.plans.insert(id.clone(), plan);
-                self.toast(&format!("planned {id} → {to} · Enter runs it, x drops it"));
+                self.ask_for_plan(id, plan);
             }
             _ => {}
         }
@@ -1692,10 +1837,13 @@ impl App {
         let (prompt, shown, resume) = match turn {
             AskTurn::First(ask) => {
                 self.chat_assess = self.tab == Tab::Maint;
-                self.assess_item = if self.chat_assess {
-                    super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
-                } else {
-                    None
+                self.plan_draft = self.plan_pending.take();
+                self.assess_item = match &self.plan_draft {
+                    Some((id, _)) => Some(id.clone()),
+                    None if self.chat_assess => {
+                        super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
+                    }
+                    None => None,
                 };
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
@@ -2318,6 +2466,19 @@ fn kill(pid: u32) -> std::io::Result<()> {
 impl App {
     pub fn set_wf_entries(&mut self, e: Vec<Entry>) {
         self.wf_entries = e;
+    }
+    /// Tests: the question waiting in the consent box.
+    pub fn consent_text(&self) -> Option<String> {
+        let m = self.modal.as_ref()?;
+        match m.yes.as_ref()?.1.first()? {
+            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
+            _ => None,
+        }
+    }
+    /// Tests: Claude's turn ended (there's no claude process offline).
+    pub fn turn_ended(&mut self) {
+        self.save_assessment();
+        self.save_plan_draft();
     }
     pub fn chat_mut(&mut self) -> Option<&mut Chat> {
         self.chat.as_mut()

@@ -37,6 +37,12 @@ pub struct Plan {
     pub vars: BTreeMap<String, String>,
     pub note: Option<String>,
     pub created: Option<jiff::Timestamp>,
+    /// The pinned image's repository (for the image var when Claude picks the version).
+    pub repo: Option<String>,
+    /// Claude's execution plan: assessment, before, change, verify, roll back, when.
+    pub text: String,
+    /// Claude advised not to move it now.
+    pub wait: bool,
 }
 
 /// Claude's last assessment of an item.
@@ -168,6 +174,9 @@ mod tests {
                 vars: [("service".to_string(), "web".to_string())].into(),
                 note: Some("after the backup on Saturday".into()),
                 created: Some("2026-10-27T10:00:00Z".parse().unwrap()),
+                repo: Some("example/web".into()),
+                text: "TARGET: v1.5.2\n**Before**: \"back up\"".into(),
+                wait: false,
             },
         );
         st.assessments.insert(

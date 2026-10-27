@@ -73,6 +73,23 @@ pub fn is_release(tag: &str) -> bool {
             })
 }
 
+/// A version written the way the pin is: `v0.64.2` → `0.64.2` when the pin has no `v`
+/// (GitHub tags releases `v…`; the image is often tagged without), and the other way round.
+pub fn like_pin(target: &str, pinned: Option<&str>) -> String {
+    let Some(p) = pinned else {
+        return target.to_string();
+    };
+    let digit_after_v = |s: &str| {
+        s.strip_prefix('v')
+            .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+    };
+    match (digit_after_v(target), digit_after_v(p)) {
+        (true, false) => target[1..].to_string(),
+        (false, true) if target.starts_with(|c: char| c.is_ascii_digit()) => format!("v{target}"),
+        _ => target.to_string(),
+    }
+}
+
 /// The first version-looking word in a command's output (`app 0.9.3` → `0.9.3`).
 pub fn find(text: &str) -> Option<String> {
     text.split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')')
@@ -119,5 +136,12 @@ mod tests {
         assert_eq!(image_tag("example/web:1.2.3"), Some("1.2.3"));
         assert_eq!(image_tag("registry:5000/web"), None);
         assert_eq!(image_tag("ghcr.io/org/app:v0.7.4"), Some("v0.7.4"));
+        assert_eq!(like_pin("v0.42.0", Some("0.41.7")), "0.42.0");
+        assert_eq!(like_pin("0.7.5", Some("v0.7.4")), "v0.7.5");
+        assert_eq!(like_pin("v0.7.5", Some("v0.7.4")), "v0.7.5");
+        assert_eq!(
+            like_pin("3.2.5-alpine", Some("3.2.4-alpine")),
+            "3.2.5-alpine"
+        );
     }
 }
