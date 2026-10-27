@@ -198,7 +198,7 @@ pub struct App {
     keys: Keymap,
     pub store: Store,
     pub tab: Tab,
-    cursors: [usize; 5],
+    cursors: [usize; 4],
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
@@ -269,7 +269,7 @@ pub struct App {
     /// A workflow's vars being asked for.
     var_input: Option<VarInput>,
     /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 5],
+    filters: [String; 4],
     filtering: bool,
     pub quit: bool,
     pub dirty: bool,
@@ -289,7 +289,7 @@ impl App {
             keys,
             store: Store::default(),
             tab: Tab::Overview,
-            cursors: [0; 5],
+            cursors: [0; 4],
             modal: None,
             modal_no: None,
             toast: None,
@@ -389,7 +389,6 @@ impl App {
                 self.fetch(Kind::Journal);
             }
             Tab::Containers => self.fetch(Kind::Docker),
-            Tab::Audit => self.fetch(Kind::Report),
             Tab::Maint => {
                 self.fetch(Kind::Maint);
                 self.fetch(Kind::Docker);
@@ -910,7 +909,8 @@ impl App {
                     .chain([
                         ("A", "ask Claude"),
                         ("I", "read what needs root, once, with your sudo password"),
-                        ("1-5 0", "tabs (or Tab, h/l)"),
+                        ("1-4", "tabs (or Tab, h/l)"),
+                        ("0", "the workflow run (:wf too)"),
                         ("j/k", "move"),
                         ("/", "filter (Esc clears) · n/N next/prev"),
                         (":", ":q quit · :r refresh · :<tab> · :wf <name>"),
@@ -1574,7 +1574,7 @@ impl App {
             self.fetch(k);
         }
         self.toast(&format!(
-            "read {n} command(s) with sudo · c on Audit audits with them"
+            "read {n} command(s) with sudo · c on Maintenance audits with them"
         ));
     }
 

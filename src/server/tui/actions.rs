@@ -387,6 +387,6 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("p", "pull"),
             ("u", "up -d"),
         ],
-        Tab::Audit | Tab::Maint => Vec::new(),
+        Tab::Maint => Vec::new(),
     }
 }

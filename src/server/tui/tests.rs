@@ -353,24 +353,30 @@ fn overview_status_rows_jump_to_their_tab() {
 }
 
 #[test]
-fn audit_details_and_expected() {
+fn findings_are_recommendations_on_maintenance() {
     let mut a = app();
-    key(&mut a, KeyCode::Char('5'));
+    // Overview's findings row lands on the first finding's recommendation.
     let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("expected") && s.contains("can control docker"),
-        "{s}"
-    );
-    assert!(
-        s.contains("Not checked:") && s.contains("fail2ban: needs sudo"),
-        "{s}"
-    );
-    // Enter opens the selected finding in a box; Esc closes it.
+    let rows: Vec<&str> = s
+        .lines()
+        .skip_while(|l| !l.contains("Status"))
+        .skip(1)
+        .collect();
+    let i = rows
+        .iter()
+        .position(|r| r.contains("open finding"))
+        .expect("findings row");
+    for _ in 0..i {
+        key(&mut a, KeyCode::Char('j'));
+    }
     key(&mut a, KeyCode::Enter);
+    assert_eq!(a.tab, Tab::Maint);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("┌ containers"), "{s}");
-    key(&mut a, KeyCode::Esc);
-    assert!(!render_to_string(&mut a, 158, 41).contains("┌ containers"));
+    assert!(s.contains("What  "), "the finding's details\n{s}");
+    assert!(
+        s.contains("didn't check:") && s.contains("fail2ban: needs sudo"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -728,7 +734,11 @@ fn ask_claude_about_a_finding_and_run_its_proposal() {
     use crate::claude::Event as CEvent;
     use crate::exec::StreamMsg;
     let mut a = app();
-    key(&mut a, KeyCode::Char('5'));
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("finding:".into())],
+        Instant::now(),
+    );
     key(&mut a, KeyCode::Char('A'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -860,7 +870,11 @@ fn chips_and_badge_match_sentry() {
 #[test]
 fn chat_input_edits() {
     let mut a = app();
-    key(&mut a, KeyCode::Char('5'));
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("finding:".into())],
+        Instant::now(),
+    );
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('y'));
     a.chat_mut().unwrap().on_exit(0);
@@ -885,12 +899,12 @@ fn quit_asks_and_colon_commands() {
     assert!(render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
     key(&mut a, KeyCode::Char('n'));
     assert!(!a.quit);
-    for c in ":aud".chars() {
+    for c in ":mai".chars() {
         key(&mut a, KeyCode::Char(c));
     }
-    assert!(render_to_string(&mut a, 158, 41).contains(":aud▏"));
+    assert!(render_to_string(&mut a, 158, 41).contains(":mai▏"));
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Audit, ":aud goes to Audit");
+    assert_eq!(a.tab, Tab::Maint, ":mai goes to Maintenance");
     for c in ":wf compose-update".chars() {
         key(&mut a, KeyCode::Char(c));
     }
@@ -935,8 +949,8 @@ fn slash_filters_the_tab() {
     );
     assert!(!s.contains("│ web"));
     // Each tab has its own filter.
-    key(&mut a, KeyCode::Char(Tab::Audit.key()));
-    assert!(!screen(&mut a).contains("Audit /"));
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    assert!(!screen(&mut a).contains("Maintenance /"));
     key(&mut a, KeyCode::Char(Tab::Containers.key()));
     // n/N wrap around the matches; Esc clears.
     key(&mut a, KeyCode::Char('n'));
@@ -953,7 +967,7 @@ fn slash_filters_the_tab() {
     assert!(screen(&mut a).contains("│ db"));
 }
 
-/// Read-only against the real server: `A` on Updates and Workflows opens the consent box
+/// Read-only against the real server: `A` on the updates recommendation opens the consent box
 /// (nothing is sent). `SENTRY_SERVER_LIVE=<name> cargo test live_ask_boxes -- --ignored --nocapture`
 #[test]
 #[ignore]
@@ -1502,59 +1516,6 @@ fn the_assessment_profile_adds_the_web_and_only_the_notes() {
         super::maint::read_rules(&["/srv/notes.md".into()]),
         ["Read(//srv/notes.md)"]
     );
-}
-
-/// Read-only against the real server: the Maintenance tab, then one assessment sent to Claude
-/// (the selected item, `SENTRY_ITEM`), with the web and notes allowed.
-/// `SENTRY_SERVER_LIVE=<name> SENTRY_ITEM=<id> cargo test live_assess -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn live_assess() {
-    let (Ok(name), Ok(item)) = (
-        std::env::var("SENTRY_SERVER_LIVE"),
-        std::env::var("SENTRY_ITEM"),
-    ) else {
-        return;
-    };
-    let (file, _) = crate::server::config::load().unwrap();
-    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
-    let pos = s
-        .maintenance
-        .items
-        .iter()
-        .position(|i| i.id == item)
-        .expect("item");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
-    a.start(Instant::now());
-    let pump = |a: &mut App, secs: u64| {
-        let until = Instant::now() + std::time::Duration::from_secs(secs);
-        while Instant::now() < until {
-            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                a.on_event(ev, Instant::now());
-            }
-            a.tick(Instant::now());
-        }
-    };
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
-    pump(&mut a, 10);
-    for _ in 0..pos {
-        key(&mut a, KeyCode::Char('j'));
-    }
-    println!("{}", render_to_string(&mut a, 158, 41));
-    key(&mut a, KeyCode::Char('A'));
-    println!("{}", render_to_string(&mut a, 158, 41));
-    key(&mut a, KeyCode::Char('y'));
-    for _ in 0..100 {
-        pump(&mut a, 3);
-        if a.chat_mut().is_some_and(|c| !c.running()) {
-            break;
-        }
-    }
-    let c = a.chat_mut().unwrap();
-    for (k, t) in &c.entries {
-        println!("[{k:?}] {t}");
-    }
 }
 
 #[test]

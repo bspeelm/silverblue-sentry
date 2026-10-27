@@ -93,7 +93,6 @@ const ON_SERVER: &str =
 /// Why `A` had nothing to ask about, when it doesn't.
 pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
     match tab {
-        Tab::Audit if v.s.report.value.is_none() => "the audit report is still loading",
         Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
         Tab::Services if v.s.units.value.is_none() => "the services are still loading",
         Tab::Maint => {
@@ -175,7 +174,6 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
                 "How is this server doing? What needs attention, and what should I do first?",
             ))
         }
-        Tab::Audit => Some(ask_finding(v, r, super::tabs::selected_finding(v)?)),
         Tab::Services => {
             let u = super::tabs::selected_unit(v)?;
             Some(Ask::new(

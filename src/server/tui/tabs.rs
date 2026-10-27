@@ -77,7 +77,6 @@ pub fn rows(tab: Tab, v: &View) -> usize {
         Tab::Overview => status_rows(v).len(),
         Tab::Services => unit_rows(v).len(),
         Tab::Containers => container_list(v).len(),
-        Tab::Audit => findings(v).len(),
         Tab::Maint => super::maint::count(v),
     }
 }
@@ -92,12 +91,6 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("c", "cpu/mem"),
             ("r", "refresh"),
         ],
-        Tab::Audit => vec![
-            ("j/k", "select"),
-            ("Enter", "details"),
-            ("b", "expected"),
-            ("c", "audit now"),
-        ],
         Tab::Maint => vec![
             ("j/k", "select"),
             ("Enter", "do it"),
@@ -108,7 +101,7 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("x", "drop/ignore"),
             ("v", "log"),
             ("z", "later"),
-            ("c", "look up"),
+            ("c", "check all"),
             ("e", "edit"),
         ],
     }
@@ -128,7 +121,6 @@ pub fn refresh(tab: Tab) -> Vec<Effect> {
         .collect(),
         Tab::Services => vec![Effect::Fetch(Kind::Units), Effect::Fetch(Kind::Journal)],
         Tab::Containers => vec![Effect::Fetch(Kind::Docker)],
-        Tab::Audit => vec![Effect::Fetch(Kind::Report)],
         Tab::Maint => vec![Effect::Fetch(Kind::Maint)],
     }
 }
@@ -139,7 +131,6 @@ pub fn check(tab: Tab) -> Vec<Effect> {
             Effect::Fetch(Kind::Stats),
             Effect::Toast("docker stats…".into()),
         ],
-        Tab::Audit => vec![Effect::Fetch(Kind::Audit)],
         // Check everything: audit the server and look upstream up again.
         Tab::Maint => vec![
             Effect::Fetch(Kind::Audit),
@@ -166,7 +157,6 @@ pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
         },
         Tab::Services => unit_detail(v),
         Tab::Containers => container_detail(v),
-        Tab::Audit => finding_detail(v),
         Tab::Maint => super::maint::key('\n', v),
     }
 }
@@ -174,10 +164,6 @@ pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
 pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Vec<Effect> {
     use super::actions;
     match (tab, c) {
-        (Tab::Audit, 'b') => match findings(v).get(v.cur) {
-            Some(f) => vec![Effect::Expected(f.id.clone(), !f.expected)],
-            None => Vec::new(),
-        },
         (Tab::Services, 'R' | 'x' | 'L') => match unit_rows(v).into_iter().nth(v.cur) {
             Some(u) => {
                 let failed = u.state.starts_with("failed")
@@ -207,10 +193,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
 
 /// Tabs whose list `/` filters.
 pub fn filterable(tab: Tab) -> bool {
-    matches!(
-        tab,
-        Tab::Services | Tab::Containers | Tab::Audit | Tab::Maint
-    )
+    matches!(tab, Tab::Services | Tab::Containers | Tab::Maint)
 }
 
 /// The count shown next to a tab name.
@@ -232,12 +215,6 @@ pub fn badge(tab: Tab, v: &View) -> Option<(String, Color)> {
                     .count();
             (n > 0).then(|| (format!(" {n}"), t.red))
         }
-        Tab::Audit => {
-            let r = v.s.report.value.as_ref()?.as_ref()?;
-            let open: Vec<&Finding> = r.open().collect();
-            let top = open.iter().map(|f| f.severity).max()?;
-            Some((format!(" {}", open.len()), sev_color(t, top)))
-        }
         Tab::Maint => super::maint::badge(v),
         Tab::Overview => None,
     }
@@ -256,7 +233,6 @@ pub fn draw(f: &mut Frame, area: Rect, tab: Tab, v: &View) {
         Tab::Overview => overview(f, area, v),
         Tab::Services => services(f, area, v),
         Tab::Containers => containers(f, area, v),
-        Tab::Audit => audit(f, area, v),
         Tab::Maint => super::maint::draw(f, area, v),
     }
 }
@@ -502,20 +478,24 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
                 format!(" (audit {})", fmt::ago(v.secs_since(ts)))
             });
             match open.iter().map(|f| f.severity).max() {
-                Some(top) => out.push(bad(
-                    sev_color(t, top),
-                    format!("{} open finding(s){when}", open.len()),
-                    Some(Tab::Audit),
-                )),
-                None => out.push(ok(format!("no open findings{when}"), Some(Tab::Audit))),
+                Some(top) => {
+                    let mut r = bad(
+                        sev_color(t, top),
+                        format!("{} open finding(s){when}", open.len()),
+                        Some(Tab::Maint),
+                    );
+                    r.pick = Some("finding:");
+                    out.push(r);
+                }
+                None => out.push(ok(format!("no open findings{when}"), Some(Tab::Maint))),
             }
         }
         Some(None) => out.push(StatusRow {
             color: t.dim,
             icon: "·",
-            text: "no audit yet: c on Audit".into(),
-            goto: Some(Tab::Audit),
-            pick: None,
+            text: "no audit yet: c on Maintenance".into(),
+            goto: Some(Tab::Maint),
+            pick: Some("audit"),
         }),
         None => {}
     }
@@ -1184,101 +1164,7 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
     info
 }
 
-// ---------- Audit ----------
-
-/// Open findings first, then the expected ones.
-fn findings<'a>(v: &View<'a>) -> Vec<&'a Finding> {
-    let Some(Some(r)) = v.s.report.value.as_ref() else {
-        return Vec::new();
-    };
-    let mut f: Vec<&Finding> = r.open().collect();
-    f.extend(r.findings.iter().filter(|f| f.expected));
-    f.retain(|f| v.matches(&[&f.message, &f.category, f.severity.as_str(), &f.id]));
-    f
-}
-
-fn audit(f: &mut Frame, area: Rect, v: &View) {
-    let t = v.t;
-    let report = v.s.report.value.as_ref().and_then(|r| r.as_deref());
-    let detail = match report {
-        Some(r) => format!(
-            "{} open · {} expected · {}{}",
-            r.open().count(),
-            r.findings.iter().filter(|f| f.expected).count(),
-            r.snapshot.taken_at.map_or(String::new(), |ts| format!(
-                "audited {}",
-                fmt::ago(v.secs_since(ts))
-            )),
-            v.inv_note()
-        ),
-        None => String::new(),
-    };
-    let [list_a, detail_a] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
-    let b = panel(t, "Findings", detail);
-    let r = inner(&b, list_a);
-    f.render_widget(b, list_a);
-    let Some(rep) = report else {
-        let msg = match &v.s.report.err {
-            Some(e) => Line::styled(format!("audit: {e}"), t.s(t.red)),
-            None if v.s.report.value.is_some() => {
-                Line::styled("No audit yet: press c to audit the server now.", t.dim())
-            }
-            None => Line::styled("reading the last report…", t.dim()),
-        };
-        f.render_widget(Paragraph::new(msg), r);
-        return;
-    };
-    let list = findings(v);
-    let rows: Vec<Row> = list
-        .iter()
-        .map(|x| {
-            let c = if x.expected {
-                t.dim
-            } else {
-                sev_color(t, x.severity)
-            };
-            Row::new(vec![
-                Cell::from(if x.expected {
-                    "expected".to_string()
-                } else {
-                    x.severity.as_str().to_string()
-                })
-                .style(t.s(c)),
-                Cell::from(x.message.clone()).style(if x.expected { t.dim() } else { t.fg() }),
-            ])
-        })
-        .collect();
-    widgets::table(
-        f,
-        r,
-        t,
-        TableSpec {
-            header: vec!["", "Finding"],
-            widths: vec![Constraint::Length(8), Constraint::Fill(1)],
-            rows,
-            selected: Some(v.cur),
-        },
-    );
-    let b = panel(t, "Details", "");
-    let r = inner(&b, detail_a);
-    f.render_widget(b, detail_a);
-    let mut lines = match list.get(v.cur) {
-        Some(x) => finding_lines(t, x),
-        None => match v.filter {
-            Some(flt) => vec![Line::styled(format!("no finding matches /{flt}"), t.dim())],
-            None => vec![Line::styled("✓ nothing needs attention", t.s(t.green))],
-        },
-    };
-    if !rep.snapshot.errors.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled("Not checked:", t.dim()));
-        for (sec, e) in &rep.snapshot.errors {
-            lines.push(Line::styled(format!("{sec}: {e}"), t.dim()));
-        }
-    }
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
-}
+// ---------- findings ----------
 
 pub fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
@@ -1308,7 +1194,7 @@ pub fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
             "{}{}",
             x.id,
             if x.expected {
-                " · expected (b to undo)"
+                " · expected (x to undo)"
             } else {
                 ""
             }
@@ -1316,13 +1202,6 @@ pub fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
         t.dim(),
     ));
     lines
-}
-
-fn finding_detail(v: &View) -> Vec<Effect> {
-    match findings(v).get(v.cur) {
-        Some(x) => vec![Effect::Info(x.category.clone(), finding_lines(v.t, x))],
-        None => Vec::new(),
-    }
 }
 
 fn smart_word(h: &SmartHealth) -> &'static str {
@@ -1341,10 +1220,6 @@ pub fn status_text(v: &View) -> Vec<String> {
         .into_iter()
         .map(|r| format!("{} {}", r.icon, r.text))
         .collect()
-}
-
-pub fn selected_finding<'a>(v: &View<'a>) -> Option<&'a Finding> {
-    findings(v).get(v.cur).copied()
 }
 
 pub fn selected_unit(v: &View) -> Option<String> {

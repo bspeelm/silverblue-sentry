@@ -2,7 +2,7 @@
 source: src/server/tui/tests.rs
 expression: body(&s)
 ---
- 1 Overview   2 Services 1   3 Containers 1   5 Audit 7   6 Maintenance 8
+ 1 Overview   2 Services 1   3 Containers 1   4 Maintenance 8
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · 20% · load 0.31 0.27 0.22 · 4 cores ──────────────────────────────────┐┌ Memory · 36% of 30.5 GiB · swap 6% ─────────────────────────────────────────┐

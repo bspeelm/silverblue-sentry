@@ -45,26 +45,18 @@ pub enum Tab {
     Overview,
     Services,
     Containers,
-    Audit,
     Maint,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::Overview,
-        Tab::Services,
-        Tab::Containers,
-        Tab::Audit,
-        Tab::Maint,
-    ];
+    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Services, Tab::Containers, Tab::Maint];
 
     pub fn key(self) -> char {
         match self {
             Tab::Overview => '1',
             Tab::Services => '2',
             Tab::Containers => '3',
-            Tab::Audit => '5',
-            Tab::Maint => '6',
+            Tab::Maint => '4',
         }
     }
 
@@ -73,7 +65,6 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Services => "Services",
             Tab::Containers => "Containers",
-            Tab::Audit => "Audit",
             Tab::Maint => "Maintenance",
         }
     }

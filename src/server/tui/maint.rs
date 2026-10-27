@@ -390,6 +390,17 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 l.push(Line::raw(""));
                 l.extend(super::tabs::finding_lines(t, f));
             }
+            // What the last audit couldn't check, beside its findings.
+            if (matches!(x.action, Action::Fix(_)) || x.key == "audit")
+                && let Some(Some(rep)) = v.s.report.value.as_ref()
+                && !rep.snapshot.errors.is_empty()
+            {
+                l.push(Line::raw(""));
+                l.push(Line::styled("The last audit didn't check:", t.dim()));
+                for (sec, e) in &rep.snapshot.errors {
+                    l.push(Line::styled(format!("{sec}: {e}"), t.dim()));
+                }
+            }
             l
         }
         None => vec![Line::styled("nothing matches", t.dim())],
