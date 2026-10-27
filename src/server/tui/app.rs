@@ -1,6 +1,6 @@
 //! State, keys, refresh schedule and the frame around the tabs.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::process::ExitStatus;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use super::tabs::{self, View};
 use super::{Ev, Tab};
 use crate::claude::{self, Ask, Proposed};
 use crate::exec::{Cmd, ExecError, StreamMsg};
-use crate::server::remote::Remote;
+use crate::server::remote::{Remote, SudoMode};
 use crate::server::workflow::{self, Exec, Session};
 use crate::tui::chat::{self as chatmod, Chat, Job};
 use crate::tui::keys::{Action, Keymap};
@@ -39,8 +39,9 @@ pub enum Effect {
     Confirm(Modal),
     /// Stream a command's output into the pane (after a confirm).
     Run(RunSpec),
-    /// Hand the terminal to a command (sudo password prompts), then refresh.
-    Suspend(Cmd, String, Vec<Kind>),
+    /// Hand the terminal to a command (sudo password prompts), then refresh. `true`: it's a
+    /// reboot, so wait for the server to come back afterwards.
+    Suspend(Cmd, String, Vec<Kind>, bool),
     /// Read-only output, fetched once, shown in the scrollable pane.
     Logs(String, Cmd),
     /// Pick one of several (digits 1-9).
@@ -59,9 +60,28 @@ pub enum AskTurn {
     Follow(String),
 }
 
+/// A workflow's `[vars]` being asked for, one at a time, before it starts.
+struct VarInput {
+    workflow: String,
+    /// (name, prompt, default), in the order asked.
+    asks: Vec<(String, String, Option<String>)>,
+    values: BTreeMap<String, String>,
+    buf: String,
+    /// Why the last answer wasn't taken.
+    note: Option<String>,
+}
+
+impl VarInput {
+    fn current(&self) -> Option<&(String, String, Option<String>)> {
+        self.asks.get(self.values.len())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum WfCmd {
+    /// Start it; its vars are asked for first, unless given.
     Begin(String),
+    BeginWith(String, BTreeMap<String, String>),
     Go,
     Skip(bool),
     Done,
@@ -129,19 +149,27 @@ pub struct App {
     pane: Option<Pane>,
     chooser: Option<(String, Vec<Choice>)>,
     suspend: Option<(Cmd, String, Vec<Kind>)>,
+    /// The suspended command reboots the server.
+    suspend_reboot: bool,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
     /// The workflow run in progress on this server.
     pub wf: Option<Session>,
     wf_entries: Vec<Entry>,
-    /// A step running with the terminal handed over.
-    suspend_step: Option<usize>,
+    /// Where they come from (shown on the tab).
+    wf_dir: String,
+    /// A step running with the terminal handed over, and where its output is captured.
+    suspend_step: Option<(usize, String)>,
     /// The stream id of a workflow's reboot command.
     wf_reboot_id: Option<u64>,
+    /// A workflow reboot with the terminal handed over: the boot id it had.
+    reboot_old: Option<String>,
     chat: Option<Chat>,
     /// The `:` command line being typed.
     cmdline: Option<String>,
+    /// A workflow's vars being asked for.
+    var_input: Option<VarInput>,
     /// Each tab's `/` filter, and whether it's being typed.
     filters: [String; 6],
     filtering: bool,
@@ -170,14 +198,18 @@ impl App {
             pane: None,
             chooser: None,
             suspend: None,
+            suspend_reboot: false,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
             wf_entries: Vec::new(),
+            wf_dir: "~/.config/sentry/server-workflows/".into(),
             suspend_step: None,
             wf_reboot_id: None,
+            reboot_old: None,
             chat: None,
             cmdline: None,
+            var_input: None,
             filters: Default::default(),
             filtering: false,
             quit: false,
@@ -225,7 +257,7 @@ impl App {
             Tab::Audit => self.fetch(Kind::Report),
             Tab::Workflows => {
                 if !self.offline {
-                    self.wf_entries = workflow::list();
+                    self.load_wf_entries();
                 }
                 if let Some(s) = self.wf.as_mut() {
                     s.armed = true;
@@ -381,6 +413,10 @@ impl App {
                 StreamMsg::Line { text, .. } => s.on_line(&text),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, code);
+                    if s.sudo_refused() {
+                        // sudo changed under us: r now retries with the terminal.
+                        self.fresh_sudo();
+                    }
                     self.wf_auto();
                 }
             }
@@ -497,6 +533,10 @@ impl App {
         }
         if self.filtering {
             self.filter_key(k);
+            return;
+        }
+        if self.var_input.is_some() {
+            self.var_key(k);
             return;
         }
         // The chat takes raw keys (Backspace, any character) before the keymap, which knows
@@ -653,24 +693,33 @@ impl App {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
                     let v = self.view();
-                    match super::ask::ask_for(self.tab, &v, &self.remote, self.wf.as_ref()) {
+                    let entry = self.wf_entries.get(self.cursors[Tab::Workflows.index()]);
+                    match super::ask::ask_for(self.tab, &v, &self.remote, self.wf.as_ref(), entry) {
                         Some(ask) => {
                             let text = ask.prompt();
                             self.modal = Some(self.consent(&text, AskTurn::First(ask)));
                         }
-                        None => self.toast("nothing selected to ask about here"),
+                        None => {
+                            let why = super::ask::nothing_here(self.tab, &v);
+                            self.toast(why);
+                        }
                     }
                 }
             }
             Action::Char('a') => {
+                self.fresh_sudo();
                 let e = super::actions::custom(&self.view(), &self.remote);
                 self.apply(e, now);
             }
             Action::Char('B') if self.tab == Tab::Overview => {
+                self.fresh_sudo();
                 let e = super::actions::reboot(&self.view(), &self.remote);
                 self.apply(e, now);
             }
             Action::Char(c) => {
+                if super::actions::uses_root(self.tab, c) {
+                    self.fresh_sudo();
+                }
                 let e = tabs::key(self.tab, c, &self.view(), &self.remote);
                 self.apply(e, now);
             }
@@ -678,7 +727,7 @@ impl App {
         }
     }
 
-    fn apply(&mut self, effects: Vec<Effect>, now: Instant) {
+    pub fn apply(&mut self, effects: Vec<Effect>, now: Instant) {
         for e in effects {
             match e {
                 Effect::Fetch(k) => {
@@ -703,7 +752,10 @@ impl App {
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
-                Effect::Suspend(cmd, banner, then) => self.suspend = Some((cmd, banner, then)),
+                Effect::Suspend(cmd, banner, then, reboot) => {
+                    self.suspend = Some((cmd, banner, then));
+                    self.suspend_reboot = reboot;
+                }
                 Effect::Run(spec) => self.start_run(spec),
                 Effect::Logs(title, cmd) => {
                     self.run_seq += 1;
@@ -881,11 +933,86 @@ impl App {
         true
     }
 
+    fn load_wf_entries(&mut self) {
+        self.wf_entries = workflow::list_for(&self.remote.name);
+        let d = workflow::dir_for(&self.remote.name);
+        let home = std::env::var("HOME").unwrap_or_default();
+        let shown = d.display().to_string();
+        self.wf_dir = match shown.strip_prefix(&home) {
+            Some(rest) if !home.is_empty() => format!("~{rest}/"),
+            _ => format!("{shown}/"),
+        };
+    }
+
+    /// How sudo behaves right now, checked again (the server's sudoers can change while this
+    /// is open); tests use what the store has.
+    fn fresh_sudo(&mut self) -> Option<SudoMode> {
+        if !self.offline {
+            let m = self.remote.sudo_mode();
+            self.store.sudo.set(m);
+        }
+        self.store.sudo.value
+    }
+
+    /// The sudo mode for the workflow's next step: checked again only when it uses sudo.
+    fn wf_sudo(&mut self) -> Option<SudoMode> {
+        if self.wf.as_ref().is_some_and(|s| s.next_uses_sudo()) {
+            self.fresh_sudo()
+        } else {
+            self.store.sudo.value
+        }
+    }
+
+    /// Stop the workflow's running step (abandoning, closing or quitting).
+    fn wf_stop_live(&mut self) {
+        if let Some(pid) = self
+            .wf
+            .as_mut()
+            .and_then(|s| s.live.take())
+            .and_then(|l| l.pid)
+        {
+            let _ = kill(pid);
+        }
+    }
+
     fn wf_cmd(&mut self, c: WfCmd) {
-        let sudo = self.store.sudo.value;
+        let sudo = match c {
+            WfCmd::Go => self.wf_sudo(),
+            _ => self.store.sudo.value,
+        };
+        if matches!(c, WfCmd::Abandon | WfCmd::Close) {
+            self.wf_stop_live();
+        }
         let r: Result<Option<Exec>, String> = match c {
-            WfCmd::Begin(name) => match self.wf_entries.iter().find(|e| e.name == name) {
-                Some(e) => match Session::begin(e, &self.remote) {
+            WfCmd::Begin(name) => {
+                let asks: Vec<(String, String, Option<String>)> = self
+                    .wf_entries
+                    .iter()
+                    .find(|e| e.name == name)
+                    .and_then(|e| e.wf.as_ref().ok())
+                    .map(|w| {
+                        w.vars
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.prompt.clone(), v.default.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if asks.is_empty() {
+                    return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
+                }
+                let buf = asks[0].2.clone().unwrap_or_default();
+                self.var_input = Some(VarInput {
+                    workflow: name,
+                    asks,
+                    values: BTreeMap::new(),
+                    buf,
+                    note: None,
+                });
+                self.dirty = true;
+                return;
+            }
+            WfCmd::BeginWith(name, vars) => match self.wf_entries.iter().find(|e| e.name == name) {
+                Some(e) => match Session::begin(e, &self.remote, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
                         Ok(None)
@@ -897,7 +1024,7 @@ impl App {
             WfCmd::Close => {
                 self.wf = None;
                 if !self.offline {
-                    self.wf_entries = workflow::list();
+                    self.load_wf_entries();
                 }
                 Ok(None)
             }
@@ -912,7 +1039,7 @@ impl App {
                         s.abandon();
                         Ok(None)
                     }
-                    WfCmd::Begin(_) | WfCmd::Close => Ok(None),
+                    WfCmd::Begin(_) | WfCmd::BeginWith(..) | WfCmd::Close => Ok(None),
                 },
             },
         };
@@ -930,7 +1057,14 @@ impl App {
         if self.tab != Tab::Workflows {
             return;
         }
-        let sudo = self.store.sudo.value;
+        if !self
+            .wf
+            .as_ref()
+            .is_some_and(|s| s.armed && s.live.is_none() && matches!(s.next, Next::Run(_)))
+        {
+            return;
+        }
+        let sudo = self.wf_sudo();
         if let Some(e) = self.wf.as_mut().and_then(|s| s.auto(sudo)) {
             self.wf_exec(e);
         }
@@ -966,12 +1100,12 @@ impl App {
                     });
                 }
             }
-            Exec::Tty { cmd, idx } => {
-                self.suspend_step = Some(idx);
+            Exec::Tty { cmd, idx, capture } => {
+                self.suspend_step = Some((idx, capture));
                 let banner = format!("sentry-server · workflow step on {}", self.remote.name);
                 self.suspend = Some((cmd, banner, Vec::new()));
             }
-            Exec::Reboot { cmd } => {
+            Exec::Reboot { cmd, tty } => {
                 let old = self
                     .wf
                     .as_ref()
@@ -982,6 +1116,17 @@ impl App {
                     })
                     .unwrap_or_default();
                 self.wf_reboot_id = Some(id);
+                if tty {
+                    // sudo asks for the password; the wait starts once the terminal is back.
+                    self.suspend = Some((
+                        cmd,
+                        format!("sentry-server · rebooting {}", self.remote.name),
+                        Vec::new(),
+                    ));
+                    self.suspend_reboot = true;
+                    self.reboot_old = Some(old);
+                    return;
+                }
                 self.reboot_wait = Some((Instant::now(), old));
                 if !self.offline {
                     let tx = self.tx.clone();
@@ -1013,6 +1158,50 @@ impl App {
             _ => {}
         }
         self.dirty = true;
+    }
+
+    /// Typing a workflow var: Enter takes it (an empty answer takes the default), Esc cancels
+    /// the start.
+    fn var_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some(v) = self.var_input.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        match k.code {
+            KeyCode::Char(c) => v.buf.push(c),
+            KeyCode::Backspace => {
+                v.buf.pop();
+            }
+            KeyCode::Esc => {
+                self.var_input = None;
+                self.toast("not started");
+            }
+            KeyCode::Enter => {
+                let Some((name, _, default)) = v.current().cloned() else {
+                    return;
+                };
+                let val = match v.buf.trim() {
+                    "" => default.unwrap_or_default(),
+                    s => s.to_string(),
+                };
+                if val.is_empty() {
+                    v.note = Some(format!("{name} needs a value"));
+                    return;
+                }
+                v.note = None;
+                v.values.insert(name, val);
+                v.buf = v
+                    .current()
+                    .and_then(|(_, _, d)| d.clone())
+                    .unwrap_or_default();
+                if v.current().is_none() {
+                    let v = self.var_input.take().expect("var input");
+                    self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
@@ -1135,7 +1324,7 @@ impl App {
             }
         };
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = super::ask::profile(&self.remote, &os, &kernel);
+        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value);
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
@@ -1311,15 +1500,52 @@ impl App {
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
-        if let Some(idx) = self.suspend_step.take()
+        if let Some((idx, capture)) = self.suspend_step.take()
             && let Some(s) = self.wf.as_mut()
         {
             let code = match &status {
                 Ok(st) => st.code().unwrap_or(-1),
                 Err(_) => -1,
             };
+            if !self.offline {
+                s.tty_output(idx, &capture);
+            }
             s.on_exit(idx, code);
             self.wf_auto();
+            return;
+        }
+        if std::mem::take(&mut self.suspend_reboot) {
+            // ssh drops (255) as the server goes down; a quick non-zero exit is sudo refusing.
+            let old = self.reboot_old.take().unwrap_or_else(|| {
+                self.store
+                    .probe
+                    .value
+                    .as_ref()
+                    .map(|p| p.boot_id.clone())
+                    .unwrap_or_default()
+            });
+            match &status {
+                Ok(st) if st.code() != Some(255) && !st.success() => {
+                    self.toast(&format!(
+                        "reboot didn't start (exit {})",
+                        st.code().unwrap_or(-1)
+                    ));
+                    if let Some(s) = self.wf.as_mut() {
+                        s.push("✗ the reboot didn't start", workflow::LogKind::Err);
+                    }
+                }
+                Err(e) => self.toast(&e.to_string()),
+                Ok(_) => {
+                    self.reboot_wait = Some((Instant::now(), old));
+                    if let Some(s) = self.wf.as_mut() {
+                        s.push(
+                            "… waiting for the server to come back",
+                            workflow::LogKind::Info,
+                        );
+                    }
+                    self.toast(&format!("waiting for {} to come back…", self.remote.name));
+                }
+            }
             return;
         }
         match status {
@@ -1399,6 +1625,7 @@ impl App {
                 f,
                 body,
                 &t,
+                &self.wf_dir,
                 &self.wf_entries,
                 self.cursors[Tab::Workflows.index()],
             ),
@@ -1507,6 +1734,31 @@ impl App {
                 Paragraph::new(Line::from(vec![
                     Span::styled(format!(":{buf}"), t.fg()),
                     Span::styled("▏", t.s(t.cyan)),
+                ])),
+                area,
+            );
+            return;
+        }
+        if let Some(v) = &self.var_input
+            && let Some((name, prompt, _)) = v.current()
+        {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{} {}/{} · {prompt} ({name}): ",
+                            v.workflow,
+                            v.values.len() + 1,
+                            v.asks.len()
+                        ),
+                        t.dim(),
+                    ),
+                    Span::styled(v.buf.clone(), t.fg()),
+                    Span::styled("▏", t.s(t.cyan)),
+                    match &v.note {
+                        Some(n) => Span::styled(format!("   {n}"), t.s(t.red)),
+                        None => Span::styled("   Enter next · Esc cancel", t.dim()),
+                    },
                 ])),
                 area,
             );

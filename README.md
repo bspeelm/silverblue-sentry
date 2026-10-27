@@ -161,7 +161,7 @@ sentry-server check                    # connection, sudo, tools, and each sudo 
 sentry-server                          # the TUI (or: sentry-server myserver)
 ```
 
-Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box, and if sudo asks for a password the terminal is handed over.
+Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box. sudo is checked again before each one: if it asks for a password, the terminal is handed over for it (a workflow step's output still lands in its log), and if it stops asking, the command streams. If sudo asks for a password, the read-only commands in `sudo:` can't run in the background, and their panels say so.
 
 | Tab | What it shows | Keys |
 |---|---|---|
@@ -170,13 +170,13 @@ Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-ser
 | `3` Containers | containers by compose project: state, health, restarts, ports; `c` loads CPU/mem | `R` restart, `L` logs, `p` pull, `u` up -d |
 | `4` Updates | a simulated `apt-get dist-upgrade`, held-back packages, reboot required and why | `C` refresh lists, `U` upgrade, `B` reboot |
 | `5` Audit | findings: services down, stale or failing timers, containers down or restarted, the docker socket mounted in a container, unexpected listeners, reboot required, updates, SMART damage, full or missing disks… | `c` audit now, `b` mark expected |
-| `0` Workflows | multi-step maintenance in the same TOML format as the local workflows: `apt-maintenance` and `compose-update` are seeded in `~/.config/sentry/server-workflows/` | Enter, `s`, `d`, `r`, `a`, `L` as on Upgrade |
+| `0` Workflows | multi-step maintenance in the same TOML format as the local workflows: `apt-maintenance` and `compose-update` are seeded in `~/.config/sentry/server-workflows/`. A server's own workflows go in `~/.config/sentry/servers/<name>/workflows/` and replace the generic ones for that server; `[vars]` are asked for when one starts | Enter, `s`, `d`, `r`, `a`, `L` as on Upgrade |
 
 On Services, Containers, Updates and Audit, `/` filters the list (any column, case-insensitive; `n`/`N` step through, `Esc` clears); each tab keeps its own filter.
 
 A reboot, from `B` or a workflow step, waits in place: sentry-server polls the server's boot id and says when it's back, then a workflow carries on. **`A` asks Claude** about whatever is selected. Claude reaches the server only through `sentry-server exec <server> -- <command>`, an allowlist of read-only commands with no shell, and ssh itself is denied. Whatever it proposes, you run after a confirm box.
 
-Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint`. Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
+Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint [server]`. Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
 
 ## Config
 

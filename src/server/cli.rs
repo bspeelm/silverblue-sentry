@@ -231,7 +231,7 @@ pub fn collect(name: &str, kind: &str) -> u8 {
             println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
             0
         }
-        Err(e @ (SrvError::NeedsSudo(_) | SrvError::NotFound(_))) => {
+        Err(e @ (SrvError::NeedsSudo(_) | SrvError::SudoPassword(_) | SrvError::NotFound(_))) => {
             println!("{}", serde_json::json!({ "unavailable": e.to_string() }));
             3
         }
@@ -287,9 +287,16 @@ pub fn cond(server: &str, name: &str, wait: Option<u64>) -> u8 {
     }
 }
 
-/// `workflow list|lint`: the server workflows and whether they can start.
-pub fn workflow(what: &str) -> u8 {
-    let entries = super::workflow::list();
+/// `workflow list|lint [server]`: a server's workflows and whether they can start.
+pub fn workflow(what: &str, server: Option<&str>) -> u8 {
+    let name = match load(server) {
+        Ok((n, _)) => n,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let entries = super::workflow::list_for(&name);
     let mut bad = 0;
     for e in &entries {
         let steps = e.wf.as_ref().map_or(0, |w| w.steps.len());
@@ -304,7 +311,7 @@ pub fn workflow(what: &str) -> u8 {
             }
         }
     }
-    println!("({})", super::workflow::dir().display());
+    println!("({name}: {})", super::workflow::dir_for(&name).display());
     u8::from(bad > 0)
 }
 

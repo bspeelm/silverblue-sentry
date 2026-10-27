@@ -16,6 +16,9 @@ pub enum SrvError {
     /// The command needs root and isn't in the `sudo:` allowlist.
     #[error("needs sudo: add `{0}` to sudo: in server_config.yaml")]
     NeedsSudo(String),
+    /// Allowed, but sudo on the server asks for a password, so it can't run unattended.
+    #[error("sudo on the server asks for a password, so `{0}` can't be read in the background")]
+    SudoPassword(String),
     #[error("{0}")]
     Failed(String),
     #[error("{0}")]
@@ -87,6 +90,11 @@ impl Remote {
     /// Run and return stdout; a non-zero exit is `Failed` with stderr.
     pub fn output(&self, cmd: &Cmd) -> Result<String, SrvError> {
         cmd.output().map_err(|e| match e {
+            ExecError::Failed { stderr, .. }
+                if cmd.bin() == "sudo" && password_refused(&stderr) =>
+            {
+                SrvError::SudoPassword(sudo_words(cmd))
+            }
             ExecError::Failed { code, stderr, .. } => SrvError::Failed(format!(
                 "{} exited {code}: {}",
                 cmd.bin(),
@@ -96,7 +104,8 @@ impl Remote {
         })
     }
 
-    /// Probed once per connection: `sudo -n true`.
+    /// How sudo behaves right now: `sudo -n true`. Checked again before anything that uses
+    /// sudo, since the server's sudoers can change while sentry-server is open.
     pub fn sudo_mode(&self) -> Result<SudoMode, SrvError> {
         let o = self
             .sh("command -v sudo >/dev/null || exit 3; sudo -n true 2>/dev/null")
@@ -107,6 +116,28 @@ impl Remote {
             _ => SudoMode::Password,
         })
     }
+}
+
+/// sudo's refusal to run without a password (`sudo -n`, or no terminal to ask on).
+pub fn password_refused(stderr: &str) -> bool {
+    stderr.contains("a password is required") || stderr.contains("a terminal is required")
+}
+
+/// `docker ps` from `sudo -n docker ps -aq`: the command and its subcommand, as in `sudo:`.
+fn sudo_words(cmd: &Cmd) -> String {
+    let line = cmd.remote_line();
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .skip_while(|w| *w != "sudo")
+        .skip(1)
+        .filter(|w| *w != "-n")
+        .collect();
+    let n = if words.get(1).is_some_and(|w| !w.starts_with('-')) {
+        2
+    } else {
+        1
+    };
+    words[..n.min(words.len())].join(" ")
 }
 
 #[cfg(test)]
@@ -128,6 +159,8 @@ mod tests {
             r.privileged(&["smartctl", "-H", "/dev/sda"]).unwrap_err(),
             SrvError::NeedsSudo("smartctl".into())
         );
+        assert_eq!(sudo_words(&c), "docker ps");
+        assert!(password_refused("sudo: a password is required\n"));
         assert_eq!(
             r.sh("cat /proc/loadavg; echo x").remote_line(),
             "env LC_ALL=C sh -c 'cat /proc/loadavg; echo x'"

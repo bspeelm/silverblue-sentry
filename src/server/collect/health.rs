@@ -87,6 +87,9 @@ pub fn smart(r: &Remote, dev: &str) -> Result<Smart, SrvError> {
     // says what happened either way.
     let o = c.run()?;
     if o.stdout.trim().is_empty() {
+        if crate::server::remote::password_refused(&o.stderr) {
+            return Err(SrvError::SudoPassword("smartctl".into()));
+        }
         return Err(SrvError::Failed(o.stderr.trim().to_string()));
     }
     Ok(parse_smart(dev, &o.stdout))

@@ -65,11 +65,17 @@ pub fn journal(r: &Remote) -> Result<Vec<JournalUnit>, SrvError> {
 
 /// Listening sockets; with process names when `ss -tulpn` is allowed through sudo.
 pub fn listeners(r: &Remote) -> Result<Vec<net::Listener>, SrvError> {
+    let plain = r.cmd("ss").arg("-tulnH");
     let c = r
         .privileged(&["ss", "-tulpnH"])
         .or_else(|_| r.privileged(&["ss", "-tulpn", "-H"]))
-        .unwrap_or_else(|_| r.cmd("ss").arg("-tulnH"));
-    Ok(net::parse_listen(&r.output(&c)?))
+        .unwrap_or_else(|_| plain.clone());
+    let out = match r.output(&c) {
+        // sudo wants a password: the sockets without their process names.
+        Err(SrvError::SudoPassword(_)) => r.output(&plain)?,
+        o => o?,
+    };
+    Ok(net::parse_listen(&out))
 }
 
 pub fn disks(r: &Remote) -> Result<Vec<disk::Mount>, SrvError> {

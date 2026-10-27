@@ -1299,6 +1299,10 @@ pub fn status_text(v: &View) -> Vec<String> {
         .collect()
 }
 
+pub fn selected_upgrade<'a>(v: &View<'a>) -> Option<&'a Pkg> {
+    upgrade_list(v).get(v.cur).copied()
+}
+
 pub fn selected_finding<'a>(v: &View<'a>) -> Option<&'a Finding> {
     findings(v).get(v.cur).copied()
 }

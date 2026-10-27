@@ -71,7 +71,7 @@ impl<T> Default for Slot<T> {
 }
 
 impl<T> Slot<T> {
-    fn set(&mut self, r: Result<T, SrvError>) {
+    pub fn set(&mut self, r: Result<T, SrvError>) {
         match r {
             Ok(v) => {
                 self.value = Some(v);

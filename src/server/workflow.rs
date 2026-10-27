@@ -1,6 +1,8 @@
 //! Server workflows: the same TOML format and state machine as the local ones
 //! (`workflows::runner`), with server built-ins and conditions read over ssh. Definitions live in
-//! `~/.config/sentry/server-workflows/`, runs in `~/.local/share/sentry/servers/<name>/workflows/`.
+//! `~/.config/sentry/servers/<name>/workflows/` when that has any (a server's own, replacing
+//! the generic ones), otherwise `~/.config/sentry/server-workflows/` (seeded); runs in
+//! `~/.local/share/sentry/servers/<name>/workflows/`.
 //!
 //! Steps run on the server (`sh -c` over ssh); a step that starts with `sentry-server cond` runs
 //! here and checks the server, so verification needs nothing installed there.
@@ -56,6 +58,33 @@ pub fn dir() -> PathBuf {
     paths::config_dir().join("server-workflows")
 }
 
+/// A server's own workflows: these replace the generic ones when there are any.
+pub fn server_dir(server: &str) -> PathBuf {
+    paths::config_dir()
+        .join("servers")
+        .join(server)
+        .join("workflows")
+}
+
+fn tomls(d: &std::path::Path) -> Vec<PathBuf> {
+    std::fs::read_dir(d)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect()
+}
+
+/// Where a server's workflows come from: its own directory if it has any, else the generic one.
+pub fn dir_for(server: &str) -> PathBuf {
+    pick_dir(server_dir(server), dir())
+}
+
+fn pick_dir(own: PathBuf, generic: PathBuf) -> PathBuf {
+    if tomls(&own).is_empty() { generic } else { own }
+}
+
 fn root(server: &str) -> PathBuf {
     paths::data_dir()
         .join("servers")
@@ -63,17 +92,20 @@ fn root(server: &str) -> PathBuf {
         .join("workflows")
 }
 
-/// Every server workflow (seeded first), with its lint result.
-pub fn list() -> Vec<Entry> {
-    let d = dir();
-    let _ = std::fs::create_dir_all(&d);
-    let _ = workflows::seed_with(&d, SEEDS, &[]);
-    let mut v: Vec<Entry> = std::fs::read_dir(&d)
+/// A server's workflows, with their lint results: its own if it has any, else the generic ones
+/// (seeded first).
+pub fn list_for(server: &str) -> Vec<Entry> {
+    let d = dir_for(server);
+    if d == dir() {
+        let _ = std::fs::create_dir_all(&d);
+        let _ = workflows::seed_with(&d, SEEDS, &[]);
+    }
+    load_dir(&d)
+}
+
+fn load_dir(d: &std::path::Path) -> Vec<Entry> {
+    let mut v: Vec<Entry> = tomls(d)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
         .map(|p| {
             let mut e = workflows::load_path_with(&p, &RULES);
             if let Ok(w) = &e.wf {
@@ -262,11 +294,38 @@ pub enum LogKind {
 pub enum Exec {
     /// Stream into the log.
     Stream { cmd: Cmd, idx: usize },
-    /// Hand over the terminal (sudo that asks for a password).
-    Tty { cmd: Cmd, idx: usize },
-    /// `sudo systemctl reboot`; the app then waits for a new boot id.
-    Reboot { cmd: Cmd },
+    /// Hand over the terminal (sudo that asks for a password). The output is also written to
+    /// `capture` on the server, read back into the step's log afterwards (`tty_output`).
+    Tty {
+        cmd: Cmd,
+        idx: usize,
+        capture: String,
+    },
+    /// `sudo systemctl reboot`; the app then waits for a new boot id. `tty`: sudo asks for a
+    /// password, so the terminal is handed over for it.
+    Reboot { cmd: Cmd, tty: bool },
 }
+
+/// A streamed step can't answer a password prompt: its `sudo` fails at once instead of
+/// waiting on a prompt nobody sees.
+pub fn no_prompt(cmd: &str) -> String {
+    format!("sudo() {{ command sudo -n \"$@\"; }}\n{cmd}")
+}
+
+/// A step run with the terminal handed over: its output still goes to the terminal, and to
+/// `capture` (under the login's home on the server) so it lands in the step's log. The exit
+/// code is the command's, not tee's.
+pub fn tee_to(cmd: &str, capture: &str) -> String {
+    format!(
+        "f=\"$HOME/{capture}\"; mkdir -p \"${{f%/*}}\" || exit 1\n\
+         {{ ( {cmd}\n) 2>&1; echo $? >\"$f.rc\"; }} | tee \"$f\"\n\
+         exit \"$(cat \"$f.rc\" 2>/dev/null || echo 1)\""
+    )
+}
+
+/// What a step that sudo refused says on its card.
+pub const SUDO_REFUSED: &str =
+    "sudo asked for a password · r retries with the terminal handed over";
 
 pub struct Live {
     pub id: u64,
@@ -286,6 +345,8 @@ pub struct Session {
     /// Auto steps may run (the user opened the Workflows tab or started the run).
     pub armed: bool,
     pub error: Option<String>,
+    /// The running step's output had sudo refusing to run without a password.
+    sudo_refused: bool,
     env: RemoteEnv,
 }
 
@@ -299,6 +360,7 @@ impl Session {
             live: None,
             armed: false,
             error: None,
+            sudo_refused: false,
             env: RemoteEnv { r },
         };
         s.refresh();
@@ -315,7 +377,12 @@ impl Session {
         Some(s)
     }
 
-    pub fn begin(entry: &Entry, r: &Remote) -> anyhow::Result<Self> {
+    /// Start a run. `vars`: the workflow's `[vars]`, asked for before it starts.
+    pub fn begin(
+        entry: &Entry,
+        r: &Remote,
+        vars: BTreeMap<String, String>,
+    ) -> anyhow::Result<Self> {
         if let Some(why) = entry.blocked() {
             anyhow::bail!("{}: {why}", entry.name);
         }
@@ -333,7 +400,7 @@ impl Session {
             &root(&r.name),
             &entry.name,
             &text,
-            RunState::new(&entry.name, &ids, BTreeMap::new()),
+            RunState::new(&entry.name, &ids, vars),
         )?;
         let mut s = Self::new(wf.clone(), run, r.clone());
         s.armed = true;
@@ -422,7 +489,8 @@ impl Session {
         let n = self.wf.steps.len();
         let header = format!("▶ {}/{n} {}", idx + 1, self.title(idx));
         self.push(header, LogKind::Info);
-        self.push(format!("$ {cmd}"), LogKind::Cmd);
+        // One line in the view (the step's log file keeps the command as written).
+        self.push(format!("$ {}", cmd.replace('\n', " ⏎ ")), LogKind::Cmd);
         let boot = self.env.boot_id();
         runner::start(&mut self.run.state, idx, boot);
         self.save();
@@ -436,13 +504,31 @@ impl Session {
                 .timeout(None),
             None => self.env.r.sh(&cmd).timeout(None),
         };
-        let needs_password = runner::needs_tty(&cmd) && sudo == Some(SudoMode::Password);
-        Some(if needs_password {
+        let local = cmd.starts_with("sentry-server ");
+        let uses_sudo = !local && runner::needs_tty(&cmd);
+        self.sudo_refused = false;
+        Some(if uses_sudo && sudo == Some(SudoMode::Password) {
             self.push(
                 "(sudo asks for a password: the terminal is handed over)",
                 LogKind::Info,
             );
-            Exec::Tty { cmd: full, idx }
+            let capture = format!(
+                ".cache/sentry-server/{}-{id}.out",
+                self.run
+                    .dir
+                    .file_name()
+                    .map_or("run".into(), |n| n.to_string_lossy())
+            );
+            Exec::Tty {
+                cmd: self.env.r.sh(&tee_to(&cmd, &capture)).timeout(None),
+                idx,
+                capture,
+            }
+        } else if uses_sudo {
+            Exec::Stream {
+                cmd: self.env.r.sh(&no_prompt(&cmd)).timeout(None),
+                idx,
+            }
         } else {
             Exec::Stream { cmd: full, idx }
         })
@@ -478,14 +564,15 @@ impl Session {
                     "↻ rebooting the server · sentry-server waits for it to come back",
                     LogKind::Info,
                 );
-                let cmd = match sudo {
-                    Some(SudoMode::NoPasswd) => {
-                        self.env.r.cmd("sudo").args(["-n", "systemctl", "reboot"])
-                    }
-                    _ => self.env.r.cmd("sudo").args(["systemctl", "reboot"]),
+                let tty = sudo != Some(SudoMode::NoPasswd);
+                let cmd = if tty {
+                    self.env.r.cmd("sudo").args(["systemctl", "reboot"])
+                } else {
+                    self.env.r.cmd("sudo").args(["-n", "systemctl", "reboot"])
                 };
                 Ok(Some(Exec::Reboot {
                     cmd: cmd.timeout(None),
+                    tty,
                 }))
             }
             Next::Shell(_) => Err("shell steps aren't supported on servers".into()),
@@ -566,6 +653,9 @@ impl Session {
 
     /// Output line of the running step: into the view and the step's log file.
     pub fn on_line(&mut self, text: &str) {
+        if super::remote::password_refused(text) {
+            self.sudo_refused = true;
+        }
         if let Some(l) = &self.live {
             let id = self.wf.steps[l.idx].id.clone();
             self.run.append_log(&id, text);
@@ -576,7 +666,8 @@ impl Session {
     pub fn on_exit(&mut self, idx: usize, code: i32) {
         self.live = None;
         let id = self.wf.steps[idx].id.clone();
-        runner::complete(&self.wf, &mut self.run.state, idx, code, None, &self.env);
+        let note = (code != 0 && self.sudo_refused).then(|| SUDO_REFUSED.to_string());
+        runner::complete(&self.wf, &mut self.run.state, idx, code, note, &self.env);
         if code == 0 {
             self.push(format!("✓ {id} done"), LogKind::Ok);
         } else {
@@ -588,6 +679,46 @@ impl Session {
         self.refresh();
         if self.done() {
             self.push(format!("✓ {} complete", self.wf.name), LogKind::Ok);
+        }
+    }
+
+    /// The next step runs `sudo` on the server (or is a reboot).
+    pub fn next_uses_sudo(&self) -> bool {
+        let Some(i) = self.next.idx() else {
+            return false;
+        };
+        let step = &self.wf.steps[i];
+        step.kind == Kind::Reboot
+            || step
+                .run
+                .as_deref()
+                .is_some_and(|r| !r.starts_with("sentry-server ") && runner::needs_tty(r))
+    }
+
+    /// Whether sudo refused the last step for want of a password (the app checks sudo again).
+    pub fn sudo_refused(&self) -> bool {
+        self.sudo_refused
+    }
+
+    /// After a step that had the terminal: read its output back from the server into the
+    /// step's log, and delete it there.
+    pub fn tty_output(&mut self, idx: usize, capture: &str) {
+        let id = self.wf.steps[idx].id.clone();
+        let r = &self.env.r;
+        let script =
+            format!("f=\"$HOME/{capture}\"; cat \"$f\" 2>/dev/null; rm -f \"$f\" \"$f.rc\"");
+        match r.output(&r.sh(&script)) {
+            Ok(text) => {
+                for l in crate::exec::clean_lines(&text) {
+                    self.run.append_log(&id, &l);
+                    self.push(l, LogKind::Out);
+                }
+            }
+            Err(e) => {
+                let msg = format!("(couldn't read the step's output back: {e})");
+                self.run.append_log(&id, &msg);
+                self.push(msg, LogKind::Err);
+            }
         }
     }
 
@@ -657,7 +788,9 @@ pub fn cond_cli(r: &Remote, name: &str, wait: Option<u64>) -> u8 {
             }
             Ok((false, why)) => println!("… {why}"),
             // Waiting won't fix these.
-            Err(e @ (SrvError::NeedsSudo(_) | SrvError::NotFound(_))) => {
+            Err(
+                e @ (SrvError::NeedsSudo(_) | SrvError::SudoPassword(_) | SrvError::NotFound(_)),
+            ) => {
                 println!("✗ {e}");
                 return 2;
             }
@@ -691,6 +824,72 @@ mod tests {
                 .iter()
                 .any(|i| i.msg.contains("newest_kernel"))
         );
+    }
+
+    /// Run a wrapper script with a local `sh`, in a scratch HOME with a fake `sudo` first on
+    /// PATH that prints its arguments.
+    fn run_sh(script: &str) -> (i32, String, std::path::PathBuf) {
+        let home = std::env::temp_dir().join(format!(
+            "sentry-wrap-{}-{}",
+            std::process::id(),
+            script.len()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("bin/sudo"), "#!/bin/sh\necho \"sudo got: $*\"\n").unwrap();
+        crate::exec::Cmd::local("chmod")
+            .args(["+x", &home.join("bin/sudo").display().to_string()])
+            .run()
+            .unwrap();
+        let wrapped = format!(
+            "HOME={0}; PATH={0}/bin:$PATH\n{script}",
+            crate::exec::sh_quote(&home.display().to_string())
+        );
+        let o = crate::exec::Cmd::local("sh")
+            .args(["-c", &wrapped])
+            .run()
+            .unwrap();
+        (o.code, o.stdout, home)
+    }
+
+    #[test]
+    fn streamed_sudo_never_prompts() {
+        let (code, out, _) = run_sh(&no_prompt("sudo apt-get update && echo next"));
+        assert_eq!(code, 0);
+        assert_eq!(out, "sudo got: -n apt-get update\nnext\n");
+    }
+
+    #[test]
+    fn handed_over_steps_keep_output_and_exit_code() {
+        let cap = ".cache/sentry-server/run-1-update.out";
+        let (code, out, home) = run_sh(&tee_to("echo out; echo err >&2\nexit 3", cap));
+        assert_eq!(code, 3, "the command's exit code, not tee's");
+        assert!(out.contains("out") && out.contains("err"), "{out}");
+        let saved = std::fs::read_to_string(home.join(cap)).unwrap();
+        assert!(
+            saved.contains("out\n") && saved.contains("err\n"),
+            "{saved}"
+        );
+        let (code, _, _) = run_sh(&tee_to("true", cap));
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn a_servers_own_workflows_replace_the_generic_ones() {
+        let base = std::env::temp_dir().join(format!("sentry-wfdir-{}", std::process::id()));
+        let (own, generic) = (base.join("own"), base.join("generic"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&generic).unwrap();
+        // No directory, or one without workflows: the generic ones.
+        assert_eq!(pick_dir(own.clone(), generic.clone()), generic);
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("notes.txt"), "x").unwrap();
+        assert_eq!(pick_dir(own.clone(), generic.clone()), generic);
+        std::fs::write(own.join("bump.toml"), SEEDS[1].1).unwrap();
+        assert_eq!(pick_dir(own.clone(), generic.clone()), own);
+        let names: Vec<String> = load_dir(&own).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["bump"]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

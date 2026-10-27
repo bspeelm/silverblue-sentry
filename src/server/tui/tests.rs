@@ -651,7 +651,7 @@ fn ask_claude_about_a_finding_and_run_its_proposal() {
 #[test]
 fn claude_gets_only_the_gateway() {
     let r = Remote::new("myserver", &cfg());
-    let p = super::ask::profile(&r, "Debian 13", "6.12");
+    let p = super::ask::profile(&r, "Debian 13", "6.12", None);
     assert_eq!(p.allowed, ["Bash(sentry-server exec myserver:*)"]);
     assert_eq!(p.tools, ["Bash"]);
     assert!(p.denied.contains(&"Bash(ssh:*)".to_string()));
@@ -813,4 +813,254 @@ fn slash_filters_the_tab() {
     assert!(!screen(&mut a).contains("│ db"));
     key(&mut a, KeyCode::Esc);
     assert!(screen(&mut a).contains("│ db"));
+}
+
+/// Read-only against the real server: `A` on Updates and Workflows opens the consent box
+/// (nothing is sent). `SENTRY_SERVER_LIVE=<name> cargo test live_ask_boxes -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_ask_boxes() {
+    let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    for tab in [Tab::Updates, Tab::Workflows] {
+        let t0 = Instant::now();
+        a.enter(tab, Instant::now());
+        // Ask straight away (as you would), then again once the tab has loaded.
+        key(&mut a, KeyCode::Char('A'));
+        println!("{tab:?} at once:\n{}", render_to_string(&mut a, 158, 41));
+        key(&mut a, KeyCode::Esc);
+        while t0.elapsed() < std::time::Duration::from_secs(20) {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+            if tab != Tab::Updates || a.store.apt.value.is_some() {
+                break;
+            }
+        }
+        println!("{tab:?} loaded after {:?}", t0.elapsed());
+        key(&mut a, KeyCode::Char('A'));
+        let s = render_to_string(&mut a, 158, 41);
+        println!("{s}");
+        assert!(s.contains("Ask Claude"), "{tab:?}: no consent box");
+        key(&mut a, KeyCode::Esc);
+    }
+}
+
+#[test]
+fn workflow_vars_are_asked_before_it_starts() {
+    let mut a = app();
+    let text = "name = \"bump\"\ndescription = \"x\"\ndraft = true\n\
+        [vars.service]\nprompt = \"Which service\"\n\
+        [vars.image]\nprompt = \"New image\"\ndefault = \"example/web:2\"\n\
+        [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ service }} {{ image }}\"\n";
+    a.set_wf_entries(vec![crate::workflows::Entry {
+        name: "bump".into(),
+        path: "bump.toml".into(),
+        wf: crate::workflows::parse(text),
+        issues: Vec::new(),
+    }]);
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
+            "bump".into(),
+        ))],
+        Instant::now(),
+    );
+    // Asked in name order (image, then service): the default is filled in.
+    let s = screen(&mut a);
+    assert!(
+        s.contains("bump 1/2 · New image (image): example/web:2▏"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("bump 2/2 · Which service (service): ▏"), "{s}");
+    // No default: an empty answer isn't taken.
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("service needs a value"));
+    for c in "web".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    // All asked: it tries to start (this one is a draft, so it's refused before any run exists).
+    let s = screen(&mut a);
+    assert!(s.contains("bump: draft"), "{s}");
+    assert!(a.wf.is_none());
+    // Esc cancels the start.
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
+            "bump".into(),
+        ))],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("not started"));
+}
+
+#[test]
+fn ask_works_on_workflows_and_updates() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Workflows.key()));
+    key(&mut a, KeyCode::Char('A'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Ask Claude") && s.contains("Workflow apt-maintenance"),
+        "no run in progress: asks about the selected workflow\n{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char(Tab::Updates.key()));
+    key(&mut a, KeyCode::Char('A'));
+    let s = screen(&mut a);
+    assert!(s.contains("Ask Claude") && s.contains("Selected:"), "{s}");
+}
+
+/// Against a disposable sshd whose sudo asks for a password (never the real server): a sudo
+/// step hands over the terminal and its output lands in the step log; abandoning a running
+/// step stops it on the server. Run under a pty that types the password:
+/// `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_password_step -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_password_step() {
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    pump(&mut a, 2);
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
+    let (cmd, banner) = a
+        .take_suspend()
+        .expect("the password step hands over the terminal");
+    println!("{banner}");
+    let status = cmd.interactive();
+    a.after_suspend(status);
+    pump(&mut a, 3);
+    let w = a.wf.as_ref().unwrap();
+    let log = std::fs::read_to_string(w.run.log_path("update")).unwrap();
+    println!("--- steps/update.log\n{log}---");
+    assert!(
+        log.contains("Reading package lists"),
+        "apt's output is in the log"
+    );
+    assert!(!log.contains("password"), "the prompt isn't");
+    let after = std::fs::read_to_string(w.run.log_path("after")).unwrap();
+    assert!(
+        after.contains("after-ok"),
+        "the auto step ran next: {after}"
+    );
+    // The long step: start it, abandon, and nothing is left running there.
+    key(&mut a, KeyCode::Enter);
+    pump(&mut a, 2);
+    assert!(a.wf.as_ref().unwrap().live.is_some());
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Char('y'));
+    pump(&mut a, 2);
+    let left = a
+        .remote
+        .output(&a.remote.sh("pgrep -fx 'sleep 600' || true"))
+        .unwrap();
+    assert!(
+        left.trim().is_empty(),
+        "still running on the server: {left}"
+    );
+    let caps = a
+        .remote
+        .output(
+            &a.remote
+                .sh("ls -A ~/.cache/sentry-server 2>/dev/null || true"),
+        )
+        .unwrap();
+    assert!(caps.trim().is_empty(), "captures are deleted: {caps}");
+    println!("ok");
+}
+
+#[test]
+fn reboot_with_a_password_waits_after_the_terminal_comes_back() {
+    use std::os::unix::process::ExitStatusExt;
+    let mut a = app();
+    data(
+        &mut a,
+        Kind::Sudo,
+        Payload::Sudo(crate::server::remote::SudoMode::Password),
+    );
+    key(&mut a, KeyCode::Char('B'));
+    key(&mut a, KeyCode::Char('y'));
+    let (cmd, _) = a
+        .take_suspend()
+        .expect("hands over the terminal for the password");
+    assert!(cmd.remote_line().ends_with("sudo systemctl reboot"));
+    // ssh drops (255) as the server goes down: that's the reboot, so wait for it.
+    a.after_suspend(Ok(std::process::ExitStatus::from_raw(255 << 8)));
+    assert!(render_to_string(&mut a, 158, 41).contains("waiting for myserver to come back"));
+    // A wrong password (sudo exits 1) isn't a reboot.
+    key(&mut a, KeyCode::Char('B'));
+    key(&mut a, KeyCode::Char('y'));
+    a.take_suspend().unwrap();
+    a.after_suspend(Ok(std::process::ExitStatus::from_raw(1 << 8)));
+    assert!(render_to_string(&mut a, 158, 41).contains("reboot didn't start (exit 1)"));
+}
+
+/// Read-only against the real server: start a workflow, let its auto steps run, stop at the
+/// first step that needs Enter (never pressed), print it, abandon. Use a scratch
+/// XDG_DATA_HOME so the run stays out of the real one:
+/// `SENTRY_SERVER_LIVE=<name> SENTRY_WORKFLOW=<wf> XDG_DATA_HOME=<scratch> cargo test live_preflight -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_preflight() {
+    let (Ok(name), Ok(wf)) = (
+        std::env::var("SENTRY_SERVER_LIVE"),
+        std::env::var("SENTRY_WORKFLOW"),
+    ) else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    a.enter(Tab::Workflows, Instant::now());
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(wf))],
+        Instant::now(),
+    );
+    let until = Instant::now() + std::time::Duration::from_secs(60);
+    while Instant::now() < until {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+        let w = a.wf.as_ref().expect("started");
+        if w.live.is_none() && !matches!(w.next, crate::workflows::runner::Next::Run(_)) {
+            break;
+        }
+    }
+    println!("{}", render_to_string(&mut a, 158, 41));
+    assert!(a.take_suspend().is_none(), "nothing handed over");
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Abandon)],
+        Instant::now(),
+    );
 }

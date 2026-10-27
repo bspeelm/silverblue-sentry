@@ -22,6 +22,16 @@ fn root(r: &Remote, mode: Option<SudoMode>, argv: &[&str]) -> Result<(Cmd, bool)
     }
 }
 
+/// Keys whose action may run something as root (so sudo is checked again first).
+pub fn uses_root(tab: Tab, c: char) -> bool {
+    matches!(
+        (tab, c),
+        (Tab::Services, 'R' | 'x')
+            | (Tab::Containers, 'R' | 'p' | 'u')
+            | (Tab::Updates, 'C' | 'U' | 'B')
+    )
+}
+
 pub struct Spec<'a> {
     pub title: String,
     pub what: String,
@@ -68,6 +78,7 @@ pub fn confirm(v: &View, r: &Remote, s: Spec) -> Vec<Effect> {
             cmd,
             format!("sentry-server · {} on {}", s.title, r.name),
             s.then.clone(),
+            s.reboot,
         )
     } else {
         Effect::Run(RunSpec {

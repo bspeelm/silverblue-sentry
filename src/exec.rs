@@ -380,12 +380,9 @@ impl Cmd {
             thread::spawn(move || {
                 for chunk in BufReader::new(r).split(b'\n') {
                     let Ok(chunk) = chunk else { break };
-                    // Progress bars redraw with \r; keep the last segment.
-                    let text = String::from_utf8_lossy(&chunk);
-                    let text = text.rsplit('\r').find(|s| !s.is_empty()).unwrap_or("");
                     sink(StreamMsg::Line {
                         stderr: is_err,
-                        text: text.to_string(),
+                        text: clean_line(&String::from_utf8_lossy(&chunk)),
                     });
                 }
             })
@@ -442,6 +439,45 @@ impl Cmd {
 /// one multiplexed connection that outlives the last command by at most 15 s. Streamed and
 /// interactive ones (actions) get a connection of their own: through the shared one, killing
 /// the local client leaves the remote command running, because the master keeps its session.
+/// One line of terminal output as text: progress bars redraw with \r, so the last segment
+/// wins; colour and cursor escapes go.
+pub fn clean_line(raw: &str) -> String {
+    let last = raw.rsplit('\r').find(|s| !s.is_empty()).unwrap_or("");
+    let mut out = String::with_capacity(last.len());
+    let mut chars = last.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // CSI: parameters, then one final letter.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if c.is_ascii_alphabetic() || c == '~' {
+                            break;
+                        }
+                    }
+                }
+                // OSC (window titles): up to BEL or ESC \.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            c if c.is_control() && c != '\t' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Captured terminal output as clean lines.
+pub fn clean_lines(text: &str) -> Vec<String> {
+    text.lines().map(clean_line).collect()
+}
+
 fn ssh_opts(control: &Path, shared: bool) -> Vec<String> {
     // Tests point ssh at a throwaway server without touching ~/.ssh/config.
     let file = std::env::var("SENTRY_SSH_CONFIG")
@@ -467,7 +503,9 @@ fn ssh_opts(control: &Path, shared: bool) -> Vec<String> {
             } else {
                 vec!["ControlPath=none".to_string()]
             })
-            .flat_map(|o| ["-o".to_string(), o]),
+            .flat_map(|o| ["-o".to_string(), o])
+            // Own connections (streamed, interactive): no "Connection to … closed." in the output.
+            .chain((!shared).then(|| "-q".to_string())),
         )
         .collect()
 }
@@ -594,6 +632,17 @@ mod tests {
             .run()
             .unwrap_err();
         assert!(matches!(e, ExecError::Timeout(_)));
+    }
+
+    #[test]
+    fn terminal_output_is_cleaned() {
+        assert_eq!(
+            clean_line("0% [Working]\rHit:1 http://deb stable InRelease"),
+            "Hit:1 http://deb stable InRelease"
+        );
+        assert_eq!(clean_line("\x1b[1;31mE:\x1b[0m locked\r"), "E: locked");
+        assert_eq!(clean_line("\x1b]0;title\x07done"), "done");
+        assert_eq!(clean_lines("a\r\nb\n"), vec!["a", "b"]);
     }
 
     #[test]

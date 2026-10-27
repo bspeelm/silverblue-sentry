@@ -13,8 +13,8 @@ use crate::workflows::Entry;
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
 
-pub fn draw_list(f: &mut Frame, area: Rect, t: &Theme, entries: &[Entry], cur: usize) {
-    let b = panel(t, "Workflows", "~/.config/sentry/server-workflows/");
+pub fn draw_list(f: &mut Frame, area: Rect, t: &Theme, dir: &str, entries: &[Entry], cur: usize) {
+    let b = panel(t, "Workflows", dir);
     let r = inner(&b, area);
     f.render_widget(b, area);
     let rows: Vec<Row> = entries

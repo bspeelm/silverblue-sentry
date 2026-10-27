@@ -63,10 +63,13 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,
     },
-    /// List the server workflows (`list`) or show their lint issues (`lint`).
+    /// List a server's workflows (`list`) or show their lint issues (`lint`). A server's own
+    /// workflows live in ~/.config/sentry/servers/<name>/workflows/ and replace the generic ones.
     Workflow {
-        #[arg(default_value = "list")]
+        #[arg(default_value = "list", value_parser = ["list", "lint"])]
         what: String,
+        /// The server (needed when several are configured).
+        server: Option<String>,
     },
 }
 
@@ -79,7 +82,7 @@ fn main() -> ExitCode {
         Some(Command::Collect { server, kind }) => cli::collect(&server, &kind),
         Some(Command::Audit { name }) => cli::audit(name.as_deref()),
         Some(Command::Cond { server, name, wait }) => cli::cond(&server, &name, wait),
-        Some(Command::Workflow { what }) => cli::workflow(&what),
+        Some(Command::Workflow { what, server }) => cli::workflow(&what, server.as_deref()),
         Some(Command::Exec { server, argv }) => cli::exec(&server, &argv),
         None => cli::tui(cli.server.as_deref()),
     })

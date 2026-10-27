@@ -174,7 +174,13 @@ pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
         Ok(o) => {
             print!("{}", o.stdout);
             eprint!("{}", o.stderr);
-            if o.code != 0 && o.stderr.contains("Permission denied") {
+            if o.code != 0 && super::remote::password_refused(&o.stderr) {
+                eprintln!(
+                    "(sudo on {} asks for a password, so this can't run here: give the user \
+                     the command to run themselves)",
+                    r.name
+                );
+            } else if o.code != 0 && o.stderr.contains("Permission denied") {
                 eprintln!(
                     "(not readable as the login user; `sudo:` in server_config.yaml would allow `{}`)",
                     words.iter().take(2).copied().collect::<Vec<_>>().join(" ")
