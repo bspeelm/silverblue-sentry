@@ -1101,6 +1101,26 @@ fn live_password_step() {
         )
         .unwrap();
     assert!(caps.trim().is_empty(), "captures are deleted: {caps}");
+    // The run is in the maintenance log, and the note asked for goes into it.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("for the maintenance log, what to know next time"),
+        "{s}"
+    );
+    for c in "apt mirror was slow".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let log = crate::server::maint::log::list(&a.remote.name);
+    let e = log.first().expect("an entry");
+    println!("{}", e.to_md());
+    assert_eq!(e.head.result, "abandoned");
+    assert!(e.head.summary.starts_with("apt mirror was slow"));
+    let ledger =
+        std::fs::read_to_string(crate::server::maint::log::dir(&a.remote.name).join("LOG.md"))
+            .unwrap();
+    println!("{ledger}");
+    assert!(ledger.contains("apt mirror was slow") && ledger.contains("result:abandoned"));
     println!("ok");
 }
 
@@ -1316,7 +1336,16 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         "{s}"
     );
     assert!(s.contains("note: after Saturday's backup"), "{s}");
-    // Back to the list: the item says planned; Enter opens the plan again.
+    // Back to the list: the item says planned; p says a plan exists, P plans again.
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('p'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("web already has a plan (→ 1.5.1 · ready): Enter opens it · P plans again"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('P'));
+    assert!(screen(&mut a).contains("Plan: move web from 1.4.2 to"));
     key(&mut a, KeyCode::Esc);
     let s = screen(&mut a);
     assert!(

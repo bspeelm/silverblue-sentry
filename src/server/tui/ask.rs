@@ -28,11 +28,22 @@ pub fn assess_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>
     p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
     let notes = super::maint::resolve_notes(&r.cfg.maintenance.notes);
     p.allowed.extend(super::maint::read_rules(&notes));
+    // The maintenance log: the ledger and every entry in it.
+    let ledger = super::maint::ledger_path(&r.name);
+    let log_dir = std::path::Path::new(&ledger)
+        .parent()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    p.allowed.push(format!("Read(/{log_dir}/**)"));
     let mut dirs: Vec<String> = notes
         .iter()
         .filter_map(|n| std::path::Path::new(n).parent())
         .map(|d| d.display().to_string())
         .collect();
+    // Claude Code can only add a directory that exists (the log appears with the first run).
+    if std::path::Path::new(&log_dir).is_dir() {
+        dirs.push(log_dir);
+    }
     dirs.sort();
     dirs.dedup();
     p.dirs = dirs;

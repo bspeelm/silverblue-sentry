@@ -371,7 +371,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     let mut keys = vec!["A assess"];
     if it.workflow.is_some() || it.retire.as_ref().is_some_and(|r| r.workflow.is_some()) {
         keys.push(if v.plans.contains_key(&s.id) {
-            "p re-plan"
+            "Enter opens the plan · P plans again"
         } else {
             "p plan"
         });
@@ -411,7 +411,22 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
                 .collect();
             vec![Effect::Choose(format!("Review {} later", s.id), choices)]
         }
-        'p' => {
+        // A plan already there: say so, rather than quietly replacing it.
+        'p' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
+            let what = match v.plans.get(&s.id) {
+                Some(p) => format!(
+                    "→ {} · {}",
+                    p.head.to.as_deref().unwrap_or("retire"),
+                    p.head.status.word()
+                ),
+                None => "being written".into(),
+            };
+            vec![Effect::Toast(format!(
+                "{} already has a plan ({what}): Enter opens it · P plans again",
+                s.id
+            ))]
+        }
+        'p' | 'P' => {
             let Some(wf) = workflow_of(it) else {
                 return vec![Effect::Toast(format!(
                     "{} has no workflow: (or retire: workflow:) in server_config.yaml",
@@ -552,20 +567,17 @@ pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
             })
             .into_iter()
             .collect();
-    let history: Vec<String> = maint::history(&r.name, &s.id)
+    // This item's own entries; the ledger has everything else.
+    let history: Vec<String> = maint::log::for_item(&r.name, &s.id)
         .iter()
         .take(5)
-        .map(|c| {
-            format!(
-                "{} {} → {} via {} ({})",
-                c.at.strftime("%Y-%m-%d"),
-                c.from.as_deref().unwrap_or("?"),
-                c.to.as_deref().unwrap_or("?"),
-                c.workflow,
-                c.result
-            )
-        })
+        .map(|e| e.line())
         .collect();
+    let ledger = if maint::log::dir(&r.name).join("LOG.md").exists() {
+        ledger_path(&r.name)
+    } else {
+        "none yet (no maintenance has been logged on this server)".into()
+    };
     let what = if let Some(img) = &it.image {
         format!(
             "image ({})",
@@ -594,7 +606,9 @@ pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
         "Server `{}`. Maintenance item `{}`: {what}, tier {} (green: routine, amber: has a rollback \
          step, red: can break the server or needs a window).\nsource: {}\npinned: {}\nrunning: {}\n\
          newest upstream: {}\nnewer releases: {}\nheld because: {}\nconstraint: {}\nreview by: {}\n\
-         end of life: {}\nworkflow that changes it: {}\nwhat runs it: {}\nchanges so far: {}{notes}",
+         end of life: {}\nworkflow that changes it: {}\nwhat runs it: {}\nthis item in the maintenance log: {}\n\
+         maintenance ledger (every run on this server, with a one-line summary and tags each; \
+         start there and read the entries that bear on this): {ledger}{notes}",
         r.name,
         s.id,
         s.tier.as_str(),
@@ -628,6 +642,31 @@ pub fn context(v: &View, r: &Remote, s: &Status, it: &MaintItem) -> String {
         },
     );
     ctx
+}
+
+/// The ledger's path as Claude Code sees it (its permission checks use the real path).
+pub fn ledger_path(server: &str) -> String {
+    real_path(&maint::log::dir(server).join("LOG.md"))
+}
+
+/// A path with its symlinks resolved, even when its end doesn't exist yet (nothing is created).
+fn real_path(p: &std::path::Path) -> String {
+    let mut base = p.to_path_buf();
+    let mut rest = Vec::new();
+    while !base.exists() {
+        match (base.file_name().map(|n| n.to_owned()), base.parent()) {
+            (Some(n), Some(parent)) => {
+                rest.push(n);
+                base = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut real = std::fs::canonicalize(&base).unwrap_or(base);
+    for n in rest.into_iter().rev() {
+        real.push(n);
+    }
+    real.display().to_string()
 }
 
 /// Notes paths as Claude Code sees them: `~` expanded and symlinks resolved (its permission

@@ -54,6 +54,8 @@ pub enum Effect {
     Inventory,
     /// Run the reads Claude asked for with sudo (after a confirm), and send it the output.
     SudoReads(Vec<Vec<String>>, ReadsFor),
+    /// The user skipped the reads a plan waits for: Claude writes it without them.
+    ReadsSkipped,
     /// Open an item's plan in the Plan view.
     PlanOpen(String),
     /// Claude writes the plan (after the confirm box): item, the new plan, the request.
@@ -176,6 +178,8 @@ pub struct App {
     pub tab: Tab,
     cursors: [usize; 7],
     modal: Option<Modal>,
+    /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
+    modal_no: Option<(String, Vec<Effect>)>,
     toast: Option<(String, Instant)>,
     sched: Sched,
     pane: Option<Pane>,
@@ -189,6 +193,12 @@ pub struct App {
     inventory_at: Option<jiff::Timestamp>,
     /// The maintenance change the running workflow makes (logged when it ends).
     wf_change: Option<crate::server::maint::Change>,
+    /// The run already written to the maintenance log.
+    wf_logged: Option<std::path::PathBuf>,
+    /// The log entry waiting for its note, and the note typed so far.
+    log_note: Option<(crate::server::maint::log::LogEntry, String)>,
+    /// Tests: the last entry written with a note.
+    pub last_log: Option<crate::server::maint::log::LogEntry>,
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
     /// The open chat is an assessment (its follow-ups keep the web and notes access).
@@ -247,6 +257,7 @@ impl App {
             tab: Tab::Overview,
             cursors: [0; 7],
             modal: None,
+            modal_no: None,
             toast: None,
             sched: Sched::default(),
             pane: None,
@@ -256,6 +267,9 @@ impl App {
             suspend_inventory: false,
             inventory_at: None,
             wf_change: None,
+            wf_logged: None,
+            log_note: None,
+            last_log: None,
             suspend_edit: false,
             chat_assess: false,
             assess_item: None,
@@ -677,6 +691,10 @@ impl App {
             self.revise_key(k);
             return;
         }
+        if self.log_note.is_some() && self.modal.is_none() {
+            self.log_note_key(k);
+            return;
+        }
         if self.plan_view.is_some()
             && self.modal.is_none()
             && self.chooser.is_none()
@@ -742,11 +760,18 @@ impl App {
         if let Some(m) = self.modal.take() {
             match a {
                 Action::Char('y') | Action::Enter if m.yes.is_some() => {
+                    self.modal_no = None;
                     let effects = m.yes.map(|(_, e)| e).unwrap_or_default();
                     self.apply(effects, now);
                 }
                 // `n` is bound to "next match" globally.
-                Action::Char('n') | Action::NextMatch | Action::Esc | Action::Quit => {}
+                Action::Char('n') | Action::NextMatch | Action::Esc | Action::Quit => {
+                    if let Some((title, effects)) = self.modal_no.take()
+                        && title == m.title
+                    {
+                        self.apply(effects, now);
+                    }
+                }
                 Action::Enter if m.yes.is_none() => {}
                 _ => self.modal = Some(m),
             }
@@ -916,6 +941,7 @@ impl App {
                     self.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
                 Effect::PlanWrite(id, doc, prompt) => self.write_plan(id, doc, prompt, None),
                 Effect::Snooze(id, until) => {
                     match crate::server::maint::snooze(&self.remote.name, &id, until) {
@@ -1187,30 +1213,114 @@ impl App {
         let Some(s) = self.wf.as_ref().filter(|s| s.done()) else {
             return;
         };
-        let Some(mut c) = self.wf_change.take() else {
+        if self.wf_logged.as_ref() == Some(&s.run.dir) {
             return;
-        };
-        use crate::workflows::state::RunStatus;
-        c.result = match s.run.state.status {
-            RunStatus::Done => "done",
-            RunStatus::Abandoned => "abandoned",
-            RunStatus::InProgress => "in progress",
         }
-        .into();
-        c.at = jiff::Timestamp::now();
-        // A plan carried out is done with; an abandoned run leaves it for next time.
-        let done = c.result == "done";
-        let applied = if done {
-            self.store.plans.remove(&c.item)
-        } else {
-            None
-        };
+        self.wf_logged = Some(s.run.dir.clone());
+        use crate::server::maint::{log, plan};
+        use crate::workflows::state::RunStatus;
+        let done = s.run.state.status == RunStatus::Done;
+        let change = self.wf_change.take();
+        // A plan carried out is done with (it moves to plans/done/); an abandoned run leaves it.
+        let mut plan_path = None;
+        if let Some(c) = &change
+            && done
+            && let Some(doc) = self.store.plans.remove(&c.item)
+        {
+            plan_path = if self.offline {
+                Some(plan::path(&self.remote.name, &c.item))
+            } else {
+                plan::close(&doc, PlanStatus::Done).ok()
+            };
+        }
+        let info = change.as_ref().map(|c| {
+            let it = self
+                .remote
+                .cfg
+                .maintenance
+                .items
+                .iter()
+                .find(|i| i.id == c.item);
+            log::ItemInfo {
+                item: c.item.clone(),
+                kind: it.map_or("system", item_kind).to_string(),
+                tier: it.map_or("amber", |i| i.tier.as_str()).to_string(),
+                from: c.from.clone(),
+                to: c.to.clone(),
+                plan: plan_path,
+            }
+        });
+        let entry = log::LogEntry::from_run(
+            &self.remote.name,
+            &s.wf,
+            &s.run.state,
+            &s.run.dir,
+            info.as_ref(),
+            None,
+        );
         if !self.offline {
-            let _ = crate::server::maint::log_change(&self.remote.name, &c);
-            if let Some(doc) = applied {
-                let _ = crate::server::maint::plan::close(&doc, PlanStatus::Done);
+            if let Err(e) = log::write(&entry) {
+                self.toast(&format!("couldn't write the maintenance log: {e}"));
             }
             self.fetch(Kind::Maint);
+        }
+        // What to know next time: asked now, while it's fresh.
+        self.log_note = Some((entry, String::new()));
+    }
+
+    /// The note for the maintenance log: Enter saves it (empty is fine), Esc leaves none.
+    fn log_note_key(&mut self, k: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let Some((_, buf)) = self.log_note.as_mut() else {
+            return;
+        };
+        self.dirty = true;
+        match k.code {
+            KeyCode::Char(c) => buf.push(c),
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Esc => self.log_note = None,
+            KeyCode::Enter => {
+                let Some((entry, note)) = self.log_note.take() else {
+                    return;
+                };
+                let note = note.trim();
+                if note.is_empty() {
+                    return;
+                }
+                let Some(s) = self.wf.as_ref() else { return };
+                // Rebuilt with the note (it replaces the entry written when the run ended).
+                let info =
+                    entry
+                        .head
+                        .item
+                        .as_ref()
+                        .map(|item| crate::server::maint::log::ItemInfo {
+                            item: item.clone(),
+                            kind: entry.head.kind.clone(),
+                            tier: entry.head.tier.clone().unwrap_or_default(),
+                            from: entry.head.from.clone(),
+                            to: entry.head.to.clone(),
+                            plan: entry.head.plan.clone().map(Into::into),
+                        });
+                let with_note = crate::server::maint::log::LogEntry::from_run(
+                    &self.remote.name,
+                    &s.wf,
+                    &s.run.state,
+                    &s.run.dir,
+                    info.as_ref(),
+                    Some(note),
+                );
+                if !self.offline
+                    && let Err(e) = crate::server::maint::log::write(&with_note)
+                {
+                    return self.toast(&format!("couldn't write the note: {e}"));
+                }
+                self.last_log = Some(with_note);
+                self.toast("noted in the maintenance log");
+            }
+            _ => {}
         }
     }
 
@@ -1722,6 +1832,17 @@ impl App {
         }
     }
 
+    /// Another turn for the plan being written (in its Claude session).
+    fn writer_follow(&mut self, prompt: String) {
+        match self.writer.as_ref() {
+            Some(w) if !w.running() => {
+                let (id, doc, session) = (w.item.clone(), w.doc.clone(), w.session.clone());
+                self.write_plan(id, doc, prompt, session);
+            }
+            _ => self.toast("the plan isn't being written any more"),
+        }
+    }
+
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
     fn writer_turn_ended(&mut self) {
         let Some(w) = self.writer.as_mut() else {
@@ -1729,6 +1850,20 @@ impl App {
         };
         let mut doc = w.doc.clone();
         doc.head.session = w.session.clone().or(doc.head.session);
+        // Waiting for reads that need root: no plan yet; ask for them.
+        if w.answer.as_deref().is_some_and(planview::waits_for_reads) {
+            w.doc.head.session = w.session.clone().or(w.doc.head.session.clone());
+            w.doing = "waiting for reads that need root".into();
+            if !self.offline {
+                let reads = crate::server::gateway::take_reads(&self.remote.name);
+                if reads.is_empty() {
+                    // Nothing queued after all: have it write the plan.
+                    return self.writer_follow(planview::reads_skipped());
+                }
+                self.reads_box(reads, ReadsFor::Plan);
+            }
+            return;
+        }
         let msg = match (&w.answer, &w.err) {
             (Some(a), _) if !a.trim().is_empty() => {
                 doc.take_answer(a);
@@ -2157,12 +2292,18 @@ impl App {
              output goes back to Claude, which then continues.",
             t.s(t.yellow),
         ));
+        let skip = match to {
+            // The plan waits for an answer either way.
+            ReadsFor::Plan => vec![Effect::ReadsSkipped],
+            ReadsFor::Chat => Vec::new(),
+        };
         self.modal = Some(Modal {
             title: "Claude asks to read with sudo".into(),
             color: t.yellow,
             lines,
             yes: Some(("read".into(), vec![Effect::SudoReads(reads, to)])),
         });
+        self.modal_no = Some(("Claude asks to read with sudo".into(), skip));
     }
 
     /// The reads ran: send their output back to Claude.
@@ -2209,13 +2350,7 @@ impl App {
         }
         text.push_str("\nContinue from here.");
         match to {
-            ReadsFor::Plan => match self.writer.as_ref() {
-                Some(w) if !w.running() => {
-                    let (id, doc, session) = (w.item.clone(), w.doc.clone(), w.session.clone());
-                    self.write_plan(id, doc, planview::reads_back(&text), session);
-                }
-                _ => self.toast("the plan isn't being written any more: the output wasn't sent"),
-            },
+            ReadsFor::Plan => self.writer_follow(planview::reads_back(&text)),
             _ if self.chat.is_some() => self.ask_turn(AskTurn::Follow(text)),
             _ => self.toast("the conversation is closed: the output wasn't sent"),
         }
@@ -2650,6 +2785,25 @@ impl App {
             );
             return;
         }
+        if let Some((e, buf)) = &self.log_note {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{} {} · for the maintenance log, what to know next time (optional): ",
+                            e.head.item.as_deref().unwrap_or(&e.head.workflow),
+                            e.head.result
+                        ),
+                        t.dim(),
+                    ),
+                    Span::styled(buf.clone(), t.fg()),
+                    Span::styled("▏", t.s(t.cyan)),
+                    Span::styled("   Enter save · Esc none", t.dim()),
+                ])),
+                area,
+            );
+            return;
+        }
         if let Some(buf) = &self.revise_input {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -2856,6 +3010,21 @@ impl crate::tui::Ui for App {
     }
     fn tick(&mut self, now: Instant) {
         App::tick(self, now);
+    }
+}
+
+/// What a maintenance item is, for the log.
+fn item_kind(it: &crate::server::config::MaintItem) -> &'static str {
+    if it.retire.is_some() {
+        "retire"
+    } else if it.image.is_some() {
+        "image"
+    } else if !it.apt.is_empty() {
+        "packages"
+    } else if it.version_cmd.is_some() {
+        "app"
+    } else {
+        "release"
     }
 }
 

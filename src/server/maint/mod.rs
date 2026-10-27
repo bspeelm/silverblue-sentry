@@ -4,6 +4,7 @@
 
 pub mod eval;
 pub mod local;
+pub mod log;
 pub mod plan;
 pub mod upstream;
 pub mod version;
@@ -131,37 +132,19 @@ pub struct Change {
     pub result: String,
 }
 
-fn log_path(server: &str) -> PathBuf {
-    paths::data_dir()
-        .join("servers")
-        .join(server)
-        .join("maintenance.jsonl")
-}
-
-pub fn log_change(server: &str, c: &Change) -> anyhow::Result<()> {
-    use std::io::Write;
-    let p = log_path(server);
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)?;
-    writeln!(f, "{}", serde_json::to_string(c)?)?;
-    Ok(())
-}
-
-/// An item's changes, newest first.
+/// An item's changes, newest first (from the maintenance log).
 pub fn history(server: &str, item: &str) -> Vec<Change> {
-    let mut v: Vec<Change> = std::fs::read_to_string(log_path(server))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Change>(l).ok())
-        .filter(|c| c.item == item)
-        .collect();
-    v.reverse();
-    v
+    log::for_item(server, item)
+        .into_iter()
+        .map(|e| Change {
+            at: e.head.ended.or(e.head.started).unwrap_or_default(),
+            item: item.to_string(),
+            from: e.head.from,
+            to: e.head.to,
+            workflow: e.head.workflow,
+            result: e.head.result,
+        })
+        .collect()
 }
 
 #[cfg(test)]

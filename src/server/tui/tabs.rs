@@ -182,7 +182,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
-        (Tab::Maint, 'z' | 'p' | 'x') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'P' | 'x') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         _ => Vec::new(),
     }

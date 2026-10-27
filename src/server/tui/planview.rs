@@ -118,11 +118,18 @@ pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Pr
         "You write maintenance execution plans for the server `{name}` ({os}, kernel {kernel}), \
 for the user's sentry-server. A plan is saved as a Markdown file and followed later, step by \
 step, so it must stand on its own.\n\
-First gather the facts: release notes and advisories with WebFetch and WebSearch (fetch the \
+First read the maintenance ledger named in the request (every earlier maintenance run on this \
+server, a one-line summary and tags each): pick the runs that bear on this change (the same \
+item or workflow, what it depends on or what depends on it, kernel, driver and engine changes, \
+anything that failed or was done by hand), read those entries with Read, and use them: repeat \
+what worked, plan around what went wrong, and name the entries you relied on.\n\
+Then gather the facts: release notes and advisories with WebFetch and WebSearch (fetch the \
 GitHub release pages given; never curl), the notes files named in the request with Read, and \
 the server read-only, ONLY as `sentry-server exec {name} -- <command> <args>` (one command per \
 call, no pipes; allowed: {}). If a read needs root and is refused, it's queued for the user to \
-run with their password and its output comes back to you; meanwhile continue.\n\
+run with their password. Make every read you'll need first. If any was queued, DON'T write the \
+plan yet: answer with only `READS PENDING` on the first line and one line saying what you're \
+waiting for; the outputs come back to you, then you write the plan.\n\
 Then answer with ONLY the plan document: no preamble, no remarks after it. As long as it needs to \
 be. Its first line is `TARGET: <exact upstream tag>`, or `TARGET: wait` if it shouldn't move now; \
 then `# Plan: <item> <from> → <to>` and the sections the request lists, with every command in \
@@ -152,6 +159,8 @@ pub fn request(
          Write the execution plan for {goal}. Sections, each with the exact commands:\n\
          ## Assessment: what changes (breaking changes, one-way migrations, security fixes), \
          whether the reason it's held still applies, and the real tier.\n\
+         ## History: what the maintenance log says that bears on this (the entries you read, \
+         by file name), or that it has nothing relevant.\n\
          ## Before: checks and backups to make first.\n\
          ## Change: the workflow's steps above, in order; what to expect at each confirm card, \
          and any manual commands between them.\n\
@@ -169,6 +178,22 @@ pub fn revise(what: &str) -> String {
         "Revise the plan: {what}\nAnswer with the complete revised plan document in the same \
          format (the TARGET line first)."
     )
+}
+
+/// The user skipped the reads: write it with what there is.
+pub fn reads_skipped() -> String {
+    "The user didn't run the reads that need root. Write the plan now with what you have, and \
+     say in it what couldn't be checked and how to check it by hand. Answer with the complete \
+     plan document (the TARGET line first)."
+        .into()
+}
+
+/// Claude stopped to wait for reads that need root (it hasn't written the plan yet).
+pub fn waits_for_reads(answer: &str) -> bool {
+    answer
+        .trim_start()
+        .to_ascii_uppercase()
+        .starts_with("READS PENDING")
 }
 
 pub fn reads_back(outputs: &str) -> String {
