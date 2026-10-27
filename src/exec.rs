@@ -186,7 +186,8 @@ impl Cmd {
         self.quoted_argv()
     }
 
-    fn quoted_argv(&self) -> String {
+    /// The argv as quoted for a shell (`docker inspect 'a b'`).
+    pub fn quoted_argv(&self) -> String {
         self.argv
             .iter()
             .map(|a| sh_quote(&a.to_string_lossy()))

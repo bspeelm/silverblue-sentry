@@ -27,9 +27,18 @@ pub struct View<'a> {
     pub now: jiff::Timestamp,
     /// The tab's `/` filter, when one is set.
     pub filter: Option<&'a str>,
+    /// When sudo asks for a password: when the root-only data shown was read (`I`).
+    pub inventory: Option<jiff::Timestamp>,
 }
 
 impl View<'_> {
+    /// " · read with sudo 3h ago" where root-only data comes from the inventory.
+    fn inv_note(&self) -> String {
+        self.inventory.map_or(String::new(), |at| {
+            format!(" · read with sudo {}", fmt::ago(self.secs_since(at)))
+        })
+    }
+
     /// Case-insensitive substring match of the filter against any field, as in sentry.
     fn matches(&self, fields: &[&str]) -> bool {
         match self.filter {
@@ -843,7 +852,7 @@ fn containers(f: &mut Frame, area: Rect, v: &View) {
         .map(|p| format!("{} {}", p.name, p.status))
         .collect::<Vec<_>>()
         .join(" · ");
-    let b = panel(t, "Containers", projects);
+    let b = panel(t, "Containers", format!("{projects}{}", v.inv_note()));
     let r = inner(&b, area);
     f.render_widget(b, area);
     let stats = v.s.stats.value.as_ref();
@@ -1159,13 +1168,14 @@ fn audit(f: &mut Frame, area: Rect, v: &View) {
     let report = v.s.report.value.as_ref().and_then(|r| r.as_deref());
     let detail = match report {
         Some(r) => format!(
-            "{} open · {} expected · {}",
+            "{} open · {} expected · {}{}",
             r.open().count(),
             r.findings.iter().filter(|f| f.expected).count(),
             r.snapshot.taken_at.map_or(String::new(), |ts| format!(
                 "audited {}",
                 fmt::ago(v.secs_since(ts))
-            ))
+            )),
+            v.inv_note()
         ),
         None => String::new(),
     };

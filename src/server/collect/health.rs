@@ -81,14 +81,21 @@ pub fn parse_smart(dev: &str, json: &str) -> Smart {
     s
 }
 
+pub fn smart_argv(dev: &str) -> [&str; 8] {
+    ["smartctl", "-j", "-n", "standby", "-H", "-A", "-i", dev]
+}
+
 pub fn smart(r: &Remote, dev: &str) -> Result<Smart, SrvError> {
-    let c = r.privileged(&["smartctl", "-j", "-n", "standby", "-H", "-A", "-i", dev])?;
+    let c = r.privileged(&smart_argv(dev))?;
     // smartctl's exit code is a bit mask (2 = asleep, 4 = some command failed, …): the JSON
     // says what happened either way.
     let o = c.run()?;
     if o.stdout.trim().is_empty() {
         if crate::server::remote::password_refused(&o.stderr) {
-            return Err(SrvError::SudoPassword("smartctl".into()));
+            return match r.from_inventory(&c) {
+                Some(out) if !out.trim().is_empty() => Ok(parse_smart(dev, &out)),
+                _ => Err(SrvError::SudoPassword("smartctl".into())),
+            };
         }
         return Err(SrvError::Failed(o.stderr.trim().to_string()));
     }
@@ -181,8 +188,10 @@ pub fn parse_jail(name: &str, text: &str) -> Jail {
     }
 }
 
+pub const F2B_ARGV: &[&str] = &["fail2ban-client", "status"];
+
 pub fn fail2ban(r: &Remote) -> Result<Vec<Jail>, SrvError> {
-    let list = parse_jail_list(&r.output(&r.privileged(&["fail2ban-client", "status"])?)?);
+    let list = parse_jail_list(&r.output(&r.privileged(F2B_ARGV)?)?);
     list.iter()
         .map(|j| {
             let t = r.output(&r.privileged(&["fail2ban-client", "status", j])?)?;

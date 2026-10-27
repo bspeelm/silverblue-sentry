@@ -48,6 +48,8 @@ pub enum Effect {
     Choose(String, Vec<Choice>),
     /// Workflow actions.
     Wf(WfCmd),
+    /// Read what needs root, with the terminal handed over for the password (after a confirm).
+    Inventory,
     /// Send a turn to Claude (after the consent box).
     AskSend(AskTurn),
     /// Run one of Claude's proposals on the server (after its confirm box).
@@ -151,6 +153,10 @@ pub struct App {
     suspend: Option<(Cmd, String, Vec<Kind>)>,
     /// The suspended command reboots the server.
     suspend_reboot: bool,
+    /// The suspended command is the inventory read (`I`).
+    suspend_inventory: bool,
+    /// When the last inventory was read.
+    inventory_at: Option<jiff::Timestamp>,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
@@ -185,7 +191,7 @@ impl App {
     pub fn new(remote: Remote, tx: Sender<Ev>) -> Self {
         let (keys, _) = Keymap::new(&Default::default());
         Self {
-            remote,
+            remote: remote.with_inventory(),
             tx,
             theme: Theme::detect(),
             keys,
@@ -199,6 +205,8 @@ impl App {
             chooser: None,
             suspend: None,
             suspend_reboot: false,
+            suspend_inventory: false,
+            inventory_at: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
@@ -224,6 +232,8 @@ impl App {
         self.fetch(Kind::Sudo);
         if !self.offline {
             self.wf = Session::resume(&self.remote);
+            self.inventory_at =
+                crate::server::inventory::load(&self.remote.name).map(|c| c.fetched_at);
         }
         self.enter(self.tab, now);
     }
@@ -514,6 +524,9 @@ impl App {
             now: self.now_override.unwrap_or_else(jiff::Timestamp::now),
             filter: Some(self.filters[self.tab.index()].as_str())
                 .filter(|f| !f.is_empty() && tabs::filterable(self.tab)),
+            inventory: self
+                .inventory_at
+                .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
         }
     }
 
@@ -661,6 +674,7 @@ impl App {
                     .chain(super::actions::hints(self.tab))
                     .chain([
                         ("A", "ask Claude"),
+                        ("I", "read what needs root, once, with your sudo password"),
                         ("1-5 0", "tabs (or Tab, h/l)"),
                         ("j/k", "move"),
                         ("/", "filter (Esc clears) · n/N next/prev"),
@@ -705,6 +719,10 @@ impl App {
                         }
                     }
                 }
+            }
+            Action::Char('I') => {
+                let m = self.fresh_sudo();
+                self.inventory_box(m);
             }
             Action::Char('a') => {
                 self.fresh_sudo();
@@ -752,6 +770,15 @@ impl App {
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
+                Effect::Inventory => {
+                    let cmd = self
+                        .remote
+                        .sh(&crate::server::inventory::wrapper(&self.remote))
+                        .timeout(None);
+                    let banner = format!("sentry-server · reading {} with sudo", self.remote.name);
+                    self.suspend = Some((cmd, banner, Vec::new()));
+                    self.suspend_inventory = true;
+                }
                 Effect::Suspend(cmd, banner, then, reboot) => {
                     self.suspend = Some((cmd, banner, then));
                     self.suspend_reboot = reboot;
@@ -942,6 +969,90 @@ impl App {
             Some(rest) if !home.is_empty() => format!("~{rest}/"),
             _ => format!("{shown}/"),
         };
+    }
+
+    /// `I`: what it reads and why, then the terminal for the password.
+    fn inventory_box(&mut self, mode: Option<SudoMode>) {
+        let t = self.theme;
+        match mode {
+            Some(SudoMode::NoPasswd) => {
+                return self.toast("sudo doesn't ask for a password here: it's all read live");
+            }
+            Some(SudoMode::Absent) => return self.toast("this login has no sudo on the server"),
+            _ => {}
+        }
+        let script = crate::server::inventory::script(&self.remote);
+        if script.is_empty() {
+            return self.toast("nothing to read: no sudo: entries in server_config.yaml");
+        }
+        let mut lines = vec![
+            Line::styled(
+                format!(
+                    "sudo on {} asks for a password, so these can't be read in the background:",
+                    self.remote.name
+                ),
+                t.fg(),
+            ),
+            Line::raw(""),
+        ];
+        let mut seen = Vec::new();
+        for l in script.lines().filter(|l| l.ends_with(" 2>/dev/null")) {
+            let cmd = l.trim_end_matches(" 2>/dev/null").trim();
+            if !seen.contains(&cmd) {
+                seen.push(cmd);
+                lines.push(Line::styled(format!("  {cmd}"), t.dim()));
+            }
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "All read-only, in one sudo: the terminal is handed over for your password. Containers,              SMART, the journal and the audit then use this read (its age is shown) until you read again.",
+            t.s(t.yellow),
+        ));
+        self.modal = Some(Modal {
+            title: "Read with sudo".into(),
+            color: t.yellow,
+            lines,
+            yes: Some(("read".into(), vec![Effect::Inventory])),
+        });
+    }
+
+    fn after_inventory(&mut self, status: Result<ExitStatus, ExecError>) {
+        match status {
+            Ok(st) if st.success() => {}
+            Ok(st) => {
+                let _ = self.remote.output(
+                    &self
+                        .remote
+                        .sh("rm -f \"$HOME/.cache/sentry-server/inventory.out\""),
+                );
+                return self.toast(&format!(
+                    "the read didn't finish (exit {}): nothing changed",
+                    st.code().unwrap_or(-1)
+                ));
+            }
+            Err(e) => return self.toast(&e.to_string()),
+        }
+        let inv = match crate::server::inventory::read_back(&self.remote) {
+            Ok(i) => i,
+            Err(e) => return self.toast(&format!("couldn't read it back: {e}")),
+        };
+        let n = inv.outputs.len();
+        match crate::server::inventory::save(&self.remote.name, &inv) {
+            Ok(at) => self.inventory_at = Some(at),
+            Err(e) => return self.toast(&format!("couldn't save it: {e}")),
+        }
+        for k in [
+            Kind::Docker,
+            Kind::Smart,
+            Kind::Jails,
+            Kind::Journal,
+            Kind::Listeners,
+        ] {
+            self.fetch(k);
+        }
+        self.toast(&format!(
+            "read {n} command(s) with sudo · c on Audit audits with them"
+        ));
     }
 
     /// How sudo behaves right now, checked again (the server's sudoers can change while this
@@ -1512,6 +1623,10 @@ impl App {
             }
             s.on_exit(idx, code);
             self.wf_auto();
+            return;
+        }
+        if std::mem::take(&mut self.suspend_inventory) {
+            self.after_inventory(status);
             return;
         }
         if std::mem::take(&mut self.suspend_reboot) {

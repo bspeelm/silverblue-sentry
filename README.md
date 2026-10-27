@@ -161,7 +161,7 @@ sentry-server check                    # connection, sudo, tools, and each sudo 
 sentry-server                          # the TUI (or: sentry-server myserver)
 ```
 
-Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box. sudo is checked again before each one: if it asks for a password, the terminal is handed over for it (a workflow step's output still lands in its log), and if it stops asking, the command streams. If sudo asks for a password, the read-only commands in `sudo:` can't run in the background, and their panels say so.
+Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box. sudo is checked again before each one: if it asks for a password, the terminal is handed over for it (a workflow step's output still lands in its log), and if it stops asking, the command streams. If sudo asks for a password, the read-only commands in `sudo:` can't run in the background; **`I` reads them once with your password** (containers, compose files, SMART, the journal, fail2ban: one sudo, all read-only), and Containers, SMART and the audit use that read, with its age shown, until you read again. Workflow checks never use it: they need the server as it is now.
 
 | Tab | What it shows | Keys |
 |---|---|---|

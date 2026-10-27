@@ -17,7 +17,10 @@ pub enum SrvError {
     #[error("needs sudo: add `{0}` to sudo: in server_config.yaml")]
     NeedsSudo(String),
     /// Allowed, but sudo on the server asks for a password, so it can't run unattended.
-    #[error("sudo on the server asks for a password, so `{0}` can't be read in the background")]
+    #[error(
+        "sudo on the server asks for a password, so `{0}` can't be read in the background \
+         (I reads it once with your password)"
+    )]
     SudoPassword(String),
     #[error("{0}")]
     Failed(String),
@@ -51,6 +54,9 @@ pub struct Remote {
     pub name: String,
     pub host: &'static str,
     pub cfg: Arc<Server>,
+    /// Answer a refused `sudo -n` from the last inventory (the TUI and the audit; never
+    /// workflow conditions, which must see the server as it is now).
+    pub inventory: bool,
 }
 
 impl Remote {
@@ -59,7 +65,24 @@ impl Remote {
             name: name.to_string(),
             host: config::host(cfg.ssh_target(name)),
             cfg: Arc::new(cfg.clone()),
+            inventory: false,
         }
+    }
+
+    /// Fall back to the last inventory when sudo asks for a password.
+    pub fn with_inventory(mut self) -> Self {
+        self.inventory = true;
+        self
+    }
+
+    /// A refused `sudo -n …` command's output from the last inventory, if it has it.
+    pub fn from_inventory(&self, cmd: &Cmd) -> Option<String> {
+        if !self.inventory {
+            return None;
+        }
+        let line = cmd.quoted_argv();
+        let argv = line.strip_prefix("sudo -n ")?;
+        super::inventory::lookup(&self.name, argv).map(|c| c.out)
     }
 
     /// A command as the login user (never sudo).
@@ -89,18 +112,19 @@ impl Remote {
 
     /// Run and return stdout; a non-zero exit is `Failed` with stderr.
     pub fn output(&self, cmd: &Cmd) -> Result<String, SrvError> {
-        cmd.output().map_err(|e| match e {
+        cmd.output().or_else(|e| match e {
             ExecError::Failed { stderr, .. }
                 if cmd.bin() == "sudo" && password_refused(&stderr) =>
             {
-                SrvError::SudoPassword(sudo_words(cmd))
+                self.from_inventory(cmd)
+                    .ok_or_else(|| SrvError::SudoPassword(sudo_words(cmd)))
             }
-            ExecError::Failed { code, stderr, .. } => SrvError::Failed(format!(
+            ExecError::Failed { code, stderr, .. } => Err(SrvError::Failed(format!(
                 "{} exited {code}: {}",
                 cmd.bin(),
                 stderr.lines().last().unwrap_or("").trim()
-            )),
-            e => e.into(),
+            ))),
+            e => Err(e.into()),
         })
     }
 

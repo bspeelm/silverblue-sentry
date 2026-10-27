@@ -46,20 +46,25 @@ pub fn group_journal(entries: Vec<journal::Entry>) -> Vec<JournalUnit> {
     out
 }
 
+pub const JOURNAL_ARGV: &[&str] = &[
+    "journalctl",
+    "-p",
+    "err",
+    "--since",
+    "-24h",
+    "-o",
+    "json",
+    "--output-fields=_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,MESSAGE,PRIORITY",
+    "-n",
+    "500",
+    "--no-pager",
+];
+
+/// `ss` with process names, in the forms an allowlist may name.
+pub const SS_ARGVS: &[&[&str]] = &[&["ss", "-tulpnH"], &["ss", "-tulpn", "-H"]];
+
 pub fn journal(r: &Remote) -> Result<Vec<JournalUnit>, SrvError> {
-    let c = r.privileged(&[
-        "journalctl",
-        "-p",
-        "err",
-        "--since",
-        "-24h",
-        "-o",
-        "json",
-        "--output-fields=_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,MESSAGE,PRIORITY",
-        "-n",
-        "500",
-        "--no-pager",
-    ])?;
+    let c = r.privileged(JOURNAL_ARGV)?;
     Ok(group_journal(journal::parse(&r.output(&c)?)))
 }
 
@@ -67,8 +72,8 @@ pub fn journal(r: &Remote) -> Result<Vec<JournalUnit>, SrvError> {
 pub fn listeners(r: &Remote) -> Result<Vec<net::Listener>, SrvError> {
     let plain = r.cmd("ss").arg("-tulnH");
     let c = r
-        .privileged(&["ss", "-tulpnH"])
-        .or_else(|_| r.privileged(&["ss", "-tulpn", "-H"]))
+        .privileged(SS_ARGVS[0])
+        .or_else(|_| r.privileged(SS_ARGVS[1]))
         .unwrap_or_else(|_| plain.clone());
     let out = match r.output(&c) {
         // sudo wants a password: the sockets without their process names.

@@ -1064,3 +1064,72 @@ fn live_preflight() {
         Instant::now(),
     );
 }
+
+/// Against a disposable sshd whose sudo asks for a password: `I` reads what needs root once,
+/// and Containers then shows it (with its age) although `sudo -n docker` is refused. Run under
+/// a pty that types the password:
+/// `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_inventory -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_inventory() {
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    pump(&mut a, 3);
+    let before = render_to_string(&mut a, 158, 41);
+    println!("{before}");
+    assert!(
+        before.contains("can't be read in the background"),
+        "refused before"
+    );
+    key(&mut a, KeyCode::Char('I'));
+    let s = render_to_string(&mut a, 158, 41);
+    println!("{s}");
+    assert!(s.contains("docker inspect $ids") && s.contains("cat /srv/stack/compose.yaml"));
+    key(&mut a, KeyCode::Char('y'));
+    let (cmd, _) = a.take_suspend().expect("hands over the terminal");
+    let st = cmd.interactive();
+    a.after_suspend(st);
+    pump(&mut a, 3);
+    let s = render_to_string(&mut a, 158, 41);
+    println!("{s}");
+    assert!(
+        s.contains("read with sudo") && s.contains("│ web"),
+        "containers from the read"
+    );
+    let inv = crate::server::inventory::load("scratch").unwrap().data;
+    assert!(
+        inv.outputs["cat /srv/stack/compose.yaml"]
+            .out
+            .contains("example/web:1.2.3")
+    );
+    // A workflow condition never uses it: it must see the server as it is now.
+    let plain = Remote::new("scratch", &a.remote.cfg);
+    assert!(crate::server::collect::docker::collect(&plain).is_err());
+    let left = a
+        .remote
+        .output(
+            &a.remote
+                .sh("ls -A ~/.cache/sentry-server 2>/dev/null || true"),
+        )
+        .unwrap();
+    assert!(
+        left.trim().is_empty(),
+        "the read is deleted on the server: {left}"
+    );
+}

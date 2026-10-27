@@ -236,8 +236,11 @@ pub fn parse_stats(text: &str) -> Vec<Stat> {
         .collect()
 }
 
+pub const PS_ARGV: &[&str] = &["docker", "ps", "-aq"];
+pub const COMPOSE_LS_ARGV: &[&str] = &["docker", "compose", "ls", "--all", "--format", "json"];
+
 pub fn collect(r: &Remote) -> Result<Docker, SrvError> {
-    let ids = r.output(&r.privileged(&["docker", "ps", "-aq"])?)?;
+    let ids = r.output(&r.privileged(PS_ARGV)?)?;
     let ids: Vec<&str> = ids.split_whitespace().collect();
     let containers = if ids.is_empty() {
         Vec::new()
@@ -248,7 +251,7 @@ pub fn collect(r: &Remote) -> Result<Docker, SrvError> {
     };
     // Projects are optional: without that sudo entry, containers still show.
     let projects = r
-        .privileged(&["docker", "compose", "ls", "--all", "--format", "json"])
+        .privileged(COMPOSE_LS_ARGV)
         .and_then(|c| r.output(&c))
         .map(|j| parse_projects(&j).unwrap_or_default())
         .unwrap_or_default();

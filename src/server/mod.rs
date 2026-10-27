@@ -7,6 +7,7 @@ pub mod collect;
 pub mod config;
 pub mod gateway;
 pub mod init;
+pub mod inventory;
 pub mod remote;
 pub mod tui;
 pub mod workflow;
