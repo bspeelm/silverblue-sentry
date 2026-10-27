@@ -108,8 +108,9 @@ pub fn parse_facts(out: &str) -> HostFacts {
             "held" => f.held.push(l.to_string()),
             "pkgs" => {
                 let w: Vec<&str> = l.split_whitespace().collect();
+                // db:Status-Abbrev: wanted (i, h for held, …), then status: `i` = installed.
                 if let [status, name, ver] = w[..]
-                    && status.starts_with("ii")
+                    && status.chars().nth(1) == Some('i')
                 {
                     f.installed.insert(name.to_string(), ver.to_string());
                 }
@@ -412,10 +413,11 @@ mod tests {
     #[test]
     fn host_facts_parse() {
         let f = parse_facts(
-            "@@held\nengine-pkg\nengine-cli\n@@pkgs\nii  linux-image-amd64 6.1.1\nun  podman <none>\nii  engine-pkg 24.3\n@@os\ndebian 12\n@@units\nlegacy.service not-found\n",
+            "@@held\nengine-pkg\nengine-cli\n@@pkgs\nii  linux-image-amd64 6.1.1\nun  podman <none>\nhi  engine-pkg 24.3\nrc  old-pkg 1.0\n@@os\ndebian 12\n@@units\nlegacy.service not-found\n",
         );
         assert_eq!(f.held, ["engine-pkg", "engine-cli"]);
-        assert_eq!(f.installed.len(), 2, "only installed ones");
+        assert_eq!(f.installed.len(), 2, "installed ones, held (hi) included");
+        assert!(f.installed.contains_key("engine-pkg"));
         assert_eq!(f.os, Some(("debian".into(), "12".into())));
         assert_eq!(f.units["legacy.service"], "not-found");
         assert!(

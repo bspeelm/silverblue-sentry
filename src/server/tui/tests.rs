@@ -1884,3 +1884,26 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
     key(&mut a, KeyCode::Char('R'));
     assert!(screen(&mut a).contains("web: plan 1.5.2"), "R opens it");
 }
+
+/// Read-only against the real server: every recommendation and what discovery found.
+/// `SENTRY_SERVER_LIVE=<name> cargo test live_recommend -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_recommend() {
+    let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let r = Remote::new(n, s).with_inventory();
+    let (_, _, found) = crate::server::collect::maint_read(&r);
+    for c in &found.candidates {
+        println!(
+            "untracked: {} · {} · source {:?}",
+            c.key, c.what, c.item.source
+        );
+    }
+    for g in &found.gone {
+        println!("gone: {} · {}", g.id, g.why);
+    }
+}
