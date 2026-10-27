@@ -258,6 +258,8 @@ impl Chat {
 }
 
 pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
+    // Nothing of the screen behind shows at the edges.
+    f.render_widget(ratatui::widgets::Clear, area);
     let rect = widgets::centered(
         area,
         area.width.saturating_sub(6).max(60),
