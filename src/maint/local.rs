@@ -182,6 +182,13 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
             });
         }
     }
+    // The update workflow is already running: its own row says so (Enter opens it).
+    if i.run
+        .as_ref()
+        .is_some_and(|r| !r.done && r.workflow == UPDATE_WORKFLOW)
+    {
+        return;
+    }
     let os = i.ostree.and_then(|o| o.update.as_ref());
     let fp = i.flatpak_updates.unwrap_or(0);
     let tb = i.toolbox_updates.unwrap_or(0);
@@ -401,6 +408,18 @@ mod tests {
         staged.deployments[0].timestamp = i.now.as_second() - 15 * 86400;
         i.ostree = Some(&staged);
         i.flatpak_updates = None;
+        // quick-update running: the run's row stands for the updates.
+        i.ostree = Some(&o);
+        i.run = Some(RunInfo {
+            workflow: UPDATE_WORKFLOW,
+            done: false,
+            step: Some((2, 9, "Update Flatpaks")),
+            failed: false,
+        });
+        let keys: Vec<String> = recommend(&i).into_iter().map(|r| r.key).collect();
+        assert!(keys.contains(&"run".to_string()) && !keys.contains(&"updates".to_string()));
+        i.run = None;
+        i.ostree = Some(&staged);
         let recs = recommend(&i);
         assert_eq!(recs[0].key, "reboot");
         assert_eq!(recs[0].level, Level::Now);

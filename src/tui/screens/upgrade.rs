@@ -575,6 +575,23 @@ impl Upgrade {
                 t.dim(),
             )),
         }
+        // The same workflow Maintenance's updates recommendation starts: say so.
+        if info.entry.name == crate::maint::local::UPDATE_WORKFLOW {
+            lines.push(Line::raw(""));
+            if let Some(r) = super::maint::recs(v)
+                .into_iter()
+                .find(|r| r.key == "updates")
+            {
+                lines.push(Line::styled(r.title, t.s(t.yellow)));
+            }
+            for l in wrap(
+                "This is the update workflow: Enter here and Enter on \"Updates waiting\" on \
+                 Maintenance (6) start the same run, and it shows here either way.",
+                r.width as usize,
+            ) {
+                lines.push(Line::styled(l, t.dim()));
+            }
+        }
         f.render_widget(Paragraph::new(lines), log);
         let lint = match blocked {
             None => Span::styled("lint ✓", t.s(t.green)),

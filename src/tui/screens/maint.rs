@@ -586,11 +586,14 @@ fn action_words(a: &Do) -> String {
         .into(),
         Do::Audit => "Enter: audit now (read-only, about a second)".into(),
         Do::CheckUpdates => "Enter: check OS, Flatpak and toolbox updates".into(),
-        Do::Run(wf) => format!("Enter: start the {wf} workflow (each step asks first)"),
+        Do::Run(wf) => format!(
+            "Enter: start {wf}, the workflow on Upgrade (0): the same run as starting it there, \
+             which shows there (each step asks first)"
+        ),
         Do::Reboot => "Enter: reboot (asks first)".into(),
         Do::Cleanup => "Enter: the cleanup checklist (pick, preview, confirm)".into(),
         Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),
-        Do::OpenRun => "Enter: open the run (Upgrade)".into(),
+        Do::OpenRun => "Enter: open the run on Upgrade (0)".into(),
         Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),
     }
 }

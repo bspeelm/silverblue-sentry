@@ -11,13 +11,13 @@ expression: body(&s)
 │                                                                                    │ │ The kernel changes: quick-update runs the NVIDIA kmod procedure     │
 │                                                                                    │ │ (two reboots).                                                      │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ Enter: start the quick-update workflow (each step asks first)       │
-│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ z: look again later                                                 │
-│   version 44.20261002.0 · 2026-10-02                                               │ │                                                                     │
-│   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │ OS → 44.20261023.0: 216 upgraded, 0 added, 0 removed, 24 advisories │
-│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │   kernel → 7.2.11-200.fc44: the NVIDIA kmod ritual                  │
-│                                                                                    │ │ Last check never · c checks again                                   │
-│   fedora:fedora/44/x86_64/silverblue                                               │ │                                                                     │
+┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ Enter: start quick-update, the workflow on Upgrade (0): the same    │
+│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ run as starting it there, which shows there (each step asks first)  │
+│   version 44.20261002.0 · 2026-10-02                                               │ │ z: look again later                                                 │
+│   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │                                                                     │
+│   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │ OS → 44.20261023.0: 216 upgraded, 0 added, 0 removed, 24 advisories │
+│                                                                                    │ │   kernel → 7.2.11-200.fc44: the NVIDIA kmod ritual                  │
+│   fedora:fedora/44/x86_64/silverblue                                               │ │ Last check never · c checks again                                   │
 │   version 44.20261001.0 · 2026-10-01                                               │ │                                                                     │
 │   layered  akmods brave-browser ghostty kmodtool mpv steam-devices xorg-x11-drv-…  │ │                                                                     │
 │   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │                                                                     │

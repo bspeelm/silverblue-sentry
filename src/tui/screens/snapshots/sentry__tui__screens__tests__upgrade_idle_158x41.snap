@@ -10,9 +10,9 @@ expression: body(&s)
 │ rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual  │  │                                                                                              │
 │ when the kernel changes                                  │  │ quick-update has never run.                                                                  │
 │ never run                                                │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│ release-rebase  24 steps  draft                          │  │                                                                                              │
-│ Rebase Silverblue to a new Fedora release with the       │  │                                                                                              │
+│                                                          │  │ Updates waiting: OS 44.20261023.0                                                            │
+│ release-rebase  24 steps  draft                          │  │ This is the update workflow: Enter here and Enter on "Updates waiting" on Maintenance (6)    │
+│ Rebase Silverblue to a new Fedora release with the       │  │ start the same run, and it shows here either way.                                            │
 │ NVIDIA kmod ritual                                       │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │

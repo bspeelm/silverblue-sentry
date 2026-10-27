@@ -93,7 +93,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 
 **Recommended** ranks what to do next, now / soon / routine / tidy, each with why; `Enter` does what it says:
 - **The audit's findings**, each explained (what it is, why it's listed, what to do): `Enter` fixes it (with Claude Code, Claude reads the logs and tells you what to run, see below; without it, sentry's own fixes: the exact command and how to undo it, asked first, the terminal handed over for sudo, then a re-audit). `x` marks it expected, `B` everything like it.
-- **Updates waiting** (the OS, Flatpaks, toolboxes; the details show what changes, old → new, and whether the kernel changes): `Enter` starts `quick-update`, the one path that does Flatpaks, toolboxes, the OS and, when the kernel changes, the NVIDIA kmod ritual. `p` has Claude plan it first.
+- **Updates waiting** (the OS, Flatpaks, toolboxes; the details show what changes, old → new, and whether the kernel changes): `Enter` starts `quick-update`, the one path that does Flatpaks, toolboxes, the OS and, when the kernel changes, the NVIDIA kmod ritual. It's the same workflow listed on Upgrade (`0`): starting it from either screen is the same run, shown on Upgrade, and while it runs Maintenance shows the run instead of the updates. `p` has Claude plan it first.
 - **A deployment staged** and waiting for a reboot (now after 14 days): `Enter` reboots after a confirm.
 - **Jobs due** by their cadence, or that failed: the audit, the update check, the cleanups. Cadence is a reminder; nothing runs by itself.
 - **Space to reclaim** from the cleanup dry runs (now when a disk is past 90%): `Enter` opens the cleanup checklist (`Space` toggles, `Enter` confirms and runs the selection).
