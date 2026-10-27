@@ -530,6 +530,21 @@ pub fn turn_cmd_with(prompt: &str, resume: Option<&str>, p: &Profile) -> Cmd {
     c.dir(dir).timeout(None)
 }
 
+/// A failed tool call in a few words: a command's exit code and why, or a refusal.
+fn error_summary(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("");
+    match first.strip_prefix("Exit code ") {
+        // Not a refusal: the command ran and exited non-zero (`systemctl is-failed` says 1 for
+        // "not failed").
+        Some(code) => match lines.next_back() {
+            Some(why) => format!("exit {code}: {why}"),
+            None => format!("exit {code}"),
+        },
+        None => format!("denied: {first}"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Init {
@@ -607,7 +622,7 @@ pub fn parse_line(line: &str) -> Vec<Event> {
                 let is_error = c["is_error"].as_bool().unwrap_or(false);
                 let n = text.lines().count();
                 let summary = if is_error {
-                    format!("denied: {}", text.lines().next().unwrap_or(""))
+                    error_summary(&text)
                 } else {
                     match n {
                         0 => "(no output)".into(),
@@ -782,6 +797,22 @@ mod tests {
             !ALLOWED
                 .iter()
                 .any(|a| a.contains("rm") || a.contains("sudo") || a.contains("install"))
+        );
+    }
+
+    #[test]
+    fn failed_commands_are_labelled_by_exit_code_not_denied() {
+        assert_eq!(
+            error_summary("Exit code 1\nactive"),
+            "exit 1: active",
+            "systemctl is-failed says 1 for a unit that's fine"
+        );
+        assert_eq!(error_summary("Exit code 3"), "exit 3");
+        assert_eq!(
+            error_summary(
+                "Claude requested permissions to read from /x, but you haven't granted it yet."
+            ),
+            "denied: Claude requested permissions to read from /x, but you haven't granted it yet."
         );
     }
 }

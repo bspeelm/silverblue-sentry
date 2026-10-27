@@ -57,7 +57,12 @@ pub struct Chat {
     pub live: Option<(u64, u32)>,
     pub started: Option<Instant>,
     pub input: String,
+    /// Lines scrolled up from the bottom (0 follows what's new).
     pub scroll: usize,
+    /// Lines that arrived while scrolled up (kept out of view's way), and the line count at
+    /// the last draw: draw has only `&self`.
+    grown: std::cell::Cell<usize>,
+    drawn: std::cell::Cell<usize>,
     pub cost: f64,
     got_done: bool,
     /// Commands from Claude's latest answer, runnable with `r` + 1–9.
@@ -81,6 +86,8 @@ impl Chat {
             started: None,
             input: String::new(),
             scroll: 0,
+            grown: Default::default(),
+            drawn: Default::default(),
             cost: 0.0,
             got_done: false,
             proposals: Vec::new(),
@@ -152,9 +159,33 @@ impl Chat {
         self.offer = Some(text);
     }
 
+    fn offset(&self) -> usize {
+        self.scroll + self.grown.get()
+    }
+
+    /// Scroll up (+) or down (-) by `n` lines; down to 0 follows what's new again.
+    pub fn scroll_by(&mut self, n: isize) {
+        let at = self.offset() as isize + n;
+        self.scroll = at.max(0) as usize;
+        self.grown.set(0);
+        // Not past the top: draw clamps too, but keys shouldn't pile up beyond it.
+        self.scroll = self.scroll.min(self.drawn.get());
+    }
+
+    pub fn scroll_top(&mut self) {
+        self.scroll = self.drawn.get();
+        self.grown.set(0);
+    }
+
+    pub fn scroll_bottom(&mut self) {
+        self.scroll = 0;
+        self.grown.set(0);
+    }
+
     pub fn push(&mut self, kind: Kind, text: impl Into<String>) {
         self.entries.push((kind, text.into()));
-        self.scroll = 0;
+        // Scrolled up: the view stays put (draw keeps it on the same lines); at the bottom it
+        // follows what's new.
     }
 
     pub fn begin_turn(&mut self, question: &str, id: u64, pid: u32) {
@@ -351,7 +382,16 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
         ));
     }
     let h = log.height as usize;
-    let end = lines.len().saturating_sub(c.scroll);
+    // Scrolled up while lines arrive: move by as many, so the view holds still. Never past
+    // the top.
+    let total = lines.len();
+    if c.scroll > 0 && c.drawn.get() > 0 {
+        c.grown
+            .set(c.grown.get() + total.saturating_sub(c.drawn.get()));
+    }
+    c.drawn.set(total);
+    let scroll = c.offset().min(total.saturating_sub(h));
+    let end = total.saturating_sub(scroll);
     let start = end.saturating_sub(h);
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), log);
     f.render_widget(
@@ -411,7 +451,7 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     if c.busy() {
         k.push(("C-c", "stop"));
     }
-    k.push(("PgUp/Dn", "scroll"));
+    k.push(("↑↓ PgUp/Dn", "scroll"));
     k
 }
 
@@ -486,5 +526,36 @@ mod tests {
         assert!(screen.contains("sentry's known fix"));
         c.set_offer("x", 0, "ok", Some("The finding is gone."));
         assert!(c.offer.as_deref().unwrap().contains("exit code 0"));
+    }
+
+    #[test]
+    fn scrolled_up_the_view_holds_while_lines_arrive() {
+        let t = crate::tui::theme::Theme::truecolor();
+        let mut c = Chat::new(crate::claude::Ask::new("s", "c", "q"));
+        for i in 0..80 {
+            c.push(Kind::Claude, format!("line {i}"));
+        }
+        let draw = |c: &Chat| {
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+            term.draw(|f| draw(f, f.area(), &t, c)).unwrap();
+            let b = term.backend().buffer().clone();
+            (0..20)
+                .map(|y| (0..60).map(|x| b[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        draw(&c);
+        c.scroll_by(30);
+        let before = draw(&c);
+        assert!(!before.contains("line 79"), "scrolled up");
+        for i in 80..90 {
+            c.push(Kind::Claude, format!("line {i}"));
+        }
+        assert_eq!(draw(&c), before, "new lines don't move a scrolled-up view");
+        c.scroll_by(10_000);
+        assert!(draw(&c).contains("line 0"), "not past the top");
+        c.scroll_bottom();
+        assert!(draw(&c).contains("line 89"), "End follows again");
     }
 }

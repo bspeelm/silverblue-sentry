@@ -92,21 +92,56 @@ pub fn script(r: &Remote) -> String {
 /// What runs over ssh with the terminal handed over: sudo asks for the password on the
 /// terminal; the output goes to a file in the login's home, read back by `read_back`.
 pub fn wrapper(r: &Remote) -> String {
-    format!(
-        "f=\"$HOME/{CAPTURE}\"; mkdir -p \"${{f%/*}}\" || exit 1\n\
-         echo 'Reading what needs root on {name} (nothing is changed)…'\n\
-         sudo sh -c {} >\"$f\"",
-        sh_quote(&script(r)),
-        name = r.name,
+    sudo_wrapper(
+        &script(r),
+        CAPTURE,
+        &format!(
+            "Reading what needs root on {} (nothing is changed)…",
+            r.name
+        ),
     )
 }
 
 const CAPTURE: &str = ".cache/sentry-server/inventory.out";
 
+/// Runs `script` as root with the terminal handed over (sudo asks for the password there);
+/// its output goes to `capture` under the login's home, for `read_capture`.
+pub fn sudo_wrapper(script: &str, capture: &str, banner: &str) -> String {
+    format!(
+        "f=\"$HOME/{capture}\"; mkdir -p \"${{f%/*}}\" || exit 1\n\
+         echo {}\n\
+         sudo sh -c {} >\"$f\"",
+        sh_quote(banner),
+        sh_quote(script),
+    )
+}
+
+/// Fetch a capture and delete it on the server.
+pub fn read_capture(r: &Remote, capture: &str) -> Result<Inventory, super::remote::SrvError> {
+    let text = r.output(&r.sh(&format!("f=\"$HOME/{capture}\"; cat \"$f\"; rm -f \"$f\"")))?;
+    Ok(parse(&text))
+}
+
 /// After the wrapper ran: fetch its output and delete it on the server.
 pub fn read_back(r: &Remote) -> Result<Inventory, super::remote::SrvError> {
-    let text = r.output(&r.sh(&format!("f=\"$HOME/{CAPTURE}\"; cat \"$f\"; rm -f \"$f\"")))?;
-    Ok(parse(&text))
+    read_capture(r, CAPTURE)
+}
+
+/// Commands Claude asked to read with sudo, each framed, with its errors kept.
+pub fn reads_script(cmds: &[Vec<String>]) -> String {
+    cmds.iter()
+        .map(|argv| {
+            let line = argv
+                .iter()
+                .map(|a| sh_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "printf '\\n{MARK}%s\\n' {}\n{line} 2>&1\nprintf '\\n{RC}%s\\n' \"$?\"\n",
+                sh_quote(&line)
+            )
+        })
+        .collect()
 }
 
 pub fn parse(text: &str) -> Inventory {
@@ -231,5 +266,25 @@ mod tests {
         let inv = parse(&o.stdout);
         assert_eq!(inv.outputs["echo a"].out, "one\ntwo\n");
         assert_eq!(inv.outputs.iter().filter(|(_, c)| c.code == 1).count(), 1);
+    }
+
+    #[test]
+    fn claude_reads_run_framed_with_errors_kept() {
+        let cmds = vec![
+            vec!["echo".to_string(), "it's here".to_string()],
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo oops >&2; exit 3".to_string(),
+            ],
+        ];
+        let o = crate::exec::Cmd::local("sh")
+            .args(["-c", &reads_script(&cmds)])
+            .run()
+            .unwrap();
+        let inv = parse(&o.stdout);
+        assert_eq!(inv.outputs["echo 'it'\\''s here'"].out, "it's here\n");
+        let err = &inv.outputs["sh -c 'echo oops >&2; exit 3'"];
+        assert_eq!((err.code, err.out.as_str()), (3, "oops\n"));
     }
 }

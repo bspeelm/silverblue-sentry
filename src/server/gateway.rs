@@ -174,16 +174,22 @@ pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
         Ok(o) => {
             print!("{}", o.stdout);
             eprint!("{}", o.stderr);
-            if o.code != 0 && super::remote::password_refused(&o.stderr) {
+            let needs_root = o.code != 0
+                && (super::remote::password_refused(&o.stderr)
+                    || o.stderr.contains("Permission denied")
+                    || o.stderr.contains("permission denied"));
+            if needs_root {
+                let queued = queue_read(&r.name, argv).is_ok();
                 eprintln!(
-                    "(sudo on {} asks for a password, so this can't run here: give the user \
-                     the command to run themselves)",
-                    r.name
-                );
-            } else if o.code != 0 && o.stderr.contains("Permission denied") {
-                eprintln!(
-                    "(not readable as the login user; `sudo:` in server_config.yaml would allow `{}`)",
-                    words.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+                    "(this needs root, and sudo on the server asks the user for a password: {})",
+                    if queued {
+                        "the request is queued. When your answer ends, the user is shown it and \
+                         can run it with their password; its output then comes back to you in \
+                         the next message. Don't wait for it: carry on with what you can, and \
+                         say what you'd conclude from it"
+                    } else {
+                        "give the user the command to run themselves"
+                    }
                 );
             }
             o.code.clamp(0, 255) as u8
@@ -194,6 +200,43 @@ pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
             125
         }
     }
+}
+
+/// Reads Claude asked for that need root, waiting for the user (one per line, as JSON).
+/// Under the runtime directory: the gateway runs as Claude's child, possibly elsewhere than the
+/// TUI's environment, and this is the same for both.
+fn reads_path(server: &str) -> std::path::PathBuf {
+    crate::exec::control_dir().join(format!("reads-{server}.jsonl"))
+}
+
+pub fn queue_read(server: &str, argv: &[String]) -> std::io::Result<()> {
+    use std::io::Write;
+    let p = reads_path(server);
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)?;
+    writeln!(f, "{}", serde_json::to_string(argv).unwrap_or_default())
+}
+
+/// The queued reads (each still on the read-only list, no repeats), and the queue emptied.
+pub fn take_reads(server: &str) -> Vec<Vec<String>> {
+    let p = reads_path(server);
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let _ = std::fs::remove_file(&p);
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for l in text.lines() {
+        if let Ok(argv) = serde_json::from_str::<Vec<String>>(l)
+            && allowed(&argv).is_ok()
+            && !out.contains(&argv)
+        {
+            out.push(argv);
+        }
+    }
+    out
 }
 
 /// How Claude is told to use the gateway.
@@ -251,5 +294,25 @@ mod tests {
         ] {
             assert!(!ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn reads_are_queued_once_and_only_while_on_the_read_only_list() {
+        let server = format!("test-queue-{}", std::process::id());
+        let v = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        queue_read(&server, &v("docker logs --since 72h web")).unwrap();
+        queue_read(&server, &v("docker logs --since 72h web")).unwrap();
+        queue_read(&server, &v("journalctl -u app.service -n 15")).unwrap();
+        // Written by hand into the queue: still refused.
+        queue_read(&server, &v("docker rm web")).unwrap();
+        let reads = take_reads(&server);
+        assert_eq!(
+            reads,
+            [
+                v("docker logs --since 72h web"),
+                v("journalctl -u app.service -n 15")
+            ]
+        );
+        assert!(take_reads(&server).is_empty(), "taken means gone");
     }
 }

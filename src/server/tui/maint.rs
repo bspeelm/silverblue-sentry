@@ -335,13 +335,16 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
             } else if p.text.is_empty() {
                 "Enter runs it · x drops it"
             } else {
-                "L shows the plan · Enter runs it · x drops it"
+                "L shows the plan · o its conversation · Enter runs it · x drops it"
             },
             t.dim(),
         ));
     } else if v.planning.as_deref() == Some(s.id.as_str()) {
         l.push(Line::raw(""));
-        l.push(Line::styled("Claude is writing the plan…", t.s(t.cyan)));
+        l.push(Line::styled(
+            "Claude is writing the plan… (o watches it)",
+            t.s(t.cyan),
+        ));
     }
     if let Some(a) =
         v.s.maint_state

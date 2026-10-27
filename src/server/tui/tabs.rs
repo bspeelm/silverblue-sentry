@@ -96,7 +96,8 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("p", "plan"),
             ("Enter", "run plan"),
             ("x", "drop plan"),
-            ("L", "assessment"),
+            ("L", "show plan"),
+            ("o", "plan's chat"),
             ("z", "later"),
             ("c", "look up"),
             ("e", "edit"),
@@ -183,6 +184,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
         (Tab::Maint, 'z' | 'p' | 'x' | 'L') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
+        (Tab::Maint, 'o') => vec![Effect::OpenPlan],
         _ => Vec::new(),
     }
 }

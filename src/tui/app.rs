@@ -889,10 +889,14 @@ impl App {
                 );
                 self.suspend_then = vec![Effect::ChatBack(None, reaudit)];
             }
-            KeyCode::Char('k') if ctrl => c.scroll += 1,
-            KeyCode::Char('j') if ctrl => c.scroll = c.scroll.saturating_sub(1),
-            KeyCode::PageUp => c.scroll += 10,
-            KeyCode::PageDown => c.scroll = c.scroll.saturating_sub(10),
+            KeyCode::Char('k') if ctrl => c.scroll_by(1),
+            KeyCode::Char('j') if ctrl => c.scroll_by(-1),
+            KeyCode::Up => c.scroll_by(1),
+            KeyCode::Down => c.scroll_by(-1),
+            KeyCode::PageUp => c.scroll_by(10),
+            KeyCode::PageDown => c.scroll_by(-10),
+            KeyCode::Home => c.scroll_top(),
+            KeyCode::End => c.scroll_bottom(),
             KeyCode::Esc => {
                 if let Some((_, pid)) = c.live {
                     let _ = kill(pid);

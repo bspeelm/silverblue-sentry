@@ -43,6 +43,8 @@ pub struct Plan {
     pub text: String,
     /// Claude advised not to move it now.
     pub wait: bool,
+    /// Claude's conversation, to resume when it's opened again (`o`).
+    pub session: Option<String>,
 }
 
 /// Claude's last assessment of an item.
@@ -177,6 +179,7 @@ mod tests {
                 repo: Some("example/web".into()),
                 text: "TARGET: v1.5.2\n**Before**: \"back up\"".into(),
                 wait: false,
+                session: None,
             },
         );
         st.assessments.insert(

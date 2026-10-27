@@ -50,6 +50,10 @@ pub enum Effect {
     Wf(WfCmd),
     /// Read what needs root, with the terminal handed over for the password (after a confirm).
     Inventory,
+    /// Run the reads Claude asked for with sudo (after a confirm), and send it the output.
+    SudoReads(Vec<Vec<String>>, ReadsFor),
+    /// Open the selected maintenance item's plan conversation (`o`).
+    OpenPlan,
     /// Look at a maintenance item again later (`z`).
     Snooze(String, jiff::civil::Date),
     /// Ask for an optional note, then save the plan (`p`).
@@ -68,6 +72,22 @@ pub enum Effect {
 pub enum AskTurn {
     First(Ask),
     Follow(String),
+    /// A follow-up to the plan being written in the background (outputs Claude asked for).
+    PlanFollow(String),
+}
+
+/// Where the answer to read requests goes back to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReadsFor {
+    Chat,
+    Plan,
+}
+
+/// A plan Claude writes in the background (`p`): saved when each of its turns ends.
+struct PlanJob {
+    item: String,
+    plan: crate::server::maint::Plan,
+    chat: Chat,
 }
 
 /// A workflow's `[vars]` being asked for, one at a time, before it starts.
@@ -184,8 +204,13 @@ pub struct App {
     plan_note: Option<(String, crate::server::maint::Plan, String)>,
     /// A plan whose request waits in the consent box.
     plan_pending: Option<(String, crate::server::maint::Plan)>,
-    /// The plan Claude is writing (saved, and revised by follow-ups, as each turn ends).
+    /// The plan whose conversation is open in the chat (saved, and revised by follow-ups, as
+    /// each turn ends).
     plan_draft: Option<(String, crate::server::maint::Plan)>,
+    /// A plan Claude writes in the background.
+    plan_job: Option<PlanJob>,
+    /// The suspended command runs Claude's read requests.
+    suspend_reads: Option<(Vec<Vec<String>>, ReadsFor)>,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
@@ -243,6 +268,8 @@ impl App {
             plan_note: None,
             plan_pending: None,
             plan_draft: None,
+            plan_job: None,
+            suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
@@ -437,6 +464,27 @@ impl App {
     }
 
     fn on_run(&mut self, id: u64, m: StreamMsg) {
+        if let Some(j) = self.plan_job.as_mut()
+            && j.chat.live.is_some_and(|(cid, _)| cid == id)
+        {
+            match m {
+                StreamMsg::Line {
+                    stderr: false,
+                    text,
+                } => {
+                    for e in claude::parse_line(&text) {
+                        j.chat.on_event(e);
+                    }
+                }
+                StreamMsg::Line { stderr: true, text } => j.chat.on_raw(text),
+                StreamMsg::Exit { code, .. } => {
+                    j.chat.on_exit(code);
+                    self.plan_job_turn_ended();
+                }
+            }
+            self.dirty = true;
+            return;
+        }
         if let Some(c) = self.chat.as_mut()
             && c.live.is_some_and(|(cid, _)| cid == id)
         {
@@ -454,6 +502,7 @@ impl App {
                     c.on_exit(code);
                     self.save_assessment();
                     self.save_plan_draft();
+                    self.offer_reads(ReadsFor::Chat);
                 }
             }
             self.dirty = true;
@@ -592,10 +641,16 @@ impl App {
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
             upstream: self.store.upstream_at,
             planning: self
-                .plan_draft
+                .plan_job
                 .as_ref()
-                .filter(|_| self.chat.as_ref().is_some_and(|c| c.running()))
-                .map(|(id, _)| id.clone()),
+                .filter(|j| j.chat.running())
+                .map(|j| j.item.clone())
+                .or_else(|| {
+                    self.plan_draft
+                        .as_ref()
+                        .filter(|_| self.chat.as_ref().is_some_and(|c| c.running()))
+                        .map(|(id, _)| id.clone())
+                }),
         }
     }
 
@@ -879,6 +934,27 @@ impl App {
                     self.suspend = Some((cmd, String::new(), Vec::new()));
                     self.suspend_edit = true;
                 }
+                Effect::SudoReads(reads, to) => {
+                    let script = crate::server::inventory::reads_script(&reads);
+                    let cmd = self
+                        .remote
+                        .sh(&crate::server::inventory::sudo_wrapper(
+                            &script,
+                            ".cache/sentry-server/claude-reads.out",
+                            &format!(
+                                "Reading for Claude on {} (nothing is changed)…",
+                                self.remote.name
+                            ),
+                        ))
+                        .timeout(None);
+                    let banner = format!(
+                        "sentry-server · reading {} with sudo for Claude",
+                        self.remote.name
+                    );
+                    self.suspend = Some((cmd, banner, Vec::new()));
+                    self.suspend_reads = Some((reads, to));
+                }
+                Effect::OpenPlan => self.open_plan(),
                 Effect::Inventory => {
                     let cmd = self
                         .remote
@@ -1592,65 +1668,17 @@ impl App {
 
     /// A plan turn ended: the plan is Claude's answer, its version from the `TARGET:` line.
     fn save_plan_draft(&mut self) {
-        let Some((id, mut plan)) = self.plan_draft.clone() else {
+        let Some((id, plan)) = self.plan_draft.clone() else {
             return;
         };
         if self.assess_item.as_deref() != Some(id.as_str()) {
             return;
         }
         let Some(c) = self.chat.as_ref() else { return };
-        // This turn's answer: what Claude said after the last thing the user said.
-        let start = c
-            .entries
-            .iter()
-            .rposition(|(k, _)| *k == chatmod::Kind::You)
-            .map_or(0, |i| i + 1);
-        let text = c.entries[start..]
-            .iter()
-            .filter(|(k, _)| *k == chatmod::Kind::Claude)
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if text.trim().is_empty() {
-            return;
+        if let Some(plan) = plan_from_chat(c, plan) {
+            self.plan_draft = Some((id.clone(), plan.clone()));
+            self.keep_plan(&id, plan);
         }
-        match super::maint::parse_target(&text) {
-            Some(None) => plan.wait = true,
-            Some(Some(t)) => {
-                plan.wait = false;
-                if let Some(it) = self
-                    .remote
-                    .cfg
-                    .maintenance
-                    .items
-                    .iter()
-                    .find(|i| i.id == id)
-                    && it.retire.is_none()
-                {
-                    let l = crate::server::maint::local::Local {
-                        repo: plan.repo.clone(),
-                        pinned: plan.from.clone(),
-                        ..Default::default()
-                    };
-                    plan.vars = crate::server::maint::local::vars_for(it, &l, Some(&t));
-                    plan.to = Some(crate::server::maint::version::like_pin(
-                        &t,
-                        plan.from.as_deref(),
-                    ));
-                }
-            }
-            None => {}
-        }
-        // The plan itself starts at its TARGET line (before it: Claude saying what it reads).
-        plan.text = match text.lines().position(|l| {
-            l.trim_start_matches(['*', '#', '`', ' '])
-                .starts_with("TARGET")
-        }) {
-            Some(i) => text.lines().skip(i).collect::<Vec<_>>().join("\n"),
-            None => text,
-        };
-        self.plan_draft = Some((id.clone(), plan.clone()));
-        self.keep_plan(&id, plan);
     }
 
     /// An assessment's turn ended: keep what Claude said, for `L` and the item's details.
@@ -1834,51 +1862,229 @@ impl App {
     }
 
     fn ask_turn(&mut self, turn: AskTurn) {
-        let (prompt, shown, resume) = match turn {
+        match turn {
             AskTurn::First(ask) => {
+                if let Some((item, plan)) = self.plan_pending.take() {
+                    // `p`: Claude writes the plan in the background; nothing opens.
+                    let p = ask.prompt();
+                    let q = ask.question.lines().next().unwrap_or("").to_string();
+                    self.plan_job = Some(PlanJob {
+                        item: item.clone(),
+                        plan,
+                        chat: Chat::new(ask),
+                    });
+                    self.start_turn(ReadsFor::Plan, &p, q, None);
+                    self.toast(&format!(
+                        "Claude is writing the plan for {item} · it's saved when done (o opens it)"
+                    ));
+                    return;
+                }
                 self.chat_assess = self.tab == Tab::Maint;
-                self.plan_draft = self.plan_pending.take();
-                self.assess_item = match &self.plan_draft {
-                    Some((id, _)) => Some(id.clone()),
-                    None if self.chat_assess => {
-                        super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
-                    }
-                    None => None,
+                self.plan_draft = None;
+                self.assess_item = if self.chat_assess {
+                    super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
+                } else {
+                    None
                 };
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
                 self.chat = Some(Chat::new(ask));
-                (p, q, None)
+                self.start_turn(ReadsFor::Chat, &p, q, None);
             }
             AskTurn::Follow(text) => {
                 let session = self.chat.as_ref().and_then(|c| c.session.clone());
-                (text.clone(), text, session)
+                self.start_turn(ReadsFor::Chat, &text, text.clone(), session);
             }
-        };
+            AskTurn::PlanFollow(text) => {
+                let session = self.plan_job.as_ref().and_then(|j| j.chat.session.clone());
+                self.start_turn(ReadsFor::Plan, &text, text.clone(), session);
+            }
+        }
+    }
+
+    /// Send one turn to Claude, into the open chat or the background plan.
+    fn start_turn(&mut self, to: ReadsFor, prompt: &str, shown: String, resume: Option<String>) {
+        let assess = to == ReadsFor::Plan || self.chat_assess;
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = if self.chat_assess {
+        let profile = if assess {
             super::ask::assess_profile(&self.remote, &os, &kernel, self.store.sudo.value)
         } else {
             super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
         };
-        let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
+        let cmd = claude::turn_cmd_with(prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
+        let chat = match to {
+            ReadsFor::Chat => self.chat.as_mut(),
+            ReadsFor::Plan => self.plan_job.as_mut().map(|j| &mut j.chat),
+        };
+        let Some(c) = chat else { return };
         if self.offline {
-            if let Some(c) = self.chat.as_mut() {
-                c.push(chatmod::Kind::You, shown);
-            }
+            c.push(chatmod::Kind::You, shown);
             return;
         }
         let tx = self.tx.clone();
-        let r = cmd.stream(move |m| {
+        match cmd.stream(move |m| {
             let _ = tx.send(Ev::Run(id, m));
-        });
-        let Some(c) = self.chat.as_mut() else { return };
-        match r {
+        }) {
             Ok(pid) => c.begin_turn(&shown, id, pid),
             Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start claude: {e}")),
         }
+    }
+
+    /// A background plan's turn ended: save the plan, then any reads it asked for.
+    fn plan_job_turn_ended(&mut self) {
+        let Some(j) = self.plan_job.as_ref() else {
+            return;
+        };
+        let (item, plan) = (j.item.clone(), j.plan.clone());
+        match plan_from_chat(&j.chat, plan) {
+            Some(plan) => {
+                if let Some(j) = self.plan_job.as_mut() {
+                    j.plan = plan.clone();
+                }
+                self.keep_plan(&item, plan);
+            }
+            None => {
+                let err = j
+                    .chat
+                    .entries
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| *k == chatmod::Kind::Err)
+                    .map(|(_, t)| t.clone());
+                self.toast(&format!(
+                    "no plan for {item}: {} (o shows the conversation)",
+                    err.unwrap_or_else(|| "Claude gave no answer".into())
+                ));
+            }
+        }
+        self.offer_reads(ReadsFor::Plan);
+    }
+
+    /// After a turn: if Claude asked to read things that need root, show them and ask.
+    fn offer_reads(&mut self, to: ReadsFor) {
+        if self.offline {
+            return;
+        }
+        let reads = crate::server::gateway::take_reads(&self.remote.name);
+        if !reads.is_empty() {
+            self.reads_box(reads, to);
+        }
+    }
+
+    fn reads_box(&mut self, reads: Vec<Vec<String>>, to: ReadsFor) {
+        let t = self.theme;
+        let mut lines = vec![
+            Line::styled(
+                format!(
+                    "Claude asks to read these on {}, which need root (sudo asks for your password):",
+                    self.remote.name
+                ),
+                t.fg(),
+            ),
+            Line::raw(""),
+        ];
+        for argv in &reads {
+            lines.push(Line::styled(
+                format!(
+                    "  $ sudo {}",
+                    argv.iter()
+                        .map(|a| crate::exec::sh_quote(a))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                t.fg(),
+            ));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "All on the read-only list. One sudo, the terminal handed over for the password; the \
+             output goes back to Claude, which then continues.",
+            t.s(t.yellow),
+        ));
+        self.modal = Some(Modal {
+            title: "Claude asks to read with sudo".into(),
+            color: t.yellow,
+            lines,
+            yes: Some(("read".into(), vec![Effect::SudoReads(reads, to)])),
+        });
+    }
+
+    /// The reads ran: send their output back to Claude.
+    fn after_reads(
+        &mut self,
+        reads: Vec<Vec<String>>,
+        to: ReadsFor,
+        status: Result<ExitStatus, ExecError>,
+    ) {
+        const CAPTURE: &str = ".cache/sentry-server/claude-reads.out";
+        if let Err(e) = status {
+            return self.toast(&e.to_string());
+        }
+        let inv = match crate::server::inventory::read_capture(&self.remote, CAPTURE) {
+            Ok(i) => i,
+            Err(e) => return self.toast(&format!("couldn't read it back: {e}")),
+        };
+        if inv.outputs.is_empty() {
+            return self.toast("nothing was read (wrong password?)");
+        }
+        let mut text = String::from(
+            "Here is the output of the commands you asked to read with sudo (I ran them):\n",
+        );
+        for argv in &reads {
+            let line = argv
+                .iter()
+                .map(|a| crate::exec::sh_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let Some(c) = inv.outputs.get(&line) else {
+                continue;
+            };
+            let out: Vec<&str> = c.out.lines().collect();
+            let shown = if out.len() > 300 {
+                format!(
+                    "{}\n… ({} more lines cut)",
+                    out[out.len() - 300..].join("\n"),
+                    out.len() - 300
+                )
+            } else {
+                out.join("\n")
+            };
+            text.push_str(&format!("\n$ sudo {line}   (exit {})\n{shown}\n", c.code));
+        }
+        text.push_str("\nContinue from here.");
+        match to {
+            ReadsFor::Plan if self.plan_job.is_some() => self.ask_turn(AskTurn::PlanFollow(text)),
+            _ if self.chat.is_some() => self.ask_turn(AskTurn::Follow(text)),
+            _ => self.toast("the conversation is closed: the output wasn't sent"),
+        }
+    }
+
+    /// `o` on Maintenance: the selected item's plan conversation, in the chat.
+    fn open_plan(&mut self) {
+        let Some(id) = super::maint::selected(&self.view()).map(|(s, _)| s.id.clone()) else {
+            return;
+        };
+        if let Some(j) = self.plan_job.take_if(|j| j.item == id) {
+            self.chat = Some(j.chat);
+            self.plan_draft = Some((id.clone(), j.plan));
+        } else if let Some(p) = self.store.maint_state.plans.get(&id).cloned() {
+            // From an earlier session: the plan, and its conversation resumed on a follow-up.
+            let mut c = Chat::new(Ask::new(
+                format!("{} · plan {id}", self.remote.name),
+                "",
+                "",
+            ));
+            c.push(chatmod::Kind::Claude, p.text.clone());
+            c.session = p.session.clone();
+            self.chat = Some(c);
+            self.plan_draft = Some((id.clone(), p));
+        } else {
+            return self.toast(&format!("no plan for {id}: p makes one"));
+        }
+        self.chat_assess = true;
+        self.assess_item = Some(id);
     }
 
     fn chat_key(&mut self, k: KeyEvent) {
@@ -1919,11 +2125,26 @@ impl App {
                 let text = c.offer.take().unwrap_or_default();
                 self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
             }
-            KeyCode::Char('k') if ctrl => c.scroll += 1,
-            KeyCode::Char('j') if ctrl => c.scroll = c.scroll.saturating_sub(1),
-            KeyCode::PageUp => c.scroll += 10,
-            KeyCode::PageDown => c.scroll = c.scroll.saturating_sub(10),
+            KeyCode::Char('k') if ctrl => c.scroll_by(1),
+            KeyCode::Char('j') if ctrl => c.scroll_by(-1),
+            KeyCode::Up => c.scroll_by(1),
+            KeyCode::Down => c.scroll_by(-1),
+            KeyCode::PageUp => c.scroll_by(10),
+            KeyCode::PageDown => c.scroll_by(-10),
+            KeyCode::Home => c.scroll_top(),
+            KeyCode::End => c.scroll_bottom(),
             KeyCode::Esc => {
+                // A plan's conversation goes on in the background (and is still saved).
+                if self.plan_draft.is_some() && self.plan_job.is_none() {
+                    let (item, plan) = self.plan_draft.take().expect("plan");
+                    let chat = self.chat.take().expect("chat");
+                    if chat.running() {
+                        self.plan_job = Some(PlanJob { item, plan, chat });
+                        self.toast("the plan is still being written · it's saved when done");
+                    }
+                    self.dirty = true;
+                    return;
+                }
                 if let Some((_, pid)) = c.live {
                     let _ = kill(pid);
                 }
@@ -2052,6 +2273,10 @@ impl App {
         }
         if std::mem::take(&mut self.suspend_edit) {
             self.reload_config();
+            return;
+        }
+        if let Some((reads, to)) = self.suspend_reads.take() {
+            self.after_reads(reads, to, status);
             return;
         }
         if std::mem::take(&mut self.suspend_inventory) {
@@ -2456,6 +2681,61 @@ impl crate::tui::Ui for App {
     }
 }
 
+/// The plan from Claude's last answer in `c`: its text from the `TARGET:` line on, the
+/// version from that line (written the way the pin is), its session to resume. None when this
+/// turn had no answer.
+fn plan_from_chat(
+    c: &Chat,
+    mut plan: crate::server::maint::Plan,
+) -> Option<crate::server::maint::Plan> {
+    use crate::server::maint::{local, version};
+    // This turn's answer: what Claude said after the last thing the user said.
+    let start = c
+        .entries
+        .iter()
+        .rposition(|(k, _)| *k == chatmod::Kind::You)
+        .map_or(0, |i| i + 1);
+    let text = c.entries[start..]
+        .iter()
+        .filter(|(k, _)| *k == chatmod::Kind::Claude)
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if text.trim().is_empty() {
+        return None;
+    }
+    match super::maint::parse_target(&text) {
+        Some(None) => plan.wait = true,
+        Some(Some(t)) => {
+            plan.wait = false;
+            // A version only for a move (retiring has none); the image var follows it.
+            if plan.vars.contains_key("service") {
+                let l = local::Local {
+                    repo: plan.repo.clone(),
+                    pinned: plan.from.clone(),
+                    ..Default::default()
+                };
+                if let Some(repo) = l.repo.as_deref() {
+                    let tag = version::like_pin(&t, l.pinned.as_deref());
+                    plan.vars.insert("image".into(), format!("{repo}:{tag}"));
+                }
+                plan.to = Some(version::like_pin(&t, plan.from.as_deref()));
+            }
+        }
+        None => {}
+    }
+    // The plan itself starts at its TARGET line (before it: Claude saying what it reads).
+    plan.text = match text.lines().position(|l| {
+        l.trim_start_matches(['*', '#', '`', ' '])
+            .starts_with("TARGET")
+    }) {
+        Some(i) => text.lines().skip(i).collect::<Vec<_>>().join("\n"),
+        None => text,
+    };
+    plan.session = c.session.clone().or(plan.session);
+    Some(plan)
+}
+
 fn kill(pid: u32) -> std::io::Result<()> {
     let pid = rustix::process::Pid::from_raw(pid as i32)
         .ok_or_else(|| std::io::Error::other("bad pid"))?;
@@ -2477,8 +2757,35 @@ impl App {
     }
     /// Tests: Claude's turn ended (there's no claude process offline).
     pub fn turn_ended(&mut self) {
+        if self.plan_job.is_some() {
+            return self.plan_job_turn_ended();
+        }
         self.save_assessment();
         self.save_plan_draft();
+    }
+    /// Tests: a chat turn ended (online: reads Claude asked for are offered).
+    pub fn turn_ended_online_for_reads(&mut self) {
+        self.offer_reads(ReadsFor::Chat);
+    }
+    /// Tests: open a conversation without asking Claude anything.
+    pub fn open_chat(&mut self, c: Chat) {
+        self.chat = Some(c);
+    }
+    /// Tests: the reads waiting for a yes, if that box is open.
+    pub fn take_reads_box(&mut self) -> Option<Vec<Vec<String>>> {
+        let m = self.modal.take()?;
+        match m.yes.as_ref()?.1.first()? {
+            Effect::SudoReads(r, _) => {
+                let r = r.clone();
+                self.modal = Some(m);
+                Some(r)
+            }
+            _ => None,
+        }
+    }
+    /// Tests: the background plan's conversation.
+    pub fn plan_chat_mut(&mut self) -> Option<&mut Chat> {
+        self.plan_job.as_mut().map(|j| &mut j.chat)
     }
     pub fn chat_mut(&mut self) -> Option<&mut Chat> {
         self.chat.as_mut()

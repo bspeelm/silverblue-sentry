@@ -1295,12 +1295,17 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     );
     assert!(prompt.contains("TARGET: <version>"));
     key(&mut a, KeyCode::Char('y'));
-    a.chat_mut().unwrap().push(
+    // It's written in the background: no chat opens, the item says so.
+    assert!(a.chat_mut().is_none(), "nothing opens");
+    assert!(screen(&mut a).contains("Claude is writing the plan for web"));
+    a.plan_chat_mut()
+        .unwrap()
+        .push(crate::tui::chat::Kind::Claude, "Reading the notes first.");
+    a.plan_chat_mut().unwrap().push(
         crate::tui::chat::Kind::Claude,
         "**TARGET: v1.5.1**\n**Assessment**: 1.5.2 regresses the export; 1.5.1 has the fix.\n**Before**: back up.",
     );
     a.turn_ended();
-    key(&mut a, KeyCode::Esc);
     assert_eq!(a.tab, Tab::Maint, "still on Maintenance");
     let s = screen(&mut a);
     assert!(
@@ -1312,8 +1317,17 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         "{s}"
     );
     key(&mut a, KeyCode::Char('L'));
-    assert!(screen(&mut a).contains("web · plan → 1.5.1"));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("web · plan → 1.5.1") && !s.contains("Reading the notes first"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Esc);
+    // o opens its conversation; Esc puts it away (it isn't killed: nothing runs here).
+    key(&mut a, KeyCode::Char('o'));
+    assert!(screen(&mut a).contains("Reading the notes first"));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.chat_mut().is_none());
     // Enter runs it: the workflow asks its vars with the plan's values filled in.
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
@@ -1533,14 +1547,20 @@ fn live_plan() {
     key(&mut a, KeyCode::Char('1'));
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('y'));
+    assert!(
+        a.chat_mut().is_none(),
+        "written in the background, nothing opens"
+    );
+    // Move about meanwhile: it's still saved.
+    key(&mut a, KeyCode::Char(Tab::Overview.key()));
     for _ in 0..200 {
         pump(&mut a, 3);
-        if a.chat_mut().is_some_and(|c| !c.running()) {
+        if a.plan_chat_mut().is_some_and(|c| !c.running()) {
             break;
         }
     }
     pump(&mut a, 1);
-    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
     println!("{}", render_to_string(&mut a, 158, 41));
     let plan = a
         .store
@@ -1553,4 +1573,48 @@ fn live_plan() {
         "to: {:?} wait: {} vars: {:?}\n{}",
         plan.to, plan.wait, plan.vars, plan.text
     );
+}
+
+/// Against a disposable sshd whose sudo asks for a password: a read Claude makes that needs
+/// root is queued by the gateway; after the turn the box lists it, one sudo runs it, and the
+/// output goes back as the next message. (No claude process: the conversation is offline.)
+/// `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_claude_reads -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_claude_reads() {
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let r = Remote::new(n, s);
+    // What Claude runs: refused (sudo wants a password), so queued.
+    let argv: Vec<String> = ["docker", "ps", "-aq"].map(String::from).to_vec();
+    let code = crate::server::gateway::exec_cli(&r, &argv);
+    assert_ne!(code, 0);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut a = App::new(r, tx);
+    a.open_chat(crate::tui::chat::Chat::new(crate::claude::Ask::new(
+        "s", "c", "q",
+    )));
+    a.turn_ended_online_for_reads();
+    let reads = a.take_reads_box().expect("the box lists the read");
+    println!("{}", render_to_string(&mut a, 158, 41));
+    assert_eq!(reads, [argv]);
+    key(&mut a, KeyCode::Char('y'));
+    let (cmd, _) = a.take_suspend().expect("hands over the terminal");
+    let st = cmd.interactive();
+    a.offline = true; // the follow-up is shown, not sent
+    a.after_suspend(st);
+    let sent = a
+        .chat_mut()
+        .unwrap()
+        .entries
+        .iter()
+        .rev()
+        .find(|(k, _)| *k == crate::tui::chat::Kind::You)
+        .map(|(_, t)| t.clone())
+        .unwrap();
+    println!("{sent}");
+    assert!(sent.contains("$ sudo docker ps -aq   (exit 0)") && sent.contains("aaa111"));
 }
