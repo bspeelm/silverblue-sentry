@@ -145,6 +145,9 @@ pub struct Snapshot {
     pub disks: Option<Vec<disk::Mount>>,
     pub listeners: Option<Vec<net::Listener>>,
     pub journal: Option<Vec<JournalUnit>>,
+    /// Maintenance items' standing (pins vs upstream), when any are configured.
+    #[serde(default)]
+    pub maint: Vec<crate::server::maint::eval::Status>,
     /// (section, why it's missing)
     pub errors: Vec<(String, String)>,
 }
@@ -187,6 +190,7 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         let disks_ = sc.spawn(|| disks(r));
         let listen = sc.spawn(|| listeners(r));
         let journal_ = sc.spawn(|| journal(r));
+        let maint_ = sc.spawn(|| maint_status(r));
         fn join<T>(
             h: std::thread::ScopedJoinHandle<'_, Result<T, SrvError>>,
         ) -> Result<T, SrvError> {
@@ -208,9 +212,30 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         s.disks = keep(&mut errors, "disks", join(disks_));
         s.listeners = keep(&mut errors, "listeners", join(listen));
         s.journal = keep(&mut errors, "journal", join(journal_));
+        s.maint = maint_.join().unwrap_or_default();
     });
     s.errors = errors;
     Ok(s)
+}
+
+/// Every maintenance item's standing: the server's side read now, upstream from the cache
+/// (looked up only when asked).
+pub fn maint_status(r: &Remote) -> Vec<crate::server::maint::eval::Status> {
+    use crate::server::maint;
+    let items = &r.cfg.maintenance.items;
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let local = maint::local::read(r, &r.cfg);
+    let lookups = maint::upstream::load(&r.name).map(|c| c.data);
+    let today = jiff::Zoned::now().date();
+    maint::eval::evaluate(
+        items,
+        &local,
+        lookups.as_ref(),
+        &maint::load_state(&r.name),
+        today,
+    )
 }
 
 /// One collector by name, as JSON (`sentry-server collect <server> <kind>`).

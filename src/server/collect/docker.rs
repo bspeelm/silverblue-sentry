@@ -20,6 +20,9 @@ pub struct Container {
     pub exit_code: i32,
     pub oom: bool,
     pub compose: Option<String>,
+    /// The compose service it runs (`com.docker.compose.service`).
+    #[serde(default)]
+    pub service: Option<String>,
     /// Mounts `/var/run/docker.sock`: control of the docker daemon, i.e. root on the host.
     pub docker_sock: bool,
     /// Published ports: (host ip, host port, container port/proto).
@@ -183,7 +186,13 @@ pub fn parse_inspect(json: &str) -> Result<Vec<Container>, String> {
                 compose: i
                     .config
                     .labels
+                    .as_ref()
                     .and_then(|l| l.get("com.docker.compose.project").cloned()),
+                service: i
+                    .config
+                    .labels
+                    .as_ref()
+                    .and_then(|l| l.get("com.docker.compose.service").cloned()),
                 docker_sock: i.mounts.iter().any(|m| m.source.ends_with("/docker.sock")),
                 ports,
                 restart_policy: i

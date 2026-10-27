@@ -489,6 +489,11 @@ pub fn derive(
         );
     }
 
+    out.extend(crate::server::maint::eval::findings(
+        &s.maint,
+        &cfg.maintenance.items,
+    ));
+
     for x in &mut out {
         x.expected = cfg.findings.iter().chain(accepted).any(|g| glob(g, &x.id));
     }

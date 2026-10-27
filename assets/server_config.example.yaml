@@ -78,3 +78,31 @@ servers:
         run: systemctl reload app.service
         sudo: true
         undo: none needed
+
+    # What's pinned or held on purpose, why, and when to look at it again: the Maintenance
+    # tab and `sentry-server maint`. Newer versions are looked up from this machine (never
+    # from the server), only when you ask. Nothing changes here: a change goes through the
+    # item's workflow, one item at a time.
+    maintenance:
+      # Local files Claude may read when you ask it to assess a change (runbooks, notes).
+      notes: [~/notes/myserver-runbook.md]
+      items:
+        - id: web
+          image: {service: web}          # the pin is read from the compose file
+          source: github:example/web     # or docker:repo, ghcr:owner/image
+          tier: amber                    # green | amber | red: how careful a change must be
+          hold: "1.5 migrates the database one way; wait for 1.5.2"
+          review_by: 2027-01-15          # findings about it wait until then (z moves it)
+          workflow: compose-bump         # p plans the change with it
+        - id: engine
+          apt: [engine-pkg, engine-cli]  # held packages: installed vs apt's candidate
+          tier: red
+          hold: "an engine update restarts every container"
+          eol: docker-engine/29          # endoflife.date product/cycle
+        - id: app
+          version_cmd: /opt/app/bin/app --version
+          unit: app.service
+          source: github:example/app
+        - id: legacy
+          unit: legacy.service
+          retire: {replaced_by: app.service, workflow: retire-service}

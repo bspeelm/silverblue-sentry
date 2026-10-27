@@ -8,6 +8,7 @@ pub mod config;
 pub mod gateway;
 pub mod init;
 pub mod inventory;
+pub mod maint;
 pub mod remote;
 pub mod tui;
 pub mod workflow;

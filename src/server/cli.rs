@@ -315,6 +315,66 @@ pub fn workflow(what: &str, server: Option<&str>) -> u8 {
     u8::from(bad > 0)
 }
 
+/// `maint [server] [--refresh]`: each maintenance item's standing. `--refresh` looks upstream
+/// up again first (from this machine).
+pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
+    use super::maint::{self, eval::Flag};
+    let (n, s) = match load(server) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    if s.maintenance.items.is_empty() {
+        println!("{n}: no maintenance: items in server_config.yaml");
+        return 0;
+    }
+    let r = Remote::new(&n, &s).with_inventory();
+    if refresh {
+        eprintln!("looking up upstream versions…");
+        maint::upstream::refresh(&n, &s);
+    }
+    let up_age = maint::upstream::load(&n).map(|c| c.age_secs(jiff::Timestamp::now()));
+    let st = super::collect::maint_status(&r);
+    println!(
+        "{:<16} {:<6} {:<22} {:<22} {:<22} flags",
+        "item", "tier", "pinned", "running", "latest"
+    );
+    let cut = |s: &Option<String>| -> String {
+        let s = s.as_deref().unwrap_or("-");
+        if s.chars().count() > 21 {
+            format!("{}…", s.chars().take(20).collect::<String>())
+        } else {
+            s.to_string()
+        }
+    };
+    for x in &st {
+        let flags: Vec<&str> = x.flags.iter().map(|f| f.word()).collect();
+        println!(
+            "{:<16} {:<6} {:<22} {:<22} {:<22} {}",
+            x.id,
+            x.tier.as_str(),
+            cut(&x.pinned),
+            cut(&x.running),
+            cut(&x.latest),
+            flags.join(", ")
+        );
+        if let Some(note) = x
+            .note
+            .as_ref()
+            .filter(|_| x.has(Flag::Unknown) || x.pinned.is_none())
+        {
+            println!("{:<16} {note}", "");
+        }
+    }
+    match up_age {
+        Some(a) => println!("(upstream looked up {})", crate::fmt::ago(a)),
+        None => println!("(upstream not looked up yet: --refresh)"),
+    }
+    0
+}
+
 /// `exec <server> [--] <argv…>`: the read-only gateway Claude uses.
 pub fn exec(server: &str, argv: &[String]) -> u8 {
     let argv: Vec<String> = match argv.first().map(String::as_str) {

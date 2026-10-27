@@ -44,6 +44,87 @@ pub struct Server {
     pub thresholds: Thresholds,
     /// Your own maintenance commands, offered behind a confirm box.
     pub actions: Vec<CustomAction>,
+    /// What's pinned or held deliberately, and when to look at it again (the Maintenance tab).
+    pub maintenance: Maintenance,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Maintenance {
+    /// Local files Claude may read when assessing a change (runbooks, notes).
+    pub notes: Vec<String>,
+    pub items: Vec<MaintItem>,
+}
+
+/// One thing kept at a deliberate version: an image, held packages, or an app on the host.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MaintItem {
+    pub id: String,
+    /// A container image: its pin from the compose file, what runs from `docker inspect`.
+    pub image: Option<ImageRef>,
+    /// Debian packages: installed (and held) vs the candidate apt offers.
+    pub apt: Vec<String>,
+    /// An app on the host: a command printing its version, run as the login user.
+    pub version_cmd: Option<String>,
+    /// Its systemd unit, for a host app (what `retire` stops).
+    pub unit: Option<String>,
+    /// Where newer versions come from: `github:owner/repo`, `docker:repo` (Docker Hub),
+    /// `ghcr:owner/image`. Packages use apt's candidate.
+    pub source: Option<String>,
+    /// Which upstream tags count, as a glob (`*-alpine`); default: plain version numbers.
+    pub tag: Option<String>,
+    pub tier: Tier,
+    /// Why it's held where it is.
+    pub hold: Option<String>,
+    /// What limits the choice of version.
+    pub constraint: Option<String>,
+    /// Look at it again by then (YYYY-MM-DD).
+    pub review_by: Option<jiff::civil::Date>,
+    /// End of life from endoflife.date: `product` or `product/cycle`.
+    pub eol: Option<String>,
+    /// The workflow that applies a change to it (`p` on the Maintenance tab).
+    pub workflow: Option<String>,
+    /// Planned to be removed.
+    pub retire: Option<Retire>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct ImageRef {
+    /// A compose service (its pin is read from the compose file).
+    pub service: Option<String>,
+    /// The compose project it belongs to (default: the first under compose:).
+    pub compose: Option<String>,
+    /// A container not run by compose.
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Retire {
+    pub replaced_by: Option<String>,
+    pub workflow: Option<String>,
+}
+
+/// How careful a change to it must be: shown, and named to Claude when assessing.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Green,
+    #[default]
+    Amber,
+    Red,
+}
+
+impl Tier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Green => "green",
+            Tier::Amber => "amber",
+            Tier::Red => "red",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -284,6 +365,47 @@ pub fn lint(name: &str, s: &Server) -> Vec<String> {
         }
         if a.run.trim().is_empty() {
             p.push(format!("{name}: action `{}` has no run command", a.id));
+        }
+    }
+    let mut ids = std::collections::HashSet::new();
+    for it in &s.maintenance.items {
+        let at = format!("{name}: maintenance item `{}`", it.id);
+        if it.id.is_empty() {
+            p.push(format!("{name}: a maintenance item has no id"));
+        } else if !ids.insert(&it.id) {
+            p.push(format!("{at} used twice"));
+        }
+        let kinds = usize::from(it.image.is_some())
+            + usize::from(!it.apt.is_empty())
+            + usize::from(it.version_cmd.is_some());
+        if kinds != 1 && it.retire.is_none() && it.eol.is_none() {
+            p.push(format!(
+                "{at}: give exactly one of image:, apt: or version_cmd:"
+            ));
+        }
+        if let Some(img) = &it.image {
+            if img.service.is_some() == img.container.is_some() {
+                p.push(format!(
+                    "{at}: image: needs service: or container:, not both"
+                ));
+            }
+            if let Some(c) = &img.compose
+                && !s.compose.iter().any(|x| &x.name == c)
+            {
+                p.push(format!("{at}: compose project `{c}` isn't under compose:"));
+            }
+            if img.service.is_some() && img.compose.is_none() && s.compose.is_empty() {
+                p.push(format!("{at}: a compose service, but no compose: projects"));
+            }
+        }
+        if let Some(src) = &it.source
+            && !["github:", "docker:", "ghcr:"]
+                .iter()
+                .any(|pre| src.strip_prefix(pre).is_some_and(|r| !r.is_empty()))
+        {
+            p.push(format!(
+                "{at}: source `{src}` should be github:owner/repo, docker:repo or ghcr:owner/image"
+            ));
         }
     }
     p

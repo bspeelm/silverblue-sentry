@@ -176,7 +176,7 @@ On Services, Containers, Updates and Audit, `/` filters the list (any column, ca
 
 A reboot, from `B` or a workflow step, waits in place: sentry-server polls the server's boot id and says when it's back, then a workflow carries on. **`A` asks Claude** about whatever is selected. Claude reaches the server only through `sentry-server exec <server> -- <command>`, an allowlist of read-only commands with no shell, and ssh itself is denied. Whatever it proposes, you run after a confirm box.
 
-Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint [server]`. Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
+Headless: `sentry-server audit`, `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint [server]`, `maint [server] [--refresh]` (each maintenance item's standing; see `maintenance:` in the sample config). Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
 
 ## Config
 
