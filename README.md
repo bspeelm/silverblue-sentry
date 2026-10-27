@@ -80,19 +80,28 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 
 | Key | Screen | Highlights |
 |---|---|---|
-| `1` | Dashboard | CPU (per-core), memory/zram, GPU, disks + breakdown, network graphs, status (updates, findings, failed units, due jobs, workflow, recorder) |
+| `1` | Dashboard | CPU (per-core), memory/zram, GPU, disks + breakdown, network graphs, status (updates, a staged reboot, findings, failed units, due jobs, workflow, recorder); `Enter` on a row opens its recommendation on Maintenance |
 | `2` | Processes | `C`/`M` sort, `x` SIGTERM (confirmed) |
 | `3` | Network | listeners as `baseline` / `local` / `client` / `NEW`; `e` marks one expected |
-| `4` | Updates | deployments, cached rpm-ostree and Flatpak updates. `c` checks, `u` upgrades (kmod ritual aware), `f` updates Flatpaks, `R` rolls back |
-| `5` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags, and pending dnf updates inside each toolbox (`old → new`). `c` checks (stopped toolboxes are started, then stopped again), `u`/`U` upgrade one/all, `Enter` opens a shell, `s` stops, `d` removes |
-| `6` | Flatpaks | permission flags from metadata + overrides, GL.nvidia pair check, `o` opens Flatseal |
-| `7` | Audit | what's worth a look, each explained (what it is, why it's listed, what to do) and marked `check` / `review` / `info`; known services are named and grouped; diff against the previous audit. `f` fixes the selected finding: with Claude Code, Claude reads the logs and tells you what to run (see below); without it, sentry's own fixes (the exact command and how to undo it, asked first, the terminal handed over for sudo, then a re-audit), `b` toggles expected, `A` asks Claude, `Enter` audits, `[`/`]` browse reports |
-| `8` | Jobs | last run, cadence, due status. `Enter` shows the plan, then runs; `e` edits the cadence |
-| `9` | Cleanup | reclaimable space from dry runs; `Space` toggles, `Enter` confirms and runs the selection |
-| `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip (asks first unless the step is optional), `a` abandon, `R` roll back, `L` log. On a failed step: `r` retry, `d` done by hand (asks first for a failed check), `f` fix with Claude |
+| `4` | Containers | toolbox / distrobox / podman, stale and `$HOME` flags, and pending dnf updates inside each toolbox (`old → new`). `c` checks (stopped toolboxes are started, then stopped again), `u`/`U` upgrade one/all, `Enter` opens a shell, `s` stops, `d` removes |
+| `5` | Flatpaks | permission flags from metadata + overrides, GL.nvidia pair check, `o` opens Flatseal |
+| `6` | Maintenance | what to do on this machine next (below), the deployments, and the selected recommendation's details. Views: `F` the audit report, `J` jobs, `C` cleanup, `v` the maintenance log, `R` Claude's review |
+| `0` | Upgrade | workflows: start, step cards (confirm / reboot / manual), streaming log, `s` skip (asks first unless the step is optional), `a` abandon, `R` roll back, `L` the step's log, `v` the maintenance log, `p` a plan by Claude. On a failed step: `r` retry, `d` done by hand (asks first for a failed check), `f` fix with Claude; `A` on a run that has ended asks what happened |
 | `H` | History | recorder data over 6h/24h/72h (`[`/`]`), `←`/`→` to scrub; the tab appears once `sentry record` has run |
 
-`A` asks Claude about the selected thing (see below). Vim keys work everywhere: `j/k`, `gg/G`, `C-d/C-u`, `h/l` (previous/next screen), `/` filter with `n/N`, and `:` commands (`:q`, `:net`, `:job audit`, `:workflow quick-update`). `C-h`/`C-l` switch panes and `C-j`/`C-k` scroll logs. `?` shows the keys for the current screen.
+### Maintenance
+
+**Recommended** ranks what to do next, now / soon / routine / tidy, each with why; `Enter` does what it says:
+- **The audit's findings**, each explained (what it is, why it's listed, what to do): `Enter` fixes it (with Claude Code, Claude reads the logs and tells you what to run, see below; without it, sentry's own fixes: the exact command and how to undo it, asked first, the terminal handed over for sudo, then a re-audit). `x` marks it expected, `B` everything like it.
+- **Updates waiting** (the OS, Flatpaks, toolboxes; the details show what changes, old → new, and whether the kernel changes): `Enter` starts `quick-update`, the one path that does Flatpaks, toolboxes, the OS and, when the kernel changes, the NVIDIA kmod ritual. `p` has Claude plan it first.
+- **A deployment staged** and waiting for a reboot (now after 14 days): `Enter` reboots after a confirm.
+- **Jobs due** by their cadence, or that failed: the audit, the update check, the cleanups. Cadence is a reminder; nothing runs by itself.
+- **Space to reclaim** from the cleanup dry runs (now when a disk is past 90%): `Enter` opens the cleanup checklist (`Space` toggles, `Enter` confirms and runs the selection).
+- **A workflow left in progress**, and **plans ready** to apply.
+
+`z` puts one off for 7, 30 or 90 days (`maint.toml`). `c` checks everything: the audit, OS, Flatpak and toolbox updates, and what cleanup could free. The views keep what the old screens did: `F` the full audit report (marked `check` / `review` / `info`, known services named and grouped, the diff against the previous audit, `[`/`]` to browse reports, `b` expected on/off), `J` the jobs (last run, cadence, due; `Enter` shows the plan, then runs; `e` edits the cadence), `C` the cleanup checklist. `:audit`, `:jobs`, `:cleanup` open them; `:rollback` rolls back to the previous deployment behind its confirm.
+
+`A` asks Claude about the selected thing (see below). Vim keys work everywhere: `j/k`, `gg/G`, `C-d/C-u`, `h/l` (previous/next screen), `/` filter with `n/N`, and `:` commands (`:q`, `:net`, `:job audit`, `:workflow quick-update`, `:log`). `C-h`/`C-l` switch panes and `C-j`/`C-k` scroll logs. `?` shows the keys for the current screen.
 
 **Refresh:**
 - Live data refreshes only while its screen is visible: the dashboard at 1 Hz, Processes at 2 Hz, Network every 3 s.
@@ -107,11 +116,11 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 
 - **You see what's sent.** Before every question, a screen shows the exact text that will go to Anthropic. `y` sends it.
 - **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. Claude Code refuses anything else, including `sudo` and any writes. The list is `ALLOWED` in `src/claude.rs`.
-- **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc closes the pane and stops Claude, and nothing keeps running after that.
+- **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
 
-### Fixing a finding with Claude (`f` on Audit)
+### Fixing a finding with Claude (`Enter` on a finding)
 
-`f` sends the finding and sentry's known fixes for it, and asks Claude for three things: what's going on, what it recommends (leaving it alone and marking it expected is a valid answer), and the commands to run, each with a `# why:` line.
+`Enter` on a finding (`f` in the audit report) sends the finding and sentry's known fixes for it, and asks Claude for three things: what's going on, what it recommends (leaving it alone and marking it expected is a valid answer), and the commands to run, each with a `# why:` line.
 
 - **Claude proposes; you run.** Claude still can't change anything. Its commands show up as a numbered list under the answer. Press `r` (then `1`–`9`) to see one in a confirm box: the exact command, why, the undo if it's one of sentry's known fixes, and whether it needs sudo. Patterns like `curl … | sh` or `rm -rf /` are shown in red. `y` runs it: sentry runs it as you, not Claude.
   - `sudo` commands hand over the terminal so you type your own password.
@@ -127,6 +136,16 @@ When a workflow step fails, the failure card offers `[f] fix with Claude`. Claud
 - `r` runs one of its commands, as above. If a command would change deployments or reboot while a workflow is in progress, the confirm box warns you.
 - **`t` retries the step** from the chat, after a confirm box showing the step's command. The step's output goes to the workflow log; the chat says whether it passed or failed again, and `s` sends the new log to Claude. The conversation carries on across retries.
 
+### Plans and reviews by Claude
+
+For a bigger move, a release rebase or an update that changes the kernel, **`p`** (on a workflow in Upgrade, or on the updates recommendation) has Claude write the execution plan first. It reads the maintenance log, your own notes (`[maintenance] notes = ["~/notes/upgrades.md"]` in `config.toml`), release notes and known issues on the web, and this machine read-only, then writes the assessment, what to check and back up first, what to expect at each step and reboot, how to verify and how to roll back. It runs in the background; the Plan view shows its progress, then the plan, saved as `~/.config/sentry/plans/<workflow>.md` (a `+++` header with the workflow and its values, then Markdown). `Enter` there starts the workflow with those values, `r` revises the plan, `x` drops it. A completed run moves it to `plans/done/`. **`R`** on Maintenance has Claude review everything recommended and write what to do now, soon and routinely (`reviews/`). Nothing on the machine changes either way.
+
+### The maintenance log
+
+Every workflow run is written to `~/.config/sentry/log/` when it ends: one Markdown entry per run (a `+++` header with the workflow, result, from/to versions, the steps that failed or were done by hand, the plan it applied, a summary and tags, then the steps as a table and your note) and `LOG.md`, a ledger of every entry. The key bar asks what to know next time. `v` (or `:log`) opens it; Claude's plans start from the ledger.
+
+**Retention** (`[retention]` in `config.toml`, both programs): log entries past 12 months go (the newest 20 always stay, and `LOG.md` follows), each workflow keeps its newest 10 run directories (never one in progress), closed plans go after 12 months, reviews past the newest 10, and audit reports past 100 (besides `audit.retention_months`). Pruned when the TUI starts and after writes; nothing runs in the background.
+
 ## Workflows
 
 Workflows are TOML files in `~/.config/sentry/workflows/`. The shipped ones are written there the first time you open Upgrade. A copy you haven't edited is upgraded when a new version ships; a copy you have edited is never touched.
@@ -138,7 +157,7 @@ Workflows are TOML files in `~/.config/sentry/workflows/`. The shipped ones are 
 
   Then it pins today's deployment, so a current Fedora N stays in the boot menu after the two new deployments, and does the rebase with the kmod ritual. Optionally it then distro-syncs your toolboxes, after saving each one's package list. Abandoning offers `rollback`, which makes the pinned deployment the next boot.
 
-Each run lives in `~/.local/share/sentry/workflows/<name>/run-<time>/`, holding `state.json`, a copy of the TOML, and `steps/<id>.log`.
+Each run lives in `~/.local/share/sentry/workflows/<name>/run-<time>/`, holding `state.json`, a copy of the TOML, and `steps/<id>.log`; the newest 10 per workflow are kept. What each run did is in the maintenance log.
 
 Reboots happen only after you confirm them. After one, open `sentry` again. Sentry compares boot ids to tell whether the reboot actually happened, and continues once you open Upgrade (`0`).
 

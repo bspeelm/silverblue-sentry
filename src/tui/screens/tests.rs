@@ -1187,3 +1187,33 @@ fn claude_plans_a_workflow_and_reviews_maintenance() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Review maintenance with Claude"), "{s}");
 }
+
+/// Read-only on this machine: Maintenance from the real collectors, its views, and the
+/// dashboard. Point XDG_CONFIG_HOME/XDG_DATA_HOME at scratch copies.
+/// `cargo test live_maintenance -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_maintenance() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(tx);
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    pump(&mut a, 3);
+    println!("{}", render_to_string(&mut a, 158, 41));
+    key(&mut a, KeyCode::Char('6'));
+    pump(&mut a, 8);
+    println!("{}", render_to_string(&mut a, 158, 41));
+    for k in ['F', 'J'] {
+        key(&mut a, KeyCode::Char(k));
+        println!("{}", render_to_string(&mut a, 158, 41));
+        key(&mut a, KeyCode::Esc);
+    }
+}
