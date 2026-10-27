@@ -2099,6 +2099,10 @@ impl App {
                 };
             }
             h.extend(super::actions::hints(self.tab));
+            // sudo asks for a password: say where the root-only data comes from.
+            if self.store.sudo.value == Some(SudoMode::Password) {
+                h.push(("I", "read with sudo"));
+            }
             // The Maintenance tab names its own `A` (assess).
             if claude::available() && self.tab != Tab::Maint {
                 h.push(("A", "ask Claude"));

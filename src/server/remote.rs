@@ -19,7 +19,7 @@ pub enum SrvError {
     /// Allowed, but sudo on the server asks for a password, so it can't run unattended.
     #[error(
         "sudo on the server asks for a password, so `{0}` can't be read in the background \
-         (I reads it once with your password)"
+         (press I to read it once with your password)"
     )]
     SudoPassword(String),
     #[error("{0}")]

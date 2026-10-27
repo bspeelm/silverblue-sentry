@@ -1385,3 +1385,32 @@ fn live_assess() {
         println!("[{k:?}] {t}");
     }
 }
+
+#[test]
+fn a_password_sudo_says_press_i() {
+    // A store that never had docker: the tab explains, with the key to press.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut b = App::new(Remote::new("myserver", &cfg()), tx);
+    b.offline = true;
+    data(
+        &mut b,
+        Kind::Sudo,
+        Payload::Sudo(crate::server::remote::SudoMode::Password),
+    );
+    b.on_event(
+        Ev::Data(
+            Kind::Docker,
+            Box::new(Err(crate::server::remote::SrvError::SudoPassword(
+                "docker ps".into(),
+            ))),
+        ),
+        Instant::now(),
+    );
+    key(&mut b, KeyCode::Char(Tab::Containers.key()));
+    let s = render_to_string(&mut b, 158, 41);
+    assert!(
+        s.contains("Press  I  to read them once with your password"),
+        "{s}"
+    );
+    assert!(s.contains(" I  read with sudo"), "key bar: {s}");
+}

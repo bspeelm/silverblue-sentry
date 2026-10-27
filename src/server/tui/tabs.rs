@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
@@ -255,6 +255,31 @@ fn waiting<T>(v: &View, slot: &super::data::Slot<T>, what: &str) -> Line<'static
         Some(e) => Line::styled(format!("{what}: {e}"), v.t.s(v.t.red)),
         None => Line::styled(format!("reading {what}…"), v.t.dim()),
     }
+}
+
+/// What to do when sudo wants a password for something this tab needs.
+fn needs_password(v: &View, what: &str) -> Vec<Line<'static>> {
+    let t = v.t;
+    vec![
+        Line::styled(
+            format!(
+                "sudo on {} asks for a password, so {what} can't be read in the background.",
+                v.name
+            ),
+            t.fg(),
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Press ", t.fg()),
+            Span::styled(" I ", Style::new().fg(t.chip_fg).bg(t.dim)),
+            Span::styled(
+                " to read them once with your password: one sudo, read-only. The terminal is \
+                 handed over for the password, then this tab shows that read (with its age) until \
+                 you read again.",
+                t.fg(),
+            ),
+        ]),
+    ]
 }
 
 // ---------- Overview ----------
@@ -863,7 +888,13 @@ fn containers(f: &mut Frame, area: Rect, v: &View) {
         let b = panel(t, "Containers", "");
         let r = inner(&b, area);
         f.render_widget(b, area);
-        f.render_widget(Paragraph::new(waiting(v, &v.s.docker, "docker")), r);
+        let text = match &v.s.docker.err {
+            Some(crate::server::remote::SrvError::SudoPassword(_)) => {
+                needs_password(v, "the containers")
+            }
+            _ => vec![waiting(v, &v.s.docker, "docker")],
+        };
+        f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), r);
         return;
     };
     let projects = d

@@ -94,7 +94,9 @@ fn compose_text(r: &Remote, file: &str) -> Result<String, String> {
             }
             Err(match e {
                 SrvError::Failed(m) if m.contains("Permission denied") => {
-                    format!("{file} is readable only with sudo: I (in the TUI) reads it once")
+                    format!(
+                        "{file} is readable only with sudo: press I to read it once with your password"
+                    )
                 }
                 e => format!("{file}: {e}"),
             })
