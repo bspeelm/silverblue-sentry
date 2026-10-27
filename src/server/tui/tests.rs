@@ -1714,7 +1714,7 @@ fn the_maintenance_log_can_be_reviewed() {
         "+++\nserver = \"myserver\"\nkind = \"system\"\nworkflow = \"apt-maintenance\"\n\
          result = \"abandoned\"\nended = \"2026-10-25T09:00:00Z\"\nsummary = \"mirror down\"\n+++\n\n# apt",
     );
-    a.log_view = Some(super::planview::LogView {
+    a.log_view = Some(crate::tui::docview::LogView {
         entries: vec![apt, web],
         cur: 1,
         open: None,

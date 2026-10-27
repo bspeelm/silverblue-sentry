@@ -196,6 +196,15 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// A path with the home directory written `~`.
+pub fn short_home(p: &std::path::Path) -> String {
+    let h = crate::paths::home();
+    match p.strip_prefix(&h) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

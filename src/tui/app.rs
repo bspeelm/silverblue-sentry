@@ -65,6 +65,8 @@ pub enum Effect {
     Goto(ScreenId),
     /// Open Upgrade and start this workflow (its own confirm/var prompts follow).
     StartWorkflow(String),
+    /// The maintenance log (`v`, `:log`).
+    LogOpen,
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -81,6 +83,8 @@ pub enum Prompt {
         rest: Vec<(String, String, String)>,
         vars: BTreeMap<String, String>,
     },
+    /// For the maintenance log, when a run has ended: what to know next time.
+    LogNote(Box<crate::maint::log::LogEntry>),
 }
 
 impl Prompt {
@@ -88,6 +92,10 @@ impl Prompt {
         match self {
             Prompt::Cadence(j) => format!("cadence for {} (e.g. 30d, 7d, off): ", j.name()),
             Prompt::WfVar { prompt, .. } => format!("{prompt}: "),
+            Prompt::LogNote(e) => format!(
+                "{} {} · for the log, what to know next time (optional): ",
+                e.head.workflow, e.head.result
+            ),
         }
     }
 }
@@ -224,6 +232,13 @@ pub struct App {
     suspend_then: Vec<Effect>,
     /// What to print above a suspended command instead of its full command line.
     suspend_banner: Option<String>,
+    /// Write records (the maintenance log): off in tests.
+    records: bool,
+    /// The run already logged, and the OS version booted when the session began.
+    wf_logged: Option<std::path::PathBuf>,
+    wf_from: Option<String>,
+    /// The Log view, over the screen.
+    log_view: Option<super::docview::LogView>,
 }
 
 const TOAST_FOR: Duration = Duration::from_millis(2600);
@@ -272,6 +287,10 @@ impl App {
             choice: None,
             suspend_then: Vec::new(),
             suspend_banner: None,
+            records: true,
+            wf_logged: None,
+            wf_from: None,
+            log_view: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -336,6 +355,10 @@ impl App {
             choice: None,
             suspend_then: Vec::new(),
             suspend_banner: None,
+            records: false,
+            wf_logged: None,
+            wf_from: None,
+            log_view: None,
         }
     }
 
@@ -687,6 +710,12 @@ impl App {
         }
         if !matches!(self.input, Input::None) {
             self.input_key(k, now);
+            return;
+        }
+        if let Some(lv) = self.log_view.as_mut() {
+            if !lv.key(k.code) {
+                self.log_view = None;
+            }
             return;
         }
         let Some(action) = self.keys.resolve(&k) else {
@@ -1228,6 +1257,20 @@ impl App {
                     );
                 }
             }
+            Prompt::LogNote(_) if text.is_empty() => {}
+            Prompt::LogNote(_) => {
+                if self.wf.is_none() {
+                    return;
+                }
+                // Rebuilt with the note (it replaces the entry written when the run ended).
+                let e = self.log_entry(Some(text));
+                if self.records
+                    && let Err(err) = crate::maint::log::write(&e)
+                {
+                    return self.toast(format!("couldn't write the note: {err}"));
+                }
+                self.toast("noted in the maintenance log (v opens it)");
+            }
             Prompt::Cadence(job) => {
                 use crate::jobs::state::{Every, set_every};
                 match Every::parse(text) {
@@ -1263,6 +1306,7 @@ impl App {
             },
             (Some("job"), None) => self.enter(ScreenId::Jobs, now),
             (Some("workflow" | "wf"), name) => self.workflow_command(name, now),
+            (Some("log"), None) => self.open_log(),
             (Some(name), None) => match ScreenId::from_name(name) {
                 Some(id) => self.enter(id, now),
                 None => self.toast(format!("unknown command :{c}")),
@@ -1414,6 +1458,7 @@ impl App {
                 Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::Goto(id) => self.enter(id, now),
                 Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
+                Effect::LogOpen => self.open_log(),
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
                     self.enter(ScreenId::Clean, now);
@@ -1470,6 +1515,7 @@ impl App {
                 match Session::begin(&entry, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
+                        self.wf_from = self.booted_version();
                         // Entering the screen arms the session and runs the first auto step.
                         self.enter(ScreenId::Upgrade, now);
                         Ok(None)
@@ -1587,7 +1633,76 @@ impl App {
     fn after_wf_change(&mut self) {
         if self.wf.as_ref().is_some_and(Session::done) {
             self.data.fetch(Fetch::Workflows, &self.cfg, &self.tx);
+            self.wf_log();
         }
+    }
+
+    fn booted_version(&self) -> Option<String> {
+        let o = self.data.ostree.value.as_ref()?;
+        o.booted().map(|d| d.version.clone())
+    }
+
+    /// The log entry for the run that just ended (once), then the note asked for.
+    fn wf_log(&mut self) {
+        let Some(s) = self.wf.as_ref().filter(|s| s.done()) else {
+            return;
+        };
+        if self.wf_logged.as_ref() == Some(&s.run.dir) {
+            return;
+        }
+        self.wf_logged = Some(s.run.dir.clone());
+        let entry = self.log_entry(None);
+        if self.records {
+            if let Err(e) = crate::maint::log::write(&entry) {
+                self.toast(format!("couldn't write the maintenance log: {e}"));
+            }
+            crate::maint::retention::purge(
+                crate::maint::LOCAL,
+                &crate::workflows::state::root(),
+                &self.cfg.retention,
+                jiff::Timestamp::now(),
+            );
+        }
+        // What to know next time: asked now, while it's fresh.
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
+    }
+
+    /// The current run as a log entry: an OS change says from → to (the booted versions).
+    fn log_entry(&self, note: Option<&str>) -> crate::maint::log::LogEntry {
+        use crate::maint::log::{ItemInfo, LogEntry};
+        let s = self.wf.as_ref().expect("a session");
+        let kind = log_kind(&s.wf.name);
+        let to = self.booted_version();
+        let info = (kind != "system").then(|| ItemInfo {
+            item: "os".into(),
+            kind: kind.into(),
+            risk: if kind == "os-update" {
+                "medium"
+            } else {
+                "high"
+            }
+            .into(),
+            from: self.wf_from.clone(),
+            to: to.filter(|t| Some(t) != self.wf_from.as_ref()),
+            plan: None,
+        });
+        LogEntry::from_run(
+            crate::maint::LOCAL,
+            &s.wf,
+            &s.run.state,
+            &s.run.dir,
+            info.as_ref(),
+            note,
+        )
+    }
+
+    fn open_log(&mut self) {
+        let entries = if self.records {
+            crate::maint::log::list(crate::maint::LOCAL)
+        } else {
+            Vec::new()
+        };
+        self.log_view = Some(super::docview::LogView::new(entries, None));
     }
 
     fn wf_exec(&mut self, e: Exec) {
@@ -1795,6 +1910,10 @@ impl App {
             wf: self.wf.as_ref(),
         };
         self.screens.render(self.screen, f, body, &v);
+        if let Some(lv) = &self.log_view {
+            let dir = crate::maint::log::dir(crate::maint::LOCAL);
+            super::docview::draw_log(f, body, &t, lv, &widgets::short_home(&dir));
+        }
         f.render_widget(
             Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)),
             keyrule,
@@ -1984,7 +2103,12 @@ impl App {
                 spans.push(Span::styled("   Enter save · Esc cancel", t.dim()));
             }
             Input::None => {
-                let hints: Vec<(&str, &str)> = if self.run.is_some() {
+                let hints: Vec<(&str, &str)> = if let Some(lv) = &self.log_view {
+                    match lv.open {
+                        Some(_) => vec![("j/k", "scroll"), ("Esc", "back")],
+                        None => vec![("j/k", "select"), ("Enter", "open"), ("Esc", "close")],
+                    }
+                } else if self.run.is_some() {
                     if self.run.as_ref().is_some_and(|r| r.done.is_some()) {
                         vec![("Esc", "close"), ("j/k", "scroll")]
                     } else {
@@ -2354,6 +2478,20 @@ impl super::Ui for App {
     }
     fn tick(&mut self, now: Instant) {
         App::tick(self, now);
+    }
+}
+
+/// What kind of change a workflow makes, for the log.
+fn log_kind(workflow: &str) -> &'static str {
+    let w = workflow.to_ascii_lowercase();
+    if w.contains("rebase") || w.contains("release") {
+        "rebase"
+    } else if w.contains("kmod") || w.contains("nvidia") || w.contains("akmod") {
+        "kmod"
+    } else if w.contains("update") || w.contains("upgrade") {
+        "os-update"
+    } else {
+        "system"
     }
 }
 

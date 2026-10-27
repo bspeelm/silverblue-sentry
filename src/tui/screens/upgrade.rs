@@ -15,7 +15,7 @@ use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::theme::Theme;
 use crate::tui::wf::{LogKind, Session};
-use crate::tui::widgets::{inner, panel, trunc, wrap};
+use crate::tui::widgets::{inner, panel, short_home, trunc, wrap};
 use crate::workflows::Kind;
 use crate::workflows::cli::{RealEnv, initial_vars};
 use crate::workflows::runner::{Next, preview};
@@ -63,8 +63,13 @@ pub fn hints(v: &View) -> Hints {
             ("Enter", "start"),
             ("e", "edit toml"),
             ("r", "reload"),
+            ("v", "maintenance log"),
         ],
-        Some(s) if s.done() => vec![("Enter", "close"), ("L", "log")],
+        Some(s) if s.done() => vec![
+            ("Enter", "close"),
+            ("L", "step log"),
+            ("v", "maintenance log"),
+        ],
         Some(s) => {
             // `l` is next-tab everywhere, so the log is `L`.
             let mut h = if failed(s) {
@@ -227,14 +232,6 @@ fn when(ts: jiff::Timestamp) -> String {
         .to_string()
 }
 
-fn short_home(p: &std::path::Path) -> String {
-    let h = crate::paths::home();
-    match p.strip_prefix(&h) {
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => p.display().to_string(),
-    }
-}
-
 impl Upgrade {
     fn infos<'a>(&self, v: &View<'a>) -> &'a [WfInfo] {
         v.d.workflows.get().map_or(&[], |w| w.as_slice())
@@ -261,6 +258,7 @@ impl Upgrade {
         };
         match a {
             Action::Refresh => vec![Effect::Fetch(Fetch::Workflows)],
+            Action::Char('v') => vec![Effect::LogOpen],
             Action::Char('e') => vec![Effect::Wf(WfCmd::Edit(info.entry.path.clone()))],
             Action::Enter => {
                 if let Some(why) = info.entry.blocked() {
@@ -330,6 +328,7 @@ impl Upgrade {
             return match a {
                 Action::Enter | Action::Esc => vec![Effect::Wf(WfCmd::Close)],
                 Action::Char('L') => vec![Effect::Wf(WfCmd::OpenLog)],
+                Action::Char('v') => vec![Effect::LogOpen],
                 _ => Vec::new(),
             };
         }
@@ -964,7 +963,9 @@ impl Upgrade {
                 "Walk me through what this workflow does on my machine and what could go wrong.",
             ));
         };
-        let i = s.next.idx().ok_or("the workflow is complete")?;
+        let Some(i) = s.next.idx() else {
+            return Ok(ask_finished(s));
+        };
         let step = &s.wf.steps[i];
         let st = &s.run.state.steps[i];
         let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
@@ -1004,4 +1005,50 @@ impl Upgrade {
             },
         ))
     }
+}
+
+/// A run that has ended: its steps, the failed step's last lines, and earlier runs of the
+/// same workflow from the ledger.
+fn ask_finished(s: &Session) -> crate::claude::Ask {
+    let e = crate::maint::log::LogEntry::from_run(
+        crate::maint::LOCAL,
+        &s.wf,
+        &s.run.state,
+        &s.run.dir,
+        None,
+        None,
+    );
+    let mut ctx = format!(
+        "The sentry workflow {} on my machine has ended ({}). Its record:\n\n{}\n",
+        s.wf.name, e.head.result, e.body
+    );
+    if let Some(id) = e.head.failed.last() {
+        let log = std::fs::read_to_string(s.run.log_path(id)).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        ctx.push_str(&format!(
+            "\nLast lines of steps/{id}.log:\n{}\n",
+            lines[lines.len().saturating_sub(60)..].join("\n")
+        ));
+    }
+    let earlier: Vec<String> = crate::maint::log::list(crate::maint::LOCAL)
+        .iter()
+        .filter(|x| x.head.workflow == s.wf.name && x.head.run != e.head.run)
+        .take(5)
+        .map(|x| format!("- {}", x.line()))
+        .collect();
+    if !earlier.is_empty() {
+        ctx.push_str(&format!(
+            "\nEarlier runs (maintenance ledger):\n{}\n",
+            earlier.join("\n")
+        ));
+    }
+    crate::claude::Ask::new(
+        format!("{} · {}", s.wf.name, e.head.result),
+        ctx,
+        if e.head.failed.is_empty() && e.head.result == "done" {
+            "This run is done. Is there anything I should check now that it's finished?"
+        } else {
+            "What happened in this run, what state is my machine in now, and what should I do next?"
+        },
+    )
 }

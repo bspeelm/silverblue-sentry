@@ -1028,3 +1028,64 @@ gate = "confirm"
     key(&mut a, KeyCode::Char('l'));
     assert_ne!(a.screen, ScreenId::Upgrade);
 }
+
+#[test]
+fn an_ended_run_is_logged_with_a_note_and_claude_can_look_back() {
+    use crate::tui::wf::Session;
+    use crate::workflows::parse;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::RunState;
+    let wf = parse(
+        r#"
+name = "flag-test"
+description = "test"
+[[steps]]
+id = "flag"
+title = "Flag file exists"
+run = "test -f /tmp/flag"
+gate = "auto"
+on_fail = "stop"
+[[steps]]
+id = "after"
+title = "Afterwards"
+run = "true"
+gate = "confirm"
+"#,
+    )
+    .unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let mut st = RunState::new("flag-test", &ids, Default::default());
+    runner::finish(&mut st, 0, 1, None);
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    a.set_wf(Session::for_test(wf, st, Next::Stopped(0)));
+    // Abandoned: the run has ended, so the log asks for a note.
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Char('y'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("flag-test abandoned · for the log, what to know next time"),
+        "{s}"
+    );
+    for c in "flag needs creating first".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(render_to_string(&mut a, 158, 41).contains("noted in the maintenance log"));
+    // `A` on the ended run: its steps and what failed, not "complete".
+    key(&mut a, KeyCode::Char('A'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Ask Claude") && s.contains("has ended (abandoned)"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    // `v`: the Log view, Esc closes it.
+    key(&mut a, KeyCode::Char('v'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Maintenance log") && s.contains("Nothing logged yet"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(!render_to_string(&mut a, 158, 41).contains("Maintenance log"));
+}

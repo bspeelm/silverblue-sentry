@@ -7,6 +7,7 @@
 mod app;
 pub(crate) mod chat;
 mod data;
+pub(crate) mod docview;
 pub(crate) mod keys;
 pub(crate) mod modal;
 mod screens;

@@ -246,7 +246,7 @@ pub struct App {
     /// The Review view (`R` on Maintenance), scrolled this far.
     review_view: Option<usize>,
     /// The Log view (`v` on Maintenance, `:log`).
-    pub log_view: Option<planview::LogView>,
+    pub log_view: Option<crate::tui::docview::LogView>,
     /// The suspended command runs Claude's read requests.
     suspend_reads: Option<(Vec<Vec<String>>, ReadsFor)>,
     run_seq: u64,
@@ -2333,45 +2333,17 @@ impl App {
         } else {
             crate::server::maint::log::list(&self.remote.name)
         };
-        // Start on the item's newest entry when there is one.
-        let cur = item
-            .as_ref()
-            .and_then(|i| entries.iter().position(|e| e.head.item.as_ref() == Some(i)))
-            .unwrap_or(0);
-        self.log_view = Some(planview::LogView {
-            entries,
-            cur,
-            open: None,
-            item,
-        });
+        self.log_view = Some(crate::tui::docview::LogView::new(entries, item));
     }
 
-    /// Keys in the Log view: j/k pick a run, Enter opens it, Esc goes back a level.
+    /// Keys in the Log view (Esc at the list closes it).
     fn log_view_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
         let Some(lv) = self.log_view.as_mut() else {
             return;
         };
         self.dirty = true;
-        let n = lv.entries.len();
-        match (&mut lv.open, k.code) {
-            (Some(_), KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace) => lv.open = None,
-            (Some(s), KeyCode::Down | KeyCode::Char('j')) => *s += 1,
-            (Some(s), KeyCode::Up | KeyCode::Char('k')) => *s = s.saturating_sub(1),
-            (Some(s), KeyCode::PageDown | KeyCode::Char(' ')) => *s += 20,
-            (Some(s), KeyCode::PageUp) => *s = s.saturating_sub(20),
-            (Some(s), KeyCode::Home | KeyCode::Char('g')) => *s = 0,
-            (Some(s), KeyCode::End | KeyCode::Char('G')) => *s = usize::MAX / 2,
-            (Some(_), _) => {}
-            (None, KeyCode::Esc | KeyCode::Char('q')) => self.log_view = None,
-            (None, KeyCode::Down | KeyCode::Char('j')) => {
-                lv.cur = (lv.cur + 1).min(n.saturating_sub(1))
-            }
-            (None, KeyCode::Up | KeyCode::Char('k')) => lv.cur = lv.cur.saturating_sub(1),
-            (None, KeyCode::Home | KeyCode::Char('g')) => lv.cur = 0,
-            (None, KeyCode::End | KeyCode::Char('G')) => lv.cur = n.saturating_sub(1),
-            (None, KeyCode::Enter) if n > 0 => lv.open = Some(0),
-            _ => {}
+        if !lv.key(k.code) {
+            self.log_view = None;
         }
     }
 
@@ -3084,7 +3056,7 @@ impl App {
                 Some(r) if !home.is_empty() => format!("~{r}"),
                 _ => d,
             };
-            super::planview::draw_log(f, body, &t, lv, &d);
+            crate::tui::docview::draw_log(f, body, &t, lv, &d);
         } else if let Some((id, scroll)) = &self.plan_view {
             let path = crate::server::maint::plan::path(&self.remote.name, id)
                 .display()
