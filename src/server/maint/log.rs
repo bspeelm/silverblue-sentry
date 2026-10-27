@@ -149,7 +149,11 @@ impl LogEntry {
             rows.push(format!(
                 "| {} | {} | {result} | {} | {when} | {} |",
                 i + 1,
-                cell(&format!("{} (`{}`)", step.title, step.id)),
+                cell(&format!(
+                    "{} (`{}`)",
+                    crate::workflows::runner::preview(st, &step.title),
+                    step.id
+                )),
                 s.code.map_or(String::new(), |c| c.to_string()),
                 cell(s.note.as_deref().unwrap_or(""))
             ));
@@ -382,7 +386,7 @@ mod tests {
     fn run() -> (Workflow, RunState) {
         let wf = crate::workflows::parse(
             "name = \"compose-bump\"\ndescription = \"x\"\n\
-             [[steps]]\nid = \"pin\"\ntitle = \"Change the pin\"\nrun = \"true\"\n\
+             [[steps]]\nid = \"pin\"\ntitle = \"Change the pin of {{ service }}\"\nrun = \"true\"\n\
              [[steps]]\nid = \"copy\"\ntitle = \"Copy | its data\"\nrun = \"true\"\noptional = true\n\
              [[steps]]\nid = \"verify\"\ntitle = \"Healthy\"\nrun = \"true\"\n",
         )
@@ -474,6 +478,18 @@ mod tests {
         assert_eq!(
             e.head.summary,
             "health check took 90 s; caddy 502 meanwhile (by hand: verify; skipped: copy)"
+        );
+    }
+
+    #[test]
+    fn step_titles_have_their_values_filled_in() {
+        let (wf, st) = run();
+        let e = LogEntry::from_run("myserver", &wf, &st, Path::new("/r/run-9"), None, None);
+        assert!(
+            e.body
+                .contains("| 1 | Change the pin of web (`pin`) | ok |"),
+            "{}",
+            e.body
         );
     }
 
