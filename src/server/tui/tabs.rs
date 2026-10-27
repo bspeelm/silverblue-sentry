@@ -29,18 +29,20 @@ pub struct View<'a> {
     pub filter: Option<&'a str>,
     /// When sudo asks for a password: when the root-only data shown was read (`I`).
     pub inventory: Option<jiff::Timestamp>,
+    /// When upstream versions were last looked up.
+    pub upstream: Option<jiff::Timestamp>,
 }
 
 impl View<'_> {
     /// " · read with sudo 3h ago" where root-only data comes from the inventory.
-    fn inv_note(&self) -> String {
+    pub fn inv_note(&self) -> String {
         self.inventory.map_or(String::new(), |at| {
             format!(" · read with sudo {}", fmt::ago(self.secs_since(at)))
         })
     }
 
     /// Case-insensitive substring match of the filter against any field, as in sentry.
-    fn matches(&self, fields: &[&str]) -> bool {
+    pub fn matches(&self, fields: &[&str]) -> bool {
         match self.filter {
             None => true,
             Some(f) => {
@@ -50,7 +52,7 @@ impl View<'_> {
         }
     }
 
-    fn secs_since(&self, t: jiff::Timestamp) -> i64 {
+    pub fn secs_since(&self, t: jiff::Timestamp) -> i64 {
         self.now.as_second() - t.as_second()
     }
 }
@@ -64,6 +66,7 @@ pub fn rows(tab: Tab, v: &View) -> usize {
         Tab::Containers => container_list(v).len(),
         Tab::Updates => upgrade_list(v).len(),
         Tab::Audit => findings(v).len(),
+        Tab::Maint => super::maint::rows(v).len(),
         Tab::Workflows => 0,
     }
 }
@@ -85,6 +88,14 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("b", "expected"),
             ("c", "audit now"),
         ],
+        Tab::Maint => vec![
+            ("j/k", "select"),
+            ("A", "assess"),
+            ("p", "plan"),
+            ("z", "later"),
+            ("c", "look up"),
+            ("e", "edit"),
+        ],
         Tab::Workflows => Vec::new(),
     }
 }
@@ -105,6 +116,7 @@ pub fn refresh(tab: Tab) -> Vec<Effect> {
         Tab::Containers => vec![Effect::Fetch(Kind::Docker)],
         Tab::Updates => vec![Effect::Fetch(Kind::Apt)],
         Tab::Audit => vec![Effect::Fetch(Kind::Report)],
+        Tab::Maint => vec![Effect::Fetch(Kind::Maint)],
         Tab::Workflows => Vec::new(),
     }
 }
@@ -117,6 +129,10 @@ pub fn check(tab: Tab) -> Vec<Effect> {
         ],
         Tab::Updates => vec![Effect::Fetch(Kind::Apt)],
         Tab::Audit => vec![Effect::Fetch(Kind::Audit)],
+        Tab::Maint => vec![
+            Effect::Fetch(Kind::Upstream),
+            Effect::Toast("looking up newer versions…".into()),
+        ],
         t => refresh(t),
     }
 }
@@ -131,7 +147,7 @@ pub fn enter(tab: Tab, v: &View) -> Vec<Effect> {
         Tab::Services => unit_detail(v),
         Tab::Containers => container_detail(v),
         Tab::Audit => finding_detail(v),
-        Tab::Updates | Tab::Workflows => Vec::new(),
+        Tab::Updates | Tab::Workflows | Tab::Maint => Vec::new(),
     }
 }
 
@@ -159,6 +175,8 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Updates, 'C' | 'U' | 'B') => actions::updates(v, r, c),
+        (Tab::Maint, 'z' | 'p') => super::maint::key(c, v),
+        (Tab::Maint, 'e') => vec![Effect::EditConfig],
         _ => Vec::new(),
     }
 }
@@ -167,7 +185,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
 pub fn filterable(tab: Tab) -> bool {
     matches!(
         tab,
-        Tab::Services | Tab::Containers | Tab::Updates | Tab::Audit
+        Tab::Services | Tab::Containers | Tab::Updates | Tab::Audit | Tab::Maint
     )
 }
 
@@ -207,6 +225,7 @@ pub fn badge(tab: Tab, v: &View) -> Option<(String, Color)> {
             let top = open.iter().map(|f| f.severity).max()?;
             Some((format!(" {}", open.len()), sev_color(t, top)))
         }
+        Tab::Maint => super::maint::badge(v),
         Tab::Overview | Tab::Workflows => None,
     }
 }
@@ -226,6 +245,7 @@ pub fn draw(f: &mut Frame, area: Rect, tab: Tab, v: &View) {
         Tab::Containers => containers(f, area, v),
         Tab::Updates => updates(f, area, v),
         Tab::Audit => audit(f, area, v),
+        Tab::Maint => super::maint::draw(f, area, v),
         Tab::Workflows => {}
     }
 }

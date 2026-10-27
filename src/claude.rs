@@ -463,6 +463,8 @@ pub struct Profile {
     pub tools: Vec<String>,
     pub allowed: Vec<String>,
     pub denied: Vec<String>,
+    /// Directories Claude may work in besides its own (`--add-dir`).
+    pub dirs: Vec<String>,
 }
 
 impl Profile {
@@ -472,6 +474,7 @@ impl Profile {
             tools: ["Bash", "Read", "Grep", "Glob"].map(String::from).to_vec(),
             allowed: ALLOWED.iter().map(|s| s.to_string()).collect(),
             denied: DENIED.iter().map(|s| s.to_string()).collect(),
+            dirs: Vec::new(),
         }
     }
 
@@ -516,6 +519,9 @@ pub fn turn_cmd_with(prompt: &str, resume: Option<&str>, p: &Profile) -> Cmd {
         .args(&p.allowed)
         .arg("--disallowedTools")
         .args(&p.denied);
+    for d in &p.dirs {
+        c = c.args(["--add-dir", d]);
+    }
     if let Some(id) = resume {
         c = c.args(["--resume", id]);
     }

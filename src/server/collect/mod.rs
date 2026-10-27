@@ -221,21 +221,32 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
 /// Every maintenance item's standing: the server's side read now, upstream from the cache
 /// (looked up only when asked).
 pub fn maint_status(r: &Remote) -> Vec<crate::server::maint::eval::Status> {
+    maint_read(r).0
+}
+
+/// Each item's standing, with the server's side it was judged from.
+pub fn maint_read(
+    r: &Remote,
+) -> (
+    Vec<crate::server::maint::eval::Status>,
+    std::collections::BTreeMap<String, crate::server::maint::local::Local>,
+) {
     use crate::server::maint;
     let items = &r.cfg.maintenance.items;
     if items.is_empty() {
-        return Vec::new();
+        return Default::default();
     }
     let local = maint::local::read(r, &r.cfg);
     let lookups = maint::upstream::load(&r.name).map(|c| c.data);
     let today = jiff::Zoned::now().date();
-    maint::eval::evaluate(
+    let st = maint::eval::evaluate(
         items,
         &local,
         lookups.as_ref(),
         &maint::load_state(&r.name),
         today,
-    )
+    );
+    (st, local)
 }
 
 /// One collector by name, as JSON (`sentry-server collect <server> <kind>`).

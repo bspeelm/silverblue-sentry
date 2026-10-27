@@ -43,8 +43,114 @@ fn cfg() -> Server {
             risky: false,
             undo: None,
         }],
+        maintenance: crate::server::config::Maintenance {
+            notes: vec!["~/notes/runbook.md".into()],
+            items: maint_items(),
+        },
         ..Default::default()
     }
+}
+
+fn maint_items() -> Vec<crate::server::config::MaintItem> {
+    use crate::server::config::{ImageRef, MaintItem, Retire, Tier};
+    vec![
+        MaintItem {
+            id: "web".into(),
+            image: Some(ImageRef {
+                service: Some("web".into()),
+                ..Default::default()
+            }),
+            source: Some("github:example/web".into()),
+            hold: Some("1.5 migrates the database one way".into()),
+            review_by: Some(jiff::civil::date(2027, 1, 15)),
+            workflow: Some("compose-bump".into()),
+            ..Default::default()
+        },
+        MaintItem {
+            id: "engine".into(),
+            apt: vec!["engine-pkg".into()],
+            tier: Tier::Red,
+            hold: Some("restarts every container".into()),
+            ..Default::default()
+        },
+        MaintItem {
+            id: "legacy".into(),
+            unit: Some("legacy.service".into()),
+            retire: Some(Retire {
+                replaced_by: Some("app.service".into()),
+                workflow: Some("retire-service".into()),
+            }),
+            ..Default::default()
+        },
+        MaintItem {
+            id: "os".into(),
+            eol: Some("debian/12".into()),
+            tier: Tier::Red,
+            ..Default::default()
+        },
+    ]
+}
+
+/// The maintenance data the tab shows: pins, a security release upstream, an end of life.
+fn maint_payload() -> Payload {
+    use crate::server::maint::local::Local;
+    use crate::server::maint::upstream::{Eol, Lookups, Release, Upstream};
+    let mut local = std::collections::BTreeMap::new();
+    local.insert(
+        "web".to_string(),
+        Local {
+            pinned: Some("1.4.2".into()),
+            running: Some("1.4.2".into()),
+            repo: Some("example/web".into()),
+            ..Default::default()
+        },
+    );
+    local.insert(
+        "engine".to_string(),
+        Local {
+            pinned: Some("5:24.3.1-1".into()),
+            running: Some("5:24.3.1-1".into()),
+            candidate: Some("5:24.4.0-1".into()),
+            held: true,
+            ..Default::default()
+        },
+    );
+    let mut lk = Lookups::default();
+    lk.sources.insert(
+        "github:example/web".into(),
+        Upstream {
+            releases: vec![
+                Release {
+                    version: "v1.5.2".into(),
+                    date: Some("2026-10-01".into()),
+                    security: true,
+                    url: None,
+                },
+                Release {
+                    version: "v1.5.1".into(),
+                    date: Some("2026-09-12".into()),
+                    ..Default::default()
+                },
+            ],
+            err: None,
+        },
+    );
+    lk.eol.insert(
+        "debian/12".into(),
+        Ok(Eol {
+            cycle: "12".into(),
+            eol: Some(jiff::civil::date(2026, 12, 10)),
+            latest: Some("12.12".into()),
+        }),
+    );
+    let st = crate::server::maint::eval::evaluate(
+        &maint_items(),
+        &local,
+        Some(&lk),
+        &Default::default(),
+        jiff::civil::date(2026, 10, 26),
+    );
+    Payload::Maint(st, local)
 }
 
 fn data(a: &mut App, k: Kind, p: Payload) {
@@ -145,6 +251,7 @@ fn app() -> App {
             findings,
         }))),
     );
+    data(&mut a, Kind::Maint, maint_payload());
     a.set_wf_entries(
         crate::server::workflow::SEEDS
             .iter()
@@ -1132,4 +1239,149 @@ fn live_inventory() {
         left.trim().is_empty(),
         "the read is deleted on the server: {left}"
     );
+}
+
+#[test]
+fn maintenance_tab_plans_one_item_at_a_time() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("security · 2 newer") && s.contains("⚠ v1.5.2"),
+        "{s}"
+    );
+    assert!(s.contains("eol soon") && s.contains("to retire"), "{s}");
+    assert!(
+        s.contains("Held because") && s.contains("1.5 migrates the database"),
+        "{s}"
+    );
+    // p: pick the version, then the workflow asks its vars with the item's values filled in.
+    a.set_wf_entries(vec![crate::workflows::Entry {
+        name: "compose-bump".into(),
+        path: "compose-bump.toml".into(),
+        wf: crate::workflows::parse(
+            "name = \"compose-bump\"\ndescription = \"x\"\ndraft = true\n\
+             [vars.service]\nprompt = \"Service\"\n[vars.image]\nprompt = \"Image\"\n\
+             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ service }} {{ image }}\"\n",
+        ),
+        issues: Vec::new(),
+    }]);
+    key(&mut a, KeyCode::Char('p'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Move web from 1.4.2 to") && s.contains("v1.5.2  2026-10-01  ⚠ security"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("compose-bump 1/2 · Image (image): example/web:v1.5.2▏"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("Service (service): web▏"));
+    key(&mut a, KeyCode::Esc);
+    // z offers later review dates; A asks with web access named in the consent box.
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('z'));
+    assert!(screen(&mut a).contains("look again in 30 days"));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('A'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("read the web (release notes)") && s.contains("~/notes/runbook.md"),
+        "{s}"
+    );
+}
+
+#[test]
+fn the_assessment_profile_adds_the_web_and_only_the_notes() {
+    let r = Remote::new("myserver", &cfg());
+    let p = super::ask::assess_profile(&r, "Debian 12", "6.1", None);
+    assert!(p.tools.contains(&"WebFetch".to_string()));
+    assert!(
+        !p.denied.iter().any(|d| d.starts_with("Web")),
+        "{:?}",
+        p.denied
+    );
+    let plain = super::ask::profile(&r, "Debian 12", "6.1", None);
+    assert!(
+        plain.denied.contains(&"WebFetch".to_string()),
+        "other asks stay offline"
+    );
+    let home = std::env::var("HOME").unwrap();
+    assert!(
+        p.allowed
+            .contains(&format!("Read(/{home}/notes/runbook.md)")),
+        "{:?}",
+        p.allowed
+    );
+    assert_eq!(p.dirs, [format!("{home}/notes")]);
+    assert!(
+        p.allowed
+            .contains(&"Bash(sentry-server exec myserver:*)".to_string())
+    );
+    assert!(
+        !p.allowed
+            .iter()
+            .any(|a| a == "Read" || a.starts_with("Bash(ssh"))
+    );
+    assert_eq!(
+        super::maint::read_rules(&["/srv/notes.md".into()]),
+        ["Read(//srv/notes.md)"]
+    );
+}
+
+/// Read-only against the real server: the Maintenance tab, then one assessment sent to Claude
+/// (the selected item, `SENTRY_ITEM`), with the web and notes allowed.
+/// `SENTRY_SERVER_LIVE=<name> SENTRY_ITEM=<id> cargo test live_assess -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_assess() {
+    let (Ok(name), Ok(item)) = (
+        std::env::var("SENTRY_SERVER_LIVE"),
+        std::env::var("SENTRY_ITEM"),
+    ) else {
+        return;
+    };
+    let (file, _) = crate::server::config::load().unwrap();
+    let (n, s) = crate::server::config::pick(&file, Some(&name)).unwrap();
+    let pos = s
+        .maintenance
+        .items
+        .iter()
+        .position(|i| i.id == item)
+        .expect("item");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + std::time::Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    pump(&mut a, 10);
+    for _ in 0..pos {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    println!("{}", render_to_string(&mut a, 158, 41));
+    key(&mut a, KeyCode::Char('A'));
+    println!("{}", render_to_string(&mut a, 158, 41));
+    key(&mut a, KeyCode::Char('y'));
+    for _ in 0..100 {
+        pump(&mut a, 3);
+        if a.chat_mut().is_some_and(|c| !c.running()) {
+            break;
+        }
+    }
+    let c = a.chat_mut().unwrap();
+    for (k, t) in &c.entries {
+        println!("[{k:?}] {t}");
+    }
 }

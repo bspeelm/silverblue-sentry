@@ -1,0 +1,44 @@
+---
+source: src/server/tui/tests.rs
+expression: body(&s)
+---
+ 1 Overview   2 Services 1   3 Containers 1   4 Updates 4 ↻   5 Audit 7   6 Maintenance 2   0 Workflows
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Maintenance · 4 items · upstream not looked up (c) ──────────────────────────────────────┐┌ Details ───────────────────────────────────────────────────────┐
+│ Item        Tier  Pinned       Running        Latest      State               Review     ││ web  amber tier                                                │
+│ web         amber 1.4.2        =              v1.5.2      security · 2 newer  2027-01-15 ││ pinned    1.4.2                                                │
+│ engine      red   5:24.3.1-1   =              5:24.4.0-1  held · 1 newer                 ││ latest    v1.5.2                                               │
+│ legacy      amber -            -              -           to retire                      ││ review    2027-01-15                                           │
+│ os          red   12           -              12.12       eol soon                       ││                                                                │
+│                                                                                          ││ Held because                                                   │
+│                                                                                          ││ 1.5 migrates the database one way                              │
+│                                                                                          ││                                                                │
+│                                                                                          ││ Newer (2), newest first                                        │
+│                                                                                          ││ ⚠ v1.5.2        2026-10-01                                     │
+│                                                                                          ││   v1.5.1        2026-09-12                                     │
+│                                                                                          ││                                                                │
+│                                                                                          ││ A assess · p plan · z review later · e edit config             │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+│                                                                                          ││                                                                │
+└──────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   A  assess   p  plan   z  later   c  look up   e  edit   A  ask Claude   ?  help   q  quit

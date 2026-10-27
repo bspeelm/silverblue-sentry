@@ -11,6 +11,34 @@ use crate::workflows::Entry;
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
 
+/// The assessment profile (`A` on Maintenance): the gateway, plus the web for release notes
+/// and reading the configured notes files.
+pub fn assess_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
+    let mut p = profile(r, os, kernel, sudo);
+    p.system.push_str(
+        " For this question you may also read the web with the WebFetch and WebSearch tools \
+         (release notes: fetch the GitHub release pages given; never curl), and the notes files \
+         named in it with the Read tool (not grep or cat). Cite what you read.",
+    );
+    p.tools
+        .extend(["WebFetch", "WebSearch", "Read"].map(String::from));
+    p.allowed
+        .extend(["WebFetch", "WebSearch"].map(String::from));
+    // Denied for every other ask; this one is about reading upstream's notes.
+    p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
+    let notes = super::maint::resolve_notes(&r.cfg.maintenance.notes);
+    p.allowed.extend(super::maint::read_rules(&notes));
+    let mut dirs: Vec<String> = notes
+        .iter()
+        .filter_map(|n| std::path::Path::new(n).parent())
+        .map(|d| d.display().to_string())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    p.dirs = dirs;
+    p
+}
+
 pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
     let name = &r.name;
     let sudo = match sudo {
@@ -37,6 +65,7 @@ root, say so and give the command for the user.{sudo}",
         tools: vec!["Bash".into()],
         allowed: vec![format!("Bash(sentry-server exec {name}:*)")],
         denied: Profile::denied_for_servers(),
+        dirs: Vec::new(),
     }
 }
 
@@ -58,6 +87,7 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
         Tab::Audit if v.s.report.value.is_none() => "the audit report is still loading",
         Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
         Tab::Services if v.s.units.value.is_none() => "the services are still loading",
+        Tab::Maint if v.s.maint.value.is_none() => "the maintenance items are still loading",
         _ => "nothing selected to ask about here",
     }
 }
@@ -189,6 +219,7 @@ pub fn ask_for(
                 },
             ))
         }
+        Tab::Maint => super::maint::ask(v, r),
         Tab::Workflows => match wf {
             Some(s) => Some(ask_step(&h, r, s)),
             None => entry.map(|e| ask_workflow(&h, v, r, e)),

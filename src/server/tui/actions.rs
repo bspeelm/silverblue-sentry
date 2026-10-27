@@ -435,6 +435,6 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("u", "up -d"),
         ],
         Tab::Updates => vec![("C", "refresh lists"), ("U", "upgrade"), ("B", "reboot")],
-        Tab::Audit | Tab::Workflows => Vec::new(),
+        Tab::Audit | Tab::Maint | Tab::Workflows => Vec::new(),
     }
 }

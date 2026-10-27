@@ -50,6 +50,10 @@ pub enum Effect {
     Wf(WfCmd),
     /// Read what needs root, with the terminal handed over for the password (after a confirm).
     Inventory,
+    /// Look at a maintenance item again later (`z`).
+    Snooze(String, jiff::civil::Date),
+    /// Open server_config.yaml in $EDITOR, then reload it.
+    EditConfig,
     /// Send a turn to Claude (after the consent box).
     AskSend(AskTurn),
     /// Run one of Claude's proposals on the server (after its confirm box).
@@ -83,6 +87,13 @@ impl VarInput {
 pub enum WfCmd {
     /// Start it; its vars are asked for first, unless given.
     Begin(String),
+    /// Start it from a maintenance item: its vars default to the item's values, and the run
+    /// is logged as a change to the item when it ends.
+    BeginPrefilled(
+        String,
+        BTreeMap<String, String>,
+        Option<crate::server::maint::Change>,
+    ),
     BeginWith(String, BTreeMap<String, String>),
     Go,
     Skip(bool),
@@ -144,7 +155,7 @@ pub struct App {
     keys: Keymap,
     pub store: Store,
     pub tab: Tab,
-    cursors: [usize; 6],
+    cursors: [usize; 7],
     modal: Option<Modal>,
     toast: Option<(String, Instant)>,
     sched: Sched,
@@ -157,6 +168,12 @@ pub struct App {
     suspend_inventory: bool,
     /// When the last inventory was read.
     inventory_at: Option<jiff::Timestamp>,
+    /// The maintenance change the running workflow makes (logged when it ends).
+    wf_change: Option<crate::server::maint::Change>,
+    /// The suspended command edits the config (reload it afterwards).
+    suspend_edit: bool,
+    /// The open chat is an assessment (its follow-ups keep the web and notes access).
+    chat_assess: bool,
     run_seq: u64,
     /// Rebooting: since when, and the boot id it had.
     reboot_wait: Option<(Instant, String)>,
@@ -177,7 +194,7 @@ pub struct App {
     /// A workflow's vars being asked for.
     var_input: Option<VarInput>,
     /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 6],
+    filters: [String; 7],
     filtering: bool,
     pub quit: bool,
     pub dirty: bool,
@@ -197,7 +214,7 @@ impl App {
             keys,
             store: Store::default(),
             tab: Tab::Overview,
-            cursors: [0; 6],
+            cursors: [0; 7],
             modal: None,
             toast: None,
             sched: Sched::default(),
@@ -207,6 +224,9 @@ impl App {
             suspend_reboot: false,
             suspend_inventory: false,
             inventory_at: None,
+            wf_change: None,
+            suspend_edit: false,
+            chat_assess: false,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
@@ -234,6 +254,8 @@ impl App {
             self.wf = Session::resume(&self.remote);
             self.inventory_at =
                 crate::server::inventory::load(&self.remote.name).map(|c| c.fetched_at);
+            self.store.upstream_at =
+                crate::server::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
         }
         self.enter(self.tab, now);
     }
@@ -265,6 +287,18 @@ impl App {
             Tab::Containers => self.fetch(Kind::Docker),
             Tab::Updates => self.fetch_apt_if_stale(),
             Tab::Audit => self.fetch(Kind::Report),
+            Tab::Maint => {
+                self.fetch(Kind::Maint);
+                self.fetch(Kind::Docker);
+                // Upstream changes slowly: looked up again at most daily without `c`.
+                let stale = self
+                    .store
+                    .upstream_at
+                    .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
+                if stale && !self.cfg_items_empty() {
+                    self.fetch(Kind::Upstream);
+                }
+            }
             Tab::Workflows => {
                 if !self.offline {
                     self.load_wf_entries();
@@ -276,6 +310,10 @@ impl App {
         }
         self.tick(now);
         self.dirty = true;
+    }
+
+    fn cfg_items_empty(&self) -> bool {
+        self.remote.cfg.maintenance.items.is_empty()
     }
 
     fn fetch_apt_if_stale(&mut self) {
@@ -344,6 +382,10 @@ impl App {
             Ev::Resize => self.dirty = true,
             Ev::Signal => self.quit = true,
             Ev::Data(k, res) => {
+                if k == Kind::Upstream && res.is_ok() {
+                    self.toast("newer versions looked up");
+                    self.fetch(Kind::Maint);
+                }
                 if k == Kind::Audit && res.is_ok() {
                     self.toast("audit done · report saved");
                 }
@@ -527,6 +569,7 @@ impl App {
             inventory: self
                 .inventory_at
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
+            upstream: self.store.upstream_at,
         }
     }
 
@@ -770,6 +813,28 @@ impl App {
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
+                Effect::Snooze(id, until) => {
+                    match crate::server::maint::snooze(&self.remote.name, &id, until) {
+                        Ok(()) => {
+                            self.toast(&format!("{id}: look again {until}"));
+                            self.fetch(Kind::Maint);
+                        }
+                        Err(e) => self.toast(&format!("couldn't save it: {e}")),
+                    }
+                }
+                Effect::EditConfig => {
+                    let editor = std::env::var("VISUAL")
+                        .or_else(|_| std::env::var("EDITOR"))
+                        .unwrap_or_else(|_| "vi".into());
+                    let path = crate::server::config::path();
+                    let mut words = editor.split_whitespace();
+                    let cmd = Cmd::local(words.next().unwrap_or("vi"))
+                        .args(words)
+                        .arg(path.display().to_string())
+                        .timeout(None);
+                    self.suspend = Some((cmd, String::new(), Vec::new()));
+                    self.suspend_edit = true;
+                }
                 Effect::Inventory => {
                     let cmd = self
                         .remote
@@ -971,6 +1036,50 @@ impl App {
         };
     }
 
+    /// After `e`: read server_config.yaml again; on an error, keep what was loaded.
+    fn reload_config(&mut self) {
+        let loaded = crate::server::config::load().and_then(|(f, w)| {
+            let s = f.servers.get(&self.remote.name).cloned().ok_or_else(|| {
+                format!("{} is no longer in server_config.yaml", self.remote.name)
+            })?;
+            Ok((s, w))
+        });
+        match loaded {
+            Ok((s, warnings)) => {
+                let problems = crate::server::config::lint(&self.remote.name, &s);
+                self.remote = Remote::new(&self.remote.name, &s).with_inventory();
+                self.fetch(Kind::Maint);
+                match warnings.iter().chain(&problems).next() {
+                    Some(p) => self.toast(&format!("reloaded · {p}")),
+                    None => self.toast("server_config.yaml reloaded"),
+                }
+            }
+            Err(e) => self.toast(&format!("not reloaded: {e}")),
+        }
+    }
+
+    /// When the workflow started from a maintenance item has ended: log the change.
+    fn wf_log_change(&mut self) {
+        let Some(s) = self.wf.as_ref().filter(|s| s.done()) else {
+            return;
+        };
+        let Some(mut c) = self.wf_change.take() else {
+            return;
+        };
+        use crate::workflows::state::RunStatus;
+        c.result = match s.run.state.status {
+            RunStatus::Done => "done",
+            RunStatus::Abandoned => "abandoned",
+            RunStatus::InProgress => "in progress",
+        }
+        .into();
+        c.at = jiff::Timestamp::now();
+        if !self.offline {
+            let _ = crate::server::maint::log_change(&self.remote.name, &c);
+            self.fetch(Kind::Maint);
+        }
+    }
+
     /// `I`: what it reads and why, then the terminal for the password.
     fn inventory_box(&mut self, mode: Option<SudoMode>) {
         let t = self.theme;
@@ -1122,6 +1231,44 @@ impl App {
                 self.dirty = true;
                 return;
             }
+            WfCmd::BeginPrefilled(name, given, change) => {
+                if self.wf.as_ref().is_some_and(|s| !s.done()) {
+                    self.toast("a workflow is already in progress");
+                    return;
+                }
+                self.enter(Tab::Workflows, Instant::now());
+                let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
+                    self.toast(&format!(
+                        "no workflow {name} in {}",
+                        self.wf_dir.trim_end_matches('/')
+                    ));
+                    return;
+                };
+                self.wf_change = change;
+                let asks: Vec<(String, String, Option<String>)> =
+                    e.wf.as_ref()
+                        .map(|w| {
+                            w.vars
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.prompt.clone(), v.default.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                let asks = super::maint::merge_defaults(asks, &given);
+                if asks.is_empty() {
+                    return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
+                }
+                let buf = asks[0].2.clone().unwrap_or_default();
+                self.var_input = Some(VarInput {
+                    workflow: name,
+                    asks,
+                    values: BTreeMap::new(),
+                    buf,
+                    note: None,
+                });
+                self.dirty = true;
+                return;
+            }
             WfCmd::BeginWith(name, vars) => match self.wf_entries.iter().find(|e| e.name == name) {
                 Some(e) => match Session::begin(e, &self.remote, vars) {
                     Ok(s) => {
@@ -1150,7 +1297,10 @@ impl App {
                         s.abandon();
                         Ok(None)
                     }
-                    WfCmd::Begin(_) | WfCmd::BeginWith(..) | WfCmd::Close => Ok(None),
+                    WfCmd::Begin(_)
+                    | WfCmd::BeginWith(..)
+                    | WfCmd::BeginPrefilled(..)
+                    | WfCmd::Close => Ok(None),
                 },
             },
         };
@@ -1165,6 +1315,7 @@ impl App {
 
     /// Run the next auto step when the Workflows tab is open.
     fn wf_auto(&mut self) {
+        self.wf_log_change();
         if self.tab != Tab::Workflows {
             return;
         }
@@ -1404,6 +1555,21 @@ impl App {
             ));
         }
         lines.push(Line::raw(""));
+        if self.tab == Tab::Maint {
+            let notes = &self.remote.cfg.maintenance.notes;
+            lines.push(Line::styled(
+                format!(
+                    "For an assessment Claude may also read the web (release notes) and these \
+                     local files: {}",
+                    if notes.is_empty() {
+                        "none".to_string()
+                    } else {
+                        notes.join(", ")
+                    }
+                ),
+                t.s(t.yellow),
+            ));
+        }
         lines.push(Line::styled(
             format!(
                 "Claude may run read-only commands on {} through `sentry-server exec` (nothing \
@@ -1424,6 +1590,7 @@ impl App {
     fn ask_turn(&mut self, turn: AskTurn) {
         let (prompt, shown, resume) = match turn {
             AskTurn::First(ask) => {
+                self.chat_assess = self.tab == Tab::Maint;
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
                 self.chat = Some(Chat::new(ask));
@@ -1435,7 +1602,11 @@ impl App {
             }
         };
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value);
+        let profile = if self.chat_assess {
+            super::ask::assess_profile(&self.remote, &os, &kernel, self.store.sudo.value)
+        } else {
+            super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+        };
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
@@ -1623,6 +1794,10 @@ impl App {
             }
             s.on_exit(idx, code);
             self.wf_auto();
+            return;
+        }
+        if std::mem::take(&mut self.suspend_edit) {
+            self.reload_config();
             return;
         }
         if std::mem::take(&mut self.suspend_inventory) {
@@ -1924,7 +2099,8 @@ impl App {
                 };
             }
             h.extend(super::actions::hints(self.tab));
-            if claude::available() {
+            // The Maintenance tab names its own `A` (assess).
+            if claude::available() && self.tab != Tab::Maint {
                 h.push(("A", "ask Claude"));
             }
             h.extend([("?", "help"), ("q", "quit")]);

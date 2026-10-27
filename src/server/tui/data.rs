@@ -1,7 +1,7 @@
 //! What the server TUI knows, and fetching it: every fetch runs on its own thread and reports
 //! back as an [`Ev::Data`]; a kind already in flight isn't started twice.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -9,6 +9,7 @@ use super::Ev;
 use crate::collectors::{disk, gpu, net};
 use crate::server::audit::{self, Report};
 use crate::server::collect::{self, JournalUnit, apt, docker, health, probe, units};
+use crate::server::maint;
 use crate::server::remote::{Remote, SrvError, SudoMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +34,10 @@ pub enum Kind {
     Report,
     /// A new audit: snapshot over ssh, findings, stored.
     Audit,
+    /// Maintenance items: the server's side now, upstream from the cache.
+    Maint,
+    /// Look upstream versions up again (from this machine, network).
+    Upstream,
 }
 
 pub enum Payload {
@@ -51,6 +56,11 @@ pub enum Payload {
     Listeners(Vec<net::Listener>),
     Journal(Vec<JournalUnit>),
     Report(Option<Box<Report>>),
+    Maint(
+        Vec<maint::eval::Status>,
+        BTreeMap<String, maint::local::Local>,
+    ),
+    Upstream(jiff::Timestamp),
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -129,6 +139,11 @@ pub struct Store {
     pub listeners: Slot<Vec<net::Listener>>,
     pub journal: Slot<Vec<JournalUnit>>,
     pub report: Slot<Option<Box<Report>>>,
+    pub maint: Slot<Vec<maint::eval::Status>>,
+    /// The server's side of each item (the pinned image's repository, for planning).
+    pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
+    /// When upstream was last looked up.
+    pub upstream_at: Option<jiff::Timestamp>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,
@@ -180,6 +195,11 @@ impl Store {
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
             Payload::Report(v) => self.report.set(Ok(v)),
+            Payload::Maint(st, local) => {
+                self.maint.set(Ok(st));
+                self.maint_local = Some(local);
+            }
+            Payload::Upstream(at) => self.upstream_at = Some(at),
         }
     }
 
@@ -200,6 +220,7 @@ impl Store {
             Kind::Listeners => self.listeners.err = Some(e),
             Kind::Journal => self.journal.err = Some(e),
             Kind::Report | Kind::Audit => self.report.err = Some(e),
+            Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
         }
     }
 
@@ -258,5 +279,13 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Journal => Payload::Journal(collect::journal(r)?),
         Kind::Report => Payload::Report(audit::latest(&r.name).map(Box::new)),
         Kind::Audit => Payload::Report(Some(Box::new(audit::run(r)?.0))),
+        Kind::Maint => {
+            let (st, local) = collect::maint_read(r);
+            Payload::Maint(st, local)
+        }
+        Kind::Upstream => {
+            maint::upstream::refresh(&r.name, &r.cfg);
+            Payload::Upstream(jiff::Timestamp::now())
+        }
     })
 }
