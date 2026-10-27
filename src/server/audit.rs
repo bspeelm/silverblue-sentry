@@ -501,7 +501,7 @@ pub fn derive(
     out
 }
 
-fn reports_dir(server: &str) -> PathBuf {
+pub fn reports_dir(server: &str) -> PathBuf {
     paths::data_dir()
         .join("servers")
         .join(server)

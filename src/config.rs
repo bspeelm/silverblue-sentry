@@ -21,6 +21,49 @@ pub struct Config {
     pub recorder: Recorder,
     pub baseline: BaselineCfg,
     pub keys: BTreeMap<String, String>,
+    pub retention: Retention,
+    pub maintenance: Maintenance,
+}
+
+/// How long maintenance records are kept (both programs). Pruned when the TUI starts and
+/// after each write; the newest few always stay.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Retention {
+    /// Log entries older than this go (`LOG.md` follows), except the newest `log_keep`.
+    pub log_months: u32,
+    pub log_keep: usize,
+    /// Workflow run directories (state and step logs) kept per workflow; a run in progress
+    /// always stays.
+    pub runs_per_workflow: usize,
+    /// Applied or dropped plans (`plans/done/`).
+    pub done_months: u32,
+    /// Claude's reviews kept.
+    pub reviews: usize,
+    /// Audit reports kept at most (besides `audit.retention_months`).
+    pub reports: usize,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            log_months: 12,
+            log_keep: 20,
+            runs_per_workflow: 10,
+            done_months: 12,
+            reviews: 10,
+            reports: 100,
+        }
+    }
+}
+
+/// Maintenance on this machine.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Maintenance {
+    /// Your own notes (Markdown files) Claude reads when it plans or reviews: upgrade
+    /// runbooks, what broke last time. Read only, never sent anywhere but to Claude.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -287,6 +330,17 @@ alerts = ["cpu>90%:5m", "disk_free<5%", "new_listener"]
 
 [baseline]
 listeners = ["127.0.0.1:631/cupsd"]
+
+[retention]
+log_months = 12
+log_keep = 20
+runs_per_workflow = 10
+done_months = 12
+reviews = 10
+reports = 100
+
+[maintenance]
+notes = []
 "#;
 
     #[test]

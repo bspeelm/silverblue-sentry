@@ -5,10 +5,8 @@
 pub mod discover;
 pub mod eval;
 pub mod local;
-pub mod log;
-pub mod plan;
+pub use crate::maint::{log, plan, review};
 pub mod recommend;
-pub mod review;
 pub mod tracked;
 pub mod upstream;
 pub mod version;
@@ -149,6 +147,45 @@ pub fn history(server: &str, item: &str) -> Vec<Change> {
             result: e.head.result,
         })
         .collect()
+}
+
+/// Plans kept in the old state file (before plans were files) become files.
+pub fn migrate_plans(server: &str) {
+    let st = load_state(server);
+    if st.plans.is_empty() {
+        return;
+    }
+    for (item, p) in &st.plans {
+        if plan::path(server, item).exists() {
+            continue;
+        }
+        let mut doc = plan::PlanDoc {
+            head: plan::Head {
+                item: item.clone(),
+                server: server.to_string(),
+                from: p.from.clone(),
+                to: p.to.clone(),
+                workflow: p.workflow.clone(),
+                vars: p.vars.clone(),
+                repo: p.repo.clone(),
+                note: p.note.clone(),
+                created: p.created,
+                session: p.session.clone(),
+                ..Default::default()
+            },
+            body: String::new(),
+        };
+        let (to, vars) = (doc.head.to.clone(), doc.head.vars.clone());
+        doc.take_answer(&p.text);
+        // The old plan's own target and vars stand.
+        doc.head.to = to;
+        doc.head.vars = vars;
+        if p.wait {
+            doc.head.status = plan::PlanStatus::Wait;
+        }
+        let _ = plan::save(&doc);
+    }
+    let _ = clear_old_plans(server);
 }
 
 #[cfg(test)]

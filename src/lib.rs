@@ -11,6 +11,7 @@ pub mod exec;
 pub mod fmt;
 pub mod jobs;
 pub mod keyfile;
+pub mod maint;
 pub mod paths;
 pub mod recorder;
 pub mod resume;

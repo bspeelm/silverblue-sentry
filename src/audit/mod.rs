@@ -422,11 +422,12 @@ pub fn run(
     let baseline = Baseline::effective(&ctx.cfg);
     r.findings = findings::derive(&r, prev.as_ref().map(|p| &p.report), &baseline, &ctx.cfg);
     let path = store::save(&r, prev.as_ref())?;
-    let pruned = store::prune(ctx.cfg.audit.retention_months, ctx.now);
+    let pruned = store::prune(ctx.cfg.audit.retention_months, ctx.now)
+        + crate::maint::retention::cap_reports(&store::dir(), ctx.cfg.retention.reports);
     if pruned > 0 {
         progress(format!(
-            "pruned {pruned} report(s) older than {} months",
-            ctx.cfg.audit.retention_months
+            "pruned {pruned} old report(s) (kept: {} months, at most {})",
+            ctx.cfg.audit.retention_months, ctx.cfg.retention.reports
         ));
     }
     Ok((r, path, prev))

@@ -85,7 +85,7 @@ fn pick_dir(own: PathBuf, generic: PathBuf) -> PathBuf {
     if tomls(&own).is_empty() { generic } else { own }
 }
 
-fn root(server: &str) -> PathBuf {
+pub fn root(server: &str) -> PathBuf {
     paths::data_dir()
         .join("servers")
         .join(server)

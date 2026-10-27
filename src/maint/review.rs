@@ -1,6 +1,6 @@
 //! Maintenance reviews: Claude looks over everything tracked, what discovery found, the
 //! ledger and upstream, and writes what to maintain next and why. Saved as
-//! `servers/<name>/reviews/<YYYY-MM-DD-HHMM>.md` (a `+++` TOML header, then Markdown).
+//! `reviews/<YYYY-MM-DD-HHMM>.md` under [`super::root`] (a `+++` TOML header, then Markdown).
 
 use std::path::PathBuf;
 
@@ -12,6 +12,8 @@ use crate::paths;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReviewHead {
+    /// The server reviewed (empty: this machine).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub server: String,
     pub status: PlanStatus,
     pub created: Option<jiff::Timestamp>,
@@ -84,10 +86,7 @@ impl ReviewDoc {
 }
 
 pub fn dir(server: &str) -> PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(server)
-        .join("reviews")
+    super::root(server).join("reviews")
 }
 
 pub fn save(doc: &ReviewDoc) -> anyhow::Result<PathBuf> {

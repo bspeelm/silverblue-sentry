@@ -342,6 +342,17 @@ impl App {
         self.fetch(Kind::Host);
         self.fetch(Kind::Sudo);
         if !self.offline {
+            let keep = crate::config::Config::load().0.retention;
+            crate::maint::retention::purge(
+                &self.remote.name,
+                &crate::server::workflow::root(&self.remote.name),
+                &keep,
+                jiff::Timestamp::now(),
+            );
+            crate::maint::retention::cap_reports(
+                &crate::server::audit::reports_dir(&self.remote.name),
+                keep.reports,
+            );
             self.wf = Session::resume(&self.remote);
             // A run left in progress: show it (its auto steps wait until it's open).
             self.run_view = self.wf.is_some();
@@ -350,7 +361,7 @@ impl App {
             self.store.upstream_at =
                 crate::server::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.maint_state = crate::server::maint::load_state(&self.remote.name);
-            crate::server::maint::plan::migrate(&self.remote.name);
+            crate::server::maint::migrate_plans(&self.remote.name);
             self.store.plans = crate::server::maint::plan::list(&self.remote.name);
             self.store.review = crate::server::maint::review::latest(&self.remote.name);
             self.store.log = crate::server::maint::log::list(&self.remote.name);

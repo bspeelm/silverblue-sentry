@@ -231,6 +231,12 @@ const TOAST_FOR: Duration = Duration::from_millis(2600);
 impl App {
     pub fn new(tx: Sender<Event>) -> Self {
         let (cfg, mut warnings) = Config::load();
+        crate::maint::retention::purge(
+            crate::maint::LOCAL,
+            &crate::workflows::state::root(),
+            &cfg.retention,
+            jiff::Timestamp::now(),
+        );
         let (keys, kw) = Keymap::new(&cfg.keys);
         warnings.extend(kw);
         let now = Instant::now();

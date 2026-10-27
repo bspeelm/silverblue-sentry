@@ -1,4 +1,4 @@
-//! Execution plans as Markdown files: `~/.config/sentry/servers/<server>/plans/<item>.md`, a
+//! Execution plans as Markdown files: `plans/<item>.md` under [`super::root`], a
 //! TOML header (`+++`) that says how to apply it (target, workflow and its vars, status),
 //! then the plan Claude wrote. Applied plans move to `plans/done/`. Local only, never in git.
 
@@ -45,6 +45,8 @@ impl PlanStatus {
 #[serde(default)]
 pub struct Head {
     pub item: String,
+    /// The server it's for (empty: this machine).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub server: String,
     pub status: PlanStatus,
     /// What it was when planned, and what it moves to (none: retiring it, or not decided).
@@ -110,7 +112,8 @@ impl PlanDoc {
             Some(Some(t)) => {
                 self.head.status = PlanStatus::Ready;
                 if self.head.vars.contains_key("service") {
-                    let tag = super::version::like_pin(&t, self.head.from.as_deref());
+                    let tag =
+                        crate::server::maint::version::like_pin(&t, self.head.from.as_deref());
                     if let Some(repo) = &self.head.repo {
                         self.head
                             .vars
@@ -144,11 +147,8 @@ fn is_target_line(l: &str) -> bool {
         .starts_with("TARGET:")
 }
 
-fn dir(server: &str) -> PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(server)
-        .join("plans")
+pub fn dir(server: &str) -> PathBuf {
+    super::root(server).join("plans")
 }
 
 pub fn path(server: &str, item: &str) -> PathBuf {
@@ -193,45 +193,6 @@ pub fn close(doc: &PlanDoc, status: PlanStatus) -> anyhow::Result<PathBuf> {
     paths::write_atomic(&to, doc.to_md().as_bytes())?;
     let _ = std::fs::remove_file(path(&doc.head.server, &doc.head.item));
     Ok(to)
-}
-
-/// Plans kept in the old state file (before plans were files) become files.
-pub fn migrate(server: &str) {
-    let st = super::load_state(server);
-    if st.plans.is_empty() {
-        return;
-    }
-    for (item, p) in &st.plans {
-        if path(server, item).exists() {
-            continue;
-        }
-        let mut doc = PlanDoc {
-            head: Head {
-                item: item.clone(),
-                server: server.to_string(),
-                from: p.from.clone(),
-                to: p.to.clone(),
-                workflow: p.workflow.clone(),
-                vars: p.vars.clone(),
-                repo: p.repo.clone(),
-                note: p.note.clone(),
-                created: p.created,
-                session: p.session.clone(),
-                ..Default::default()
-            },
-            body: String::new(),
-        };
-        let (to, vars) = (doc.head.to.clone(), doc.head.vars.clone());
-        doc.take_answer(&p.text);
-        // The old plan's own target and vars stand.
-        doc.head.to = to;
-        doc.head.vars = vars;
-        if p.wait {
-            doc.head.status = PlanStatus::Wait;
-        }
-        let _ = save(&doc);
-    }
-    let _ = super::clear_old_plans(server);
 }
 
 #[cfg(test)]

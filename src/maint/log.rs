@@ -1,5 +1,5 @@
 //! The maintenance log: what was maintained, when and how, written for the next person or
-//! agent who plans a change. `~/.config/sentry/servers/<server>/log/`:
+//! agent who plans a change. `log/` under [`super::root`]:
 //!
 //! - one file per workflow run, `YYYY-MM-DD-HHMM-<item|workflow>-<workflow>.md`: a `+++` TOML
 //!   header with fixed fields and `key:value` tags (filter on those), then the steps as a
@@ -19,6 +19,8 @@ use crate::workflows::state::{RunState, RunStatus, StepStatus};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogHead {
+    /// The server it ran on (empty: this machine).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub server: String,
     /// The maintenance item changed, when the run came from one.
     pub item: Option<String>,
@@ -161,7 +163,11 @@ impl LogEntry {
             ));
         }
         h.tags = [
-            Some(format!("server:{server}")),
+            Some(if server.is_empty() {
+                "machine:local".to_string()
+            } else {
+                format!("server:{server}")
+            }),
             h.item.as_ref().map(|i| format!("item:{i}")),
             Some(format!("kind:{}", h.kind)),
             Some(format!("workflow:{}", h.workflow)),
@@ -288,7 +294,7 @@ fn cell(s: &str) -> String {
 }
 
 pub fn dir(server: &str) -> PathBuf {
-    paths::config_dir().join("servers").join(server).join("log")
+    super::root(server).join("log")
 }
 
 /// Write an entry (replacing the same run's earlier one) and the index.
@@ -309,7 +315,11 @@ pub fn write(entry: &LogEntry) -> anyhow::Result<PathBuf> {
 
 /// Every entry, newest first.
 pub fn list(server: &str) -> Vec<LogEntry> {
-    let mut v: Vec<LogEntry> = std::fs::read_dir(dir(server))
+    list_in(&dir(server))
+}
+
+pub fn list_in(d: &Path) -> Vec<LogEntry> {
+    let mut v: Vec<LogEntry> = std::fs::read_dir(d)
         .into_iter()
         .flatten()
         .flatten()
@@ -332,13 +342,19 @@ pub fn for_item(server: &str, item: &str) -> Vec<LogEntry> {
 }
 
 fn write_index(server: &str) -> anyhow::Result<()> {
-    let text = ledger(server, &list(server));
-    paths::write_atomic(&dir(server).join("LOG.md"), text.as_bytes())?;
+    write_index_in(&dir(server), server)
+}
+
+/// Rewrite `LOG.md` in `d` from the entries there.
+pub fn write_index_in(d: &Path, server: &str) -> anyhow::Result<()> {
+    let text = ledger(server, &list_in(d));
+    paths::write_atomic(&d.join("LOG.md"), text.as_bytes())?;
     Ok(())
 }
 
 /// The ledger's text: what each entry is, enough to choose which to read.
 pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
+    let server = super::label(server);
     let mut s = format!(
         "# Maintenance ledger · {server}\n\n\
          Every maintenance run on {server}, newest first: start here. Pick the rows that bear on \
@@ -418,6 +434,24 @@ mod tests {
             ],
         };
         (wf, st)
+    }
+
+    #[test]
+    fn a_local_entry_names_no_server() {
+        let (wf, st) = run();
+        let e = LogEntry::from_run(
+            super::super::LOCAL,
+            &wf,
+            &st,
+            Path::new("/r/run-1"),
+            None,
+            None,
+        );
+        let md = e.to_md();
+        assert!(!md.contains("server ="), "{md}");
+        assert!(e.head.tags.contains(&"machine:local".to_string()));
+        assert_eq!(LogEntry::parse(&md).unwrap(), e);
+        assert!(ledger("", &[e]).starts_with("# Maintenance ledger · this machine"));
     }
 
     #[test]
