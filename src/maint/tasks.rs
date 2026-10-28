@@ -130,9 +130,18 @@ pub fn take_suggestions(answer: &str, known: &Known) -> (String, Vec<Task>) {
     let Some(start) = lines.iter().position(|l| l.trim_start().starts_with(FENCE)) else {
         return (answer.to_string(), Vec::new());
     };
+    // The closing fence is the first one outside a TOML multi-line string: `steps` may hold
+    // Markdown with fences of its own.
+    let mut quoted = false;
     let end = lines[start + 1..]
         .iter()
-        .position(|l| l.trim() == "```")
+        .position(|l| {
+            let closes = !quoted && l.trim() == "```";
+            if l.matches("\"\"\"").count() % 2 == 1 {
+                quoted = !quoted;
+            }
+            closes
+        })
         .map_or(lines.len(), |n| start + 1 + n);
     let block = lines[start + 1..end].join("\n");
     let rest: Vec<&str> = lines[..start]
@@ -419,6 +428,19 @@ mod tests {
         // An unknown workflow: done by hand, and it says why.
         assert_eq!(tasks[2].action(), Do::ByHand);
         assert!(tasks[2].why.contains("workflow ghost not found"));
+        // Fences inside `steps` don't end the block.
+        let fenced = "# Review\n\n```sentry-tasks\n[[task]]\nid = \"fw\"\ntitle = \"Firmware\"\n\
+            level = \"routine\"\ndo = \"by-hand\"\nsteps = \"\"\"\n```bash\nfwupdmgr get-updates\n```\n\
+            Then reboot.\n\"\"\"\n\n[[task]]\nid = \"two\"\ntitle = \"Two\"\nlevel = \"tidy\"\n\
+            do = \"by-hand\"\nsteps = \"\"\"\n```\nls\n```\n\"\"\"\n```\n\n## After";
+        let (body, tasks) = take_suggestions(fenced, &k);
+        assert_eq!(body, "# Review\n\n\n## After");
+        assert_eq!(tasks.len(), 2);
+        assert!(
+            tasks[0]
+                .steps
+                .contains("```bash\nfwupdmgr get-updates\n```")
+        );
         // No block: nothing taken.
         let (b, t) = take_suggestions("# Review\n", &k);
         assert_eq!((b.as_str(), t.len()), ("# Review\n", 0));
