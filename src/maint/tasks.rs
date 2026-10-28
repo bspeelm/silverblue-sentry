@@ -436,7 +436,11 @@ mod tests {
         let (body, tasks) = take_suggestions(fenced, &k);
         assert_eq!(body, "# Review\n\n\n## After");
         assert_eq!(tasks.len(), 2);
-        assert!(tasks[0].steps.contains("```bash\nfwupdmgr get-updates\n```"));
+        assert!(
+            tasks[0]
+                .steps
+                .contains("```bash\nfwupdmgr get-updates\n```")
+        );
         // No block: nothing taken.
         let (b, t) = take_suggestions("# Review\n", &k);
         assert_eq!((b.as_str(), t.len()), ("# Review\n", 0));
