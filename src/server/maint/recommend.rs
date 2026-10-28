@@ -1,6 +1,7 @@
 //! What to maintain next, and why: rules over each item's standing, the plans, what
 //! discovery found, pending updates and reboots, and how long ago each routine workflow last
-//! ran (the maintenance log against `maintenance.cadence`). Pure.
+//! ran (the maintenance log against `maintenance.cadence`), and the tasks you took from a
+//! review that are due. Pure.
 
 use std::collections::BTreeMap;
 
@@ -32,6 +33,8 @@ pub enum Action {
     Fix(String),
     /// Audit the server now.
     Audit,
+    /// A task from a review (its id): what Enter does is the task's own `do`.
+    Task(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +63,8 @@ pub struct Inputs<'a> {
     /// The latest audit's findings, and when it was taken (None: no audit yet).
     pub findings: &'a [crate::audit::Finding],
     pub audited: Option<jiff::Timestamp>,
+    /// Tasks taken from reviews (`servers/<name>/tasks.toml`).
+    pub tasks: &'a [crate::maint::tasks::Task],
 }
 
 /// An audit older than this is due again.
@@ -387,6 +392,16 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             item: Some(g.id.clone()),
         });
     }
+    for t in crate::maint::tasks::recs(i.tasks, i.log, i.audited, i.now) {
+        out.push(Rec {
+            level: t.level,
+            key: t.key,
+            title: t.title,
+            why: t.why,
+            action: Action::Task(t.id),
+            item: t.item,
+        });
+    }
     // Put off with z.
     out.retain(|r| i.snooze.get(&r.key).is_none_or(|d| *d <= today));
     let risk = |r: &Rec| {
@@ -520,6 +535,7 @@ mod tests {
             now,
             findings: &findings,
             audited: Some(now),
+            tasks: &[],
         };
         let r = recommend(&inputs);
         let got: Vec<(Level, &str)> = r.iter().map(|x| (x.level, x.title.as_str())).collect();
@@ -566,5 +582,26 @@ mod tests {
             ..Inputs { ..inputs }
         });
         assert!(!r.iter().any(|x| x.title == "Run apt-maintenance"));
+        // A task from a review: shown while due, about its item; done once web's change is.
+        let tasks = [crate::maint::tasks::Task {
+            id: "web-next".into(),
+            title: "Plan web to 1.2".into(),
+            why: "Security fix.".into(),
+            level: Level::Now,
+            every: None,
+            act: "plan web".into(),
+            item: Some("web".into()),
+            steps: String::new(),
+            added: Some("2026-10-20T00:00:00Z".parse().unwrap()),
+            review: None,
+        }];
+        let r = recommend(&Inputs {
+            tasks: &tasks,
+            ..Inputs { ..inputs }
+        });
+        let t = r.iter().find(|x| x.key == "task:web-next").unwrap();
+        assert_eq!(t.action, Action::Task("web-next".into()));
+        assert_eq!(t.item.as_deref(), Some("web"));
+        assert_eq!(t.level, Level::Now);
     }
 }

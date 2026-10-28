@@ -140,7 +140,7 @@ pub fn plan_request(
     )
 }
 
-pub fn review_request(cfg: &Config, recs: &str, context: &str) -> String {
+pub fn review_request(cfg: &Config, recs: &str, context: &str, tasks: &str) -> String {
     format!(
         "{}\n\nWhat sentry recommends now, ranked:\n{recs}\n\n{context}\n\n\
          Review the maintenance of this machine. Sections:\n\
@@ -149,7 +149,7 @@ pub fn review_request(cfg: &Config, recs: &str, context: &str) -> String {
          ## Soon: the same, for the next weeks.\n\
          ## Routine: regular maintenance due, and what can simply wait (say why).\n\
          ## Watch: Fedora releases, driver or kernel changes and anything else to look at \
-         again, with dates.",
+         again, with dates.\n\n{tasks}",
         records(cfg)
     )
 }

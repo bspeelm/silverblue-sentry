@@ -203,6 +203,9 @@ pub struct DataStore {
     /// Recommendations put off with `z` (`maint.toml`), and Claude's plans (`plans/`).
     pub snoozes: crate::maint::snooze::Snoozes,
     pub plans: std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
+    /// Tasks taken from reviews (`tasks.toml`), and the maintenance log that says which are done.
+    pub tasks: Vec<crate::maint::tasks::Task>,
+    pub maint_log: Vec<crate::maint::log::LogEntry>,
 
     pub inflight: HashSet<Fetch>,
     pub os_version: String,
@@ -215,6 +218,8 @@ impl DataStore {
         d.baseline = Baseline::effective(&Config::load().0);
         d.snoozes = crate::maint::snooze::load();
         d.plans = crate::maint::plan::list(crate::maint::LOCAL);
+        d.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
+        d.maint_log = crate::maint::log::list(crate::maint::LOCAL);
         d.ostree_checked =
             cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
         // Cached results are shown immediately with their age; never refreshed automatically.
@@ -264,6 +269,8 @@ impl DataStore {
             baseline: Baseline::default(),
             snoozes: Default::default(),
             plans: Default::default(),
+            tasks: Default::default(),
+            maint_log: Default::default(),
             inflight: HashSet::new(),
             os_version,
             kernel,

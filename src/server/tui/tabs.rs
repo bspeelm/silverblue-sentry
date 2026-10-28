@@ -180,7 +180,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             Some(ct) => actions::containers(v, r, c, &ct.name, ct.compose.as_deref()),
             None => Vec::new(),
         },
-        (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't' | 'd') => super::maint::key(c, v),
         (Tab::Maint, 'e') => vec![Effect::EditConfig],
         (Tab::Maint, 'R') => vec![Effect::ReviewOpen],
         (Tab::Maint, 'w') => vec![Effect::ChooseWorkflow],

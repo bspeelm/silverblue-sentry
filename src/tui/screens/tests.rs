@@ -1193,6 +1193,73 @@ fn claude_plans_a_workflow_and_reviews_maintenance() {
     assert!(s.contains("Review maintenance with Claude"), "{s}");
 }
 
+const REVIEW_WITH_TASKS: &str = "Reading the ledger.\n# Maintenance review\n\n## Now\n- update\n\n\
+```sentry-tasks\n\
+[[task]]\nid = \"ups\"\ntitle = \"Check the UPS battery\"\nwhy = \"It is three years old.\"\n\
+level = \"soon\"\nevery = \"90d\"\ndo = \"by-hand\"\nsteps = \"Run `upsc ups` and read the charge.\"\n\n\
+[[task]]\nid = \"update\"\ntitle = \"Install the waiting updates\"\nlevel = \"routine\"\n\
+do = \"run quick-update\"\n```\n";
+
+#[test]
+fn review_suggestions_become_maintenance_tasks() {
+    let mut a = app(ScreenId::Maint);
+    a.review_written_for_test(REVIEW_WITH_TASKS);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("2 suggested tasks · a adds one"), "{s}");
+    assert!(
+        s.contains("Suggested tasks") && s.contains("Check the UPS battery"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("sentry-tasks"),
+        "the block isn't shown as text: {s}"
+    );
+    // a: pick one, see what's written, confirm.
+    key(&mut a, KeyCode::Char('a'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Add which task?"), "{s}");
+    key(&mut a, KeyCode::Char('1'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Add this task to Maintenance") && s.contains("[[task]]"),
+        "{s}"
+    );
+    assert!(
+        s.contains("tasks.toml") && s.contains("every = \"90d\""),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    // x: the one left is skipped.
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("added") && s.contains("skipped"), "{s}");
+    assert!(!s.contains("suggested task"), "none open: {s}");
+    key(&mut a, KeyCode::Esc);
+    // On Maintenance: the task, its steps, d to mark it done.
+    a.apply_for_test(vec![crate::tui::app::Effect::MaintFind("task:".into())]);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("maintenance_task_158x41", body(&s));
+    assert!(
+        s.contains("Check the UPS battery") && s.contains("upsc ups"),
+        "{s}"
+    );
+    assert!(!s.contains("Install the waiting updates"), "skipped: {s}");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("mark done"), "Enter shows the steps: {s}");
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('d'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("ups done · for the log"), "{s}");
+    for c in "checked, 100%".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Recommended · 1 ·"), "done for 90 days: {s}");
+    assert!(s.contains("done, in the maintenance log"), "{s}");
+}
+
 /// Read-only on this machine: Maintenance from the real collectors, its views, and the
 /// dashboard. Point XDG_CONFIG_HOME/XDG_DATA_HOME at scratch copies.
 /// `cargo test live_maintenance -- --ignored --nocapture`

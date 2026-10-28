@@ -1,5 +1,5 @@
 //! Maintenance records both programs keep: the log and its ledger, Claude's plans and
-//! reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
+//! reviews, the tasks you took from reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
 //! server's under `~/.config/sentry/servers/<name>/`. Local only, never in git.
 
 pub mod local;
@@ -8,6 +8,7 @@ pub mod plan;
 pub mod retention;
 pub mod review;
 pub mod snooze;
+pub mod tasks;
 
 use std::path::PathBuf;
 
@@ -84,7 +85,10 @@ pub fn read_rules(notes: &[String]) -> Vec<String> {
 }
 
 /// How soon a recommendation should be acted on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Level {
     Now,
     Soon,

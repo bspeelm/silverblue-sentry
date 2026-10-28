@@ -18,6 +18,7 @@ use super::tabs::{self, View};
 use super::{Ev, Tab};
 use crate::claude::{self, Ask, Proposed};
 use crate::exec::{Cmd, ExecError, StreamMsg};
+use crate::maint::tasks::SugState;
 use crate::server::maint::plan::{PlanDoc, PlanStatus};
 use crate::server::remote::{Remote, SudoMode};
 use crate::server::workflow::{self, Exec, Session};
@@ -96,6 +97,13 @@ pub enum Effect {
     AskSend(AskTurn),
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
+    /// A review's suggested task: added to `tasks.toml`, or skipped.
+    TaskAdd(Box<crate::maint::tasks::Task>),
+    TaskSkip(String),
+    /// Take a task off `tasks.toml`.
+    TaskRemove(String),
+    /// A task done by hand: logged (tagged `task:<id>`), then the note box.
+    TaskDone(String),
 }
 
 #[derive(Clone, Debug)]
@@ -366,6 +374,7 @@ impl App {
             crate::server::maint::migrate_plans(&self.remote.name);
             self.store.plans = crate::server::maint::plan::list(&self.remote.name);
             self.store.review = crate::server::maint::review::latest(&self.remote.name);
+            self.store.tasks = crate::maint::tasks::load(&self.remote.name);
             self.store.log = crate::server::maint::log::list(&self.remote.name);
             self.last_change_at = self
                 .store
@@ -774,7 +783,7 @@ impl App {
             self.log_view_key(k);
             return;
         }
-        if self.review_view.is_some() && self.modal.is_none() {
+        if self.review_view.is_some() && self.modal.is_none() && self.chooser.is_none() {
             self.review_view_key(k);
             return;
         }
@@ -1048,6 +1057,18 @@ impl App {
                         self.review_box();
                     }
                 }
+                Effect::TaskAdd(task) => self.task_add(*task),
+                Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
+                Effect::TaskRemove(id) => {
+                    if !self.offline
+                        && let Err(e) = crate::maint::tasks::remove(&self.remote.name, &id)
+                    {
+                        return self.toast(&format!("couldn't remove it: {e}"));
+                    }
+                    self.store.tasks.retain(|t| t.id != id);
+                    self.toast(&format!("{id} is off the list (tasks.toml)"));
+                }
+                Effect::TaskDone(id) => self.task_done(&id),
                 Effect::ReviewWrite(prompt) => {
                     let doc = crate::server::maint::review::ReviewDoc::new(&self.remote.name);
                     self.start_writer(planview::Writer::review(doc), prompt, None);
@@ -1480,15 +1501,29 @@ impl App {
                 // Done by hand (no run): the same entry, with the note.
                 if entry.head.run.is_none() {
                     let h = &entry.head;
-                    let with_note = crate::server::maint::log::LogEntry::by_hand(
-                        &h.server,
-                        h.item.as_deref().unwrap_or("?"),
-                        &h.kind,
-                        h.from.clone(),
-                        h.to.clone(),
-                        h.plan.as_deref().map(std::path::Path::new),
-                        Some(note),
-                    );
+                    let task = h.tags.iter().find_map(|t| t.strip_prefix("task:"));
+                    let with_note = match task {
+                        Some(id) => crate::maint::log::LogEntry::task(
+                            &h.server,
+                            id,
+                            &self
+                                .store
+                                .tasks
+                                .iter()
+                                .find(|t| t.id == id)
+                                .map_or(id.to_string(), |t| t.title.clone()),
+                            Some(note),
+                        ),
+                        None => crate::server::maint::log::LogEntry::by_hand(
+                            &h.server,
+                            h.item.as_deref().unwrap_or("?"),
+                            &h.kind,
+                            h.from.clone(),
+                            h.to.clone(),
+                            h.plan.as_deref().map(std::path::Path::new),
+                            Some(note),
+                        ),
+                    };
                     if !self.offline
                         && let Err(e) =
                             crate::server::maint::log::write_replacing(&entry, &with_note)
@@ -2164,7 +2199,13 @@ impl App {
             return self.toast("reviews are written by Claude Code, which isn't installed");
         }
         let v = self.view();
-        let prompt = planview::review_request(&super::maint::review_context(&v, &self.remote));
+        let tasks = crate::maint::tasks::request_section(
+            &self.store.workflows,
+            &self.item_ids(),
+            &self.store.tasks,
+        );
+        let prompt =
+            planview::review_request(&super::maint::review_context(&v, &self.remote), &tasks);
         let t = self.theme;
         let notes = &self.remote.cfg.maintenance.notes;
         let lines = vec![
@@ -2172,7 +2213,8 @@ impl App {
                 format!(
                     "Claude reviews the maintenance of {}: every tracked item, what isn't \
                      tracked, updates and reboots waiting, the maintenance log, and upstream's \
-                     release notes, then writes what to do now, soon and routinely, and why.",
+                     release notes, then writes what to do now, soon and routinely, and why. It \
+                     ends with tasks you can add to Maintenance (a in the review).",
                     self.remote.name
                 ),
                 t.fg(),
@@ -2238,12 +2280,126 @@ impl App {
                 self.review_view = None;
                 self.review_box();
             }
+            KeyCode::Char(c @ ('a' | 'x')) if !writing => self.suggestion_pick(c == 'a'),
             _ => {}
         }
     }
 
+    fn item_ids(&self) -> Vec<String> {
+        self.remote
+            .cfg
+            .maintenance
+            .items
+            .iter()
+            .map(|i| i.id.clone())
+            .collect()
+    }
+
+    /// `a`/`x` in the review view: pick an open suggestion to add (preview, confirm) or skip.
+    fn suggestion_pick(&mut self, add: bool) {
+        let t = self.theme;
+        let open: Vec<crate::maint::tasks::Task> = self
+            .store
+            .review
+            .as_ref()
+            .map(|d| d.open().into_iter().map(|s| s.task.clone()).collect())
+            .unwrap_or_default();
+        if open.is_empty() {
+            return self.toast("no suggested tasks left in this review");
+        }
+        let file = crate::tui::widgets::short_home(&crate::maint::tasks::path(&self.remote.name));
+        let effects = |task: &crate::maint::tasks::Task| {
+            if add {
+                vec![Effect::Confirm(Modal {
+                    title: "Add this task to Maintenance".into(),
+                    color: t.mag,
+                    lines: crate::tui::docview::task_lines(&t, task, &file),
+                    yes: Some(("add".into(), vec![Effect::TaskAdd(Box::new(task.clone()))])),
+                })]
+            } else {
+                vec![Effect::TaskSkip(task.id.clone())]
+            }
+        };
+        let e = if open.len() == 1 {
+            effects(&open[0])
+        } else {
+            vec![Effect::Choose(
+                format!(
+                    "{} which task? (1–{})",
+                    if add { "Add" } else { "Skip" },
+                    open.len().min(9)
+                ),
+                open.iter()
+                    .take(9)
+                    .map(|s| {
+                        (
+                            format!("[{}] {} · {}", s.level.word(), s.title, s.when()),
+                            effects(s),
+                        )
+                    })
+                    .collect(),
+            )]
+        };
+        self.apply(e, Instant::now());
+    }
+
+    fn task_add(&mut self, task: crate::maint::tasks::Task) {
+        let mut task = task;
+        task.added = Some(jiff::Timestamp::now());
+        if !self.offline
+            && let Err(e) = crate::maint::tasks::add(&self.remote.name, task.clone())
+        {
+            return self.toast(&format!("couldn't add it: {e}"));
+        }
+        let (id, title) = (task.id.clone(), task.title.clone());
+        self.store.tasks.retain(|t| t.id != id);
+        self.store.tasks.push(task);
+        self.suggestion_mark(&id, SugState::Added);
+        self.toast(&format!("added to Maintenance (4): {title}"));
+    }
+
+    /// Record what was done with a suggestion in the review itself.
+    fn suggestion_mark(&mut self, id: &str, state: SugState) {
+        let Some(rd) = self.store.review.as_mut() else {
+            return;
+        };
+        rd.mark(id, state);
+        if !self.offline
+            && let Err(e) = crate::maint::review::save(rd)
+        {
+            return self.toast(&format!("couldn't update the review: {e}"));
+        }
+        if state == SugState::Skipped {
+            self.toast(&format!("skipped {id}"));
+        }
+    }
+
+    /// A task done by hand: logged now (tagged `task:<id>`, which takes it off the list),
+    /// then the note box, as for a plan done by hand.
+    fn task_done(&mut self, id: &str) {
+        let title = self
+            .store
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map_or(id.to_string(), |t| t.title.clone());
+        let entry = crate::maint::log::LogEntry::task(&self.remote.name, id, &title, None);
+        if !self.offline {
+            if let Err(e) = crate::maint::log::write(&entry) {
+                return self.toast(&format!("couldn't write the maintenance log: {e}"));
+            }
+            self.store.log = crate::maint::log::list(&self.remote.name);
+        } else {
+            self.store.log.insert(0, entry.clone());
+        }
+        self.last_change_at = Some(jiff::Timestamp::now());
+        self.log_note = Some((entry, String::new()));
+    }
+
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
     fn writer_turn_ended(&mut self) {
+        let workflows = self.store.workflows.clone();
+        let items = self.item_ids();
         let Some(w) = self.writer.as_mut() else {
             return;
         };
@@ -2251,8 +2407,19 @@ impl App {
             rd.head.session = w.session.clone().or(rd.head.session);
             let msg = match (&w.answer, &w.err) {
                 (Some(a), _) if !a.trim().is_empty() => {
-                    rd.take_answer(a);
-                    "the maintenance review is saved".to_string()
+                    rd.take_answer(
+                        a,
+                        &crate::maint::tasks::Known {
+                            workflows: &workflows,
+                            items: &items,
+                        },
+                    );
+                    match rd.open().len() {
+                        0 => "the maintenance review is saved".to_string(),
+                        n => format!(
+                            "the maintenance review is saved: {n} suggested tasks (a adds one)"
+                        ),
+                    }
                 }
                 (_, err) => format!(
                     "no review: {}",

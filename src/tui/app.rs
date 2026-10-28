@@ -24,6 +24,7 @@ use super::{Event, ScreenId};
 use crate::config::Config;
 use crate::exec::{Cmd, ExecError, StreamMsg};
 use crate::fmt;
+use crate::maint::tasks::SugState;
 
 /// Something a screen wants done. Screens never touch threads or the terminal themselves.
 #[derive(Clone)]
@@ -84,6 +85,11 @@ pub enum Effect {
     /// `R`: the latest review, or what writing one means.
     ReviewOpen,
     ReviewWrite,
+    /// A review's suggested task: added to `tasks.toml`, or skipped.
+    TaskAdd(Box<crate::maint::tasks::Task>),
+    TaskSkip(String),
+    /// Take a task off `tasks.toml`.
+    TaskRemove(String),
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -106,6 +112,8 @@ pub enum Prompt {
     PlanNote(String),
     /// What to change in this workflow's plan.
     PlanRevise(String),
+    /// A task done by hand (its id): the note for its log entry.
+    TaskDone(String),
 }
 
 impl Prompt {
@@ -119,6 +127,9 @@ impl Prompt {
             ),
             Prompt::PlanNote(wf) => format!("plan {wf} · a note for Claude (optional): "),
             Prompt::PlanRevise(wf) => format!("revise the plan for {wf}: "),
+            Prompt::TaskDone(id) => {
+                format!("{id} done · for the log, how it went (optional; Esc cancels): ")
+            }
         }
     }
 }
@@ -367,6 +378,19 @@ impl App {
             body: String::new(),
         };
         self.start_writer(super::docview::Writer::new(wf, doc), String::new(), None);
+        if let Some(w) = self.writer.as_mut() {
+            w.live = None;
+            w.answer = Some(answer.into());
+        }
+        self.writer_turn_ended();
+    }
+
+    /// Tests: Claude wrote this review (nothing is sent or saved).
+    #[cfg(test)]
+    pub fn review_written_for_test(&mut self, answer: &str) {
+        let mut doc = crate::maint::review::ReviewDoc::new(crate::maint::LOCAL);
+        doc.head.created = "2026-10-27T12:00:00Z".parse().ok();
+        self.start_writer(super::docview::Writer::review(doc), String::new(), None);
         if let Some(w) = self.writer.as_mut() {
             w.live = None;
             w.answer = Some(answer.into());
@@ -1390,6 +1414,7 @@ impl App {
                 let w = super::docview::Writer::new(&wf, doc);
                 self.start_writer(w, super::plans::revise(text), session);
             }
+            Prompt::TaskDone(id) => self.task_done(&id, text),
             Prompt::LogNote(_) if text.is_empty() => {}
             Prompt::LogNote(_) => {
                 if self.wf.is_none() {
@@ -1401,6 +1426,9 @@ impl App {
                     && let Err(err) = crate::maint::log::write(&e)
                 {
                     return self.toast(format!("couldn't write the note: {err}"));
+                }
+                if self.records {
+                    self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
                 }
                 self.toast("noted in the maintenance log (v opens it)");
             }
@@ -1668,6 +1696,17 @@ impl App {
                     }
                 }
                 Effect::ReviewWrite => self.review_write(),
+                Effect::TaskAdd(task) => self.task_add(*task),
+                Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
+                Effect::TaskRemove(id) => {
+                    if self.records
+                        && let Err(e) = crate::maint::tasks::remove(crate::maint::LOCAL, &id)
+                    {
+                        return self.toast(format!("couldn't remove it: {e}"));
+                    }
+                    self.data.tasks.retain(|t| t.id != id);
+                    self.toast(format!("{id} is off the list (tasks.toml)"));
+                }
                 Effect::Quit => self.quit = true,
             }
         }
@@ -1874,6 +1913,7 @@ impl App {
             if let Err(e) = crate::maint::log::write(&entry) {
                 self.toast(format!("couldn't write the maintenance log: {e}"));
             }
+            self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
             crate::maint::retention::purge(
                 crate::maint::LOCAL,
                 &crate::workflows::state::root(),
@@ -2027,7 +2067,8 @@ impl App {
                 Line::styled(
                     "Claude reviews what Maintenance recommends, the deployments and updates \
                      waiting, the maintenance log and release notes, then writes what to do \
-                     now, soon and routinely, and why.",
+                     now, soon and routinely, and why. It ends with tasks you can add to \
+                     Maintenance (a in the review).",
                     t.fg(),
                 ),
                 Line::raw(""),
@@ -2051,10 +2092,13 @@ impl App {
 
     fn review_write(&mut self) {
         let v = self.view();
+        let tasks =
+            crate::maint::tasks::request_section(&self.workflow_names(), &[], &self.data.tasks);
         let prompt = super::plans::review_request(
             &self.cfg,
             &super::screens::maint::recs_text(&v),
             &super::screens::maint::context(&v),
+            &tasks,
         );
         let doc = crate::maint::review::ReviewDoc::new(crate::maint::LOCAL);
         self.start_writer(super::docview::Writer::review(doc), prompt, None);
@@ -2102,6 +2146,7 @@ impl App {
     /// The writer's turn ended: its answer becomes the plan (or the review), saved.
     fn writer_turn_ended(&mut self) {
         use crate::maint::plan::PlanStatus;
+        let workflows = self.workflow_names();
         let Some(w) = self.writer.as_mut() else {
             return;
         };
@@ -2109,8 +2154,19 @@ impl App {
             rd.head.session = w.session.clone().or(rd.head.session);
             let msg = match (&w.answer, &w.err) {
                 (Some(a), _) if !a.trim().is_empty() => {
-                    rd.take_answer(a);
-                    "the maintenance review is saved".to_string()
+                    rd.take_answer(
+                        a,
+                        &crate::maint::tasks::Known {
+                            workflows: &workflows,
+                            items: &[],
+                        },
+                    );
+                    match rd.open().len() {
+                        0 => "the maintenance review is saved".to_string(),
+                        n => format!(
+                            "the maintenance review is saved: {n} suggested tasks (a adds one)"
+                        ),
+                    }
                 }
                 (_, err) => format!(
                     "no review: {}",
@@ -2254,8 +2310,135 @@ impl App {
                 self.review_view = None;
                 self.review_box();
             }
+            KeyCode::Char(c @ ('a' | 'x')) if !writing => self.suggestion_pick(c == 'a'),
             _ => {}
         }
+    }
+
+    /// The workflows there are (what a suggested `run` may name).
+    fn workflow_names(&self) -> Vec<String> {
+        match self.data.workflows.get() {
+            Some(w) => w.iter().map(|i| i.entry.name.clone()).collect(),
+            None if self.records => crate::workflows::list()
+                .into_iter()
+                .map(|e| e.name)
+                .collect(),
+            // Tests: the seeded ones.
+            None => crate::workflows::SEEDS
+                .iter()
+                .map(|(n, _)| n.to_string())
+                .collect(),
+        }
+    }
+
+    /// `a`/`x` in the review view: pick an open suggestion to add (preview, confirm) or skip.
+    fn suggestion_pick(&mut self, add: bool) {
+        let t = self.theme;
+        let open: Vec<crate::maint::tasks::Task> = self
+            .review
+            .as_ref()
+            .map(|d| d.open().into_iter().map(|s| s.task.clone()).collect())
+            .unwrap_or_default();
+        if open.is_empty() {
+            return self.toast("no suggested tasks left in this review");
+        }
+        let file = widgets::short_home(&crate::maint::tasks::path(crate::maint::LOCAL));
+        let effects = |task: &crate::maint::tasks::Task| {
+            if add {
+                vec![Effect::Confirm(Modal {
+                    title: "Add this task to Maintenance".into(),
+                    color: t.mag,
+                    lines: super::docview::task_lines(&t, task, &file),
+                    yes: Some(("add".into(), vec![Effect::TaskAdd(Box::new(task.clone()))])),
+                })]
+            } else {
+                vec![Effect::TaskSkip(task.id.clone())]
+            }
+        };
+        if open.len() == 1 {
+            let e = effects(&open[0]);
+            return self.apply(e, Instant::now());
+        }
+        let lines = open
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Line::styled(
+                    format!("{}  [{}] {} · {}", i + 1, s.level.word(), s.title, s.when()),
+                    t.fg(),
+                )
+            })
+            .collect();
+        self.choice = Some(Choice {
+            title: format!(
+                "{} which task? (1–{}, n cancels)",
+                if add { "Add" } else { "Skip" },
+                open.len().min(9)
+            ),
+            lines,
+            options: open
+                .iter()
+                .take(9)
+                .map(|s| (s.title.clone(), effects(s)))
+                .collect(),
+        });
+        self.dirty = true;
+    }
+
+    fn task_add(&mut self, task: crate::maint::tasks::Task) {
+        let mut task = task;
+        task.added = Some(jiff::Timestamp::now());
+        if self.records
+            && let Err(e) = crate::maint::tasks::add(crate::maint::LOCAL, task.clone())
+        {
+            return self.toast(format!("couldn't add it: {e}"));
+        }
+        let (id, title) = (task.id.clone(), task.title.clone());
+        self.data.tasks.retain(|t| t.id != id);
+        self.data.tasks.push(task);
+        self.suggestion_mark(&id, SugState::Added);
+        self.toast(format!("added to Maintenance (6): {title}"));
+    }
+
+    /// Record what was done with a suggestion in the review itself.
+    fn suggestion_mark(&mut self, id: &str, state: SugState) {
+        let Some(rd) = self.review.as_mut() else {
+            return;
+        };
+        rd.mark(id, state);
+        if self.records
+            && let Err(e) = crate::maint::review::save(rd)
+        {
+            return self.toast(format!("couldn't update the review: {e}"));
+        }
+        if state == SugState::Skipped {
+            self.toast(format!("skipped {id}"));
+        }
+    }
+
+    /// `d` on a task: logged as done by hand (tagged `task:<id>`, which takes it off the list).
+    fn task_done(&mut self, id: &str, note: &str) {
+        let title = self
+            .data
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .map_or(id.to_string(), |t| t.title.clone());
+        let entry = crate::maint::log::LogEntry::task(
+            crate::maint::LOCAL,
+            id,
+            &title,
+            (!note.is_empty()).then_some(note),
+        );
+        if self.records {
+            if let Err(e) = crate::maint::log::write(&entry) {
+                return self.toast(format!("couldn't write the maintenance log: {e}"));
+            }
+            self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
+        } else {
+            self.data.maint_log.insert(0, entry);
+        }
+        self.toast(format!("{title}: done, in the maintenance log (v)"));
     }
 
     fn open_log(&mut self) {

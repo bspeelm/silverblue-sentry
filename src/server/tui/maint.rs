@@ -10,7 +10,7 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
-use super::app::Effect;
+use super::app::{Effect, Modal};
 use super::tabs::View;
 use crate::fmt;
 use crate::server::config::{MaintItem, Risk};
@@ -55,6 +55,7 @@ pub fn recs(v: &View) -> Vec<Rec> {
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
+        tasks: &v.s.tasks,
     });
     r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
     r
@@ -159,6 +160,18 @@ fn action_words(a: &Action) -> String {
         Action::Look(_) => "Enter: go to the item".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it · x: it's expected here".into(),
         Action::Audit => "Enter (or c): audit the server now".into(),
+        Action::Task(_) => "A task you took from a review · d: done · x: remove it".into(),
+    }
+}
+
+/// What Enter does on a task, in words.
+fn task_words(task: &crate::maint::tasks::Task) -> String {
+    use crate::maint::tasks::Do;
+    match task.action() {
+        Do::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
+        Do::Plan(id) => format!("Enter: Claude plans {id}; it's done when {id}'s change is."),
+        Do::Audit => "Enter audits now; it's done with the audit.".into(),
+        Do::ByHand => "By hand: Enter shows the steps, then marks it done.".into(),
     }
 }
 
@@ -383,6 +396,24 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" {
                 l.push(Line::raw(""));
                 l.extend(super::tabs::updates_lines(v));
+            }
+            if let Action::Task(id) = &x.action
+                && let Some(task) = v.s.tasks.iter().find(|t| &t.id == id)
+            {
+                l.push(Line::raw(""));
+                l.push(Line::styled(task_words(task), t.fg()));
+                l.push(Line::styled(
+                    format!(
+                        "{} · from the review {}",
+                        task.when(),
+                        task.review.as_deref().unwrap_or("?")
+                    ),
+                    t.dim(),
+                ));
+                if !task.steps.trim().is_empty() {
+                    l.push(Line::raw(""));
+                    l.extend(crate::tui::docview::markdown(t, &task.steps));
+                }
             }
             if let Action::Fix(id) = &x.action
                 && let Some(f) = finding(v, id)
@@ -698,6 +729,20 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Effect::Fetch(super::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
+        ('\n', Action::Task(id)) => task_enter(v, id),
+        ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
+        ('x', Action::Task(id)) => vec![Effect::Confirm(Modal {
+            title: "Remove this task".into(),
+            color: v.t.yellow,
+            lines: vec![
+                Line::styled(r.title.clone(), v.t.fg()),
+                Line::styled(
+                    "It comes off tasks.toml and leaves Maintenance. The log keeps what was done.",
+                    v.t.dim(),
+                ),
+            ],
+            yes: Some(("remove".into(), vec![Effect::TaskRemove(id.clone())])),
+        })],
         ('z', _) => later(&r.key, &r.title),
         // Plan keys work on the item the recommendation is about.
         ('p' | 'P' | 'x', _) => match r
@@ -709,6 +754,45 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             None => Vec::new(),
         },
         _ => Vec::new(),
+    }
+}
+
+/// Enter on a task: its workflow, the item's plan, the audit, or (by hand) its steps.
+fn task_enter(v: &View, id: &str) -> Vec<Effect> {
+    use crate::maint::tasks::Do;
+    let t = v.t;
+    let Some(task) = v.s.tasks.iter().find(|x| x.id == id) else {
+        return Vec::new();
+    };
+    match task.action() {
+        Do::Run(wf) => vec![Effect::StartWorkflow(wf)],
+        Do::Plan(it) => match status_of(v, &it).zip(item_of(v, &it)) {
+            Some((s, i)) => item_key('p', v, s, i),
+            None => vec![Effect::Toast(format!("{it} isn't tracked any more"))],
+        },
+        Do::Audit => vec![
+            Effect::Fetch(super::data::Kind::Audit),
+            Effect::Toast("auditing the server…".into()),
+        ],
+        Do::ByHand => {
+            let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
+            if task.steps.trim().is_empty() {
+                lines.push(Line::styled("(no steps given: see the review)", t.dim()));
+            } else {
+                lines.extend(crate::tui::docview::markdown(t, &task.steps));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Do it yourself, then mark it done: it's logged, and leaves the list.",
+                t.dim(),
+            ));
+            vec![Effect::Confirm(Modal {
+                title: task.title.clone(),
+                color: t.cyan,
+                lines,
+                yes: Some(("mark done".into(), vec![Effect::TaskDone(id.to_string())])),
+            })]
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 //! Keeping the records from ballooning: old log entries, workflow run directories, closed
-//! plans and reviews are deleted, the newest few always kept. Runs when a TUI starts and
+//! plans and reviews, and one-time tasks done long ago are deleted, the newest few always kept. Runs when a TUI starts and
 //! after a record is written; nothing runs in the background.
 
 use std::path::{Path, PathBuf};
@@ -30,6 +30,19 @@ fn months_ago(now: Timestamp, months: u32) -> i64 {
 
 /// Prune a server's records (`LOCAL`: this machine's); `runs` is where its workflow runs live.
 pub fn purge(server: &str, runs: &Path, k: &Retention, now: Timestamp) -> Purged {
+    // Done one-time tasks first: their log entry may be about to go.
+    let tasks = super::tasks::load(server);
+    if !tasks.is_empty() {
+        let cutoff = months_ago(now, k.log_months.min(k.done_months));
+        let kept = super::tasks::keep(
+            &tasks,
+            &super::log::list(server),
+            Timestamp::from_second(cutoff).unwrap_or(now),
+        );
+        if kept.len() != tasks.len() {
+            let _ = super::tasks::save(server, &kept);
+        }
+    }
     let mut p = Purged {
         log: purge_log(&super::log::dir(server), server, k, now),
         runs: purge_runs(runs, k.runs_per_workflow),
