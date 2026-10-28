@@ -8,7 +8,25 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Unit tests never touch the real config, data or cache: they get a scratch root of their
+/// own (per test process), whatever XDG_* says. Live tests (`#[ignore]`) opt back in.
+#[cfg(test)]
+static REAL_DIRS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Live tests: use the real XDG locations (or the XDG_* overrides given on the command line).
+#[cfg(test)]
+pub fn use_real_dirs() {
+    REAL_DIRS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn xdg(var: &str, fallback: &str) -> PathBuf {
+    #[cfg(test)]
+    if !REAL_DIRS.load(std::sync::atomic::Ordering::SeqCst) {
+        return std::env::temp_dir()
+            .join(format!("sentry-test-{}", std::process::id()))
+            .join(fallback)
+            .join("sentry");
+    }
     std::env::var_os(var)
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -68,4 +86,16 @@ pub fn parse_os_version(text: &str) -> String {
         .map(|v| v.split(' ').next().unwrap_or(&v).to_string())
         .or_else(|| get("VERSION_ID="))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit_tests_never_see_the_real_dirs() {
+        let home = super::home();
+        for d in [super::config_dir(), super::data_dir(), super::cache_dir()] {
+            assert!(!d.starts_with(&home), "{}", d.display());
+            assert!(d.starts_with(std::env::temp_dir()), "{}", d.display());
+        }
+    }
 }

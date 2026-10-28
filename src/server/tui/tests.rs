@@ -402,6 +402,7 @@ fn tabs_and_badges() {
 #[test]
 #[ignore]
 fn live_tabs() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
         return;
     };
@@ -585,6 +586,7 @@ fn custom_actions_and_logs() {
 #[test]
 #[ignore]
 fn live_actions() {
+    crate::paths::use_real_dirs();
     use crate::exec::StreamMsg;
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
@@ -661,6 +663,7 @@ fn live_actions() {
 #[test]
 #[ignore]
 fn live_workflow() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
@@ -816,6 +819,7 @@ fn claude_gets_only_the_gateway() {
 #[test]
 #[ignore]
 fn live_ask() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
         return;
     };
@@ -972,6 +976,7 @@ fn slash_filters_the_tab() {
 #[test]
 #[ignore]
 fn live_ask_boxes() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
         return;
     };
@@ -1078,6 +1083,7 @@ fn ask_works_on_the_updates_recommendation() {
 #[test]
 #[ignore]
 fn live_password_step() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
@@ -1201,6 +1207,7 @@ fn reboot_with_a_password_waits_after_the_terminal_comes_back() {
 #[test]
 #[ignore]
 fn live_preflight() {
+    crate::paths::use_real_dirs();
     let (Ok(name), Ok(wf)) = (
         std::env::var("SENTRY_SERVER_LIVE"),
         std::env::var("SENTRY_WORKFLOW"),
@@ -1242,6 +1249,7 @@ fn live_preflight() {
 #[test]
 #[ignore]
 fn live_inventory() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
@@ -1569,6 +1577,7 @@ fn claude_target_lines() {
 #[test]
 #[ignore]
 fn live_plan() {
+    crate::paths::use_real_dirs();
     let (Ok(name), Ok(item)) = (
         std::env::var("SENTRY_SERVER_LIVE"),
         std::env::var("SENTRY_ITEM"),
@@ -1651,6 +1660,7 @@ fn live_plan() {
 #[test]
 #[ignore]
 fn live_claude_reads() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
@@ -1853,6 +1863,7 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
 #[test]
 #[ignore]
 fn live_recommend() {
+    crate::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
         return;
     };

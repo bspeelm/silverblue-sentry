@@ -9,6 +9,7 @@ Upgrade procedures: the user's personal notes in `docs/cheatsheets/` (gitignored
 - Build/test: `make check` (= `cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check`)
 - Snapshot tests: `cargo insta review` (or `INSTA_UPDATE=always cargo test` and then inspect `git diff`)
 - Tests run with `TZ=UTC` (`.cargo/config.toml`), so snapshots match CI; `cargo run` shows UTC times too unless `TZ` is set.
+- Unit tests never touch the real config/data/cache: `paths::xdg` gives each test process a scratch root under the temp dir (XDG_* ignored). Live tests (`#[ignore]`) call `crate::paths::use_real_dirs()` first, which honours XDG_* again; a new live test must too.
 - CI (`.github/workflows/ci.yml`) runs `make check` plus MSRV (1.95, set by sysinfo) and a privacy scan on every PR. Never push to `main`: branch, PR, the user merges.
 - Re-capture fixtures: `scripts/capture-fixtures.sh` (scrubs the username and IPs; journal fixtures are synthetic, never captured)
 - Install: `make install-binary` (copies `target/release/sentry` to `~/.local/bin/sentry`)
