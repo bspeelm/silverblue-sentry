@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::plan::PlanStatus;
+use super::tasks::{Known, SugState, Suggestion};
 use crate::paths;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -19,6 +20,9 @@ pub struct ReviewHead {
     pub created: Option<jiff::Timestamp>,
     pub updated: Option<jiff::Timestamp>,
     pub session: Option<String>,
+    /// The tasks Claude suggested (its `sentry-tasks` block), and what you did with each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suggest: Vec<Suggestion>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -63,8 +67,21 @@ impl ReviewDoc {
         })
     }
 
-    /// Claude's answer: the review, from its title on (before it: Claude saying what it reads).
-    pub fn take_answer(&mut self, answer: &str) {
+    /// Claude's answer: the review, from its title on (before it: Claude saying what it reads);
+    /// its tasks block becomes the suggestions.
+    pub fn take_answer(&mut self, answer: &str, known: &Known) {
+        let (answer, tasks) = super::tasks::take_suggestions(answer, known);
+        let review = self.file_name();
+        self.head.suggest = tasks
+            .into_iter()
+            .map(|mut task| {
+                task.review = Some(review.clone());
+                Suggestion {
+                    state: SugState::Open,
+                    task,
+                }
+            })
+            .collect();
         let lines: Vec<&str> = answer.lines().collect();
         let start = lines
             .iter()
@@ -73,6 +90,24 @@ impl ReviewDoc {
         self.body = lines[start..].join("\n").trim().to_string();
         self.head.status = PlanStatus::Ready;
         self.head.updated = Some(jiff::Timestamp::now());
+    }
+
+    /// The suggestions not yet added or skipped.
+    pub fn open(&self) -> Vec<&Suggestion> {
+        self.head
+            .suggest
+            .iter()
+            .filter(|s| s.state == SugState::Open)
+            .collect()
+    }
+
+    /// Mark a suggestion added or skipped.
+    pub fn mark(&mut self, id: &str, state: SugState) {
+        for s in &mut self.head.suggest {
+            if s.task.id == id {
+                s.state = state;
+            }
+        }
     }
 
     pub fn file_name(&self) -> String {
@@ -119,9 +154,27 @@ mod tests {
     #[test]
     fn the_answer_becomes_the_review_and_round_trips() {
         let mut d = ReviewDoc::new("myserver");
-        d.take_answer("Reading the ledger first.\n# Maintenance review · myserver\n\n## Now\n- web: plan 1.5.2");
+        let known = Known {
+            workflows: &[],
+            items: &["web".to_string()],
+        };
+        d.take_answer(
+            "Reading the ledger first.\n# Maintenance review · myserver\n\n## Now\n- web: plan 1.5.2\n\n\
+             ```sentry-tasks\n[[task]]\nid = \"web\"\ntitle = \"Plan web\"\nlevel = \"now\"\n\
+             do = \"plan web\"\n```",
+            &known,
+        );
         assert!(d.body.starts_with("# Maintenance review"));
+        assert!(!d.body.contains("sentry-tasks"));
         assert_eq!(d.head.status, PlanStatus::Ready);
+        assert_eq!(d.open().len(), 1);
+        assert_eq!(
+            d.head.suggest[0].task.review.as_deref(),
+            Some(d.file_name().as_str())
+        );
+        assert_eq!(ReviewDoc::parse(&d.to_md()).unwrap(), d);
+        d.mark("web", SugState::Added);
+        assert!(d.open().is_empty());
         assert_eq!(ReviewDoc::parse(&d.to_md()).unwrap(), d);
     }
 }

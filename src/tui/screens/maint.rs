@@ -13,6 +13,7 @@ use super::{Cursor, Hints, View, audit, jobs, updates};
 use crate::audit::Finding;
 use crate::maint::Level;
 use crate::maint::local::{self, Action as Do, Inputs, Rec, RunInfo};
+use crate::maint::tasks::{Do as TaskDo, Task};
 use crate::tui::app::{Choice, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
@@ -79,6 +80,9 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         if matches!(r.action, Do::Run(_) | Do::OpenPlan(_)) {
             h.push(("p", "plan"));
         }
+        if matches!(r.action, Do::Task(_)) {
+            h.extend([("d", "done"), ("x", "remove")]);
+        }
         h.push(("z", "later"));
     }
     h.extend([
@@ -134,10 +138,17 @@ pub fn recs(v: &View) -> Vec<Rec> {
         run,
         plans: &v.d.plans,
         snoozes: &v.d.snoozes,
+        tasks: &v.d.tasks,
+        log: &v.d.maint_log,
     })
     .into_iter()
     .filter(|r| v.matches(&[&r.title, &r.why, r.level.word()]))
     .collect()
+}
+
+/// The task behind a `Task` recommendation.
+fn task<'a>(v: &View<'a>, id: &str) -> Option<&'a Task> {
+    v.d.tasks.iter().find(|t| t.id == id)
 }
 
 /// The finding behind a `Fix` recommendation, from the newest report.
@@ -269,7 +280,27 @@ impl Maint {
                     "plans are for workflows: p on updates, or on Upgrade (0)".into(),
                 )],
             },
+            Action::Char('d') => match &r.action {
+                Do::Task(id) => vec![Effect::Prompt(
+                    crate::tui::app::Prompt::TaskDone(id.clone()),
+                    String::new(),
+                )],
+                _ => Vec::new(),
+            },
             Action::Char('x') => match &r.action {
+                Do::Task(id) => vec![Effect::Confirm(Modal {
+                    title: "Remove this task".into(),
+                    color: t.yellow,
+                    lines: vec![
+                        Line::styled(r.title.clone(), t.fg()),
+                        Line::styled(
+                            "It comes off tasks.toml and leaves Maintenance. The log keeps what \
+                             was done.",
+                            t.dim(),
+                        ),
+                    ],
+                    yes: Some(("remove".into(), vec![Effect::TaskRemove(id.clone())])),
+                })],
                 Do::Fix(id) => finding(v, id).map_or(Vec::new(), |f| {
                     vec![
                         audit::expected_toggle(v, f),
@@ -368,6 +399,41 @@ impl Maint {
             }
             Do::OpenRun => vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Do::OpenPlan(wf) => vec![Effect::PlanOpen(wf.clone())],
+            Do::Task(id) => {
+                let Some(task) = task(v, id) else {
+                    return Vec::new();
+                };
+                match task.action() {
+                    TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
+                    TaskDo::Audit => vec![audit::audit_run()],
+                    // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
+                    TaskDo::ByHand | TaskDo::Plan(_) => {
+                        let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
+                        if task.steps.trim().is_empty() {
+                            lines.push(Line::styled("(no steps given: see the review)", t.dim()));
+                        } else {
+                            lines.extend(crate::tui::docview::markdown(t, &task.steps));
+                        }
+                        lines.push(Line::raw(""));
+                        lines.push(Line::styled(
+                            "Do it yourself, then mark it done: it's logged, and leaves the list.",
+                            t.dim(),
+                        ));
+                        vec![Effect::Confirm(Modal {
+                            title: task.title.clone(),
+                            color: t.cyan,
+                            lines,
+                            yes: Some((
+                                "mark done".into(),
+                                vec![Effect::Prompt(
+                                    crate::tui::app::Prompt::TaskDone(id.clone()),
+                                    String::new(),
+                                )],
+                            )),
+                        })]
+                    }
+                }
+            }
         }
     }
 
@@ -542,6 +608,29 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
             l.push(Line::raw(""));
             l.extend(updates::updates_lines(v));
         }
+        Do::Task(id) => {
+            if let Some(task) = task(v, id) {
+                l.push(Line::raw(""));
+                l.push(Line::styled(task_words(task), t.fg()));
+                l.push(Line::styled(
+                    format!(
+                        "{} · from the review {}",
+                        task.when(),
+                        task.review.as_deref().unwrap_or("?")
+                    ),
+                    t.dim(),
+                ));
+                if !task.steps.trim().is_empty() {
+                    l.push(Line::raw(""));
+                    l.extend(crate::tui::docview::markdown(t, &task.steps));
+                }
+                l.push(Line::raw(""));
+                l.push(Line::styled(
+                    "d: done (logs it) · x: remove it (tasks.toml)",
+                    t.dim(),
+                ));
+            }
+        }
         Do::Cleanup => {
             l.push(Line::raw(""));
             match v.d.cleanup.get() {
@@ -584,6 +673,18 @@ fn action_words(a: &Do) -> String {
         Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),
         Do::OpenRun => "Enter: open the run on Upgrade (0)".into(),
         Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),
+        Do::Task(_) => "A task you took from a review".into(),
+    }
+}
+
+/// What Enter does on a task, in words.
+fn task_words(task: &Task) -> String {
+    match task.action() {
+        TaskDo::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
+        TaskDo::Audit => "Enter audits now; it's done with the audit.".into(),
+        TaskDo::ByHand | TaskDo::Plan(_) => {
+            "By hand: Enter shows the steps, then marks it done.".into()
+        }
     }
 }
 

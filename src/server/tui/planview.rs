@@ -33,7 +33,7 @@ server yourself.",
 }
 
 /// What a review is asked.
-pub fn review_request(context: &str) -> String {
+pub fn review_request(context: &str, tasks: &str) -> String {
     format!(
         "{context}\n\nReview the maintenance of this server. Sections:\n\
          ## Summary: two or three lines on where things stand.\n\
@@ -43,7 +43,8 @@ pub fn review_request(context: &str) -> String {
          ## Routine: regular maintenance due, and what can simply wait (say why).\n\
          ## The list: what to start or stop tracking, sources to add, risk levels, holds and \
          review dates to revisit.\n\
-         ## Watch: ends of life, upstream changes or anything else to look at again, with dates."
+         ## Watch: ends of life, upstream changes or anything else to look at again, with dates.\n\n\
+         {tasks}"
     )
 }
 

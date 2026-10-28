@@ -209,6 +209,18 @@ impl LogEntry {
         }
     }
 
+    /// A task from a review done by hand (`d` on Maintenance): tagged `task:<id>`, which is
+    /// what marks it done.
+    pub fn task(server: &str, id: &str, title: &str, note: Option<&str>) -> Self {
+        let mut e = Self::by_hand(server, id, "task", None, None, None, note);
+        e.head.tags.push(format!("task:{id}"));
+        e.body = e.body.replace(
+            "Carried out by hand from the plan (no workflow run).",
+            &format!("Done by hand: {title} (a task from a review; no workflow run)."),
+        );
+        e
+    }
+
     /// A change made by hand from a plan (no workflow run): what it was, the plan, the note.
     pub fn by_hand(
         server: &str,

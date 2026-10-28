@@ -157,6 +157,8 @@ pub struct Store {
     pub workflows: Vec<String>,
     /// The latest maintenance review.
     pub review: Option<maint::review::ReviewDoc>,
+    /// Tasks taken from reviews (`servers/<name>/tasks.toml`).
+    pub tasks: Vec<crate::maint::tasks::Task>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,

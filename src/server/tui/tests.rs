@@ -1971,3 +1971,65 @@ fn an_item_without_a_workflow_is_planned_and_done_by_hand() {
     );
     assert!(!a.store.plans.contains_key("engine"), "the plan is closed");
 }
+
+#[test]
+fn review_suggestions_become_maintenance_tasks() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('R'));
+    let prompt = a.consent_text_any().expect("the request");
+    assert!(
+        prompt.contains("sentry-tasks") && prompt.contains("`plan web`"),
+        "it asks for tasks, naming what they may do: {prompt}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    a.writer_answered(
+        "# Maintenance review · myserver\n\n## Now\n- web\n\n```sentry-tasks\n\
+         [[task]]\nid = \"web-next\"\ntitle = \"Plan web to 1.5.2\"\nwhy = \"Security fix.\"\n\
+         level = \"now\"\ndo = \"plan web\"\nitem = \"web\"\n\n\
+         [[task]]\nid = \"restore-test\"\ntitle = \"Test a backup restore\"\nwhy = \"Never tried.\"\n\
+         level = \"soon\"\nevery = \"180d\"\ndo = \"by-hand\"\nsteps = \"Restore last night's dump to a scratch dir.\"\n```",
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("2 suggested tasks · a adds one"), "{s}");
+    // Add both: pick, see the TOML, confirm.
+    for _ in 0..2 {
+        key(&mut a, KeyCode::Char('a'));
+        key(&mut a, KeyCode::Char('1'));
+        let s = screen(&mut a);
+        assert!(
+            s.contains("Add this task to Maintenance") && s.contains("[[task]]"),
+            "{s}"
+        );
+        key(&mut a, KeyCode::Char('y'));
+    }
+    let s = screen(&mut a);
+    assert!(!s.contains("suggested task"), "none open: {s}");
+    key(&mut a, KeyCode::Esc);
+    // Both on Maintenance; the plan task is about web.
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Plan web to 1.5.2") && s.contains("Test a backup restore"),
+        "{s}"
+    );
+    a.apply(
+        vec![super::app::Effect::MaintFind("task:restore".into())],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("Restore last night's dump"), "the steps: {s}");
+    // d: logged as done by hand, then the note box; it leaves the list.
+    key(&mut a, KeyCode::Char('d'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("restore-test done · for the maintenance log"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(
+        !s.contains("soon     Test a backup restore"),
+        "done for 180 days: {s}"
+    );
+}

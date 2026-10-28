@@ -484,8 +484,16 @@ pub fn draw_review(
             t.fg(),
         ));
     }
+    let open = doc.map_or(0, |d| d.open().len());
     let l2 = match writer.filter(|w| w.running()) {
         Some(w) => Line::styled(format!(" {}", w.progress()), t.s(t.cyan)),
+        None if open > 0 => Line::styled(
+            format!(
+                " {open} suggested task{} · a adds one to Maintenance · x skips one · R writes a new review",
+                if open == 1 { "" } else { "s" }
+            ),
+            t.s(t.yellow),
+        ),
         None => Line::styled(
             " what to maintain next, and why · R writes a new one",
             t.dim(),
@@ -497,7 +505,11 @@ pub fn draw_review(
         rule,
     );
     let lines = match doc {
-        Some(d) if !writing => markdown(t, &d.body),
+        Some(d) if !writing => {
+            let mut l = suggestions(t, d);
+            l.extend(markdown(t, &d.body));
+            l
+        }
         Some(d) => {
             let mut l = vec![
                 Line::styled(
@@ -522,6 +534,57 @@ pub fn draw_review(
             .scroll((top as u16, 0)),
         body,
     );
+}
+
+/// A review's suggested tasks, above its text.
+fn suggestions(t: &Theme, d: &crate::maint::review::ReviewDoc) -> Vec<Line<'static>> {
+    use crate::maint::tasks::SugState;
+    if d.head.suggest.is_empty() {
+        return Vec::new();
+    }
+    let mut l = vec![Line::styled(
+        "Suggested tasks",
+        t.s(t.mag).add_modifier(Modifier::BOLD),
+    )];
+    for s in &d.head.suggest {
+        let (mark, style) = match s.state {
+            SugState::Open => ("open   ", t.s(t.yellow)),
+            SugState::Added => ("added  ", t.s(t.green)),
+            SugState::Skipped => ("skipped", t.dim()),
+        };
+        l.push(Line::from(vec![
+            Span::styled(format!("  {mark}  "), style),
+            Span::styled(format!("{:<8}", s.task.level.word()), t.dim()),
+            Span::styled(s.task.title.clone(), t.fg()),
+            Span::styled(format!("  · {} · {}", s.task.when(), s.task.act), t.dim()),
+        ]));
+    }
+    l.push(Line::raw(""));
+    l
+}
+
+/// What the confirm box shows before a suggested task is added: the task and its TOML.
+pub fn task_lines(t: &Theme, task: &crate::maint::tasks::Task, file: &str) -> Vec<Line<'static>> {
+    let mut l = vec![
+        Line::styled(task.title.clone(), t.fg().add_modifier(Modifier::BOLD)),
+        Line::styled(task.why.clone(), t.fg()),
+        Line::raw(""),
+        Line::styled(format!("Added to {file}:"), t.dim()),
+    ];
+    l.extend(
+        task.to_toml()
+            .lines()
+            .map(|x| Line::styled(format!("  {x}"), t.s(t.cyan))),
+    );
+    l.push(Line::raw(""));
+    l.push(Line::styled(
+        format!(
+            "It shows on Maintenance while it's due ({}). Nothing runs now.",
+            task.when()
+        ),
+        t.dim(),
+    ));
+    l
 }
 
 #[cfg(test)]

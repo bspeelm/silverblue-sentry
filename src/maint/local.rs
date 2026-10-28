@@ -1,14 +1,17 @@
 //! What to maintain on this machine next, and why: the audit's open findings, updates
 //! waiting and a deployment waiting for a reboot, jobs that are due or failed (cadence is the
-//! reminder), space to reclaim, a workflow left in progress, and plans ready to apply. Pure.
+//! reminder), space to reclaim, a workflow left in progress, plans ready to apply, and the
+//! tasks you took from a review that are due. Pure.
 
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
 
 use super::Level;
+use super::log::LogEntry;
 use super::plan::{PlanDoc, PlanStatus};
 use super::snooze::Snoozes;
+use super::tasks::Task;
 use crate::audit::{Report, Sev};
 use crate::baseline::Baseline;
 use crate::collectors::ostree::{Ostree, UpgradePlan, upgrade_plan};
@@ -44,13 +47,15 @@ pub enum Action {
     OpenRun,
     /// Open a plan (ready to apply).
     OpenPlan(String),
+    /// A task from a review (its id): what Enter does is the task's own `do`.
+    Task(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rec {
     pub level: Level,
     /// For `z` and for keeping the selection: `finding:<id>`, `updates`, `reboot`,
-    /// `job:<name>`, `cleanup`, `run`, `plan:<workflow>`.
+    /// `job:<name>`, `cleanup`, `run`, `plan:<workflow>`, `task:<id>`.
     pub key: String,
     pub title: String,
     pub why: String,
@@ -83,6 +88,9 @@ pub struct Inputs<'a> {
     pub run: Option<RunInfo<'a>>,
     pub plans: &'a BTreeMap<String, PlanDoc>,
     pub snoozes: &'a Snoozes,
+    /// Tasks taken from reviews (`tasks.toml`), and the log that says which are done.
+    pub tasks: &'a [Task],
+    pub log: &'a [LogEntry],
 }
 
 pub fn recommend(i: &Inputs) -> Vec<Rec> {
@@ -124,6 +132,16 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
     findings(i, &mut out);
     updates(i, &mut out);
     jobs(i, &mut out);
+    let audited = i.report.map(|r| r.taken_at);
+    for t in super::tasks::recs(i.tasks, i.log, audited, i.now) {
+        out.push(Rec {
+            level: t.level,
+            key: t.key,
+            title: t.title,
+            why: t.why,
+            action: Action::Task(t.id),
+        });
+    }
     out.retain(|r| !snoozed(i, &r.key));
     out.sort_by_key(|r| r.level);
     out
@@ -347,7 +365,40 @@ mod tests {
             run: None,
             plans: p,
             snoozes: s,
+            tasks: &[],
+            log: &[],
         }
+    }
+
+    #[test]
+    fn tasks_due_are_recommended_and_snooze_like_the_rest() {
+        let (cfg, b, p) = (Config::default(), Baseline::default(), BTreeMap::new());
+        let task = Task {
+            id: "ups".into(),
+            title: "Check the UPS battery".into(),
+            why: "It's three years old.".into(),
+            level: Level::Soon,
+            every: Some(crate::config::Dur::secs(90 * 86400)),
+            act: "by-hand".into(),
+            item: None,
+            steps: String::new(),
+            added: None,
+            review: None,
+        };
+        let tasks = [task];
+        let s = Snoozes::new();
+        let mut i = base(&cfg, &b, &s, &p);
+        i.tasks = &tasks;
+        let r = recommend(&i);
+        let t = r.iter().find(|r| r.key == "task:ups").expect("the task");
+        assert_eq!(t.action, Action::Task("ups".into()));
+        assert_eq!(t.level, Level::Soon);
+        assert!(t.why.contains("every 90d; not done yet"));
+        let mut s = Snoozes::new();
+        s.insert("task:ups".into(), "2026-11-30".parse().unwrap());
+        let mut i = base(&cfg, &b, &s, &p);
+        i.tasks = &tasks;
+        assert!(recommend(&i).iter().all(|r| r.key != "task:ups"));
     }
 
     #[test]
