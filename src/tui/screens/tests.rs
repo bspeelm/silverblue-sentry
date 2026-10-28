@@ -1317,6 +1317,7 @@ fn review_suggestions_become_maintenance_tasks() {
 #[test]
 #[ignore]
 fn live_maintenance() {
+    crate::paths::use_real_dirs();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = App::new(tx);
     a.start(Instant::now());
