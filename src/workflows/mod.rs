@@ -156,6 +156,12 @@ pub fn dry_run_of(cmd: &str) -> Option<String> {
     }
 }
 
+/// A dry run that says there's nothing to do: `rpm-ostree upgrade --preview` exits 77 when
+/// no update is available. The step it stands for would change nothing.
+pub fn dry_nothing_to_do(dry: &str, code: i32) -> bool {
+    code == 77 && dry.starts_with("rpm-ostree upgrade --preview")
+}
+
 pub fn dir() -> PathBuf {
     paths::config_dir().join("workflows")
 }
@@ -190,6 +196,7 @@ const SHIPPED: &[(&str, u64)] = &[
     ("quick-update", 0xde8871690062d69b),
     ("quick-update", 0x2d312982ded1964f),
     ("quick-update", 0xf52047aecfabc312),
+    ("quick-update", 0x6622cb14519df822),
     ("release-rebase", 0x88a4b4c8c169a61b),
     ("release-rebase", 0xacf631c5205f1724),
     ("release-rebase", 0x66f7dd06dad74b07),
@@ -582,5 +589,9 @@ kind = "manual"
             None
         );
         assert_eq!(dry_run_of("flatpak update -y"), None);
+        // --preview's 77 is "no update", not a failure; other dry runs' 77 is.
+        assert!(dry_nothing_to_do("rpm-ostree upgrade --preview", 77));
+        assert!(!dry_nothing_to_do("rpm-ostree upgrade --preview", 1));
+        assert!(!dry_nothing_to_do("rpm-ostree install --dry-run x", 77));
     }
 }

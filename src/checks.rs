@@ -33,6 +33,7 @@ pub const NAMES: &[&str] = &[
     "booted-version",
     "booted-kernel",
     "kernel-changed",
+    "routine-update",
     "nvidia-module",
     "nvidia-loaded",
     "rpmfusion-version",
@@ -121,6 +122,15 @@ pub fn run(name: &str, args: &[String]) -> Result<Outcome, String> {
                     u.new_kernel.as_deref().unwrap_or("?")
                 )),
                 Some(_) => fail("pending update keeps the kernel"),
+                None => fail("no pending update (cached-update is empty; run the preview)"),
+            }
+        }
+        // An update is waiting and keeps the kernel: the routine upgrade has work to do.
+        "routine-update" => {
+            let o = ostree::collect().map_err(|e| e.to_string())?;
+            match o.update.as_ref() {
+                Some(u) if u.kernel_changed => fail("the pending update changes the kernel"),
+                Some(_) => pass("an update is waiting and keeps the kernel"),
                 None => fail("no pending update (cached-update is empty; run the preview)"),
             }
         }

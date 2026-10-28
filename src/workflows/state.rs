@@ -44,6 +44,9 @@ pub struct StepState {
     /// The rpm-ostree dry-run sibling has succeeded.
     #[serde(default)]
     pub dry_ok: bool,
+    /// The dry run's exit code, when one ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dry_code: Option<i32>,
     /// Why it was skipped (`when !kernel_changed`, `skipped by user`).
     #[serde(default)]
     pub note: Option<String>,
@@ -82,6 +85,7 @@ impl RunState {
                     ended: None,
                     boot_id: None,
                     dry_ok: false,
+                    dry_code: None,
                     note: None,
                 })
                 .collect(),
