@@ -215,6 +215,7 @@ pub fn retry(st: &mut RunState, idx: usize) {
         s.code = None;
         s.note = None;
         s.dry_ok = false;
+        s.dry_code = None;
     });
 }
 
@@ -359,6 +360,8 @@ mod tests {
 
     struct Fake {
         kernel_changed: bool,
+        /// An update is waiting (false: the preview said there's nothing).
+        update: bool,
         boot: RefCell<String>,
         cond_calls: Cell<usize>,
         /// Staging clears rpm-ostree's cached update, and with it `pending_kernel`.
@@ -370,6 +373,7 @@ mod tests {
             self.cond_calls.set(self.cond_calls.get() + 1);
             match name {
                 "kernel_changed" => Ok(self.kernel_changed),
+                "routine_update" => Ok(self.update && !self.kernel_changed),
                 "master_repo_present" => Ok(false),
                 // A new driver needs new GL runtimes; a routine upgrade has them already.
                 "flatpak_gl_nvidia" => Ok(!self.kernel_changed),
@@ -400,6 +404,7 @@ mod tests {
         let st = RunState::new("quick-update", &ids, BTreeMap::new());
         let env = Fake {
             kernel_changed,
+            update: true,
             boot: RefCell::new("boot-a".into()),
             cond_calls: Cell::new(0),
             staged: Cell::new(false),
@@ -505,9 +510,43 @@ mod tests {
         assert_eq!(st.status, RunStatus::Done);
         assert_eq!(
             env.cond_calls.get(),
-            3,
-            "kernel_changed frozen after one evaluation (+ master_repo_present, flatpak_gl_nvidia)"
+            4,
+            "each condition frozen after one evaluation (routine_update, kernel_changed, \
+             master_repo_present, flatpak_gl_nvidia)"
         );
+    }
+
+    #[test]
+    fn nothing_to_upgrade_skips_the_routine_upgrade_and_reboot() {
+        let (wf, mut st, mut env) = quick(false);
+        env.update = false;
+        let seen = drive(&wf, &mut st, &env);
+        let ids: Vec<&str> = seen.iter().map(|s| s.split(':').next().unwrap()).collect();
+        assert_eq!(
+            ids,
+            [
+                "preview",
+                "flatpak-idle",
+                "flatpak",
+                "toolboxes",
+                "flatpak-gl",
+                "done"
+            ]
+        );
+        let note = |id: &str| {
+            st.steps
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.note.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            note("upgrade-routine").contains("routine_update"),
+            "{}",
+            note("upgrade-routine")
+        );
+        assert!(note("reboot-routine").contains("routine_update"));
+        assert_eq!(st.status, RunStatus::Done);
     }
 
     #[test]
@@ -596,6 +635,7 @@ mod tests {
         let mut st = RunState::new("release-rebase", &ids, vars);
         let env = Fake {
             kernel_changed: false,
+            update: true,
             boot: RefCell::new("boot-a".into()),
             cond_calls: Cell::new(0),
             staged: Cell::new(false),

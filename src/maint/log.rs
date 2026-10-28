@@ -489,6 +489,7 @@ mod tests {
             ended: Some(t("2026-10-27T15:01:00Z")),
             boot_id: None,
             dry_ok: false,
+            dry_code: None,
             note: note.map(str::to_string),
         };
         let st = RunState {

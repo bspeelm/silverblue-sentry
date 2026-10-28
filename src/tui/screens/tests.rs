@@ -1004,6 +1004,57 @@ gate = "auto"
 }
 
 #[test]
+fn a_dry_run_that_finds_nothing_skips_the_step() {
+    use crate::tui::wf::{Exec, Session};
+    use crate::workflows::parse;
+    use crate::workflows::runner::Next;
+    use crate::workflows::state::{RunState, StepStatus};
+    let wf = parse(
+        r#"
+name = "up"
+description = "test"
+[[steps]]
+id = "upgrade"
+title = "Stage upgrade"
+run = "rpm-ostree upgrade"
+gate = "confirm"
+[[steps]]
+id = "after"
+title = "Afterwards"
+run = "true"
+gate = "confirm"
+"#,
+    )
+    .unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let session = || {
+        let st = RunState::new("up", &ids, Default::default());
+        Session::for_test(wf.clone(), st, Next::Confirm(0))
+    };
+    // Enter: the dry run first.
+    let mut s = session();
+    match s.go() {
+        Ok(Some(Exec::Stream { dry: true, .. })) => {}
+        _ => panic!("expected the dry run"),
+    }
+    // Exit 77 from --preview: nothing to upgrade, the step is skipped, the next one is up.
+    s.on_exit(0, true, 77, None);
+    let st = &s.run.state.steps[0];
+    assert_eq!(st.status, StepStatus::Skipped);
+    assert_eq!(st.dry_code, Some(77));
+    assert!(st.note.as_deref().unwrap_or("").contains("nothing to do"));
+    assert!(matches!(s.next, Next::Confirm(1)));
+    // Any other failure stays a failed dry run, with its code kept.
+    let mut s = session();
+    let _ = s.go();
+    s.on_exit(0, true, 1, None);
+    let st = &s.run.state.steps[0];
+    assert_eq!(st.status, StepStatus::Pending);
+    assert_eq!((st.dry_code, st.dry_ok), (Some(1), false));
+    assert!(matches!(s.next, Next::Confirm(0)));
+}
+
+#[test]
 fn upgrade_stopped_step_done_by_hand_or_skipped() {
     use crate::tui::wf::Session;
     use crate::workflows::parse;

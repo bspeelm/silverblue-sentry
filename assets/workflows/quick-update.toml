@@ -36,18 +36,20 @@ run = "sentry toolbox upgrade"
 gate = "confirm"
 optional = true
 
+# routine_update: an update is waiting and keeps the kernel. With nothing to upgrade, both
+# routine steps are skipped (as is the kernel ritual).
 [[steps]]
 id = "upgrade-routine"
 title = "Stage upgrade (no kernel change)"
 run = "rpm-ostree upgrade"
 gate = "confirm"
-when = "!kernel_changed"
+when = "routine_update"
 
 [[steps]]
 id = "reboot-routine"
 title = "Reboot into the new deployment (whenever convenient)"
 kind = "reboot"
-when = "!kernel_changed"
+when = "routine_update"
 optional = true
 
 [[steps]]

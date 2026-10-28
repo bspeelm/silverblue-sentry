@@ -60,6 +60,7 @@ Permissions are computed by parsing the app `metadata` keyfiles and applying ove
 
 ## A10. rpm-ostree has no dry-run for upgrade/rebase
 On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` offers nothing. Only `install`/`uninstall` take `-n/--dry-run`. The spec's "`--dry-run` sibling" therefore means: `--preview` for upgrade, `--dry-run` for install/uninstall, and none for rebase (the card says so; `rpm-ostree cleanup -p` undoes a staged deployment). The seeded `release-rebase.toml` step `rebase-dry` used a nonexistent flag. It now validates that the target ref exists instead.
+`--preview` exits 77 when no update is available. As a dry run that means "nothing to do": the step is skipped with that note instead of failing. Every dry run's exit code is kept in `state.json` (`dry_code`) and in the step's log, and `D` (skip the dry run) is logged too. The seeded `quick-update` gates its routine upgrade and reboot on `routine_update` (an update is waiting and keeps the kernel), so with nothing to upgrade neither is offered.
 
 ## A11. Jobs (milestone 4)
 - Every job is `sentry job <name>`. The TUI streams that same command (with `--yes`, after its own confirm modal), so output, reports and last-run records are identical either way. Headless runs prompt `[y/N]` on a terminal. With no terminal and no `--yes` they refuse, exit 1, and record nothing.

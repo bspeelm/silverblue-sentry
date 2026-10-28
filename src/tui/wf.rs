@@ -398,6 +398,8 @@ impl Session {
         match self.next {
             Next::Confirm(i) => {
                 self.run.state.steps[i].dry_ok = true;
+                let id = self.wf.steps[i].id.clone();
+                self.run.append_log(&id, "dry run skipped by user (D)");
                 self.push("dry run skipped by user", LogKind::Info);
                 self.save();
                 Ok(())
@@ -436,6 +438,18 @@ impl Session {
         self.live = None;
         let id = self.wf.steps[idx].id.clone();
         if dry {
+            // Kept in the step's log and state, whatever comes next.
+            self.run.state.steps[idx].dry_code = Some(code);
+            self.run.append_log(&id, &format!("(dry run exit {code})"));
+            let dry_cmd = self.rendered(idx).ok().and_then(|c| dry_run_of(&c));
+            if dry_cmd.is_some_and(|d| crate::workflows::dry_nothing_to_do(&d, code)) {
+                let why = "nothing to do: the dry run found no update (exit 77)";
+                self.run.append_log(&id, why);
+                runner::skip(&mut self.run.state, idx, why);
+                self.push(format!("– {id}: {why}"), LogKind::Info);
+                self.refresh();
+                return;
+            }
             if code == 0 {
                 self.run.state.steps[idx].dry_ok = true;
                 self.push("✓ dry run ok · Enter runs it for real", LogKind::Ok);
