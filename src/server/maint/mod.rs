@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::maint::tasks::Task;
 use crate::paths;
 
 /// What sentry-server writes itself, next to the config (never in it): review dates moved
@@ -98,6 +99,30 @@ pub fn drop_plan(server: &str, id: &str) -> anyhow::Result<()> {
 /// After the old plans became files.
 fn clear_old_plans(server: &str) -> anyhow::Result<()> {
     update(server, |st| st.plans.clear())
+}
+
+/// `maintenance.cadence` as recurring tasks (`cadence-<workflow>`), for the workflows this
+/// server has. `tasks.toml` can replace one with the same id.
+pub fn cadence_tasks(cfg: &crate::server::config::Server, workflows: &[String]) -> Vec<Task> {
+    cfg.maintenance
+        .cadence
+        .iter()
+        .filter(|(wf, _)| workflows.contains(wf))
+        .map(|(wf, every)| Task {
+            id: format!("cadence-{wf}"),
+            title: format!("Run {wf}"),
+            why: "Routine (maintenance.cadence in server_config.yaml).".into(),
+            level: crate::maint::Level::Routine,
+            every: Some(*every),
+            act: format!("run {wf}"),
+            item: None,
+            steps: String::new(),
+            added: None,
+            off: false,
+            source: crate::maint::tasks::Source::Config,
+            review: None,
+        })
+        .collect()
 }
 
 /// One change made through a workflow started from an item.

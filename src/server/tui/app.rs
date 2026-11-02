@@ -104,6 +104,8 @@ pub enum Effect {
     TaskRemove(String),
     /// A task done by hand: logged (tagged `task:<id>`), then the note box.
     TaskDone(String),
+    /// Open this server's tasks.toml in $EDITOR (read again after).
+    EditTasks,
 }
 
 #[derive(Clone, Debug)]
@@ -591,6 +593,24 @@ impl App {
                         c.push(chatmod::Kind::Info, format!("exit {code}"));
                         c.set_offer(&cmd, code, &output, None);
                         c.push(chatmod::Kind::Info, "s sends the output to Claude");
+                        // What Claude proposed and you ran on the server: the log keeps it.
+                        let tags: Vec<String> = c
+                            .ask
+                            .finding()
+                            .map(|f| vec![format!("finding:{f}")])
+                            .unwrap_or_default();
+                        let tail: Vec<&str> = output.lines().rev().take(5).collect();
+                        let tail: Vec<&str> = tail.into_iter().rev().collect();
+                        let e = crate::maint::log::LogEntry::event(
+                            &self.remote.name,
+                            "fix",
+                            "fix",
+                            code == 0,
+                            &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
+                            &tags,
+                            jiff::Timestamp::now(),
+                        );
+                        self.log_event(e);
                     }
                     for k in [Kind::Units, Kind::Docker] {
                         self.fetch(k);
@@ -1076,13 +1096,27 @@ impl App {
                 Effect::TaskAdd(task) => self.task_add(*task),
                 Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
                 Effect::TaskRemove(id) => {
-                    if !self.offline
-                        && let Err(e) = crate::maint::tasks::remove(&self.remote.name, &id)
-                    {
-                        return self.toast(&format!("couldn't remove it: {e}"));
+                    let all = super::maint::all_tasks(&self.view());
+                    let Some(t) = all.into_iter().find(|t| t.id == id) else {
+                        return;
+                    };
+                    if self.offline {
+                        self.store.tasks.retain(|x| x.id != id);
+                        return;
                     }
-                    self.store.tasks.retain(|t| t.id != id);
-                    self.toast(&format!("{id} is off the list (tasks.toml)"));
+                    match crate::maint::tasks::remove_or_off(
+                        &self.remote.name,
+                        &t,
+                        &self.store.tasks,
+                    ) {
+                        Ok(off) => self.toast(&if off {
+                            format!("{} is off (tasks.toml)", t.title)
+                        } else {
+                            format!("{} is off the list (tasks.toml)", t.title)
+                        }),
+                        Err(e) => return self.toast(&format!("couldn't change it: {e}")),
+                    }
+                    self.store.tasks = crate::maint::tasks::load(&self.remote.name);
                 }
                 Effect::TaskDone(id) => self.task_done(&id),
                 Effect::ReviewWrite(prompt) => {
@@ -1173,11 +1207,15 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::EditConfig => {
+                Effect::EditConfig | Effect::EditTasks => {
                     let editor = std::env::var("VISUAL")
                         .or_else(|_| std::env::var("EDITOR"))
                         .unwrap_or_else(|_| "vi".into());
-                    let path = crate::server::config::path();
+                    let path = if matches!(e, Effect::EditTasks) {
+                        crate::maint::tasks::path(&self.remote.name)
+                    } else {
+                        crate::server::config::path()
+                    };
                     let mut words = editor.split_whitespace();
                     let cmd = Cmd::local(words.next().unwrap_or("vi"))
                         .args(words)
@@ -1438,7 +1476,7 @@ impl App {
                 plan: plan_path,
             }
         });
-        let entry = log::LogEntry::from_run(
+        let mut entry = log::LogEntry::from_run(
             &self.remote.name,
             &s.wf,
             &s.run.state,
@@ -1446,6 +1484,7 @@ impl App {
             info.as_ref(),
             None,
         );
+        crate::maint::tasks::tag_run(&mut entry, &super::maint::all_tasks(&self.view()));
         if !self.offline {
             if let Err(e) = log::write(&entry) {
                 self.toast(&format!("couldn't write the maintenance log: {e}"));
@@ -1572,13 +1611,17 @@ impl App {
                             to: entry.head.to.clone(),
                             plan: entry.head.plan.clone().map(Into::into),
                         });
-                let with_note = crate::server::maint::log::LogEntry::from_run(
+                let mut with_note = crate::server::maint::log::LogEntry::from_run(
                     &self.remote.name,
                     &s.wf,
                     &s.run.state,
                     &s.run.dir,
                     info.as_ref(),
                     Some(note),
+                );
+                crate::maint::tasks::tag_run(
+                    &mut with_note,
+                    &super::maint::all_tasks(&self.view()),
                 );
                 if !self.offline
                     && let Err(e) = crate::server::maint::log::write(&with_note)
@@ -2226,7 +2269,7 @@ impl App {
         let tasks = crate::maint::tasks::request_section(
             &self.store.workflows,
             &self.item_ids(),
-            &self.store.tasks,
+            &super::maint::all_tasks(&v),
         );
         let prompt =
             planview::review_request(&super::maint::review_context(&v, &self.remote), &tasks);
@@ -2401,12 +2444,10 @@ impl App {
     /// A task done by hand: logged now (tagged `task:<id>`, which takes it off the list),
     /// then the note box, as for a plan done by hand.
     fn task_done(&mut self, id: &str) {
-        let title = self
-            .store
-            .tasks
-            .iter()
+        let title = super::maint::all_tasks(&self.view())
+            .into_iter()
             .find(|t| t.id == id)
-            .map_or(id.to_string(), |t| t.title.clone());
+            .map_or(id.to_string(), |t| t.title);
         let entry = crate::maint::log::LogEntry::task(&self.remote.name, id, &title, None);
         if !self.offline {
             if let Err(e) = crate::maint::log::write(&entry) {
@@ -3114,7 +3155,32 @@ impl App {
         }
     }
 
+    /// Something done outside a workflow (a reboot, a fix): into the maintenance log.
+    fn log_event(&mut self, e: crate::maint::log::LogEntry) {
+        if !self.offline {
+            if let Err(err) = crate::maint::log::write(&e) {
+                return self.toast(&format!("couldn't write the maintenance log: {err}"));
+            }
+            self.store.log = crate::maint::log::list(&self.remote.name);
+        } else {
+            self.store.log.insert(0, e);
+        }
+        self.last_change_at = Some(jiff::Timestamp::now());
+    }
+
     fn start_run(&mut self, spec: RunSpec) {
+        if spec.reboot {
+            let e = crate::maint::log::LogEntry::event(
+                &self.remote.name,
+                "reboot",
+                "reboot",
+                true,
+                &spec.title,
+                &[],
+                jiff::Timestamp::now(),
+            );
+            self.log_event(e);
+        }
         self.run_seq += 1;
         let id = self.run_seq;
         let mut pane = Pane {
@@ -3170,6 +3236,7 @@ impl App {
         }
         if std::mem::take(&mut self.suspend_edit) {
             self.reload_config();
+            self.store.tasks = crate::maint::tasks::load(&self.remote.name);
             return;
         }
         if let Some((reads, to)) = self.suspend_reads.take() {

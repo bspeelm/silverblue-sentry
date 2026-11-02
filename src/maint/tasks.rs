@@ -4,6 +4,11 @@
 //! `tasks.toml` under [`super::root`]. Maintenance shows those that are due. Whether a task is
 //! done comes from the log (the workflow it runs ended well, or `d` logged it by hand), never
 //! from this file. Edit it freely.
+//!
+//! Recurring work the programs know about is a task too, without being written anywhere: this
+//! machine's jobs (`[jobs]` in config.toml, else their defaults) and a server's
+//! `maintenance.cadence`. A task in `tasks.toml` with the same id takes its place (`e` writes
+//! one; `off = true` turns it off).
 
 use std::path::PathBuf;
 
@@ -25,7 +30,8 @@ pub struct Task {
     /// Recurring: due again this long after it was last done. None: once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<Dur>,
-    /// `run <workflow>`, `plan <item>` (sentry-server), `audit`, or `by-hand`.
+    /// `run <workflow>`, `plan <item>` (sentry-server), `audit`, `job <name>` (this machine's
+    /// jobs; `job cleanup` is any cleanup), or `by-hand`.
     #[serde(rename = "do")]
     pub act: String,
     /// The server item it's about.
@@ -36,9 +42,37 @@ pub struct Task {
     pub steps: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added: Option<Timestamp>,
+    /// Turned off: it's never due (a built-in one you don't want).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
+    /// Where it comes from (not written: a task in the file is `File`).
+    #[serde(skip)]
+    pub source: Source,
     /// The review it came from (file name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
+}
+
+/// Where a task comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Source {
+    /// `tasks.toml`.
+    #[default]
+    File,
+    /// The config (`[jobs]`, `maintenance.cadence`).
+    Config,
+    /// Built in (a job's default cadence).
+    Default,
+}
+
+impl Source {
+    pub fn word(self) -> &'static str {
+        match self {
+            Source::File => "tasks.toml",
+            Source::Config => "config",
+            Source::Default => "built in",
+        }
+    }
 }
 
 /// What Enter does on a task.
@@ -47,6 +81,8 @@ pub enum Do {
     Run(String),
     Plan(String),
     Audit,
+    /// One of this machine's jobs (`cleanup`: any cleanup job, on the Cleanup screen).
+    Job(String),
     ByHand,
 }
 
@@ -56,6 +92,8 @@ impl Do {
         match s.split_once(char::is_whitespace) {
             Some(("run", wf)) if !wf.trim().is_empty() => Some(Do::Run(wf.trim().to_string())),
             Some(("plan", it)) if !it.trim().is_empty() => Some(Do::Plan(it.trim().to_string())),
+            Some(("job", "audit")) => Some(Do::Audit),
+            Some(("job", j)) if !j.trim().is_empty() => Some(Do::Job(j.trim().to_string())),
             None if s == "audit" => Some(Do::Audit),
             None if s == "by-hand" => Some(Do::ByHand),
             _ => None,
@@ -256,7 +294,9 @@ pub fn last_done(t: &Task, log: &[LogEntry], audited: Option<Timestamp>) -> Opti
                             && t.item.as_ref().is_none_or(|i| h.item.as_ref() == Some(i))
                     }
                     Do::Plan(it) => ok && h.item.as_ref() == Some(it),
-                    Do::Audit | Do::ByHand => false,
+                    Do::Job(j) => ok && h.kind == "job" && job_matches(j, &h.workflow),
+                    Do::Audit => ok && h.kind == "job" && h.workflow == "audit",
+                    Do::ByHand => false,
                 }
         })
         .filter_map(|e| e.head.ended.or(e.head.started))
@@ -265,8 +305,39 @@ pub fn last_done(t: &Task, log: &[LogEntry], audited: Option<Timestamp>) -> Opti
     from_log.max(audit)
 }
 
+/// A workflow run that ended well: tag it with the tasks it does (`task:<id>`), so the log
+/// says why they left the list. Every such task, due or not, so the tags are the same when
+/// the entry is written again with its note.
+pub fn tag_run(entry: &mut LogEntry, tasks: &[Task]) {
+    let h = &entry.head;
+    if h.result != "done" {
+        return;
+    }
+    let tags: Vec<String> = tasks
+        .iter()
+        .filter(|t| match t.action() {
+            Do::Run(wf) => {
+                wf == h.workflow && t.item.as_ref().is_none_or(|i| h.item.as_ref() == Some(i))
+            }
+            Do::Plan(it) => h.item.as_ref() == Some(&it),
+            _ => false,
+        })
+        .map(Task::key)
+        .filter(|k| !h.tags.contains(k))
+        .collect();
+    entry.head.tags.extend(tags);
+}
+
+/// A job task's name against a job that ran (`cleanup`: any cleanup job).
+fn job_matches(task: &str, ran: &str) -> bool {
+    task == ran || (task == "cleanup" && ran.starts_with("cleanup-"))
+}
+
 /// Whether it belongs on Maintenance now.
 pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestamp) -> bool {
+    if t.off {
+        return false;
+    }
     let last = last_done(t, log, audited);
     match t.every {
         None => match (last, t.added) {
@@ -320,6 +391,11 @@ pub fn recs(
         .filter(|t| due(t, log, audited, now))
         .map(|t| {
             let last = last_done(t, log, audited);
+            // Twice as long as it should be: it's not routine any more.
+            let late = t
+                .every
+                .zip(last)
+                .is_some_and(|(e, l)| now.as_second() - l.as_second() >= 2 * e.0.as_secs() as i64);
             let why = match (t.every, last) {
                 (Some(d), Some(l)) => format!(
                     "{} (every {d}; last done {})",
@@ -330,7 +406,11 @@ pub fn recs(
                 (None, _) => t.why.trim().to_string(),
             };
             TaskRec {
-                level: t.level,
+                level: if late {
+                    t.level.min(Level::Soon)
+                } else {
+                    t.level
+                },
                 key: t.key(),
                 title: t.title.clone(),
                 why: why.trim().to_string(),
@@ -345,6 +425,48 @@ pub fn recs(
 #[serde(default)]
 struct File {
     task: Vec<Task>,
+}
+
+/// The tasks that apply: `tasks.toml`'s, and the derived ones it doesn't replace.
+pub fn effective(file: &[Task], derived: Vec<Task>) -> Vec<Task> {
+    let mut v: Vec<Task> = derived
+        .into_iter()
+        .filter(|d| !file.iter().any(|f| f.id == d.id))
+        .collect();
+    v.extend(file.iter().cloned());
+    v
+}
+
+/// `x` on a task: one from the file goes; a derived one is turned off (written with
+/// `off = true`, so it stays off).
+pub fn remove_or_off(server: &str, t: &Task, file: &[Task]) -> anyhow::Result<bool> {
+    let derived = t.source != Source::File || file.iter().all(|f| f.id != t.id);
+    if derived {
+        add(
+            server,
+            Task {
+                off: true,
+                source: Source::File,
+                ..t.clone()
+            },
+        )?;
+    } else {
+        remove(server, &t.id)?;
+    }
+    Ok(derived)
+}
+
+/// `e` on a task: written to `tasks.toml` with its new cadence (`None`: off).
+pub fn set_every(server: &str, t: &Task, every: Option<Dur>) -> anyhow::Result<()> {
+    add(
+        server,
+        Task {
+            every: every.or(t.every),
+            off: every.is_none(),
+            source: Source::File,
+            ..t.clone()
+        },
+    )
 }
 
 pub fn path(server: &str) -> PathBuf {
@@ -365,8 +487,9 @@ pub fn save(server: &str, tasks: &[Task]) -> anyhow::Result<()> {
         std::fs::create_dir_all(d)?;
     }
     let text = format!(
-        "# Maintenance tasks you took from a review (a on the review view). Done is read from\n\
-         # the maintenance log; do = run <workflow> | plan <item> | audit | by-hand. Edit freely.\n\n{}",
+        "# Maintenance tasks: taken from a review (a on the review view), and built-in cadences\n\
+         # changed with e (or off = true). Done is read from the maintenance log;\n\
+         # do = run <workflow> | plan <item> | audit | job <name> | by-hand. Edit freely.\n\n{}",
         toml::to_string(&File {
             task: tasks.to_vec()
         })?
@@ -510,6 +633,8 @@ mod tests {
             steps: String::new(),
             added: Some(ts(added)),
             review: None,
+            off: false,
+            source: Default::default(),
         }
     }
 
@@ -603,5 +728,98 @@ mod tests {
             ids(keep(&tasks, &log, ts("2026-01-15T00:00:00Z"))),
             ["t", "e"]
         );
+    }
+
+    fn job_task(id: &str, act: &str, every: Option<u64>) -> Task {
+        Task {
+            id: id.into(),
+            title: id.into(),
+            why: String::new(),
+            level: Level::Routine,
+            every: every.map(|d| Dur::secs(d * 86400)),
+            act: act.into(),
+            item: None,
+            steps: String::new(),
+            added: None,
+            off: false,
+            source: Source::Default,
+            review: None,
+        }
+    }
+
+    fn job_run(name: &str, ok: bool, at: &str) -> LogEntry {
+        LogEntry::event("", "job", name, ok, "", &[], ts(at))
+    }
+
+    #[test]
+    fn job_tasks_are_done_by_their_jobs_and_overdue_twice_is_soon() {
+        assert_eq!(
+            Do::parse("job update-check"),
+            Some(Do::Job("update-check".into()))
+        );
+        assert_eq!(Do::parse("job audit"), Some(Do::Audit));
+        let now = ts("2026-11-02T00:00:00Z");
+        let clean = job_task("job-cleanup", "job cleanup", Some(30));
+        // Any cleanup job counts; a failed one doesn't.
+        let log = vec![
+            job_run("cleanup-podman", false, "2026-10-30T00:00:00Z"),
+            job_run("cleanup-ostree", true, "2026-10-20T00:00:00Z"),
+        ];
+        assert_eq!(
+            last_done(&clean, &log, None),
+            Some(ts("2026-10-20T00:00:00Z"))
+        );
+        assert!(!due(&clean, &log, None, now));
+        // Never done: due. Done 70 days ago with a 30-day cadence: due, and soon.
+        assert!(due(&clean, &[], None, now));
+        let old = vec![job_run("cleanup-ostree", true, "2026-08-24T00:00:00Z")];
+        let r = recs(std::slice::from_ref(&clean), &old, None, now);
+        assert_eq!(r[0].level, Level::Soon);
+        // Turned off: never due.
+        let off = Task { off: true, ..clean };
+        assert!(!due(&off, &[], None, now));
+    }
+
+    #[test]
+    fn the_file_replaces_a_derived_task_and_x_turns_a_derived_one_off() {
+        let derived = vec![
+            job_task("job-audit", "audit", Some(30)),
+            job_task("job-cleanup", "job cleanup", Some(30)),
+        ];
+        let mut mine = job_task("job-audit", "audit", Some(7));
+        mine.source = Source::File;
+        let all = effective(std::slice::from_ref(&mine), derived);
+        assert_eq!(all.len(), 2);
+        let audit = all.iter().find(|t| t.id == "job-audit").unwrap();
+        assert_eq!(audit.every, Some(Dur::secs(7 * 86400)));
+        // x on a derived one writes it with off = true.
+        let server = "x-turns-off";
+        let off = remove_or_off(server, &all[0], &[]).unwrap();
+        assert!(off);
+        let back = load(server);
+        assert!(back[0].off && back[0].id == "job-cleanup", "{back:?}");
+        // x on one from the file removes it.
+        assert!(!remove_or_off(server, &back[0], &back).unwrap());
+        assert!(load(server).is_empty());
+    }
+
+    #[test]
+    fn a_run_is_tagged_with_the_tasks_it_does() {
+        let tasks = vec![
+            job_task("weekly", "run quick-update", Some(7)),
+            job_task("other", "run something-else", None),
+        ];
+        let mut e = LogEntry::parse(
+            "+++\nworkflow = \"quick-update\"\nresult = \"done\"\ntags = [\"result:done\"]\n+++\n",
+        )
+        .unwrap();
+        tag_run(&mut e, &tasks);
+        tag_run(&mut e, &tasks);
+        assert_eq!(e.head.tags, ["result:done", "task:weekly"]);
+        let mut failed =
+            LogEntry::parse("+++\nworkflow = \"quick-update\"\nresult = \"failed\"\n+++\n")
+                .unwrap();
+        tag_run(&mut failed, &tasks);
+        assert!(failed.head.tags.is_empty());
     }
 }

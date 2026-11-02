@@ -178,6 +178,7 @@ impl Cleanup {
                     queue: cmds.collect(),
                     then,
                     ok_toast: format!("cleanup complete · ≈ {} reclaimed", fmt::bytes(total)),
+                    log: None,
                 })],
             )),
         })]

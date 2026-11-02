@@ -63,8 +63,9 @@ pub fn audit_run() -> Effect {
         title: "sentry job audit".into(),
         cmd: sentry_cmd(&["job", "audit"]),
         queue: Vec::new(),
-        then: vec![Fetch::Reports, Fetch::Jobs],
+        then: vec![Fetch::Reports, Fetch::Log],
         ok_toast: "audit complete".into(),
+        log: None,
     })
 }
 
@@ -190,12 +191,13 @@ pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
                     title: x.label.clone(),
                     cmd: Cmd::host("bash").args(["-c", cmd]).timeout(None),
                     queue,
-                    then: vec![Fetch::Reports, Fetch::Jobs],
+                    then: vec![Fetch::Reports, Fetch::Log],
                     ok_toast: if x.inspect {
                         "done".into()
                     } else {
                         "fixed · audited again".into()
                     },
+                    log: None,
                 })]
             }
             Act::Edit { path, line } => {

@@ -180,7 +180,11 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::server::remote::Remote) -> Ve
             None => Vec::new(),
         },
         (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't' | 'd') => super::maint::key(c, v),
-        (Tab::Maint, 'e') => vec![Effect::EditConfig],
+        // A task: where it's written; anything else: the config.
+        (Tab::Maint, 'e') => match super::maint::key(c, v) {
+            e if e.is_empty() => vec![Effect::EditConfig],
+            e => e,
+        },
         (Tab::Maint, 'R') => vec![Effect::ReviewOpen],
         (Tab::Maint, 'w') => vec![Effect::ChooseWorkflow],
         (Tab::Maint, 'v') => vec![Effect::LogOpen(

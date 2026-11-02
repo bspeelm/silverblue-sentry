@@ -50,6 +50,8 @@ pub struct Verbs {
     pub track: bool,
     /// `d` marks it done by hand (a task).
     pub done: bool,
+    /// `e` sets how often it recurs (a task).
+    pub every: bool,
     pub dismiss: Option<Dismiss>,
     /// `B`: everything like this finding is expected too.
     pub like: bool,
@@ -69,6 +71,9 @@ pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
     if v.done {
         h.push(("d", "done"));
     }
+    if v.every {
+        h.push(("e", "every"));
+    }
     if let Some(d) = v.dismiss {
         h.push(("x", d.word()));
     }
@@ -84,7 +89,14 @@ pub const GRAMMAR: &[(&str, &str)] = &[
     ("Enter", "do what the row says"),
     ("p / P", "plan it (Claude writes the plan) / plan again"),
     ("t", "track it (something discovery found)"),
-    ("d", "done by hand (a task): logged, with your note"),
+    (
+        "d",
+        "done by hand (a task): logged, then a note if you like",
+    ),
+    (
+        "e",
+        "how often a task recurs (30d, off); written to tasks.toml",
+    ),
     (
         "x",
         "expected (a finding) · ignore · untrack · remove (a task) · drop the plan; asks first",

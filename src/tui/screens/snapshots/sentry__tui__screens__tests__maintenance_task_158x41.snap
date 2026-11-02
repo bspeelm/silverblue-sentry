@@ -10,7 +10,7 @@ expression: body(&s)
 │ soon     Updates waiting: OS 44.20261023 The kernel changes: quick-update runs the │ │                                                                     │
 │ soon     Check the UPS battery           It is three years old. (every 90d; not do │ │ It is three years old. (every 90d; not done yet)                    │
 │                                                                                    │ │                                                                     │
-└────────────────────────────────────────────────────────────────────────────────────┘ │ A task you took from a review                                       │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ A task: Enter does it                                               │
 ┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │ z: look again later                                                 │
 │ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │                                                                     │
 │   version 44.20261002.0 · 2026-10-02                                               │ │ By hand: Enter shows the steps, then marks it done.                 │
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  do it   d  done   x  remove   z  later   c  check all   R  review   v  log   A  ask Claude   ?  help   q  quit           skipped update
+ j/k  select   Enter  do it   d  done   e  every   x  remove   z  later   c  check all   R  review   A  ask Claude   ?  help   q  quit         skipped update
