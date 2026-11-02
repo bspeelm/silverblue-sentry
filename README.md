@@ -141,23 +141,28 @@ Measured on the host: the open dashboard uses about 0.8% of one core including c
 
 Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/claude-code) about the selected thing: a finding, a listener, a process, a container, a Flatpak, a pending update, a cleanup item, a failed workflow step, or the dashboard as a whole. It uses the `claude` CLI and the login you already have, so there's no API key and nothing to configure. If `claude` isn't installed, `A` just says so.
 
-- **You see what's sent.** Before every question, a screen shows the exact text that will go to Anthropic. `y` sends it.
+- **You see what's sent.** A conversation opens showing the exact text that will go to Anthropic, with a line to add to it; nothing leaves before Enter. What you type later is sent as you typed it.
 - **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. It may also read your notes files (`[maintenance] notes`, or a server's `notes:`). Claude Code refuses anything else, including `sudo` and any writes, unless you grant it (below). The list is `ALLOWED` in `crates/sentry-core/src/claude.rs`.
-- **Granting files (`g`).** When Claude tries to read or edit a file it isn't allowed, the chat says so ("Claude asked to read … · g grants it"). `g` shows exactly which files, read or edit; `y` grants them for the rest of that conversation and tells Claude to carry on. Only that file is opened, by its exact path. Edits are only for files you own (anywhere, a work tree under `/var/mnt` too; never root's), never `~/.ssh`, `~/.gnupg`, keyrings or `~/.password-store`, and the file is backed up first (`~/.cache/sentry/claude/backups/`). After each answer, a file Claude changed shows in the chat ("✎ edited … · backup …") and goes in the maintenance log (`kind = "edit"`). What Claude reads is sent to Anthropic. Commands stay yours to run.
+- **Granting files (`g`).** When Claude tries to read or edit a file it isn't allowed, the chat says so ("Claude asked to read … · g grants it"). `g` shows exactly which files, read or edit; Enter grants them for the rest of that conversation and tells Claude to carry on. Only that file is opened, by its exact path. Edits are only for files you own (anywhere, a work tree under `/var/mnt` too; never root's), never `~/.ssh`, `~/.gnupg`, keyrings or `~/.password-store`, and the file is backed up first (`~/.cache/sentry/claude/backups/`). After each answer, a file Claude changed shows in the chat ("✎ edited … · backup …") and goes in the maintenance log (`kind = "edit"`). What Claude reads is sent to Anthropic. Commands stay yours to run.
 - **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
 
 ### Applying a recommendation or a plan with Claude (`A` → 1, both programs)
 
-`A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**. Applying, Claude is told what the row is about (the updates waiting and the deployments, the item's standing and its upstream, the task's steps, the plan written earlier, and the workflow that does it, step by step). It looks around read-only, then answers with **one plan**: exact steps, in order.
+`A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**; `Enter` on a task done by hand is **1** straight away. Applying is one session in one window, start to finish. You make two decisions, and the rest follows by itself:
 
-- **`edit`**: a file change, as the exact old text and its replacement (shown as a diff).
-- **`check`**: a command that must succeed (verification); a failing check stops the plan.
-- **`run`**: a command that changes something (sudo hands the terminal over for your password).
-- **`workflow`**: when one of sentry's workflows makes the change (quick-update, apt-maintenance, a compose bump): it's started with its own confirm steps, and the plan waits for its run to end.
+1. **Start (Enter).** The window shows what will be sent to Claude (the row: the updates waiting, the item's standing, the task's steps, the plan written earlier, the workflow that does it). Type anything Claude should also know, or just press Enter. Tab shows the whole brief.
+2. **Claude looks into it** read-only, then answers with **one plan**: exact steps, in order.
+   - **`edit`**: a file change, as the exact old text and its replacement (shown as a diff). Your own files anywhere, and root's configuration under /etc (written with your sudo; never sudoers, PAM or the password files). On a server, only files on this machine (the notes); the server's files change with `run` steps.
+   - **`check`**: a command that must succeed; a failing check stops the plan.
+   - **`run`**: a command that changes something.
+   - **`workflow`**: when one of sentry's workflows makes the change (quick-update, apt-maintenance, a compose bump): it's started with its own confirm steps, and the plan waits for its run to end.
 
-The chat shows the plan, numbered, with its diffs, and nothing runs. **`a`** opens it whole, and **`y`** approves it once: sentry backs up every file it edits, then carries the steps out in order, each one's result in the chat (✓ / ✗). A plan that can't be applied as it is (an edit whose old text isn't in the file, a file that isn't yours, a workflow that doesn't exist) is marked in red, and `a` isn't offered; `s` sends Claude what's wrong, and it answers with a corrected plan. When the plan has run, or stopped at a failed step, the report is ready for Claude (`s`): what happened, and on a failure the steps already done, so Claude can send a plan for the rest. The run is one entry in the maintenance log (`kind = "apply"`, tagged with the row and every file edited, backups listed). To change the plan before approving it, just say so (Enter); Claude answers with a new one.
+   A plan sentry can't use as written (old text that isn't in the file, a file it may not edit, a workflow that doesn't exist) goes back to Claude by itself for a corrected one (twice at most; then it's yours to tell Claude what to do).
+3. **Approve (Enter).** The plan on screen is what runs; typing instead asks Claude for a change. If a step needs sudo and sudo asks for a password, it's asked once, inline (masked), checked with sudo, and fed to each sudo step on stdin: never in a command line, a file or the log, and forgotten when the session ends.
+4. **sentry carries it out**, step by step, each step's output under it as it runs. Every edited file is backed up first (`~/.cache/sentry/claude/backups/`). A step that fails stops the plan and goes back to Claude by itself, with its output, for a plan for the rest. `C-c` stops a step (nothing is sent). A workflow step shows how its run is doing; when it needs you, Enter opens it, and the session comes back when the run ends.
+5. **Claude checks the result** (sent by itself once the last step is done) and gives a verdict: **done** (the task is marked done), **more** (with a plan for what's left: approve it the same way), or **not done**. What to do later (reboot to confirm, say) is said in words, never as commands.
 
-- **A task, or a plan done by hand**: `d` in the chat marks it done, as on Maintenance.
+The window's top line says where it stands (`brief › investigate › plan › apply › verify › done`) and the key bar shows only what makes sense now. Esc hides a session that's working (`A` brings it back) and closes one that's done. Everything that ran is one entry in the maintenance log (`kind = "apply"`, tagged with the row, every file edited and, when done, the task; backups and how to undo it listed).
 
 ### Fixing a finding with Claude (`Enter` on a finding)
 
@@ -167,7 +172,7 @@ The chat shows the plan, numbered, with its diffs, and nothing runs. **`a`** ope
   - `sudo` commands hand over the terminal so you type your own password.
   - Other commands stream into the chat.
   - Commands that change something are followed by a re-audit, and the chat says whether the finding is gone.
-- **The output stays with you** until you press `s`, which shows the follow-up ("I ran X, exit N, output…") before sending it.
+- **The output stays with you** until you press `s`, which sends it ("I ran X, exit N, output…").
 - **`C` continues in Claude Code.** It opens the same conversation as an interactive `claude` session in this terminal. Read-only commands are pre-allowed and sudo and file edits stay off; Claude Code asks you before anything else. Quit it to return to sentry, which audits again.
 
 ### Fixing a failed workflow step (`f` on Upgrade)

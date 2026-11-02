@@ -20,6 +20,10 @@ pub enum Kind {
     ToolErr,
     Info,
     Err,
+    /// A good outcome (green).
+    Good,
+    /// Where an apply session's plan goes (the text is its index); drawn by the session.
+    Plan,
 }
 
 /// A command sentry runs on the user's behalf from inside the chat (not Claude).
@@ -85,12 +89,10 @@ pub struct Chat {
     pub grants: Vec<crate::claude::Grant>,
     /// Files Claude may write: path, its hash when last seen, its backup.
     pub watched: Vec<(String, u64, std::path::PathBuf)>,
-    /// An apply chat's plan (from Claude's latest answer), proposed or being carried out.
-    pub apply_run: Option<crate::applyplan::Run>,
-    /// What stops the plan from being approved (set by the app, which knows the workflows).
-    pub plan_problems: Vec<(usize, String)>,
-    /// The plan step whose command is running (its end advances the plan).
-    pub plan_step: Option<usize>,
+    /// Not sent yet: the brief is shown, and Enter sends it (with what's typed, if anything).
+    pub pending: bool,
+    /// What Claude may do with what's sent (shown under the brief).
+    pub privacy: String,
 }
 
 /// A file's contents, hashed (0: it doesn't exist).
@@ -131,231 +133,9 @@ impl Chat {
             requests: Vec::new(),
             grants: Vec::new(),
             watched: Vec::new(),
-            apply_run: None,
-            plan_problems: Vec::new(),
-            plan_step: None,
+            pending: false,
+            privacy: crate::claude::allowlist_summary(),
         }
-    }
-
-    /// What stops the plan, found after Claude's turn. Any: `s` sends them back for a
-    /// corrected plan (the plan says it can't be applied; `a` isn't offered).
-    pub fn set_plan_problems(&mut self, problems: Vec<(usize, String)>) {
-        if !problems.is_empty()
-            && let Some(r) = &self.apply_run
-        {
-            let list: Vec<String> = problems
-                .iter()
-                .map(|(i, why)| {
-                    let title = r.plan.steps.get(*i).map(|s| s.title.as_str()).unwrap_or("");
-                    format!("- step {} ({title}): {why}", i + 1)
-                })
-                .collect();
-            self.offer = Some(format!(
-                "sentry can't apply your plan as it is:\n{}\n\nSend the whole plan again, fixed \
-                 (the same sentry-apply block, the steps that were fine included).",
-                list.join("\n")
-            ));
-        }
-        self.plan_problems = problems;
-    }
-
-    /// `a` is offered: a plan is shown, not started, and nothing stops it.
-    pub fn can_apply(&self) -> bool {
-        self.apply_run
-            .as_ref()
-            .is_some_and(|r| r.state == crate::applyplan::RunState::Proposed)
-            && self.plan_problems.is_empty()
-    }
-
-    /// An apply chat's latest answer: its plan block taken out of the text (shown as the
-    /// plan instead), the proposals cleared (the plan is what runs).
-    fn take_plan(&mut self) {
-        if self.ask.applying().is_none() {
-            return;
-        }
-        let Some(i) = self.entries.iter().rposition(|(k, _)| *k == Kind::Claude) else {
-            return;
-        };
-        if self.entries[i + 1..].iter().any(|(k, _)| *k == Kind::You) {
-            return;
-        }
-        let (body, plan) = crate::applyplan::take(&self.entries[i].1);
-        match plan {
-            None => {}
-            Some(Ok(p)) => {
-                self.entries[i].1 = body;
-                // A new plan replaces one not started, or one that stopped.
-                if self
-                    .apply_run
-                    .as_ref()
-                    .is_none_or(|r| r.state == crate::applyplan::RunState::Proposed || r.finished())
-                {
-                    self.apply_run = Some(crate::applyplan::Run::new(p));
-                    self.plan_problems.clear();
-                }
-                self.proposals.clear();
-            }
-            Some(Err(why)) => {
-                self.entries[i].1 = body;
-                self.proposals.clear();
-                self.push(Kind::Err, format!("the plan block didn't parse: {why}"));
-                self.offer = Some(format!(
-                    "Your sentry-apply block didn't parse: {why}. Send the plan again, fixed."
-                ));
-            }
-        }
-    }
-
-    /// The plan, under the answer: each step with its state, an edit's first changed lines.
-    fn plan_lines(&self, t: &Theme, w: usize) -> Vec<Line<'static>> {
-        use crate::applyplan::{Kind as K, RunState};
-        let Some(r) = &self.apply_run else {
-            return Vec::new();
-        };
-        let head = match r.state {
-            RunState::Proposed if self.plan_problems.is_empty() => "a applies it",
-            RunState::Proposed => "can't be applied as it is · s sends Claude why",
-            RunState::Running => "applying…",
-            RunState::WaitingWorkflow(_) => "waiting for its workflow",
-            RunState::Done => "applied",
-            RunState::Failed(_) => "stopped",
-        };
-        let mut l = vec![Line::styled(
-            widgets::trunc(
-                &format!("       Plan: {} · {head}", r.plan.summary),
-                w.saturating_sub(1).max(10),
-            ),
-            t.s(t.yellow),
-        )];
-        for (i, s) in r.plan.steps.iter().enumerate() {
-            let (glyph, color) = match (r.results.get(i), r.state) {
-                (Some(x), _) if x.ok => ("✓", t.green),
-                (Some(_), _) => ("✗", t.red),
-                (None, RunState::WaitingWorkflow(k)) if k == i => ("⏸", t.yellow),
-                (None, RunState::Running) if i == r.current() => ("▶", t.cyan),
-                _ => ("○", t.dim),
-            };
-            l.push(Line::from(vec![
-                Span::styled(format!("     {glyph} "), t.s(color)),
-                Span::styled(
-                    widgets::trunc(
-                        &format!("{}. {}", i + 1, s.title),
-                        w.saturating_sub(8).max(10),
-                    ),
-                    t.fg(),
-                ),
-            ]));
-            let target = |x: &str| widgets::trunc(x, w.saturating_sub(11).max(10));
-            match &s.kind {
-                K::Edit { file, old, new } => {
-                    l.push(Line::styled(
-                        format!("         edit {}", target(file)),
-                        t.dim(),
-                    ));
-                    for x in old.lines().take(2) {
-                        l.push(Line::styled(
-                            format!("         - {}", target(x)),
-                            t.s(t.red),
-                        ));
-                    }
-                    for x in new.lines().take(2) {
-                        l.push(Line::styled(
-                            format!("         + {}", target(x)),
-                            t.s(t.green),
-                        ));
-                    }
-                }
-                K::Run(c) | K::Check(c) => {
-                    let c1 = c.lines().next().unwrap_or("");
-                    let color = if crate::claude::risky(c).is_some() {
-                        t.red
-                    } else {
-                        t.cyan
-                    };
-                    l.push(Line::styled(
-                        format!("         {} {}", s.kind.word(), target(c1)),
-                        t.s(color),
-                    ));
-                }
-                K::Workflow(wf) => {
-                    l.push(Line::styled(format!("         workflow {wf}"), t.s(t.cyan)));
-                }
-            }
-            for (_, why) in self.plan_problems.iter().filter(|(k, _)| *k == i) {
-                l.push(Line::styled(
-                    format!("         ✗ {}", target(why)),
-                    t.s(t.red),
-                ));
-            }
-            if let Some(x) = r.results.get(i) {
-                let first = x.note.lines().next().unwrap_or("");
-                l.push(Line::styled(
-                    format!("         → {}", target(first)),
-                    t.dim(),
-                ));
-            }
-        }
-        l
-    }
-
-    /// The box `a` opens: the whole plan, approved at once.
-    pub fn approval_lines(&self, t: &Theme) -> Vec<Line<'static>> {
-        use crate::applyplan::Kind as K;
-        let Some(r) = &self.apply_run else {
-            return Vec::new();
-        };
-        let mut l = vec![Line::styled(r.plan.summary.clone(), t.fg()), Line::raw("")];
-        for (i, s) in r.plan.steps.iter().enumerate() {
-            l.push(Line::styled(format!("{}. {}", i + 1, s.title), t.fg()));
-            match &s.kind {
-                K::Edit { file, old, new } => {
-                    l.push(Line::styled(format!("   edit {file}"), t.dim()));
-                    for x in old.lines().take(4) {
-                        l.push(Line::styled(format!("   - {x}"), t.s(t.red)));
-                    }
-                    for x in new.lines().take(4) {
-                        l.push(Line::styled(format!("   + {x}"), t.s(t.green)));
-                    }
-                }
-                K::Run(c) | K::Check(c) => {
-                    for (j, x) in c.lines().enumerate() {
-                        let w = if j == 0 { s.kind.word() } else { "" };
-                        l.push(Line::styled(
-                            format!("   {w:<5} $ {x}"),
-                            t.s(if crate::claude::risky(c).is_some() {
-                                t.red
-                            } else {
-                                t.cyan
-                            }),
-                        ));
-                    }
-                    if c.contains("sudo") {
-                        l.push(Line::styled(
-                            "   needs sudo: the terminal is handed over for your password",
-                            t.dim(),
-                        ));
-                    }
-                }
-                K::Workflow(wf) => {
-                    l.push(Line::styled(
-                        format!("   workflow {wf} (its own confirm steps)"),
-                        t.s(t.cyan),
-                    ));
-                }
-            }
-        }
-        l.push(Line::raw(""));
-        l.push(Line::styled(
-            "Files are backed up first. The steps run in order; one that fails stops the rest.",
-            t.dim(),
-        ));
-        if !r.plan.rollback.trim().is_empty() {
-            l.push(Line::styled(
-                format!("To undo: {}", r.plan.rollback.trim()),
-                t.dim(),
-            ));
-        }
-        l
     }
 
     /// The box `g` opens: what Claude asked for, what's granted, what isn't and why.
@@ -541,6 +321,12 @@ impl Chat {
 
     pub fn begin_turn(&mut self, question: &str, id: u64, pid: u32) {
         self.push(Kind::You, question);
+        self.begin_quiet(id, pid);
+    }
+
+    /// A turn sentry sent by itself (its own line is already in the transcript).
+    pub fn begin_quiet(&mut self, id: u64, pid: u32) {
+        self.pending = false;
         self.live = Some((id, pid));
         self.started = Some(Instant::now());
         self.got_done = false;
@@ -614,7 +400,6 @@ impl Chat {
             self.push(Kind::Err, format!("claude exited with {code}"));
         }
         self.refresh_proposals();
-        self.take_plan();
         if !self.requests.is_empty() {
             let what: Vec<String> = self
                 .requests
@@ -671,59 +456,9 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     ])
     .areas(inner);
     let w = log.width as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    for (kind, text) in &c.entries {
-        let (label, style) = match kind {
-            Kind::You => ("you    ", t.s(t.cyan)),
-            Kind::Claude => ("claude ", t.fg()),
-            Kind::Tool => ("       ", t.dim()),
-            Kind::ToolErr => ("       ", t.s(t.yellow)),
-            Kind::Info => ("       ", t.dim()),
-            Kind::Err => ("error  ", t.s(t.red)),
-        };
-        let mut first = true;
-        let mut code = false;
-        for para in text.split('\n') {
-            // Light markdown: code fences become plain indented commands, **bold** loses its stars.
-            if *kind == Kind::Claude && para.trim_start().starts_with("```") {
-                code = !code;
-                continue;
-            }
-            let (body, st) = if code {
-                (format!("  {para}"), t.s(t.cyan))
-            } else if *kind == Kind::Claude {
-                (para.replace("**", ""), style)
-            } else {
-                (para.to_string(), style)
-            };
-            let wrapped = wrap(&body, w.saturating_sub(7).max(10));
-            let wrapped = if wrapped.is_empty() {
-                vec![String::new()]
-            } else if code {
-                // Keep code on one line (truncated) so it can be copied as-is.
-                vec![widgets::trunc(&body, w.saturating_sub(7).max(10))]
-            } else {
-                wrapped
-            };
-            for l in wrapped {
-                let lab = if first { label } else { "       " };
-                first = false;
-                lines.push(Line::from(vec![
-                    Span::styled(lab.to_string(), t.s(t.mag)),
-                    Span::styled(l, st),
-                ]));
-            }
-        }
-        if matches!(kind, Kind::Claude | Kind::Err) {
-            lines.push(Line::raw(""));
-        }
-    }
-    if !c.running() {
-        let plan = c.plan_lines(t, w);
-        if !plan.is_empty() {
-            lines.extend(plan);
-            lines.push(Line::raw(""));
-        }
+    let mut lines = entry_lines(c, t, w, false, &|_| Vec::new());
+    if c.pending {
+        lines.extend(brief_lines(c, t, w, false));
     }
     if !c.proposals.is_empty() && !c.running() {
         lines.push(Line::styled(
@@ -773,11 +508,6 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
             Job::Audit { .. } => "       … auditing again",
         };
         lines.push(Line::styled(what, t.dim()));
-    } else if c.offer.is_some() {
-        lines.push(Line::styled(
-            "       Press s to send this output to Claude (shown first), or ask your own follow-up.",
-            t.s(t.yellow),
-        ));
     }
     if c.running() {
         let s = c.started.map_or(0, |s| s.elapsed().as_secs());
@@ -786,19 +516,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
             t.dim(),
         ));
     }
-    let h = log.height as usize;
-    // Scrolled up while lines arrive: move by as many, so the view holds still. Never past
-    // the top.
-    let total = lines.len();
-    if c.scroll > 0 && c.drawn.get() > 0 {
-        c.grown
-            .set(c.grown.get() + total.saturating_sub(c.drawn.get()));
-    }
-    c.drawn.set(total);
-    let scroll = c.offset().min(total.saturating_sub(h));
-    let end = total.saturating_sub(scroll);
-    let start = end.saturating_sub(h);
-    f.render_widget(Paragraph::new(lines[start..end].to_vec()), log);
+    show_scrolled(f, log, c, lines);
     f.render_widget(
         Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.rule)),
         rule,
@@ -829,8 +547,146 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     f.render_widget(Paragraph::new(Line::from(spans)), keyline);
 }
 
+/// The transcript as lines, `w` wide. `fold`: Claude's read-only commands fold to one line
+/// per run of them; `plan`: the lines a `Kind::Plan` entry stands for.
+pub fn entry_lines(
+    c: &Chat,
+    t: &Theme,
+    w: usize,
+    fold: bool,
+    plan: &dyn Fn(usize) -> Vec<Line<'static>>,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut i = 0;
+    while i < c.entries.len() {
+        let (kind, text) = &c.entries[i];
+        if *kind == Kind::Plan {
+            lines.extend(plan(text.parse().unwrap_or(0)));
+            i += 1;
+            continue;
+        }
+        if fold && matches!(kind, Kind::Tool | Kind::ToolErr) {
+            let n = c.entries[i..]
+                .iter()
+                .take_while(|(k, _)| matches!(k, Kind::Tool | Kind::ToolErr))
+                .count();
+            let cmds = c.entries[i..i + n]
+                .iter()
+                .filter(|(_, t)| !t.starts_with("  → "))
+                .count();
+            lines.push(Line::styled(
+                format!(
+                    "       looked around: {cmds} read-only command{}",
+                    if cmds == 1 { "" } else { "s" }
+                ),
+                t.dim(),
+            ));
+            i += n;
+            continue;
+        }
+        let (label, style) = match kind {
+            Kind::You => ("you    ", t.s(t.cyan)),
+            Kind::Claude => ("claude ", t.fg()),
+            Kind::Tool => ("       ", t.dim()),
+            Kind::ToolErr => ("       ", t.s(t.yellow)),
+            Kind::Info => ("       ", t.dim()),
+            Kind::Err => ("error  ", t.s(t.red)),
+            Kind::Good => ("       ", t.s(t.green)),
+            Kind::Plan => ("       ", t.dim()),
+        };
+        let mut first = true;
+        let mut code = false;
+        for para in text.split('\n') {
+            // Light markdown: code fences become plain indented commands, **bold** loses its stars.
+            if *kind == Kind::Claude && para.trim_start().starts_with("```") {
+                code = !code;
+                continue;
+            }
+            let (body, st) = if code {
+                (format!("  {para}"), t.s(t.cyan))
+            } else if *kind == Kind::Claude {
+                (para.replace("**", ""), style)
+            } else {
+                (para.to_string(), style)
+            };
+            let wrapped = wrap(&body, w.saturating_sub(7).max(10));
+            let wrapped = if wrapped.is_empty() {
+                vec![String::new()]
+            } else if code {
+                // Keep code on one line (truncated) so it can be copied as-is.
+                vec![widgets::trunc(&body, w.saturating_sub(7).max(10))]
+            } else {
+                wrapped
+            };
+            for l in wrapped {
+                let lab = if first { label } else { "       " };
+                first = false;
+                lines.push(Line::from(vec![
+                    Span::styled(lab.to_string(), t.s(t.mag)),
+                    Span::styled(l, st),
+                ]));
+            }
+        }
+        if matches!(kind, Kind::Claude | Kind::Err) {
+            lines.push(Line::raw(""));
+        }
+        i += 1;
+    }
+    lines
+}
+
+/// What's sent first: the brief (folded to its first lines unless `open`), and what Claude
+/// may do with it.
+pub fn brief_lines(c: &Chat, t: &Theme, w: usize, open: bool) -> Vec<Line<'static>> {
+    let all: Vec<&str> = c.ask.context.lines().collect();
+    let shown = if open { all.len() } else { all.len().min(4) };
+    let mut l = vec![Line::styled(
+        format!(
+            "       Sent to Claude through your Claude Code login (Anthropic){}:",
+            if all.len() > shown {
+                format!(" · {} lines · Tab shows all", all.len())
+            } else {
+                String::new()
+            }
+        ),
+        t.s(t.yellow),
+    )];
+    for x in &all[..shown] {
+        for y in wrap(x, w.saturating_sub(9).max(10)) {
+            l.push(Line::styled(format!("         {y}"), t.dim()));
+        }
+    }
+    if all.len() > shown {
+        l.push(Line::styled("         …", t.dim()));
+    }
+    for y in wrap(&c.privacy, w.saturating_sub(7).max(10)) {
+        l.push(Line::styled(format!("       {y}"), t.dim()));
+    }
+    l.push(Line::raw(""));
+    l
+}
+
+/// Draw `lines` into `log`, at the chat's scroll position. Scrolled up while lines arrive:
+/// move by as many, so the view holds still. Never past the top.
+pub fn show_scrolled(f: &mut Frame, log: Rect, c: &Chat, lines: Vec<Line<'static>>) {
+    let h = log.height as usize;
+    let total = lines.len();
+    if c.scroll > 0 && c.drawn.get() > 0 {
+        c.grown
+            .set(c.grown.get() + total.saturating_sub(c.drawn.get()));
+    }
+    c.drawn.set(total);
+    let scroll = c.offset().min(total.saturating_sub(h));
+    let end = total.saturating_sub(scroll);
+    let start = end.saturating_sub(h);
+    f.render_widget(Paragraph::new(lines[start..end].to_vec()), log);
+}
+
 /// The key line: letters act only while the input line is empty (otherwise they're typed).
 pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
+    if c.pending {
+        return vec![("Enter", "send"), ("Esc", "cancel")];
+    }
     let mut k = vec![("Enter", "follow-up")];
     let idle = c.input.is_empty() && !c.busy();
     if idle && !c.proposals.is_empty() {
@@ -849,20 +705,8 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
             },
         ));
     }
-    if idle && c.can_apply() {
-        k.push(("a", "apply the plan"));
-    }
     if idle && !c.requests.is_empty() {
         k.push(("g", "grant files"));
-    }
-    // Applying something: start its workflow, or mark it done.
-    if let Some(a) = c.ask.applying().filter(|_| idle) {
-        if a.workflow.is_some() {
-            k.push(("w", "start the workflow"));
-        }
-        if a.can_mark_done() {
-            k.push(("d", "mark it done"));
-        }
     }
     if idle && c.session.is_some() {
         k.push(("C", "continue in Claude Code"));
@@ -1009,31 +853,19 @@ mod tests {
     }
 
     #[test]
-    fn an_apply_chat_offers_its_workflow_or_done() {
+    fn the_apply_question_asks_for_one_plan() {
         use crate::claude::{Apply, Ask};
         let wf = Apply {
             key: "updates".into(),
             workflow: Some("quick-update".into()),
             ..Default::default()
         };
-        let c = Chat::new(Ask::apply("updates", "ctx", wf));
+        let p = Ask::apply("updates", "ctx", wf).prompt();
         assert!(
-            c.ask.prompt().contains("```sentry-apply")
-                && c.ask.prompt().contains("never its commands"),
-            "{}",
-            c.ask.prompt()
+            p.contains("```sentry-apply") && p.contains("never its commands"),
+            "{p}"
         );
-        assert!(keys(&c).iter().any(|(k, _)| *k == "w"));
-        assert!(!keys(&c).iter().any(|(k, _)| *k == "d"));
-        let task = Apply {
-            key: "task:ups".into(),
-            task: Some("ups".into()),
-            ..Default::default()
-        };
-        let c = Chat::new(Ask::apply("ups", "ctx", task));
-        assert!(c.ask.prompt().contains("(`d`)") && !c.ask.prompt().contains("workflow = "));
-        assert!(keys(&c).iter().any(|(k, _)| *k == "d"));
-        assert!(!keys(&c).iter().any(|(k, _)| *k == "w"));
+        assert!(p.contains("root's configuration under /etc"), "{p}");
     }
 
     #[test]

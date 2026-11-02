@@ -5,6 +5,7 @@
 //! streamed commands send `Event`s over the same channel. There is no ticker thread: the loop
 //! sleeps until the active screen's next refresh is due, so idle screens cost ~nothing.
 
+pub mod applyview;
 pub mod chat;
 pub mod docview;
 pub mod keys;

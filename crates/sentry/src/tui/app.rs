@@ -49,9 +49,8 @@ pub enum Effect {
     /// Ask for a line of input in the key bar (initial text).
     Prompt(Prompt, String),
     Wf(WfCmd),
-    /// Send a turn to Claude: the first question, or a follow-up in the open chat.
-    AskSend(AskTurn),
-    /// Show what an ask would send (the consent modal), e.g. `f` on an audit finding.
+    /// Open a conversation with Claude showing what it would send (nothing sent until Enter),
+    /// e.g. `f` on an audit finding; applying something opens an apply session.
     AskConsent(crate::claude::Ask),
     /// Run one of Claude's proposed commands for the open chat (after its confirm modal).
     ChatRun(crate::claude::Proposed),
@@ -96,8 +95,6 @@ pub enum Effect {
     LogEvent(Box<crate::maint::log::LogEntry>),
     /// Grant the files Claude asked for, then tell it (the next turn).
     ChatGrant,
-    /// The plan was approved: carry it out.
-    ApplyStart,
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -144,12 +141,6 @@ impl Prompt {
             }
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum AskTurn {
-    First(crate::claude::Ask),
-    Follow(String),
 }
 
 /// A numbered choice between actions (fix options).
@@ -276,6 +267,10 @@ pub struct App {
     wf: Option<Session>,
     suspend_for: Option<SuspendFor>,
     chat: Option<super::chat::Chat>,
+    /// Applying something with Claude: the one session, start to finish.
+    apply: Option<crate::apply::session::Session>,
+    /// sudo's check for the session running (stream id; true: the password's check).
+    apply_aux: Option<(u64, bool)>,
     choice: Option<Choice>,
     /// Effects to apply once a suspended command returns.
     suspend_then: Vec<Effect>,
@@ -342,6 +337,8 @@ impl App {
             wf: Session::resume(),
             suspend_for: None,
             chat: None,
+            apply: None,
+            apply_aux: None,
             choice: None,
             suspend_then: Vec::new(),
             suspend_banner: None,
@@ -372,25 +369,75 @@ impl App {
         self.apply(e, Instant::now());
     }
 
-    /// Tests: the question in the consent box, if one is open.
+    /// Tests: what the conversation just opened would send (a chat or an apply session,
+    /// not sent yet).
     #[cfg(test)]
     pub fn consent_text(&self) -> Option<String> {
-        match self.modal.as_ref()?.yes.as_ref()?.1.first()? {
-            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
-            _ => None,
+        if let Some(s) = self
+            .apply
+            .as_ref()
+            .filter(|s| s.phase == crate::apply::session::Phase::Brief)
+        {
+            return Some(s.chat.ask.prompt());
         }
+        self.chat
+            .as_ref()
+            .filter(|c| c.pending)
+            .map(|c| c.ask.prompt())
     }
 
-    /// Tests: the chat, open or hidden.
+    /// Tests: the apply session.
     #[cfg(test)]
-    pub fn chat_for_test(&self) -> Option<&super::chat::Chat> {
-        self.chat.as_ref()
+    pub fn apply_session(&mut self) -> Option<&mut crate::apply::session::Session> {
+        self.apply.as_mut()
     }
 
-    /// Tests: a proposal ran in the chat (what `on_run_msg` does when it exits).
+    /// Tests: Claude's answer to the apply session's turn (nothing was sent).
     #[cfg(test)]
-    pub fn chat_done_for_test(&mut self, cmd: &str, code: i32, output: &str) {
-        self.chat_done(cmd.into(), code, output.into(), false);
+    pub fn apply_answer_for_test(&mut self, text: &str) {
+        let Some(id) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.0)) else {
+            panic!("no turn running");
+        };
+        let line = serde_json::json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
+        })
+        .to_string();
+        self.on_run_msg(
+            id,
+            StreamMsg::Line {
+                stderr: false,
+                text: line,
+            },
+        );
+        self.on_run_msg(
+            id,
+            StreamMsg::Exit {
+                code: 0,
+                elapsed: Duration::ZERO,
+            },
+        );
+    }
+
+    /// Tests: a workflow run ended with this log entry.
+    #[cfg(test)]
+    pub fn run_ended_for_test(&mut self, e: &crate::maint::log::LogEntry) {
+        self.apply_run_ended(e);
+    }
+
+    /// Tests: the apply session's running step ended (nothing ran).
+    #[cfg(test)]
+    pub fn apply_step_exit_for_test(&mut self, code: i32) {
+        let Some(id) = self.apply.as_ref().and_then(|s| s.job.map(|j| j.0)) else {
+            panic!("no step running");
+        };
+        self.on_run_msg(
+            id,
+            StreamMsg::Exit {
+                code,
+                elapsed: Duration::ZERO,
+            },
+        );
     }
 
     /// Tests: the maintenance log as loaded.
@@ -486,6 +533,8 @@ impl App {
             wf: None,
             suspend_for: None,
             chat: None,
+            apply: None,
+            apply_aux: None,
             choice: None,
             suspend_then: Vec::new(),
             suspend_banner: None,
@@ -733,6 +782,10 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.apply_stream(id, &msg) {
+            self.dirty = true;
+            return;
+        }
         if let Some(c) = self.chat.as_mut()
             && c.live.is_some_and(|(cid, _)| cid == id)
         {
@@ -752,7 +805,6 @@ impl App {
                         self.toast("Claude answered · A opens the chat");
                     }
                     self.chat_edits();
-                    self.chat_plan_check();
                 }
             }
             self.dirty = true;
@@ -911,6 +963,11 @@ impl App {
             }
             return;
         }
+        if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
+            let fx = s.key(k);
+            self.apply_fx(fx, now);
+            return;
+        }
         if self.chat.as_ref().is_some_and(|c| !c.hidden) {
             self.chat_key(k, now);
             return;
@@ -1043,6 +1100,10 @@ impl App {
 
     /// `A`: build the selected thing's question and show exactly what would be sent.
     fn ask(&mut self) {
+        if let Some(s) = self.apply.as_mut().filter(|s| s.chat.hidden) {
+            s.chat.hidden = false;
+            return;
+        }
         if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
             c.hidden = false;
             return;
@@ -1073,12 +1134,22 @@ impl App {
         }
     }
 
+    /// Open the conversation, nothing sent yet: an apply session, or a chat, showing the
+    /// brief; Enter sends it.
     fn ask_consent(&mut self, ask: crate::claude::Ask) {
-        self.modal = Some(consent_modal(
-            &self.theme,
-            &ask.prompt(),
-            AskTurn::First(ask),
-        ));
+        if ask.applying().is_some() {
+            if let Some(pid) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.1)) {
+                let _ = kill(pid);
+            }
+            self.apply = Some(crate::apply::session::Session::new(ask));
+            return;
+        }
+        if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
+            let _ = kill(pid);
+        }
+        let mut c = super::chat::Chat::new(ask);
+        c.pending = true;
+        self.chat = Some(c);
     }
 
     fn chat_key(&mut self, k: KeyEvent, now: Instant) {
@@ -1093,6 +1164,29 @@ impl App {
                 let reaudit = c.ask.finding().is_some();
                 let note = workflow_note(self.wf.is_some(), &c.ask);
                 self.modal = Some(run_proposal_modal(&self.theme, p, note, reaudit));
+            }
+            return;
+        }
+        if c.pending {
+            match k.code {
+                KeyCode::Esc => self.chat = None,
+                KeyCode::Enter => {
+                    let note = std::mem::take(&mut c.input);
+                    let mut prompt = c.ask.prompt();
+                    let shown = match note.trim() {
+                        "" => first_sentence(&c.ask),
+                        n => {
+                            prompt.push_str(&format!("\n\nFrom me: {n}"));
+                            n.to_string()
+                        }
+                    };
+                    self.chat_turn(prompt, shown, false);
+                }
+                KeyCode::Backspace => {
+                    c.input.pop();
+                }
+                KeyCode::Char(ch) if !ctrl => c.input.push(ch),
+                _ => {}
             }
             return;
         }
@@ -1130,22 +1224,7 @@ impl App {
             }
             KeyCode::Char('s') if idle && c.offer.is_some() => {
                 let text = c.offer.take().unwrap_or_default();
-                self.modal = Some(consent_modal(
-                    &self.theme,
-                    &text,
-                    AskTurn::Follow(text.clone()),
-                ));
-            }
-            // Claude's plan: shown whole, approved once, then sentry carries it out.
-            KeyCode::Char('a') if idle && c.can_apply() => {
-                let t = self.theme;
-                let lines = c.approval_lines(&t);
-                self.modal = Some(Modal {
-                    title: "Apply the plan".into(),
-                    color: t.yellow,
-                    lines,
-                    yes: Some(("apply".into(), vec![Effect::ApplyStart])),
-                });
+                self.ask_turn(text);
             }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
@@ -1157,23 +1236,6 @@ impl App {
                     lines,
                     yes: Some(("grant".into(), vec![Effect::ChatGrant])),
                 });
-            }
-            // Applying something: start its workflow (the chat steps aside), or mark it done.
-            KeyCode::Char('w')
-                if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
-            {
-                let wf = c.ask.applying().and_then(|a| a.workflow.clone());
-                c.hidden = true;
-                self.toast("A brings Claude back; it hears how the run goes when you send it (s)");
-                if let Some(wf) = wf {
-                    self.apply(vec![Effect::StartWorkflow(wf)], now);
-                }
-            }
-            KeyCode::Char('d') if idle && c.ask.applying().is_some_and(|a| a.can_mark_done()) => {
-                if let Some(id) = c.ask.applying().and_then(|a| a.task.clone()) {
-                    c.hidden = true;
-                    self.task_done(&id);
-                }
             }
             KeyCode::Char('C') if idle && c.session.is_some() => {
                 let session = c.session.clone().unwrap_or_default();
@@ -1207,13 +1269,10 @@ impl App {
                     self.toast("Claude carries on · A brings the chat back");
                 }
             }
+            // What you typed is what's sent: no box.
             KeyCode::Enter if !c.running() && !c.input.trim().is_empty() => {
                 let text = std::mem::take(&mut c.input);
-                self.modal = Some(consent_modal(
-                    &self.theme,
-                    &text,
-                    AskTurn::Follow(text.clone()),
-                ));
+                self.ask_turn(text);
             }
             KeyCode::Backspace => {
                 c.input.pop();
@@ -1224,51 +1283,50 @@ impl App {
         let _ = now;
     }
 
-    fn ask_turn(&mut self, turn: AskTurn) {
-        let (prompt, shown, resume) = match turn {
-            AskTurn::First(ask) => {
-                let p = ask.prompt();
-                // The full instructions were in the consent modal; the transcript keeps one line.
-                let q = match ask.question.split_once(". ") {
-                    Some((first, _)) if ask.target.is_some() => format!("{first}."),
-                    _ => ask.question.clone(),
-                };
-                // A hidden chat still answering is replaced: stop it first.
-                if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
-                    let _ = kill(pid);
-                }
-                self.chat = Some(super::chat::Chat::new(ask));
-                (p, q, None)
-            }
-            AskTurn::Follow(text) => {
-                let session = self.chat.as_ref().and_then(|c| c.session.clone());
-                (text.clone(), text, session)
-            }
-        };
-        // Read-only, plus the notes files, plus what the user granted in this conversation.
-        let grants = self
-            .chat
-            .as_ref()
-            .map(|c| c.grants.clone())
-            .unwrap_or_default();
-        let profile = crate::claude::Profile::local()
-            .with_notes(&self.cfg.maintenance.notes)
-            .with_grants(&grants);
-        let cmd = crate::claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
-        self.run_seq += 1;
-        let id = self.run_seq;
-        let tx = self.tx.clone();
-        let r = cmd.stream(move |m| {
-            let _ = tx.send(Event::Run(id, m));
-        });
+    /// A follow-up in the open chat, as typed (or a report sentry offered).
+    fn ask_turn(&mut self, text: String) {
+        self.chat_turn(text.clone(), text, true);
+    }
+
+    /// A turn of the open chat: `shown` in the transcript, `resume`: the conversation so far.
+    fn chat_turn(&mut self, prompt: String, shown: String, resume: bool) {
+        let Some(c) = self.chat.as_ref() else { return };
+        let session = c.session.clone().filter(|_| resume);
+        let grants = c.grants.clone();
+        let r = self.spawn_turn(&prompt, session.as_deref(), &grants);
         let Some(c) = self.chat.as_mut() else { return };
         match r {
-            Ok(pid) => c.begin_turn(&shown, id, pid),
+            Ok((id, pid)) => c.begin_turn(&shown, id, pid),
             Err(e) => c.push(
                 super::chat::Kind::Err,
                 format!("couldn't start claude: {e}"),
             ),
         }
+    }
+
+    /// Start a Claude turn: read-only, plus the notes files, plus what the user granted in
+    /// this conversation. Tests (`records` off) start nothing: the id is real, the pid 0.
+    fn spawn_turn(
+        &mut self,
+        prompt: &str,
+        resume: Option<&str>,
+        grants: &[crate::claude::Grant],
+    ) -> Result<(u64, u32), String> {
+        self.run_seq += 1;
+        let id = self.run_seq;
+        if !self.records {
+            return Ok((id, 0));
+        }
+        let profile = crate::claude::Profile::local()
+            .with_notes(&self.cfg.maintenance.notes)
+            .with_grants(grants);
+        let cmd = crate::claude::turn_cmd_with(prompt, resume, &profile);
+        let tx = self.tx.clone();
+        cmd.stream(move |m| {
+            let _ = tx.send(Event::Run(id, m));
+        })
+        .map(|pid| (id, pid))
+        .map_err(|e| e.to_string())
     }
 
     /// `y` on a proposal's modal: sudo hands the terminal over (output tee'd to a file so it
@@ -1343,50 +1401,6 @@ impl App {
 
     /// A chat command finished: audit again if it changed something, else offer the output.
     fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
-        // A step of the approved plan: its end is the plan's next step.
-        if let Some(c) = self.chat.as_mut()
-            && let Some(i) = c.plan_step.take()
-        {
-            let out = crate::applyplan::tail(&output, 15);
-            let note = if out.trim().is_empty() {
-                format!("exit {code}")
-            } else {
-                format!("exit {code}\n{out}")
-            };
-            c.push(
-                super::chat::Kind::Info,
-                format!(
-                    "{} step {} · exit {code}",
-                    if code == 0 { "✓" } else { "✗" },
-                    i + 1
-                ),
-            );
-            let a = c.apply_run.as_mut().map(|r| r.step_done(code == 0, note));
-            if let Some(a) = a {
-                self.plan_drive(a, Instant::now());
-            }
-            return;
-        }
-        // Applying something: what you ran that changes anything goes in the log. Never a
-        // task's tag: `d` or the workflow's own run says it's done.
-        if let Some(a) = self
-            .chat
-            .as_ref()
-            .and_then(|c| c.ask.applying().cloned())
-            .filter(|_| !cmd.is_empty() && !crate::claude::read_only(&cmd))
-        {
-            let tail: Vec<&str> = output.lines().rev().take(5).collect::<Vec<_>>();
-            let tail: Vec<&str> = tail.into_iter().rev().collect();
-            self.log_event(crate::maint::log::LogEntry::event(
-                crate::maint::LOCAL,
-                "apply",
-                "apply",
-                code == 0,
-                &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
-                &[format!("apply:{}", a.key)],
-                jiff::Timestamp::now(),
-            ));
-        }
         // A command Claude proposed that changes something: the log keeps it.
         if reaudit && !cmd.is_empty() {
             let tags: Vec<String> = self
@@ -1461,76 +1475,22 @@ impl App {
     }
 
     /// A workflow step finished: tell the fix chat about it, if it's that step's chat.
-    /// An apply chat for the workflow that's running: how a step went wrong, ready for `s`.
-    fn apply_step_failed(&mut self, idx: usize, dry: bool, code: i32) {
-        let Some(s) = self.wf.as_ref() else { return };
-        let Some(c) = self.chat.as_mut().filter(|c| {
-            c.ask
-                .applying()
-                .is_some_and(|a| a.workflow.as_deref() == Some(s.wf.name.as_str()))
-        }) else {
-            return;
-        };
-        let step = &s.wf.steps[idx];
-        let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
-        let tail: Vec<&str> = log.lines().rev().take(40).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        c.offer = Some(format!(
-            "Step {}/{} of {}, {} ({}){}, failed (exit {code}). Last lines of its log:\n{}\n\nWhat now?",
-            idx + 1,
-            s.wf.steps.len(),
-            s.wf.name,
-            step.title,
-            step.id,
-            if dry { ", its dry run" } else { "" },
-            tail.join("\n")
-        ));
-        self.toast("a step failed · A: Claude is waiting (s sends it the log)");
-    }
-
-    /// An apply chat for the workflow that just ended: what happened, ready for `s`.
+    /// A workflow run ended: the apply session waiting for it carries on (and shows again).
     fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
-        // The approved plan was waiting for this run: its result is the step's.
-        if let Some(c) = self.chat.as_mut()
-            && let Some(r) = c.apply_run.as_mut()
-            && let crate::applyplan::RunState::WaitingWorkflow(i) = r.state
-            && matches!(&r.plan.steps[i].kind, crate::applyplan::Kind::Workflow(w) if *w == e.head.workflow)
-        {
-            let ok = e.head.result == "done";
-            let a = r.step_done(
-                ok,
-                format!("{} {}: {}", e.head.workflow, e.head.result, e.head.summary),
-            );
-            self.plan_drive(a, Instant::now());
-            return;
-        }
-        let Some(c) = self.chat.as_mut().filter(|c| {
-            c.ask
-                .applying()
-                .is_some_and(|a| a.workflow.as_deref() == Some(e.head.workflow.as_str()))
-        }) else {
+        let Some(sess) = self.apply.as_mut() else {
             return;
         };
         let h = &e.head;
-        let list = |what: &str, v: &[String]| {
-            (!v.is_empty()).then(|| format!(" {what}: {}.", v.join(", ")))
-        };
-        c.offer = Some(format!(
-            "The {} run ended: {}.{}{}{} What should I verify now?",
-            h.workflow,
-            h.result,
-            list("Failed", &h.failed).unwrap_or_default(),
-            list("Done by hand", &h.by_hand).unwrap_or_default(),
-            list("Skipped", &h.skipped).unwrap_or_default(),
-        ));
-        self.toast("the run ended · A: Claude is waiting with the next step (s)");
+        let note = format!("{} {}: {}", h.workflow, h.result, h.summary);
+        let fx = sess.workflow_ended(&h.workflow, h.result == "done", note);
+        if !fx.is_empty() || sess.phase != crate::apply::session::Phase::Applying {
+            sess.chat.hidden = false;
+        }
+        self.apply_fx(fx, Instant::now());
     }
 
     fn chat_step_exit(&mut self, idx: usize, dry: bool, code: i32) {
         use super::chat::{Kind, StepState};
-        if code != 0 {
-            self.apply_step_failed(idx, dry, code);
-        }
         let Some(c) = self.chat.as_mut().filter(|c| c.ask.step() == Some(idx)) else {
             return;
         };
@@ -1951,7 +1911,6 @@ impl App {
                 }
                 Effect::Prompt(p, init) => self.input = Input::Prompt(p, init),
                 Effect::Wf(c) => self.wf_cmd(c, now),
-                Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::Goto(id) => self.enter(id, now),
                 Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
                 Effect::LogOpen => self.open_records(super::records::Section::Log),
@@ -2062,16 +2021,6 @@ impl App {
                 Effect::TaskDone(id) => self.task_done(&id),
                 Effect::LogEvent(e) => self.log_event(*e),
                 Effect::ChatGrant => self.chat_grant(),
-                Effect::ApplyStart => {
-                    let a = self
-                        .chat
-                        .as_mut()
-                        .and_then(|c| c.apply_run.as_mut())
-                        .map(|r| r.start());
-                    if let Some(a) = a {
-                        self.plan_drive(a, now);
-                    }
-                }
                 Effect::Quit => self.quit = true,
             }
         }
@@ -2812,110 +2761,6 @@ impl App {
         }
     }
 
-    /// `d` on a task: logged as done by hand (tagged `task:<id>`, which takes it off the list).
-    /// After Claude's turn: what stops its plan (edits that don't fit, unknown workflows).
-    fn chat_plan_check(&mut self) {
-        let names = self.workflow_names();
-        if let Some(c) = self.chat.as_mut()
-            && let Some(r) = &c.apply_run
-            && r.state == crate::applyplan::RunState::Proposed
-        {
-            let p = crate::applyplan::problems(&r.plan, &names);
-            c.set_plan_problems(p);
-        }
-    }
-
-    /// Carry out the approved plan from `a` on: edits here, commands like a proposal (sudo
-    /// hands the terminal over), a workflow started; each one's end comes back here.
-    fn plan_drive(&mut self, mut a: crate::applyplan::Action, now: Instant) {
-        use crate::applyplan::{Action, apply_edit};
-        loop {
-            let Some(c) = self.chat.as_mut() else { return };
-            let Some(r) = c.apply_run.as_mut() else {
-                return;
-            };
-            match a {
-                Action::Edit(i) => {
-                    let (ok, note) = match apply_edit(&r.plan.steps[i]) {
-                        Ok((b, before, after)) => (
-                            true,
-                            format!("{before} → {after} lines · backup {}", b.display()),
-                        ),
-                        Err(e) => (false, e),
-                    };
-                    let line = format!("{} step {}: {note}", if ok { "✓" } else { "✗" }, i + 1);
-                    a = r.step_done(ok, note);
-                    c.push(super::chat::Kind::Info, line);
-                }
-                Action::Command { idx, cmd } => {
-                    c.plan_step = Some(idx);
-                    let why = r.plan.steps[idx].title.clone();
-                    self.chat_run(crate::claude::Proposed {
-                        cmd,
-                        why,
-                        undo: None,
-                        known: false,
-                    });
-                    return;
-                }
-                Action::StartWorkflow(_, wf) => {
-                    c.hidden = true;
-                    self.toast(format!(
-                        "starting {wf} · the plan carries on when its run ends"
-                    ));
-                    self.apply(vec![Effect::StartWorkflow(wf)], now);
-                    return;
-                }
-                Action::Finished => return self.plan_finished(),
-            }
-        }
-    }
-
-    /// The plan ran (or stopped): Claude gets the report (`s`), the log one entry.
-    fn plan_finished(&mut self) {
-        let Some(c) = self.chat.as_mut() else { return };
-        let Some(r) = c.apply_run.as_ref() else {
-            return;
-        };
-        let report = r.report();
-        let ok = r.state == crate::applyplan::RunState::Done;
-        let tags: Vec<String> = c
-            .ask
-            .applying()
-            .map(|a| format!("apply:{}", a.key))
-            .into_iter()
-            .chain(r.plan.steps.iter().filter_map(|s| match &s.kind {
-                crate::applyplan::Kind::Edit { file, .. } => Some(format!("file:{file}")),
-                _ => None,
-            }))
-            .collect();
-        let summary = format!("{}\n\n{report}", r.plan.summary);
-        c.hidden = false;
-        c.offer = Some(report);
-        c.push(
-            super::chat::Kind::Info,
-            if ok {
-                "plan applied · s sends the results to Claude".to_string()
-            } else {
-                "plan stopped · s sends what happened to Claude".to_string()
-            },
-        );
-        self.log_event(crate::maint::log::LogEntry::event(
-            crate::maint::LOCAL,
-            "apply",
-            "apply",
-            ok,
-            &summary,
-            &tags,
-            jiff::Timestamp::now(),
-        ));
-        self.toast(if ok {
-            "plan applied"
-        } else {
-            "plan stopped at a failed step"
-        });
-    }
-
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
     fn chat_grant(&mut self) {
         use crate::claude::{Access, backup, grantable};
@@ -2942,7 +2787,7 @@ impl App {
             }
         }
         if let Some(text) = c.grant() {
-            self.ask_turn(AskTurn::Follow(text));
+            self.ask_turn(text);
         }
     }
 
@@ -2989,6 +2834,241 @@ impl App {
             self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
         } else {
             self.data.maint_log.insert(0, e);
+        }
+    }
+
+    /// A stream that belongs to the apply session (Claude's turn, a step, sudo's check).
+    fn apply_stream(&mut self, id: u64, msg: &StreamMsg) -> bool {
+        use crate::apply::session::Phase;
+        let Some(sess) = self.apply.as_mut() else {
+            return false;
+        };
+        if sess.chat.live.is_some_and(|(cid, _)| cid == id) {
+            match msg {
+                StreamMsg::Line {
+                    stderr: false,
+                    text,
+                } => {
+                    for e in crate::claude::parse_line(text) {
+                        sess.chat.on_event(e);
+                    }
+                }
+                StreamMsg::Line { stderr: true, text } => sess.chat.on_raw(text.clone()),
+                StreamMsg::Exit { code, .. } => {
+                    let names = self.workflow_names();
+                    let Some(sess) = self.apply.as_mut() else {
+                        return true;
+                    };
+                    let fx = sess.turn_ended(*code, &names);
+                    if sess.chat.hidden && !sess.busy() {
+                        self.toast("Claude answered · A opens it");
+                    }
+                    self.apply_fx(fx, Instant::now());
+                }
+            }
+            return true;
+        }
+        if sess.job.is_some_and(|(jid, _)| jid == id) {
+            match msg {
+                StreamMsg::Line { text, .. } => sess.step_line(text.clone()),
+                StreamMsg::Exit { code, .. } => {
+                    let fx = sess.step_ended(*code);
+                    self.apply_fx(fx, Instant::now());
+                }
+            }
+            return true;
+        }
+        if let Some((aid, password)) = self.apply_aux.filter(|(aid, _)| *aid == id) {
+            if let StreamMsg::Exit { code, .. } = msg {
+                self.apply_aux = None;
+                let fx = match (password, sess.phase) {
+                    (true, Phase::Password { .. }) => sess.password_checked(*code == 0),
+                    (false, Phase::SudoCheck) => sess.sudo_checked(*code != 0),
+                    _ => Vec::new(),
+                };
+                self.apply_fx(fx, Instant::now());
+            }
+            let _ = aid;
+            return true;
+        }
+        false
+    }
+
+    /// Carry out what the apply session asks for.
+    fn apply_fx(&mut self, fx: Vec<crate::apply::session::Fx>, now: Instant) {
+        use crate::apply::session::Fx;
+        for f in fx {
+            match f {
+                Fx::Turn { prompt, shown } => {
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let resume = sess.chat.session.clone();
+                    let grants = sess.chat.grants.clone();
+                    let r = self.spawn_turn(&prompt, resume.as_deref(), &grants);
+                    let Some(sess) = self.apply.as_mut() else {
+                        return;
+                    };
+                    match (r, shown) {
+                        (Ok((id, pid)), Some(q)) => sess.chat.begin_turn(&q, id, pid),
+                        (Ok((id, pid)), None) => sess.chat.begin_quiet(id, pid),
+                        (Err(e), _) => {
+                            sess.chat.push(
+                                super::chat::Kind::Err,
+                                format!("couldn't start claude: {e}"),
+                            );
+                            let names = self.workflow_names();
+                            if let Some(sess) = self.apply.as_mut() {
+                                let fx = sess.turn_ended(-1, &names);
+                                self.apply_fx(fx, now);
+                            }
+                        }
+                    }
+                }
+                Fx::Kill(pid) => {
+                    let _ = kill(pid);
+                }
+                Fx::Command { cmd, sudo } => {
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let c = if sudo && sess.secret_ok {
+                        Cmd::host("bash")
+                            .args(["-c", &crate::apply::sudo::wrap(&cmd)])
+                            .input(sess.secret.stdin())
+                    } else {
+                        Cmd::host("bash").args(["-c", &cmd])
+                    }
+                    .timeout(None);
+                    self.run_seq += 1;
+                    let id = self.run_seq;
+                    let r = if self.records {
+                        let tx = self.tx.clone();
+                        c.stream(move |m| {
+                            let _ = tx.send(Event::Run(id, m));
+                        })
+                        .map_err(|e| e.to_string())
+                    } else {
+                        Ok(0)
+                    };
+                    let Some(sess) = self.apply.as_mut() else {
+                        return;
+                    };
+                    match r {
+                        Ok(pid) => sess.step_started(id, pid),
+                        Err(e) => {
+                            sess.step_line(format!("couldn't start it: {e}"));
+                            let fx = sess.step_ended(-1);
+                            self.apply_fx(fx, now);
+                        }
+                    }
+                }
+                Fx::CheckSudo | Fx::CheckPassword => {
+                    let password = f == Fx::CheckPassword;
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let c = if password {
+                        Cmd::host("bash")
+                            .args(["-c", crate::apply::sudo::check_script()])
+                            .input(sess.secret.stdin())
+                    } else {
+                        Cmd::host("sudo").args(["-n", "true"])
+                    }
+                    .timeout(None);
+                    self.run_seq += 1;
+                    let id = self.run_seq;
+                    self.apply_aux = Some((id, password));
+                    if self.records {
+                        let tx = self.tx.clone();
+                        if let Err(e) = c.stream(move |m| {
+                            let _ = tx.send(Event::Run(id, m));
+                        }) {
+                            self.apply_aux = None;
+                            self.toast(format!("couldn't run sudo: {e}"));
+                        }
+                    }
+                }
+                Fx::StartWorkflow(wf) => {
+                    self.apply(vec![Effect::StartWorkflow(wf.clone())], now);
+                    // A workflow that needs you first (a value, a confirm): its run, in front.
+                    let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
+                    if !going || !matches!(self.input, Input::None) {
+                        if let Some(sess) = self.apply.as_mut() {
+                            sess.chat.hidden = true;
+                        }
+                        self.toast(format!(
+                            "{wf} needs you · the plan carries on when its run ends (A shows it)"
+                        ));
+                    }
+                }
+                Fx::OpenRun => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.chat.hidden = true;
+                    }
+                    self.apply(vec![Effect::Goto(ScreenId::Upgrade)], now);
+                    self.toast("the plan carries on when the run ends · A shows it");
+                }
+                Fx::Log { ok, body, tags } => {
+                    self.log_event(crate::maint::log::LogEntry::event(
+                        crate::maint::LOCAL,
+                        "apply",
+                        "apply",
+                        ok,
+                        &body,
+                        &tags,
+                        jiff::Timestamp::now(),
+                    ));
+                }
+                Fx::TaskDone(id) => {
+                    let title = crate::maint::tasks::effective(
+                        &self.data.tasks,
+                        crate::jobs::state::tasks(&self.cfg),
+                    )
+                    .into_iter()
+                    .find(|t| t.id == id)
+                    .map_or(id.clone(), |t| t.title);
+                    self.log_event(crate::maint::log::LogEntry::task(
+                        crate::maint::LOCAL,
+                        &id,
+                        &title,
+                        None,
+                    ));
+                }
+                Fx::Hide => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.chat.hidden = true;
+                    }
+                    self.toast("it carries on · A brings it back");
+                }
+                Fx::Close => self.apply = None,
+            }
+        }
+    }
+
+    /// How the workflow the apply session waits for is doing, for its step.
+    fn wf_glimpse(&self) -> Vec<String> {
+        let Some(name) = self.apply.as_ref().and_then(|s| s.waiting_workflow()) else {
+            return Vec::new();
+        };
+        let Some(s) = self.wf.as_ref().filter(|s| s.wf.name == name) else {
+            return vec![format!("{name}: waiting to start · Enter opens it")];
+        };
+        let n = s.wf.steps.len();
+        if let Some(l) = &s.live {
+            return vec![format!(
+                "{name} · step {}/{n}: {}",
+                l.idx + 1,
+                s.wf.steps[l.idx].title
+            )];
+        }
+        match s.next.idx() {
+            Some(i) => vec![format!(
+                "{name} · step {}/{n}: {} · it needs you: Enter opens it",
+                i + 1,
+                s.wf.steps[i].title
+            )],
+            None => vec![format!("{name} · finishing")],
         }
     }
 
@@ -3425,6 +3505,11 @@ impl App {
             widgets::dim_backdrop(f.buffer_mut(), body);
             super::chat::draw(f, body, &t, c);
         }
+        if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            let wf = self.wf_glimpse();
+            crate::tui::applyview::draw(f, body, &t, sess, &wf);
+        }
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
             draw_modal(f, body, &t, m);
@@ -3629,17 +3714,34 @@ impl App {
                         vec![("C-c", "terminate"), ("j/k", "scroll")]
                     }
                 } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
-                    vec![("y", "confirm"), ("n", "cancel")]
+                    vec![("Enter", "confirm"), ("Esc", "cancel")]
                 } else {
                     let v = self.view();
                     let mut h = self.screens.hints(self.screen, &v);
                     // `A` is global but invisible unless it's in the bar on every tab.
                     // A screen may name its own (Maintenance: apply or ask); a hidden chat
                     // waiting takes the key over.
-                    match self.chat.as_ref().filter(|c| c.hidden) {
-                        Some(c) => {
+                    let hidden = self
+                        .apply
+                        .as_ref()
+                        .filter(|s| s.chat.hidden)
+                        .map(|s| {
+                            if s.busy() {
+                                "applying…"
+                            } else {
+                                "the apply session"
+                            }
+                        })
+                        .or_else(|| {
+                            self.chat
+                                .as_ref()
+                                .filter(|c| c.hidden)
+                                .map(|c| c.hidden_word())
+                        });
+                    match hidden {
+                        Some(word) => {
                             h.retain(|(k, _)| *k != "A");
-                            h.push(("A", c.hidden_word()));
+                            h.push(("A", word));
                         }
                         None if crate::claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
                             h.push(("A", "ask Claude"))
@@ -3796,35 +3898,11 @@ fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
     }
 }
 
-/// What is about to leave the machine, verbatim, before every Claude turn.
-fn consent_modal(t: &Theme, text: &str, turn: AskTurn) -> Modal {
-    let mut lines = vec![
-        Line::styled(
-            "Sent to Claude through your Claude Code login (Anthropic):",
-            t.fg(),
-        ),
-        Line::raw(""),
-    ];
-    let shown: Vec<&str> = text.lines().collect();
-    for l in shown.iter().take(24) {
-        lines.push(Line::styled(format!("  {l}"), t.dim()));
-    }
-    if shown.len() > 24 {
-        lines.push(Line::styled(
-            format!("  … {} more lines", shown.len() - 24),
-            t.dim(),
-        ));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        crate::claude::allowlist_summary(),
-        t.s(t.yellow),
-    ));
-    Modal {
-        title: "Ask Claude".into(),
-        color: t.mag,
-        lines,
-        yes: Some(("send".into(), vec![Effect::AskSend(turn)])),
+/// The transcript's one line for a first question (the whole of it is in the brief).
+fn first_sentence(ask: &crate::claude::Ask) -> String {
+    match ask.question.split_once(". ") {
+        Some((first, _)) if ask.target.is_some() => format!("{first}."),
+        _ => ask.question.clone(),
     }
 }
 

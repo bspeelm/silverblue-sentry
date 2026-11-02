@@ -3,7 +3,7 @@
 //! plans, reviews, tasks, what's put off), workflows (format and runner), Claude Code, the
 //! audit finding type, a few parsers, and the TUI kit both apps are built on.
 
-pub mod applyplan;
+pub mod apply;
 pub mod baseline;
 pub mod cache;
 pub mod claude;

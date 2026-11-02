@@ -725,18 +725,20 @@ fn chat_pane_and_consent_render() {
         s.contains("follow-up") && s.contains("continue in Claude Code"),
         "{s}"
     );
-    // Typing goes to the follow-up line; Enter asks for consent first.
+    // Typing goes to the follow-up line; Enter sends what you typed (no box: you wrote it).
     for ch in "who owns it?".chars() {
         key(&mut a, KeyCode::Char(ch));
     }
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 120, 30);
     assert!(
-        s.contains("Ask Claude") && s.contains("who owns it?"),
+        s.contains("you    who owns it?") && s.contains("thinking"),
         "{s}"
     );
-    assert!(s.contains("read-only commands"), "{s}");
-    key(&mut a, KeyCode::Char('n'));
+    a.on_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Instant::now(),
+    );
     key(&mut a, KeyCode::Esc);
     let s = render_to_string(&mut a, 120, 30);
     assert!(!s.contains("Claude ·"), "Esc closes the pane: {s}");
@@ -904,14 +906,16 @@ fn audit_fix_with_claude() {
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
     let mut a = maint_view(d, 'F');
     render_to_string(&mut a, 158, 41);
-    // `f` shows what would be sent (finding + sentry's known fixes) before anything leaves.
+    // `f` opens the chat with what would be sent (finding + sentry's known fixes); nothing
+    // leaves before Enter.
     key(&mut a, KeyCode::Char('f'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Ask Claude") && s.contains("sentry's known fixes"),
+        s.contains("Sent to Claude") && s.contains("Enter  send"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    assert!(a.consent_text().unwrap().contains("sentry's known fixes"));
+    key(&mut a, KeyCode::Esc);
     // An answer with a proposal: `r` opens the confirm box, `n` runs nothing.
     let f = crate::audit::Finding {
         id: "listener:svc:passim (fwupd firmware cache)".into(),
@@ -986,10 +990,10 @@ gate = "auto"
     key(&mut a, KeyCode::Char('f'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Ask Claude") && s.contains("step 1/2: Flag file exists"),
+        s.contains("Sent to Claude") && s.contains("step 1/2: Flag file exists"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
 
     // Claude proposes a fix; after it, `t` retries the step behind a confirm box.
     let mut c = Chat::new(Ask::step_fix(&facts));
@@ -1183,10 +1187,10 @@ gate = "confirm"
     key(&mut a, KeyCode::Char('A'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Ask Claude") && s.contains("has ended (abandoned)"),
+        s.contains("Sent to Claude") && s.contains("has ended (abandoned)"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     // `v`: Records on its Log, Esc closes it.
     key(&mut a, KeyCode::Char('v'));
     let s = render_to_string(&mut a, 158, 41);
@@ -1354,7 +1358,7 @@ fn review_suggestions_become_maintenance_tasks() {
         p.contains("Help me apply this") && p.contains("Check the UPS battery"),
         "{p}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('m'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("mark done"), "m shows the steps: {s}");
@@ -1463,7 +1467,7 @@ fn claude_helps_apply_the_updates_beside_quick_update() {
         "{p}"
     );
     // `2`: the plain question, no apply rules.
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('2'));
     let p = a.consent_text().expect("consent");
@@ -1471,69 +1475,48 @@ fn claude_helps_apply_the_updates_beside_quick_update() {
 }
 
 #[test]
-fn an_apply_chat_logs_what_you_run_and_hears_how_the_run_goes() {
+fn a_plans_workflow_step_waits_for_its_run() {
+    use crate::apply::session::{Phase, Turn};
     use crate::claude::{Apply, Ask};
-    use crate::tui::chat::Chat;
-    use crate::tui::wf::Session;
-    use crate::workflows::parse;
-    use crate::workflows::runner::{self, Next};
-    use crate::workflows::state::RunState;
-    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
-    // A task's apply chat: what you run is logged as apply, never as the task's own tag.
-    a.set_chat(Chat::new(Ask::apply(
-        "Check the UPS battery",
+    let mut a = app(ScreenId::Maint);
+    a.apply_for_test(vec![crate::tui::screens::Effect::AskConsent(Ask::apply(
+        "updates",
         "ctx",
         Apply {
-            key: "task:ups".into(),
-            task: Some("ups".into()),
+            key: "updates".into(),
+            workflow: Some("quick-update".into()),
             ..Default::default()
         },
-    )));
-    a.chat_done_for_test("sudo upsc ups battery.test", 0, "ok");
-    let e = &a.log_for_test()[0];
-    assert_eq!(e.head.kind, "apply");
-    assert!(
-        e.head.tags.contains(&"apply:task:ups".to_string()),
-        "{:?}",
-        e.head.tags
+    ))]);
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "Run it.\n```sentry-apply\nsummary = \"install the updates\"\n[[step]]\ntitle = \"Install\"\nworkflow = \"quick-update\"\n```",
     );
+    let s = render_to_string(&mut a, 158, 41);
     assert!(
-        !e.head.tags.iter().any(|t| t.starts_with("task:")),
-        "{:?}",
-        e.head.tags
+        s.contains("workflow quick-update") && s.contains("Enter applies these 1 steps"),
+        "{s}"
     );
-    // Read-only commands aren't logged.
-    let n = a.log_for_test().len();
-    a.chat_done_for_test("systemctl status nut-server", 0, "ok");
-    assert_eq!(a.log_for_test().len(), n);
-    // Beside a workflow: a failed step is offered to Claude (s sends it).
-    let wf = parse(
-        "name = \"flag-test\"\ndescription = \"test\"\n[[steps]]\nid = \"flag\"\n\
-         title = \"Flag file exists\"\nrun = \"test -f /tmp/flag\"\ngate = \"auto\"\n",
-    )
-    .unwrap();
-    let mut st = RunState::new("flag-test", &["flag".to_string()], Default::default());
-    runner::finish(&mut st, 0, 1, None);
-    a.set_wf(Session::for_test(wf, st, Next::Stopped(0)));
-    a.set_chat(Chat::new(Ask::apply(
-        "flag",
-        "ctx",
-        Apply {
-            key: "wf:flag-test".into(),
-            workflow: Some("flag-test".into()),
-            ..Default::default()
-        },
-    )));
-    a.step_exit_for_test(0, 1);
-    let offer = a
-        .chat_for_test()
-        .and_then(|c| c.offer.clone())
-        .unwrap_or_default();
-    assert!(
-        offer.contains("Step 1/1 of flag-test, Flag file exists (flag)")
-            && offer.contains("exit 1"),
-        "{offer}"
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.apply_session().unwrap().waiting_workflow(),
+        Some("quick-update")
     );
+    // The run ends: the plan carries on (here, to the check), and the session shows again.
+    let mut e = crate::maint::log::LogEntry::event(
+        crate::maint::LOCAL,
+        "workflow",
+        "quick-update",
+        true,
+        "updated",
+        &[],
+        jiff::Timestamp::now(),
+    );
+    e.head.workflow = "quick-update".into();
+    a.run_ended_for_test(&e);
+    let sess = a.apply_session().unwrap();
+    assert_eq!(sess.phase, Phase::Thinking(Turn::Verify));
+    assert!(!sess.chat.hidden);
 }
 
 #[test]
@@ -1574,96 +1557,98 @@ fn g_shows_the_files_claude_asked_for() {
 }
 
 #[test]
-fn claude_plans_once_and_sentry_applies_the_plan() {
-    use crate::claude::{Apply, Ask, Event};
-    use crate::tui::chat::Chat;
-    // A file under home (edits are only allowed there), removed at the end.
+fn applying_a_task_is_one_session_start_to_done() {
+    use crate::claude::{Apply, Ask};
+    // A file under home, removed at the end.
     let dir = crate::paths::home().join(".cache/sentry-applyplan-apptest");
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join(format!("cheatsheet-{}.md", std::process::id()));
     std::fs::write(&f, "# Cheatsheet\n**Layered:** akmods code\nend\n").unwrap();
     let file = f.display().to_string();
-    let answer = |old: &str| {
+    let plan = |old: &str| {
         format!(
             "The layered line is stale.\n\n```sentry-apply\nsummary = \"Fix the layered line\"\n\
              rollback = \"sentry restores the backup\"\n\n[[step]]\ntitle = \"Line 2\"\n\
-             edit = \"{file}\"\nold = \"\"\"{old}\"\"\"\nnew = \"\"\"**Layered:** akmods ghostty\"\"\"\n```\n"
+             edit = \"{file}\"\nold = \"\"\"{old}\"\"\"\nnew = \"\"\"**Layered:** akmods ghostty\"\"\"\n\n\
+             [[step]]\ntitle = \"Check it\"\ncheck = \"grep -q ghostty {file}\"\n```\n"
         )
     };
-    let chat = |text: String| {
-        let mut c = Chat::new(Ask::apply(
-            "the cheatsheet",
-            "ctx",
-            Apply {
-                key: "task:sheet".into(),
-                task: Some("sheet".into()),
-                ..Default::default()
-            },
-        ));
-        c.begin_turn("q", 1, 1);
-        c.on_event(Event::Text(text));
-        c.on_exit(0);
-        c
-    };
-    // A plan whose old text isn't in the file: shown, not appliable.
     let mut a = app(ScreenId::Maint);
-    let mut c = chat(answer("**Layered:** nope"));
-    c.set_plan_problems(crate::applyplan::problems(
-        &c.apply_run.as_ref().unwrap().plan,
-        &[],
-    ));
-    // `s` tells Claude why, for a corrected plan.
-    let offer = c.offer.clone().unwrap_or_default();
-    assert!(
-        offer.contains("step 1 (Line 2): its old text isn't in the file"),
-        "{offer}"
-    );
-    a.set_chat(c);
+    a.apply_for_test(vec![crate::tui::screens::Effect::AskConsent(Ask::apply(
+        "the cheatsheet",
+        "A task: fix the cheatsheet.",
+        Apply {
+            key: "task:sheet".into(),
+            task: Some("sheet".into()),
+            ..Default::default()
+        },
+    ))]);
+    // 1. The brief, nothing sent: Enter starts.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("can't be applied as it is") && s.contains("isn't in the file"),
+        s.contains("brief › investigate")
+            && s.contains("Sent to Claude")
+            && s.contains("Enter  start"),
         "{s}"
     );
-    assert!(
-        !s.contains("apply the plan") && s.contains("send to Claude"),
-        "{s}"
-    );
-    // The real one: shown as one plan, no proposals; `a`, `y`, and sentry does it.
-    let mut c = chat(answer("**Layered:** akmods code"));
-    c.plan_problems = crate::applyplan::problems(&c.apply_run.as_ref().unwrap().plan, &[]);
-    a.set_chat(c);
+    assert!(s.contains("A task: fix the cheatsheet."), "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert!(render_to_string(&mut a, 158, 41).contains("Claude is looking into it"));
+    // A plan sentry can't use goes back to Claude by itself: no key, no box.
+    a.apply_answer_for_test(&plan("**Layered:** nope"));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Plan: Fix the layered line · a applies it"),
+        s.contains("sentry can't use step 1 as written")
+            && s.contains("Claude is correcting the plan"),
         "{s}"
     );
-    assert!(
-        !s.contains("Proposed commands") && !s.contains("```"),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Char('a'));
+    // 2. The plan: Enter applies it.
+    a.apply_answer_for_test(&plan("**Layered:** akmods code"));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Apply the plan") && s.contains("+ **Layered:** akmods ghostty"),
+        s.contains("Plan: Fix the layered line") && s.contains("Enter applies these 2 steps"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('y'));
+    assert!(s.contains("Enter  apply the plan"), "{s}");
+    assert!(
+        !s.contains("Proposed commands") && !s.contains("```") && !s.contains("press s"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // The edit is done; the check runs; then the results go to Claude by themselves.
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
         "# Cheatsheet\n**Layered:** akmods ghostty\nend\n"
     );
-    let c = a.chat_for_test().unwrap();
+    let s = render_to_string(&mut a, 158, 41);
     assert!(
-        c.offer
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("sentry applied all 1 steps"),
-        "{:?}",
-        c.offer
+        s.contains("✓ 1. Line 2") && s.contains("▶ 2. Check it"),
+        "{s}"
+    );
+    a.apply_step_exit_for_test(0);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("all 2 steps done") && s.contains("Claude is checking the result"),
+        "{s}"
+    );
+    // The verdict: done, logged, the task with it.
+    a.apply_answer_for_test(
+        "The line is right.\n```sentry-verdict\nstatus = \"done\"\nsummary = \"the cheatsheet matches the system\"\nnext = \"nothing\"\n```",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("✓ Done · the cheatsheet matches the system") && s.contains("task marked done"),
+        "{s}"
     );
     let e = &a.log_for_test()[0];
     assert_eq!(e.head.kind, "apply");
-    assert!(e.head.tags.contains(&"apply:task:sheet".to_string()));
+    assert!(
+        e.head.tags.contains(&"task:sheet".to_string()),
+        "{:?}",
+        e.head.tags
+    );
     assert!(e.head.tags.contains(&format!("file:{file}")));
+    key(&mut a, KeyCode::Esc);
+    assert!(a.apply_session().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }

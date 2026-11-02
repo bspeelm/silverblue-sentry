@@ -745,11 +745,11 @@ fn ask_claude_about_a_finding_and_run_its_proposal() {
     key(&mut a, KeyCode::Char('A'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Ask Claude") && s.contains("Audit finding (high"),
+        s.contains("Sent to Claude") && s.contains("Audit finding (high"),
         "{s}"
     );
     assert!(s.contains("through `sentry-server exec`"), "{s}");
-    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
     let c = a.chat_mut().expect("chat open");
     c.on_event(CEvent::Text(
         "**Commands**\n```bash\n# why: bring it back\nsudo docker start db\n```\n".into(),
@@ -883,7 +883,7 @@ fn chat_input_edits() {
         Instant::now(),
     );
     key(&mut a, KeyCode::Char('A'));
-    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
     a.chat_mut().unwrap().on_exit(0);
     for c in "why qj1".chars() {
         key(&mut a, KeyCode::Char(c));
@@ -1124,7 +1124,7 @@ fn ask_works_on_the_updates_recommendation() {
             && prompt.contains("workflow = \"apt-maintenance\""),
         "{prompt}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('2'));
     let prompt = a.consent_text().expect("consent");
@@ -1513,7 +1513,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         prompt.contains("recommends maintaining") && prompt.contains("About \"web\""),
         "{prompt}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('1'));
     let prompt = a.consent_text().expect("consent");
@@ -2211,9 +2211,9 @@ fn files_claude_was_refused_can_be_granted_for_the_conversation() {
 }
 
 #[test]
-fn claude_plans_once_and_sentry_applies_the_plan() {
-    use sentry_core::claude::{Apply, Ask, Event};
-    use sentry_core::tui::chat::Chat;
+fn applying_on_a_server_is_one_session() {
+    use sentry_core::apply::session::Phase;
+    use sentry_core::claude::{Apply, Ask};
     let dir = sentry_core::paths::home().join(".cache/sentry-applyplan-srvtest");
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join(format!("notes-{}.md", std::process::id()));
@@ -2221,35 +2221,64 @@ fn claude_plans_once_and_sentry_applies_the_plan() {
     let file = f.display().to_string();
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    let mut c = Chat::new(Ask::apply(
-        "web",
-        "ctx",
-        Apply {
-            key: "web".into(),
-            item: Some("web".into()),
-            ..Default::default()
-        },
-    ));
-    c.begin_turn("q", 1, 1);
-    c.on_event(Event::Text(format!(
-        "Notes are stale.\n```sentry-apply\nsummary = \"Update the notes\"\nrollback = \"backup\"\n\
-         [[step]]\ntitle = \"The version\"\nedit = \"{file}\"\nold = \"1.4.2\"\nnew = \"1.5.1\"\n```\n"
-    )));
-    c.on_exit(0);
-    a.open_chat(c);
-    let s = screen(&mut a);
-    assert!(s.contains("Plan: Update the notes · a applies it"), "{s}");
-    key(&mut a, KeyCode::Char('a'));
-    assert!(screen(&mut a).contains("Apply the plan"));
-    key(&mut a, KeyCode::Char('y'));
-    assert_eq!(std::fs::read_to_string(&f).unwrap(), "web runs 1.5.1\n");
-    let c = a.chat_for_test().unwrap();
-    assert!(
-        c.offer
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("sentry applied all 1 steps")
+    a.apply(
+        vec![super::app::Effect::AskConsent(Box::new(Ask::apply(
+            "web",
+            "ctx",
+            Apply {
+                key: "web".into(),
+                item: Some("web".into()),
+                remote: true,
+                ..Default::default()
+            },
+        )))],
+        Instant::now(),
     );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Sent to Claude") && s.contains("sentry-server exec"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // An edit of the server's /etc isn't for here: back to Claude by itself.
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"x\"\n[[step]]\ntitle = \"t\"\nedit = \"/etc/hosts\"\nold = \"a\"\nnew = \"b\"\n```",
+    );
+    assert!(screen(&mut a).contains("Claude is correcting the plan"));
+    // The notes here, a sudo command there: the password is asked inline.
+    a.apply_answer_for_test(&format!(
+        "Notes are stale.\n```sentry-apply\nsummary = \"Update the notes\"\nrollback = \"backup\"\n\
+         [[step]]\ntitle = \"The version\"\nedit = \"{file}\"\nold = \"1.4.2\"\nnew = \"1.5.1\"\n\n\
+         [[step]]\ntitle = \"Restart\"\nrun = \"sudo systemctl restart app\"\n```\n"
+    ));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Plan: Update the notes") && s.contains("Enter applies these 2 steps"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // sudo -n refuses (exit 1): the password line.
+    a.apply_exit_for_test(1);
+    for c in "pw".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    let s = screen(&mut a);
+    assert!(s.contains("sudo password (for step 2) › ●●"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0);
+    // The edit is done here; the restart runs there.
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "web runs 1.5.1\n");
+    a.apply_exit_for_test(0);
+    assert!(screen(&mut a).contains("Claude is checking the result"));
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"web notes match\"\n```",
+    );
+    let sess = a.apply_session().unwrap();
+    assert_eq!(
+        sess.phase,
+        Phase::Settled(sentry_core::apply::session::End::Done)
+    );
+    assert!(sess.secret.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2289,7 +2318,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
         p.contains("Help me apply this") && p.contains("Check the UPS battery"),
         "{p}"
     );
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('m'));
     assert!(screen(&mut a).contains("mark done"));
 }

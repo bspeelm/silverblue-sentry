@@ -1,10 +1,9 @@
 //! Applying something with Claude: Claude writes one plan (a ```` ```sentry-apply ```` TOML
 //! block: file edits as exact old → new text, commands, checks, a workflow to start), the user
-//! approves it once, and sentry carries it out in order. Pure, except `apply_edit`.
+//! approves it once, and sentry carries it out in order. Pure, except `apply_edit` (your own
+//! files; root's are `sudo::prepare_root_edit`).
 
 use serde::Deserialize;
-
-use crate::claude::{Access, Grant};
 
 const FENCE: &str = "```sentry-apply";
 
@@ -146,15 +145,14 @@ pub fn problems(p: &Plan, workflows: &[String]) -> Vec<(usize, String)> {
     for (i, s) in p.steps.iter().enumerate() {
         match &s.kind {
             Kind::Edit { file, old, .. } => {
-                let g = Grant {
-                    access: Access::Write,
-                    path: crate::maint::real_path(std::path::Path::new(file)),
+                let owner = match super::sudo::edit_target(file) {
+                    Ok(o) => o,
+                    Err(why) => {
+                        out.push((i, why));
+                        continue;
+                    }
                 };
-                if let Err(why) = crate::claude::grantable(&g) {
-                    out.push((i, format!("{file}: {why}")));
-                    continue;
-                }
-                match std::fs::read_to_string(file) {
+                match super::sudo::read(file, owner) {
                     Err(e) => out.push((i, format!("{file}: {e}"))),
                     Ok(t) => match t.matches(old.as_str()).count() {
                         1 => {}
@@ -305,15 +303,15 @@ impl Run {
             .collect();
         match self.state {
             RunState::Failed(k) => format!(
-                "sentry applied the plan and stopped at step {} ({}):\n{}\n\nSteps 1–{} are done. \
-                 Send a plan for the rest, as a sentry-apply block.",
+                "sentry carried out the plan and stopped at step {} ({}), which failed:\n{}\n\n\
+                 Steps 1–{} are done.",
                 k + 1,
                 self.plan.steps[k].title,
                 lines.join("\n"),
                 k
             ),
             _ => format!(
-                "sentry applied all {} steps:\n{}\n\nAnything left to check or do?",
+                "sentry carried out all {} steps of the plan:\n{}",
                 self.plan.steps.len(),
                 lines.join("\n")
             ),
@@ -422,7 +420,7 @@ Approve it and sentry does it.";
         assert_eq!(r.state, RunState::WaitingWorkflow(2));
         assert_eq!(r.step_done(true, "done".into()), Action::Finished);
         assert_eq!(r.state, RunState::Done);
-        assert!(r.report().starts_with("sentry applied all 3 steps"));
+        assert!(r.report().starts_with("sentry carried out all 3 steps"));
         // A failing check stops it; the report says what's left.
         let mut r = Run::new(take(ANSWER).1.unwrap().unwrap());
         r.start();
@@ -431,7 +429,8 @@ Approve it and sentry does it.";
         assert_eq!(r.state, RunState::Failed(1));
         let rep = r.report();
         assert!(
-            rep.contains("stopped at step 2 (Check)") && rep.contains("Steps 1–1 are done"),
+            rep.contains("stopped at step 2 (Check), which failed")
+                && rep.contains("Steps 1–1 are done"),
             "{rep}"
         );
     }

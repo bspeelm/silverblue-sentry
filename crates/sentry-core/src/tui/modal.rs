@@ -48,9 +48,9 @@ pub fn draw<E>(f: &mut Frame, area: Rect, t: &Theme, m: &Modal<E>) {
     let mut spans = Vec::new();
     match &m.yes {
         Some((label, _)) => {
-            spans.extend(chip(t, "y", label, m.color));
+            spans.extend(chip(t, "Enter", label, m.color));
             spans.push(Span::raw("   "));
-            spans.extend(chip(t, "n", "cancel", t.dim));
+            spans.extend(chip(t, "Esc", "cancel", t.dim));
         }
         None => spans.extend(chip(t, "Enter", "close", m.color)),
     }
