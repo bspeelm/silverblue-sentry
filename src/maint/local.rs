@@ -10,6 +10,7 @@ use jiff::Timestamp;
 use super::Level;
 use super::log::LogEntry;
 use super::plan::{PlanDoc, PlanStatus};
+use super::rec::Target;
 use super::snooze::Snoozes;
 use super::tasks::Task;
 use crate::audit::{Report, Sev};
@@ -51,15 +52,21 @@ pub enum Action {
     Task(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rec {
-    pub level: Level,
-    /// For `z` and for keeping the selection: `finding:<id>`, `updates`, `reboot`,
-    /// `job:<name>`, `cleanup`, `run`, `plan:<workflow>`, `task:<id>`.
-    pub key: String,
-    pub title: String,
-    pub why: String,
-    pub action: Action,
+/// Keys: `finding:<id>`, `updates`, `reboot`, `job:<name>`, `cleanup`, `run`,
+/// `plan:<workflow>`, `task:<id>`.
+pub type Rec = super::rec::Rec<Action>;
+
+impl super::rec::Act for Action {
+    fn target(&self) -> Target {
+        match self {
+            Action::Run(wf) => Target::Workflow(wf.clone()),
+            Action::Audit | Action::Jobs(JobId::Audit) => Target::Audit,
+            _ => Target::None,
+        }
+    }
+    fn task(id: String) -> Self {
+        Action::Task(id)
+    }
 }
 
 /// The workflow run on screen, if any.
@@ -113,6 +120,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                 if r.failed { ", which failed" } else { "" }
             ),
             action: Action::OpenRun,
+            item: None,
         });
     }
     for (wf, p) in i.plans {
@@ -126,30 +134,24 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                         .into()
                 }),
                 action: Action::OpenPlan(wf.clone()),
+                item: None,
             });
         }
     }
     findings(i, &mut out);
     updates(i, &mut out);
     jobs(i, &mut out);
-    let audited = i.report.map(|r| r.taken_at);
-    for t in super::tasks::recs(i.tasks, i.log, audited, i.now) {
-        out.push(Rec {
-            level: t.level,
-            key: t.key,
-            title: t.title,
-            why: t.why,
-            action: Action::Task(t.id),
-        });
-    }
-    out.retain(|r| !snoozed(i, &r.key));
-    out.sort_by_key(|r| r.level);
-    out
-}
-
-fn snoozed(i: &Inputs, key: &str) -> bool {
-    let today = i.now.to_zoned(jiff::tz::TimeZone::system()).date();
-    i.snoozes.get(key).is_some_and(|d| *d > today)
+    super::rec::finish(
+        out,
+        &super::rec::Tail {
+            tasks: i.tasks,
+            log: i.log,
+            audited: i.report.map(|r| r.taken_at),
+            now: i.now,
+            snooze: i.snoozes,
+            today: i.now.to_zoned(jiff::tz::TimeZone::system()).date(),
+        },
+    )
 }
 
 fn findings(i: &Inputs, out: &mut Vec<Rec>) {
@@ -169,6 +171,7 @@ fn findings(i: &Inputs, out: &mut Vec<Rec>) {
                 f.why.clone()
             },
             action: Action::Fix(f.id.clone()),
+            item: None,
         });
     }
 }
@@ -197,6 +200,7 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
                     }
                 ),
                 action: Action::Reboot,
+                item: None,
             });
         }
     }
@@ -246,6 +250,7 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
             "quick-update does Flatpaks, toolboxes, then stages the OS update.".into()
         },
         action: Action::Run(UPDATE_WORKFLOW.into()),
+        item: None,
     });
 }
 
@@ -263,6 +268,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
                 title: format!("{} failed", j.name()),
                 why: format!("Last run: {}", l.summary),
                 action: Action::Jobs(j),
+                item: None,
             });
             continue;
         }
@@ -293,6 +299,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
             title: title.into(),
             why: format!("{} ({ago}).", j.name()),
             action,
+            item: None,
         });
     }
     let big = i.reclaim.is_some_and(|b| b >= RECLAIM_MIN);
@@ -324,6 +331,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
             .collect::<Vec<_>>()
             .join(" "),
             action: Action::Cleanup,
+            item: None,
         });
     }
 }

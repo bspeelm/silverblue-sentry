@@ -1,5 +1,5 @@
 //! Audit: findings of the selected report with an evidence box, and the structural diff against
-//! the report before it. `Enter` audits now (read-only), `b`/`B` baseline, `[`/`]` browse.
+//! the report before it. `Enter` fixes the finding (as on Maintenance), `c` audits now (read-only), `x`/`B` baseline, `[`/`]` browse.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -38,19 +38,20 @@ pub fn hints(v: &View) -> Hints {
     if v.d.reports.get().is_none_or(|r| r.is_empty()) {
         return vec![("Enter", "run audit")];
     }
+    // The same keys as a finding on Maintenance (f and b still work).
     vec![
         ("j/k", "select"),
         (
-            "f",
+            "Enter",
             if crate::claude::available() {
                 "fix (with Claude)"
             } else {
                 "fix"
             },
         ),
-        ("b", "expected on/off"),
-        ("B", "hide similar"),
-        ("Enter", "run audit"),
+        ("x", "expected on/off"),
+        ("B", "all like it"),
+        ("c", "run audit"),
         ("[ ]", "browse reports"),
         ("C-h/l", "focus"),
     ]
@@ -378,7 +379,9 @@ impl Audit {
                 self.cur.sel = 0;
                 self.diff_scroll = 0;
             }
-            Action::Enter => return vec![audit_run()],
+            // No report yet: Enter runs the first audit; c always does.
+            Action::Enter if n == 0 => return vec![audit_run()],
+            Action::Check => return vec![audit_run()],
             Action::Refresh => return vec![Effect::Fetch(Fetch::Reports)],
             _ if self.focus == Focus::Diff => {
                 let page = self.diff_h.max(2);
@@ -402,12 +405,12 @@ impl Audit {
                 };
                 match a {
                     // Claude reads the logs and says what to run; without it, sentry's own list.
-                    Action::Char('f') if crate::claude::available() => {
+                    Action::Enter | Action::Char('f') if crate::claude::available() => {
                         return vec![Effect::AskConsent(crate::claude::Ask::fix(f))];
                     }
-                    Action::Char('f') => return fix_effects(v, f),
-                    // `b` toggles: marks the finding expected, or un-marks it if it already is.
-                    Action::Char('b') => return vec![expected_toggle(v, f)],
+                    Action::Enter | Action::Char('f') => return fix_effects(v, f),
+                    // `x` toggles: marks the finding expected, or un-marks it if it already is.
+                    Action::Char('x' | 'b') => return vec![expected_toggle(v, f)],
                     Action::Char('B') => return pattern_effects(v, f),
                     _ => {}
                 }
@@ -482,11 +485,11 @@ impl Audit {
         } else {
             "Worth a look on this machine."
         };
-        let keys = "f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = audit again";
+        let keys = "Enter = fix it (Claude helps) · x = expected on/off · A = ask Claude · c = audit again";
         // Detail box for the selected finding: what / why / to do, then the raw evidence.
-        let detail: Vec<Line> = rows
-            .get(sel)
-            .map_or(Vec::new(), |fd| finding_lines(t, fd, r.width as usize, "f"));
+        let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
+            finding_lines(t, fd, r.width as usize, "Enter")
+        });
         let detail_rows = detail.len();
         let ev_h = (detail_rows as u16 + 1).clamp(4, r.height / 2);
         let [head, list, summary, evidence] = Layout::vertical([

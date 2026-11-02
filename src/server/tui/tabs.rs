@@ -81,7 +81,7 @@ pub fn rows(tab: Tab, v: &View) -> usize {
     }
 }
 
-pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
+pub fn hints(tab: Tab, v: &View) -> Vec<(&'static str, &'static str)> {
     match tab {
         Tab::Overview => vec![("j/k", "select"), ("Enter", "open tab"), ("r", "refresh")],
         Tab::Services => vec![("j/k", "select"), ("Enter", "details"), ("r", "refresh")],
@@ -91,19 +91,18 @@ pub fn hints(tab: Tab, _v: &View) -> Vec<(&'static str, &'static str)> {
             ("c", "cpu/mem"),
             ("r", "refresh"),
         ],
-        Tab::Maint => vec![
-            ("j/k", "select"),
-            ("Enter", "do it"),
-            ("p", "plan"),
-            ("t", "track"),
-            ("R", "review"),
-            ("w", "workflow"),
-            ("x", "drop/ignore"),
-            ("v", "log"),
-            ("z", "later"),
-            ("c", "check all"),
-            ("e", "edit"),
-        ],
+        // The selected row's keys, then the tab's.
+        Tab::Maint => {
+            let mut h = crate::tui::maintlist::hints(&super::maint::verbs(v));
+            h.extend([
+                ("c", "check all"),
+                ("w", "workflow"),
+                ("R", "review"),
+                ("v", "log"),
+                ("e", "edit"),
+            ]);
+            h
+        }
     }
 }
 
@@ -473,7 +472,20 @@ fn status_rows(v: &View) -> Vec<StatusRow> {
     }
     match s.report.value.as_ref().map(|r| r.as_deref()) {
         Some(Some(r)) => {
-            let open: Vec<&Finding> = r.open().collect();
+            // The findings Maintenance lists (not the ones its item rows already say, nor
+            // the ones put off), so the count and the rows it jumps to agree.
+            let listed: Vec<String> = super::maint::recs(v)
+                .into_iter()
+                .filter_map(|x| match x.action {
+                    crate::server::maint::recommend::Action::Fix(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let open: Vec<&Finding> = r
+                .findings
+                .iter()
+                .filter(|f| listed.contains(&f.id))
+                .collect();
             let when = r.snapshot.taken_at.map_or(String::new(), |ts| {
                 format!(" (audit {})", fmt::ago(v.secs_since(ts)))
             });

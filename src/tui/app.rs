@@ -1340,7 +1340,16 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        let hints = self.screens.hints(self.screen, &self.view());
+        let mut hints = self.screens.hints(self.screen, &self.view());
+        // Maintenance's list: every row key, not only the selected row's.
+        if self.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
+            let row = ["j/k", "Enter", "p", "P", "t", "d", "x", "B", "z"];
+            hints = [("j/k", "select")]
+                .into_iter()
+                .chain(super::maintlist::GRAMMAR.iter().copied())
+                .chain(hints.into_iter().filter(|(k, _)| !row.contains(k)))
+                .collect();
+        }
         self.modal = Some(help_modal(&self.theme, self.screen.name(), &hints));
     }
 

@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  do it   d  done   x  remove   z  later   c  check all   F  report   J  jobs   A  ask Claude   ?  help   q  quit          skipped update
+ j/k  select   Enter  do it   d  done   x  remove   z  later   c  check all   R  review   v  log   A  ask Claude   ?  help   q  quit           skipped update
