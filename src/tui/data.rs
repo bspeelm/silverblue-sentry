@@ -29,7 +29,6 @@ use crate::collectors::{CollectError, Ctx};
 use crate::config::Config;
 use crate::jobs::JobId;
 use crate::jobs::plan::Plan;
-use crate::jobs::state::Records;
 
 /// Background work the UI can request. At most one of each kind is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,8 +48,8 @@ pub enum Fetch {
     Units,
     /// Stored audit reports (`reports/*.json`).
     Reports,
-    /// `jobs.json` last-run records.
-    Jobs,
+    /// The maintenance log (after a job or anything else wrote to it).
+    Log,
     /// Plans of the four cleanup jobs (Cleanup screen).
     Cleanup,
     /// One job's plan, for its confirm modal.
@@ -74,7 +73,7 @@ pub enum Payload {
     Podman(Podman),
     Units(Units),
     Reports(Vec<Stored>),
-    Jobs(Records),
+    Log(Vec<crate::maint::log::LogEntry>),
     Cleanup(Vec<Plan>),
     Plan(Plan),
     Workflows(Vec<WfInfo>),
@@ -190,7 +189,6 @@ pub struct DataStore {
     pub podman: Slot<Podman>,
     pub units: Slot<Units>,
     pub reports: Slot<Vec<Stored>>,
-    pub job_runs: Slot<Records>,
     pub cleanup: Slot<Vec<Plan>>,
     /// The most recent single-job plan (consumed by the app to open a modal).
     pub plan: Option<Plan>,
@@ -215,7 +213,10 @@ pub struct DataStore {
 impl DataStore {
     pub fn new() -> Self {
         let mut d = Self::blank(crate::paths::os_version(), ostree::booted_kernel());
-        d.baseline = Baseline::effective(&Config::load().0);
+        let cfg = Config::load().0;
+        // Old jobs.json / cadence.toml into the log and tasks.toml, once, before they're read.
+        crate::jobs::state::migrate(&cfg);
+        d.baseline = Baseline::effective(&cfg);
         d.snoozes = crate::maint::snooze::load();
         d.plans = crate::maint::plan::list(crate::maint::LOCAL);
         d.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
@@ -260,7 +261,6 @@ impl DataStore {
             podman: Slot::default(),
             units: Slot::default(),
             reports: Slot::default(),
-            job_runs: Slot::default(),
             cleanup: Slot::default(),
             plan: None,
             workflows: Slot::default(),
@@ -349,7 +349,11 @@ impl DataStore {
             Fetch::Podman => put!(podman, Payload::Podman),
             Fetch::Units => put!(units, Payload::Units),
             Fetch::Reports => put!(reports, Payload::Reports),
-            Fetch::Jobs => put!(job_runs, Payload::Jobs),
+            Fetch::Log => {
+                if let Ok(Payload::Log(v)) = r {
+                    self.maint_log = v;
+                }
+            }
             Fetch::Cleanup => put!(cleanup, Payload::Cleanup),
             Fetch::Workflows => put!(workflows, Payload::Workflows),
             Fetch::History => put!(history, Payload::History),
@@ -419,7 +423,7 @@ fn run_fetch(f: Fetch, ctx: &Ctx) -> Result<Payload, FetchErr> {
         Fetch::Podman => Payload::Podman(podman::collect(ctx)?),
         Fetch::Units => Payload::Units(units::collect(ctx)?),
         Fetch::Reports => Payload::Reports(crate::audit::store::list()),
-        Fetch::Jobs => Payload::Jobs(Records::load()),
+        Fetch::Log => Payload::Log(crate::maint::log::list(crate::maint::LOCAL)),
         Fetch::Cleanup => Payload::Cleanup(
             JobId::CLEANUP
                 .iter()

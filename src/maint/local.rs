@@ -1,7 +1,7 @@
 //! What to maintain on this machine next, and why: the audit's open findings, updates
-//! waiting and a deployment waiting for a reboot, jobs that are due or failed (cadence is the
-//! reminder), space to reclaim, a workflow left in progress, plans ready to apply, and the
-//! tasks you took from a review that are due. Pure.
+//! waiting and a deployment waiting for a reboot, jobs whose last run failed, space to
+//! reclaim, a workflow left in progress, plans ready to apply, and the tasks that are due
+//! (the jobs' cadences among them). Pure.
 
 use std::collections::BTreeMap;
 
@@ -17,8 +17,6 @@ use crate::audit::{Report, Sev};
 use crate::baseline::Baseline;
 use crate::collectors::ostree::{Ostree, UpgradePlan, upgrade_plan};
 use crate::config::Config;
-use crate::jobs::JobId;
-use crate::jobs::state::{Records, due};
 
 /// The workflow that applies updates: Flatpaks, toolboxes, the OS, and the kmod ritual.
 pub const UPDATE_WORKFLOW: &str = "quick-update";
@@ -42,8 +40,6 @@ pub enum Action {
     Reboot,
     /// Open the Cleanup view.
     Cleanup,
-    /// Open the Jobs view on this job.
-    Jobs(JobId),
     /// Open the workflow run (Upgrade).
     OpenRun,
     /// Open a plan (ready to apply).
@@ -60,7 +56,9 @@ impl super::rec::Act for Action {
     fn target(&self) -> Target {
         match self {
             Action::Run(wf) => Target::Workflow(wf.clone()),
-            Action::Audit | Action::Jobs(JobId::Audit) => Target::Audit,
+            Action::Audit => Target::Audit,
+            Action::CheckUpdates => Target::Job("update-check".into()),
+            Action::Cleanup => Target::Job("cleanup".into()),
             _ => Target::None,
         }
     }
@@ -87,7 +85,6 @@ pub struct Inputs<'a> {
     pub ostree: Option<&'a Ostree>,
     pub flatpak_updates: Option<usize>,
     pub toolbox_updates: Option<usize>,
-    pub jobs: Option<&'a Records>,
     /// Bytes the cleanup dry runs found (None: not measured).
     pub reclaim: Option<u64>,
     /// A disk past 90%.
@@ -255,55 +252,27 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
 }
 
 fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
-    let Some(rec) = i.jobs else { return };
-    let has_updates = out.iter().any(|r| r.key == "updates");
-    let mut cleanup_due = Vec::new();
-    for j in JobId::ALL {
-        let every = rec.every(j, i.cfg);
-        let last = rec.runs.get(j.name());
-        if let Some(l) = last.filter(|l| !l.ok) {
+    // A job whose last run failed (the log has it). Due jobs are tasks.
+    for (name, r) in crate::jobs::state::last_runs(i.log) {
+        let action = match name {
+            "audit" => Action::Audit,
+            "update-check" => Action::CheckUpdates,
+            "update-apply" => Action::Run(UPDATE_WORKFLOW.into()),
+            _ => Action::Cleanup,
+        };
+        if !r.ok {
             out.push(Rec {
                 level: Level::Soon,
-                key: format!("job:{}", j.name()),
-                title: format!("{} failed", j.name()),
-                why: format!("Last run: {}", l.summary),
-                action: Action::Jobs(j),
+                key: format!("job:{name}"),
+                title: format!("{name} failed"),
+                why: format!("Last run: {}", r.summary),
+                action,
                 item: None,
             });
-            continue;
         }
-        if !due(j, every, &rec.runs, i.now).is_due() {
-            continue;
-        }
-        let ago = last.map_or("never run".to_string(), |l| {
-            format!(
-                "last run {} days ago, due every {}",
-                (i.now.as_second() - l.at.as_second()) / 86400,
-                every.label()
-            )
-        });
-        let (title, action) = match j {
-            JobId::Audit => ("Audit this machine", Action::Audit),
-            JobId::UpdateCheck => ("Check for updates", Action::CheckUpdates),
-            // Applying is what the updates recommendation does already.
-            JobId::UpdateApply if has_updates => continue,
-            JobId::UpdateApply => ("Apply updates", Action::Run(UPDATE_WORKFLOW.into())),
-            _ => {
-                cleanup_due.push(j.name());
-                continue;
-            }
-        };
-        out.push(Rec {
-            level: Level::Routine,
-            key: format!("job:{}", j.name()),
-            title: title.into(),
-            why: format!("{} ({ago}).", j.name()),
-            action,
-            item: None,
-        });
     }
     let big = i.reclaim.is_some_and(|b| b >= RECLAIM_MIN);
-    if big || !cleanup_due.is_empty() || (i.disk_tight && i.reclaim.is_some_and(|b| b > 0)) {
+    if big || (i.disk_tight && i.reclaim.is_some_and(|b| b > 0)) {
         let space = i
             .reclaim
             .filter(|b| *b > 0)
@@ -321,10 +290,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
             },
             why: [
                 i.disk_tight.then(|| "A disk is past 90%.".to_string()),
-                (!cleanup_due.is_empty()).then(|| format!("Due: {}.", cleanup_due.join(", "))),
-                space
-                    .is_none()
-                    .then(|| "c measures what can go.".to_string()),
+                Some("Cleanup (7) shows what goes before anything does.".to_string()),
             ]
             .into_iter()
             .flatten()
@@ -340,7 +306,6 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
 mod tests {
     use super::*;
     use crate::audit::Finding;
-    use crate::jobs::state::Run;
 
     fn finding(id: &str, sev: Sev) -> Finding {
         Finding {
@@ -367,7 +332,6 @@ mod tests {
             ostree: None,
             flatpak_updates: None,
             toolbox_updates: None,
-            jobs: None,
             reclaim: None,
             disk_tight: false,
             run: None,
@@ -392,6 +356,8 @@ mod tests {
             steps: String::new(),
             added: None,
             review: None,
+            off: false,
+            source: Default::default(),
         };
         let tasks = [task];
         let s = Snoozes::new();
@@ -485,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn jobs_due_failed_and_cleanup() {
+    fn failed_jobs_due_tasks_and_cleanup() {
         let (cfg, b, s, p) = (
             Config::default(),
             Baseline::default(),
@@ -493,30 +459,29 @@ mod tests {
             BTreeMap::new(),
         );
         let now: Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
-        let mut rec = Records::default();
+        let yesterday = now - jiff::SignedDuration::from_hours(24);
         // Everything ran yesterday, except the audit (never) and podman (failed).
-        for j in JobId::ALL {
-            rec.runs.insert(
-                j.name().into(),
-                Run {
-                    at: now - jiff::SignedDuration::from_hours(24),
-                    ok: j != JobId::CleanupPodman,
-                    summary: "podman: not found".into(),
-                },
-            );
-        }
-        rec.runs.remove("audit");
+        let log: Vec<LogEntry> = crate::jobs::JobId::ALL
+            .into_iter()
+            .filter(|j| j.name() != "audit")
+            .map(|j| {
+                let ok = j.name() != "cleanup-podman";
+                LogEntry::event("", "job", j.name(), ok, "podman: not found", &[], yesterday)
+            })
+            .collect();
+        let tasks = crate::jobs::state::tasks(&cfg);
         let mut i = base(&cfg, &b, &s, &p);
-        i.jobs = Some(&rec);
+        i.log = &log;
+        i.tasks = &tasks;
         i.reclaim = Some(3 << 30);
         let recs = recommend(&i);
         let keys: Vec<&str> = recs.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             keys,
-            ["job:cleanup-podman", "job:audit", "cleanup"],
+            ["job:cleanup-podman", "task:job-audit", "cleanup"],
             "{recs:#?}"
         );
-        assert_eq!(recs[1].action, Action::Audit);
+        assert_eq!(recs[1].action, Action::Task("job-audit".into()));
         assert_eq!(recs[2].level, Level::Tidy);
         assert!(recs[2].title.contains("3.0 GiB"), "{}", recs[2].title);
         i.disk_tight = true;

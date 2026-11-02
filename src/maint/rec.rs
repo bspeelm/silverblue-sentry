@@ -30,6 +30,8 @@ pub enum Target {
     Workflow(String),
     Item(String),
     Audit,
+    /// One of this machine's jobs (`cleanup`: the Cleanup screen).
+    Job(String),
     None,
 }
 
@@ -45,6 +47,8 @@ pub fn task_target(t: &Task) -> Target {
         Do::Run(wf) => Target::Workflow(wf),
         Do::Plan(it) => Target::Item(it),
         Do::Audit => Target::Audit,
+        Do::Job(j) if j.starts_with("cleanup") => Target::Job("cleanup".into()),
+        Do::Job(j) => Target::Job(j),
         Do::ByHand => Target::None,
     }
 }
@@ -141,6 +145,8 @@ mod tests {
             steps: String::new(),
             added: None,
             review: None,
+            off: false,
+            source: Default::default(),
         }
     }
 

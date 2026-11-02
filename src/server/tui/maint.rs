@@ -50,16 +50,20 @@ pub fn recs(v: &View) -> Vec<Rec> {
         found: &v.s.maint_found,
         apt: v.s.apt.value.as_ref(),
         log: &v.s.log,
-        cadence: &v.cfg.maintenance.cadence,
         workflows: &v.s.workflows,
         snooze: &v.s.maint_state.snooze,
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
-        tasks: &v.s.tasks,
+        tasks: &all_tasks(v),
     });
     r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
     r
+}
+
+/// Every task that applies: `tasks.toml`'s and `maintenance.cadence`.
+pub fn all_tasks(v: &View) -> Vec<crate::maint::tasks::Task> {
+    crate::maint::tasks::effective(&v.s.tasks, maint::cadence_tasks(v.cfg, &v.s.workflows))
 }
 
 /// The latest audit report, when there is one.
@@ -173,6 +177,7 @@ pub fn verbs(v: &View) -> Verbs {
             },
             Action::Task(_) => Verbs {
                 done: true,
+                every: true,
                 dismiss: Some(Dismiss::Remove),
                 ..Default::default()
             },
@@ -192,7 +197,7 @@ fn action_words(a: &Action) -> String {
         Action::Look(_) => "Enter: go to the item".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it · x: it's expected here".into(),
         Action::Audit => "Enter (or c): audit the server now".into(),
-        Action::Task(_) => "A task you took from a review · d: done · x: remove it".into(),
+        Action::Task(_) => "A task: Enter does it · d: done · e: every · x: remove it".into(),
     }
 }
 
@@ -203,6 +208,7 @@ fn task_words(task: &crate::maint::tasks::Task) -> String {
         Do::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
         Do::Plan(id) => format!("Enter: Claude plans {id}; it's done when {id}'s change is."),
         Do::Audit => "Enter audits now; it's done with the audit.".into(),
+        Do::Job(j) => format!("{j} is one of sentry's jobs (a desktop's): d marks it done."),
         Do::ByHand => "By hand: Enter shows the steps, then marks it done.".into(),
     }
 }
@@ -430,15 +436,18 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 l.extend(super::tabs::updates_lines(v));
             }
             if let Action::Task(id) = &x.action
-                && let Some(task) = v.s.tasks.iter().find(|t| &t.id == id)
+                && let Some(task) = all_tasks(v).into_iter().find(|t| &t.id == id)
             {
                 l.push(Line::raw(""));
-                l.push(Line::styled(task_words(task), t.fg()));
+                l.push(Line::styled(task_words(&task), t.fg()));
                 l.push(Line::styled(
                     format!(
-                        "{} · from the review {}",
+                        "{} · {}",
                         task.when(),
-                        task.review.as_deref().unwrap_or("?")
+                        match &task.review {
+                            Some(r) => format!("from the review {r}"),
+                            None => format!("from {}", task.source.word()),
+                        }
                     ),
                     t.dim(),
                 ));
@@ -726,6 +735,12 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         ],
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
+        // Where it's written: the config (a cadence) or tasks.toml.
+        ('e', Action::Task(id)) => match all_tasks(v).iter().find(|t| &t.id == id) {
+            Some(t) if t.source == crate::maint::tasks::Source::Config => vec![Effect::EditConfig],
+            Some(_) => vec![Effect::EditTasks],
+            None => Vec::new(),
+        },
         ('x', Action::Task(id)) => vec![Effect::Confirm(Modal {
             title: "Remove this task".into(),
             color: v.t.yellow,
@@ -769,7 +784,7 @@ fn dismiss(v: &View, title: &str, what: &str, how: &str, e: Effect) -> Vec<Effec
 fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     use crate::maint::tasks::Do;
     let t = v.t;
-    let Some(task) = v.s.tasks.iter().find(|x| x.id == id) else {
+    let Some(task) = all_tasks(v).into_iter().find(|x| x.id == id) else {
         return Vec::new();
     };
     match task.action() {
@@ -782,6 +797,9 @@ fn task_enter(v: &View, id: &str) -> Vec<Effect> {
             Effect::Fetch(super::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
+        Do::Job(j) => vec![Effect::Toast(format!(
+            "{j} is a job of sentry's (on a desktop), not the server's: d marks it done"
+        ))],
         Do::ByHand => {
             let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
             if task.steps.trim().is_empty() {

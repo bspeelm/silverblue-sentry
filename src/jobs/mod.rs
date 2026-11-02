@@ -102,6 +102,14 @@ pub fn run_cli(name: &str, o: Opts, ctx: &Ctx) -> u8 {
         );
         return 2;
     };
+    // Old jobs.json / cadence.toml into the log and tasks.toml, once.
+    state::migrate(&ctx.cfg);
+    if job == JobId::UpdateApply {
+        eprintln!(
+            "note: quick-update is the update path (sentry workflow quick-update); this job \
+             skips the NVIDIA kmod steps"
+        );
+    }
     let out = &mut std::io::stdout();
     let dry = o.dry_run;
     let r = match job {
