@@ -13,20 +13,17 @@ use sentry_core::workflows::state::StepStatus;
 /// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
 pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
-    let mut p = profile(r, os, kernel, sudo);
+    let mut p = profile(r, os, kernel, sudo).with_notes(&r.cfg.maintenance.notes);
     p.system.push_str(
         " For this question you may also read the web with the WebFetch and WebSearch tools \
          (release notes: fetch the GitHub release pages given; never curl), and the notes files \
          named in it with the Read tool (not grep or cat). Cite what you read.",
     );
-    p.tools
-        .extend(["WebFetch", "WebSearch", "Read"].map(String::from));
+    p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
     p.allowed
         .extend(["WebFetch", "WebSearch"].map(String::from));
     // Denied for every other ask; this one is about reading upstream's notes.
     p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
-    let notes = super::maint::resolve_notes(&r.cfg.maintenance.notes);
-    p.allowed.extend(super::maint::read_rules(&notes));
     // The maintenance log: the ledger and every entry in it.
     let ledger = super::maint::ledger_path(&r.name);
     let log_dir = std::path::Path::new(&ledger)
@@ -34,18 +31,12 @@ pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>
         .map(|d| d.display().to_string())
         .unwrap_or_default();
     p.allowed.push(format!("Read(/{log_dir}/**)"));
-    let mut dirs: Vec<String> = notes
-        .iter()
-        .filter_map(|n| std::path::Path::new(n).parent())
-        .map(|d| d.display().to_string())
-        .collect();
     // Claude Code can only add a directory that exists (the log appears with the first run).
     if std::path::Path::new(&log_dir).is_dir() {
-        dirs.push(log_dir);
+        p.dirs.push(log_dir);
     }
-    dirs.sort();
-    dirs.dedup();
-    p.dirs = dirs;
+    p.dirs.sort();
+    p.dirs.dedup();
     p
 }
 
@@ -69,8 +60,9 @@ refused. You cannot change anything, so never say you did. When something should
 give the exact commands for the user: they run them on the server through sentry-server after \
 confirming (plain commands as they'd type them on the server, not wrapped in sentry-server or \
 ssh). Keep it under about 200 words unless asked for more. If a command was refused or needs \
-root, say so and give the command for the user.{sudo}",
-            crate::gateway::summary()
+root, say so and give the command for the user.{sudo} Files on the laptop (the user's notes): {}",
+            crate::gateway::summary(),
+            sentry_core::claude::GRANTS
         ),
         tools: vec!["Bash".into()],
         allowed: vec![format!("Bash(sentry-server exec {name}:*)")],

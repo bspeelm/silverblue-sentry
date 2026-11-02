@@ -77,6 +77,28 @@ pub struct Chat {
     pub step: Option<StepState>,
     /// Esc while Claude answers: out of sight, still running (`A` brings it back).
     pub hidden: bool,
+    /// The last tool Claude called (name, input): a refusal right after names what it wanted.
+    last_tool: Option<(String, String)>,
+    /// Files Claude was refused this turn, for `g` (not yet granted).
+    pub requests: Vec<crate::claude::Grant>,
+    /// What the user granted in this conversation (every later turn gets it).
+    pub grants: Vec<crate::claude::Grant>,
+    /// Files Claude may write: path, its hash when last seen, its backup.
+    pub watched: Vec<(String, u64, std::path::PathBuf)>,
+}
+
+/// A file's contents, hashed (0: it doesn't exist).
+fn file_hash(path: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    std::fs::read(path).map_or(0, |b| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b.hash(&mut h);
+        h.finish()
+    })
+}
+
+fn line_count(p: &std::path::Path) -> usize {
+    std::fs::read_to_string(p).map_or(0, |t| t.lines().count())
 }
 
 impl Chat {
@@ -99,7 +121,101 @@ impl Chat {
             offer: None,
             step: ask.step().map(|_| StepState::Failed),
             ask,
+            last_tool: None,
+            requests: Vec::new(),
+            grants: Vec::new(),
+            watched: Vec::new(),
         }
+    }
+
+    /// The box `g` opens: what Claude asked for, what's granted, what isn't and why.
+    pub fn grant_lines(&self, t: &Theme) -> Vec<Line<'static>> {
+        let mut l = vec![Line::styled(
+            "Claude asked to use these files, for the rest of this conversation:",
+            t.fg(),
+        )];
+        for g in &self.requests {
+            match crate::claude::grantable(g) {
+                Ok(()) => l.push(Line::styled(
+                    format!(
+                        "  {} {}{}",
+                        g.word(),
+                        g.path,
+                        if g.access == crate::claude::Access::Write {
+                            "  (backed up first)"
+                        } else {
+                            ""
+                        }
+                    ),
+                    t.fg(),
+                )),
+                Err(why) => l.push(Line::styled(
+                    format!("  {} {}  · not granted: {why}", g.word(), g.path),
+                    t.s(t.red),
+                )),
+            }
+        }
+        l.push(Line::raw(""));
+        l.push(Line::styled(
+            "What Claude reads is sent to Anthropic. It can't run commands: those stay yours.",
+            t.dim(),
+        ));
+        l
+    }
+
+    /// `y` on that box: the grantable requests become grants (a write's file is backed up
+    /// by the caller, `watch`); the text of the next turn, telling Claude.
+    pub fn grant(&mut self) -> Option<String> {
+        let ok: Vec<crate::claude::Grant> = std::mem::take(&mut self.requests)
+            .into_iter()
+            .filter(|g| crate::claude::grantable(g).is_ok())
+            .collect();
+        if ok.is_empty() {
+            return None;
+        }
+        let what: Vec<String> = ok
+            .iter()
+            .map(|g| format!("{} {}", g.word(), g.path))
+            .collect();
+        for g in ok {
+            // A write covers a read of the same file.
+            self.grants
+                .retain(|x| !(x.path == g.path && x.access == crate::claude::Access::Read));
+            if !self.grants.contains(&g) {
+                self.grants.push(g);
+            }
+        }
+        Some(format!(
+            "I've granted you: {} (for this conversation). Carry on where you stopped.",
+            what.join("; ")
+        ))
+    }
+
+    /// Watch a file Claude may now write (its backup made by the caller).
+    pub fn watch(&mut self, path: &str, backup: std::path::PathBuf) {
+        if !self.watched.iter().any(|(p, ..)| p == path) {
+            self.watched
+                .push((path.to_string(), file_hash(path), backup));
+        }
+    }
+
+    /// Files Claude changed since they were last looked at: (path, backup, lines before (in
+    /// the backup), lines now). Each change is reported once.
+    pub fn changed(&mut self) -> Vec<(String, std::path::PathBuf, usize, usize)> {
+        let mut out = Vec::new();
+        for (path, hash, backup) in &mut self.watched {
+            let now = file_hash(path);
+            if now != *hash {
+                *hash = now;
+                out.push((
+                    path.clone(),
+                    backup.clone(),
+                    line_count(backup),
+                    line_count(std::path::Path::new(path.as_str())),
+                ));
+            }
+        }
+        out
     }
 
     pub fn busy(&self) -> bool {
@@ -206,6 +322,7 @@ impl Chat {
                 _ => self.push(Kind::Claude, t),
             },
             Event::ToolUse { name, input } => {
+                self.last_tool = Some((name.clone(), input.clone()));
                 let shown = if name == "Bash" {
                     format!("$ {input}")
                 } else {
@@ -214,6 +331,18 @@ impl Chat {
                 self.push(Kind::Tool, shown);
             }
             Event::ToolResult { summary, is_error } => {
+                // Refused a file: sentry can ask the user to grant it (`g`).
+                if is_error
+                    && summary.contains("requested permissions")
+                    && let Some(g) = self
+                        .last_tool
+                        .as_ref()
+                        .and_then(|(n, i)| crate::claude::requested(n, i, &summary))
+                    && !self.grants.contains(&g)
+                    && !self.requests.contains(&g)
+                {
+                    self.requests.push(g);
+                }
                 let kind = if is_error { Kind::ToolErr } else { Kind::Tool };
                 self.push(kind, format!("  → {summary}"));
             }
@@ -253,6 +382,17 @@ impl Chat {
             self.push(Kind::Err, format!("claude exited with {code}"));
         }
         self.refresh_proposals();
+        if !self.requests.is_empty() {
+            let what: Vec<String> = self
+                .requests
+                .iter()
+                .map(|g| format!("{} {}", g.word(), g.path))
+                .collect();
+            self.push(
+                Kind::Info,
+                format!("Claude asked to {} · g grants it", what.join(", ")),
+            );
+        }
     }
 
     pub fn running(&self) -> bool {
@@ -469,6 +609,9 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
             },
         ));
     }
+    if idle && !c.requests.is_empty() {
+        k.push(("g", "grant files"));
+    }
     // Applying something: start its workflow, or mark it done.
     if let Some(a) = c.ask.applying().filter(|_| idle) {
         if a.workflow.is_some() {
@@ -571,6 +714,51 @@ mod tests {
         assert!(screen.contains("sentry's known fix"));
         c.set_offer("x", 0, "ok", Some("The finding is gone."));
         assert!(c.offer.as_deref().unwrap().contains("exit code 0"));
+    }
+
+    #[test]
+    fn a_refused_file_can_be_granted_and_edits_are_noticed() {
+        use crate::claude::{Access, Ask, Event, Grant};
+        let file = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let mut c = Chat::new(Ask::new("s", "ctx", "q"));
+        c.begin_turn("q", 1, 1);
+        c.on_event(Event::ToolUse {
+            name: "Read".into(),
+            input: file.clone(),
+        });
+        c.on_event(Event::ToolResult {
+            summary: format!(
+                "denied: Claude requested permissions to read from {file}, but you haven't granted it yet."
+            ),
+            is_error: true,
+        });
+        c.on_exit(0);
+        assert_eq!(c.requests.len(), 1);
+        assert!(keys(&c).iter().any(|(k, _)| *k == "g"));
+        assert!(c.entries.iter().any(|(_, t)| t.ends_with("g grants it")));
+        let text = c.grant().expect("granted");
+        assert!(
+            text.starts_with("I've granted you: read ") && text.contains(&file),
+            "{text}"
+        );
+        assert_eq!(c.grants.len(), 1);
+        assert!(c.requests.is_empty() && !keys(&c).iter().any(|(k, _)| *k == "g"));
+        // A write: its file is watched; a change is reported once.
+        let tmp = std::env::temp_dir().join(format!("sentry-chat-edit-{}.md", std::process::id()));
+        std::fs::write(&tmp, "a\n").unwrap();
+        let path = tmp.display().to_string();
+        c.watch(&path, tmp.clone());
+        c.grants.push(Grant {
+            access: Access::Write,
+            path: path.clone(),
+        });
+        assert!(c.changed().is_empty());
+        std::fs::write(&tmp, "a\nb\n").unwrap();
+        let ch = c.changed();
+        assert_eq!(ch.len(), 1);
+        assert_eq!((ch[0].0.as_str(), ch[0].3), (path.as_str(), 2));
+        assert!(c.changed().is_empty(), "reported once");
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
