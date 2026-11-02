@@ -3035,6 +3035,7 @@ impl App {
                         None,
                     ));
                 }
+                Fx::AddTask(t) => self.task_add(*t),
                 Fx::Hide => {
                     if let Some(sess) = self.apply.as_mut() {
                         sess.chat.hidden = true;

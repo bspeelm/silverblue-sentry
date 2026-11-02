@@ -568,6 +568,7 @@ mod tests {
             steps: String::new(),
             added: Some("2026-10-20T00:00:00Z".parse().unwrap()),
             review: None,
+            after: None,
             off: false,
             source: Default::default(),
         }];

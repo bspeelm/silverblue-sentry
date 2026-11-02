@@ -51,6 +51,10 @@ pub struct Task {
     /// The review it came from (file name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
+    /// Not due before then: the next good run of this workflow after it was added (a
+    /// follow-up check), or a wait from when it was added (`7d`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 /// Where a task comes from.
@@ -110,10 +114,16 @@ impl Task {
         format!("task:{}", self.id)
     }
 
-    /// "once" or "every 90d".
+    /// "once" or "every 90d" (and what it waits for).
     pub fn when(&self) -> String {
-        self.every
-            .map_or("once".to_string(), |d| format!("every {d}"))
+        let w = self
+            .every
+            .map_or("once".to_string(), |d| format!("every {d}"));
+        match &self.after {
+            Some(a) if a.parse::<Dur>().is_ok() => format!("{w}, {a} after it was added"),
+            Some(wf) => format!("{w}, after the next {wf} run"),
+            None => w,
+        }
     }
 
     /// The task as it's written to `tasks.toml` (what the confirm box shows).
@@ -314,7 +324,7 @@ fn job_matches(task: &str, ran: &str) -> bool {
 
 /// Whether it belongs on Maintenance now.
 pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestamp) -> bool {
-    if t.off {
+    if t.off || !waited(t, log, now) {
         return false;
     }
     let last = last_done(t, log, audited);
@@ -328,6 +338,23 @@ pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestam
             last.is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64)
         }
     }
+}
+
+/// What a task waits for (`after`) has happened: the workflow ran well since it was added,
+/// or the wait is over. A task with no `added` time doesn't wait.
+pub fn waited(t: &Task, log: &[LogEntry], now: Timestamp) -> bool {
+    let (Some(after), Some(added)) = (&t.after, t.added) else {
+        return true;
+    };
+    if let Ok(d) = after.parse::<Dur>() {
+        return now.as_second() - added.as_second() >= d.0.as_secs() as i64;
+    }
+    log.iter().any(|e| {
+        let h = &e.head;
+        &h.workflow == after
+            && h.result == "done"
+            && h.ended.or(h.started).is_some_and(|at| at > added)
+    })
 }
 
 /// A one-time task that's done, and when (retention drops it a while after).
@@ -612,9 +639,28 @@ mod tests {
             steps: String::new(),
             added: Some(ts(added)),
             review: None,
+            after: None,
             off: false,
             source: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_follow_up_waits_for_its_workflow_or_its_time() {
+        let mut t = task("by-hand", None, "2026-10-20T00:00:00Z");
+        t.after = Some("quick-update".into());
+        let now = ts("2026-10-27T12:00:00Z");
+        assert!(!due(&t, &[], None, now), "the run hasn't happened");
+        let before = entry("quick-update", None, "done", "2026-10-19T00:00:00Z", &[]);
+        let failed = entry("quick-update", None, "failed", "2026-10-21T00:00:00Z", &[]);
+        assert!(!due(&t, &[before, failed.clone()], None, now));
+        let ran = entry("quick-update", None, "done", "2026-10-22T00:00:00Z", &[]);
+        assert!(due(&t, &[failed, ran], None, now));
+        assert_eq!(t.when(), "once, after the next quick-update run");
+        t.after = Some("7d".into());
+        assert!(due(&t, &[], None, now));
+        assert!(!due(&t, &[], None, ts("2026-10-25T00:00:00Z")));
+        assert_eq!(t.when(), "once, 7d after it was added");
     }
 
     #[test]
@@ -723,6 +769,7 @@ mod tests {
             off: false,
             source: Source::Default,
             review: None,
+            after: None,
         }
     }
 
