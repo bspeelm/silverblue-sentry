@@ -1473,6 +1473,39 @@ fn claude_helps_apply_the_updates_beside_quick_update() {
 }
 
 #[test]
+fn a_long_plan_keeps_its_running_step_in_view() {
+    use crate::claude::{Apply, Ask};
+    let mut a = app(ScreenId::Maint);
+    a.apply_for_test(vec![crate::tui::screens::Effect::AskConsent(Ask::apply(
+        "many steps",
+        "ctx",
+        Apply {
+            key: "x".into(),
+            ..Default::default()
+        },
+    ))]);
+    key(&mut a, KeyCode::Enter);
+    let steps: String = (1..=40)
+        .map(|i| format!("[[step]]\ntitle = \"Check number {i}\"\ncheck = \"true\"\n"))
+        .collect();
+    a.apply_answer_for_test(&format!(
+        "Many.\n```sentry-apply\nsummary = \"forty checks\"\n{steps}```"
+    ));
+    key(&mut a, KeyCode::Enter);
+    // Step 1 runs: it's on screen (with its clock), not the untouched end of the list.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("▶ 1. Check number 1") && s.contains("… running 0:00"),
+        "{s}"
+    );
+    for _ in 0..19 {
+        a.apply_step_exit_for_test(0);
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("▶ 20. Check number 20"), "{s}");
+}
+
+#[test]
 fn a_plans_workflow_step_waits_for_its_run() {
     use crate::apply::session::{Phase, Turn};
     use crate::claude::{Apply, Ask};

@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::chat::{brief_lines, entry_lines, show_scrolled};
+use super::chat::{brief_lines, entry_lines, show_focused};
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
 use crate::apply::plan::{Kind as K, Run, RunState};
@@ -53,7 +53,17 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     if let Some(l) = status(s, t) {
         lines.push(l);
     }
-    show_scrolled(f, log, c, lines);
+    // Applying: the running (or waiting) step stays in view, however long the plan.
+    let focus = matches!(s.phase, Phase::Applying)
+        .then(|| {
+            lines.iter().rposition(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|x| x.content.contains('▶') || x.content.contains('⏸'))
+            })
+        })
+        .flatten();
+    show_focused(f, log, c, lines, focus);
     f.render_widget(
         Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.rule)),
         rule,
@@ -176,6 +186,9 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
         k.push(("Enter", "send"));
     } else if let Some(w) = s.enter_word() {
         k.push(("Enter", w));
+    }
+    if s.can_grant() {
+        k.push(("g", "grant it"));
     }
     match s.phase {
         Phase::Brief => {

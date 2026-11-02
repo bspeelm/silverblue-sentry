@@ -709,6 +709,24 @@ impl Profile {
         self
     }
 
+    /// Claude may read sentry's own maintenance log (`dir`: the ledger `LOG.md` and its
+    /// entries), as plans and reviews do: it's what was done before.
+    pub fn with_log(mut self, dir: &std::path::Path) -> Self {
+        let d = crate::maint::real_path(dir);
+        if !self.tools.iter().any(|t| t == "Read") {
+            self.tools.push("Read".into());
+        }
+        let rule = format!("Read(/{d}/**)");
+        if !self.allowed.contains(&rule) {
+            self.allowed.push(rule);
+        }
+        // Claude Code can only add a directory that exists (the log appears with the first run).
+        if dir.is_dir() && !self.dirs.contains(&d) {
+            self.dirs.push(d);
+        }
+        self
+    }
+
     /// Chats may read the configured notes files (as plans and reviews do).
     pub fn with_notes(mut self, notes: &[String]) -> Self {
         let notes = crate::maint::resolve_notes(notes);
@@ -1123,6 +1141,21 @@ mod tests {
             path: "ostree admin status".into(),
         }]);
         assert!(p.allowed.iter().any(|a| a == "Bash(ostree admin status)"));
+    }
+
+    #[test]
+    fn the_maintenance_log_is_readable() {
+        let d = std::env::temp_dir().join(format!("sentry-log-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = Profile::local().with_log(&d);
+        let real = crate::maint::real_path(&d);
+        assert!(
+            p.allowed.contains(&format!("Read(/{real}/**)")),
+            "{:?}",
+            p.allowed
+        );
+        assert!(p.dirs.contains(&real));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

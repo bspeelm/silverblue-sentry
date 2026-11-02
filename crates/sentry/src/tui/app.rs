@@ -1276,6 +1276,7 @@ impl App {
         }
         let profile = crate::claude::Profile::local()
             .with_notes(&self.cfg.maintenance.notes)
+            .with_log(&crate::maint::log::dir(crate::maint::LOCAL))
             .with_grants(grants);
         let cmd = crate::claude::turn_cmd_with(prompt, resume, &profile);
         let tx = self.tx.clone();

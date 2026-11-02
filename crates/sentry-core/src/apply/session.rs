@@ -384,6 +384,7 @@ impl Session {
             return Vec::new();
         }
         match code {
+            KeyCode::Char('g') if self.can_grant() => return self.grant(),
             KeyCode::Char(c) if !ctrl => self.chat.input.push(c),
             KeyCode::Backspace => {
                 self.chat.input.pop();
@@ -392,6 +393,29 @@ impl Session {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// `g` is offered: Claude asked to read something it may not, and nothing's typed.
+    pub fn can_grant(&self) -> bool {
+        self.chat.input.is_empty()
+            && matches!(self.phase, Phase::Review | Phase::Settled(_))
+            && self
+                .chat
+                .requests
+                .iter()
+                .any(|g| g.access != crate::claude::Access::Write)
+    }
+
+    /// `g`: what Claude asked to read (or run, read-only) is granted for the session, and it
+    /// carries on. Writes aren't: in a session, changes go in the plan.
+    fn grant(&mut self) -> Vec<Fx> {
+        self.chat
+            .requests
+            .retain(|g| g.access != crate::claude::Access::Write);
+        match self.chat.grant() {
+            Some(text) => self.turn(Turn::Investigate, text.clone(), Some(text)),
+            None => Vec::new(),
+        }
     }
 
     fn enter(&mut self) -> Vec<Fx> {
@@ -1351,6 +1375,42 @@ mod tests {
         s.phase = Phase::Settled(End::Done);
         assert_eq!(s.enter_word(), Some("retry the step"));
         assert_eq!(key(&mut s, KeyCode::Enter), [Fx::RetryStep, Fx::Close]);
+    }
+
+    #[test]
+    fn g_grants_reads_but_changes_go_in_the_plan() {
+        use crate::claude::{Access, Grant};
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, &plan(CHECKS));
+        s.chat.requests = vec![
+            Grant {
+                access: Access::Read,
+                path: "/etc/hosts".into(),
+            },
+            Grant {
+                access: Access::Write,
+                path: "/etc/hosts".into(),
+            },
+        ];
+        assert!(s.can_grant());
+        let fx = key(&mut s, KeyCode::Char('g'));
+        let Some(Fx::Turn { prompt, .. }) = fx.first() else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            prompt.contains("read /etc/hosts") && !prompt.contains("edit"),
+            "{prompt}"
+        );
+        assert!(s.chat.grants.iter().all(|g| g.access == Access::Read));
+        // Typing: `g` is a letter.
+        s.chat.requests = vec![Grant {
+            access: Access::Read,
+            path: "/etc/os-release".into(),
+        }];
+        s.phase = Phase::Review;
+        s.chat.input.push('x');
+        assert!(!s.can_grant());
     }
 
     #[test]

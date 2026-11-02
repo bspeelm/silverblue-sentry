@@ -3519,6 +3519,7 @@ impl App {
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
             .with_notes(&self.remote.cfg.maintenance.notes)
+            .with_log(&sentry_core::maint::log::dir(&self.remote.name))
             .with_grants(grants);
         self.run_seq += 1;
         let id = self.run_seq;
@@ -3545,6 +3546,7 @@ impl App {
             .unwrap_or_default();
         let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
             .with_notes(&self.remote.cfg.maintenance.notes)
+            .with_log(&sentry_core::maint::log::dir(&self.remote.name))
             .with_grants(&grants);
         let cmd = claude::turn_cmd_with(prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
