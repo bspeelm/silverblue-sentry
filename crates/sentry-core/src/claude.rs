@@ -488,9 +488,10 @@ pub fn allowlist_summary() -> String {
 }
 
 /// How Claude asks for a file it may not read or change (every chat's system prompt).
-pub const GRANTS: &str = "If you need to read or change a file you aren't allowed to, call Read or \
-Edit on it anyway: sentry asks the user and tells you if they grant it. Don't ask them to paste it. \
-Commands are still theirs to run.";
+pub const GRANTS: &str = "If you need to read or change a file, or run a read-only command, that \
+you aren't allowed to, call Read, Edit or Bash on it anyway: sentry asks the user and tells you if \
+they grant it. Don't ask them to paste it. Commands that change the system are still theirs to \
+run: propose them.";
 
 pub fn system_prompt() -> String {
     let os = crate::paths::os_version();
@@ -530,6 +531,8 @@ thread_local! {
 pub enum Access {
     Read,
     Write,
+    /// Run one exact command (not on the read-only allowlist).
+    Run,
 }
 
 /// One file Claude may use for the rest of a conversation, because the user said so.
@@ -537,6 +540,7 @@ pub enum Access {
 pub struct Grant {
     pub access: Access,
     /// The real path (symlinks resolved), as Claude Code checks it.
+    /// For `Run`: the exact command.
     pub path: String,
 }
 
@@ -545,6 +549,7 @@ impl Grant {
         match self.access {
             Access::Read => "read",
             Access::Write => "edit",
+            Access::Run => "run",
         }
     }
 }
@@ -552,6 +557,17 @@ impl Grant {
 /// A refused tool call → what it asked for: the tool and its input (Read, Edit, Write,
 /// MultiEdit, NotebookEdit carry a file path), else the path in the refusal itself.
 pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
+    // A command: the part Claude Code wants approved, else the whole command.
+    if name == "Bash" && !refusal.contains("permissions to read") && !refusal.contains("to write") {
+        let cmd = refusal
+            .split_once("requires approval: ")
+            .map_or(input, |(_, part)| part)
+            .trim();
+        return (!cmd.is_empty()).then(|| Grant {
+            access: Access::Run,
+            path: cmd.to_string(),
+        });
+    }
     let access = match name {
         "Read" => Some(Access::Read),
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => Some(Access::Write),
@@ -589,12 +605,32 @@ const NEVER: &[&str] = &[".ssh", ".gnupg", ".local/share/keyrings", ".password-s
 
 /// Whether the user may grant it, and why not.
 pub fn grantable(g: &Grant) -> Result<(), &'static str> {
+    if g.access == Access::Run {
+        let words: Vec<&str> = g.path.split_whitespace().collect();
+        let writes_out = g
+            .path
+            .replace("2>&1", "")
+            .replace(">&2", "")
+            .replace("2>/dev/null", "")
+            .contains('>');
+        return if words
+            .iter()
+            .any(|w| matches!(*w, "sudo" | "su" | "rm" | "dd" | "mkfs"))
+        {
+            Err("sudo and deleting stay yours: Claude proposes it, you run it (r)")
+        } else if writes_out {
+            Err("it writes to a file: Claude proposes it, you run it (r)")
+        } else {
+            Ok(())
+        };
+    }
     let p = std::path::Path::new(&g.path);
     let home = crate::paths::home();
     if NEVER.iter().any(|n| p.starts_with(home.join(n))) {
         return Err("keys and passwords live there");
     }
     match g.access {
+        Access::Run => Ok(()),
         Access::Read if !p.is_file() => Err("not a file"),
         Access::Read => Ok(()),
         Access::Write if !p.starts_with(&home) || p == home => Err("only files in your home"),
@@ -625,6 +661,15 @@ pub fn backup(path: &str) -> std::io::Result<std::path::PathBuf> {
     Ok(to)
 }
 
+/// A chat's denials: the interactive ones without Edit/Write (which stay refused unless a
+/// file is granted, and can be asked for).
+fn chat_denied(d: &[&str]) -> Vec<String> {
+    d.iter()
+        .filter(|x| **x != "Edit" && **x != "Write")
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// `Read(//abs)` for an absolute path, as Claude Code's rules want it.
 fn rule(tool: &str, path: &str) -> String {
     match path.strip_prefix('/') {
@@ -645,14 +690,29 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// A chat on this machine: read-only commands, and Edit/Write there to be asked for
+    /// (refused unless granted: `-p` turns every call without an allow rule down).
     pub fn local() -> Self {
         Self {
             system: system_prompt(),
-            tools: ["Bash", "Read", "Grep", "Glob"].map(String::from).to_vec(),
+            tools: ["Bash", "Read", "Grep", "Glob", "Edit", "Write"]
+                .map(String::from)
+                .to_vec(),
             allowed: ALLOWED.iter().map(|s| s.to_string()).collect(),
-            denied: DENIED.iter().map(|s| s.to_string()).collect(),
+            denied: chat_denied(DENIED),
             dirs: Vec::new(),
         }
+    }
+
+    /// No edits at all (plans and reviews: nobody is there to grant one).
+    pub fn without_edits(mut self) -> Self {
+        self.tools.retain(|t| t != "Edit" && t != "Write");
+        for d in ["Edit", "Write"] {
+            if !self.denied.iter().any(|x| x == d) {
+                self.denied.push(d.into());
+            }
+        }
+        self
     }
 
     /// Chats may read the configured notes files (as plans and reviews do).
@@ -681,6 +741,10 @@ impl Profile {
     /// path-scoped allows keep every other file out.
     pub fn with_grants(mut self, grants: &[Grant]) -> Self {
         for g in grants {
+            if g.access == Access::Run {
+                self.allowed.push(format!("Bash({})", g.path));
+                continue;
+            }
             let mut tools = vec!["Read"];
             self.allowed.push(rule("Read", &g.path));
             if g.access == Access::Write {
@@ -705,9 +769,8 @@ impl Profile {
 
     /// The local denials plus every way around a server gateway.
     pub fn denied_for_servers() -> Vec<String> {
-        DENIED
-            .iter()
-            .map(|s| s.to_string())
+        chat_denied(DENIED)
+            .into_iter()
             .chain(
                 [
                     "Bash(ssh:*)",
@@ -1005,7 +1068,13 @@ mod tests {
             "{c}"
         );
         assert!(c.contains("--allowedTools") && c.contains("'Bash(journalctl:*)'"));
-        assert!(c.contains("--disallowedTools Write Edit"));
+        // Edit/Write are there to be asked for, with no allow rule (refused unless granted).
+        assert!(c.contains("--tools Bash Read Grep Glob Edit Write"), "{c}");
+        assert!(
+            !c.contains("Edit(") && !c.contains("--disallowedTools Write Edit"),
+            "{c}"
+        );
+        assert!(c.contains("--disallowedTools NotebookEdit"), "{c}");
         assert!(c.contains("'Bash(sudo:*)'"));
         assert!(c.ends_with("--resume abc"), "{c}");
         assert!(
@@ -1047,7 +1116,37 @@ mod tests {
         assert_eq!(g.path, "/nowhere/notes.md");
         let w = "denied: Claude requested permissions to write to /nowhere/a.md, but …";
         assert_eq!(requested("Bash", "x", w).unwrap().access, Access::Write);
-        assert!(requested("Bash", "ls", "denied: Bash(ls) isn't allowed").is_none());
+        // A command: the part Claude Code wants approved, else the whole command.
+        let part = "denied: This Bash command contains multiple operations. The following part \
+                    requires approval: ostree admin status 2>&1";
+        let g = requested(
+            "Bash",
+            "rpm-ostree status; ostree admin status 2>&1 | head",
+            part,
+        )
+        .unwrap();
+        assert_eq!(
+            (g.access, g.path.as_str()),
+            (Access::Run, "ostree admin status 2>&1")
+        );
+        assert!(grantable(&g).is_ok());
+        let g = requested(
+            "Bash",
+            "sudo ostree admin pin 1",
+            "denied: Bash isn't allowed",
+        )
+        .unwrap();
+        assert!(grantable(&g).is_err(), "sudo stays the user's");
+        let out = Grant {
+            access: Access::Run,
+            path: "rpm -qa > /tmp/x".into(),
+        };
+        assert!(grantable(&out).is_err(), "writes a file");
+        let p = Profile::local().with_grants(&[Grant {
+            access: Access::Run,
+            path: "ostree admin status".into(),
+        }]);
+        assert!(p.allowed.iter().any(|a| a == "Bash(ostree admin status)"));
     }
 
     #[test]
@@ -1090,12 +1189,14 @@ mod tests {
             p.denied
         );
         assert!(p.tools.iter().any(|t| t == "Edit") && p.dirs == ["/home/u/notes"]);
-        // A read grant leaves edits denied.
+        // A read grant allows no edit; plans and reviews can't edit at all.
         let r = Profile::local().with_grants(&[Grant {
             access: Access::Read,
             path: "/home/u/a.md".into(),
         }]);
-        assert!(r.denied.iter().any(|d| d == "Edit"));
+        assert!(!r.allowed.iter().any(|a| a.starts_with("Edit(")));
+        let w = Profile::local().without_edits();
+        assert!(w.denied.iter().any(|d| d == "Edit") && !w.tools.iter().any(|t| t == "Edit"));
         // Notes are readable in chats, as for plans.
         let n = Profile::local().with_notes(&["/nowhere/notes/up.md".into()]);
         assert!(n.allowed.iter().any(|a| a == "Read(//nowhere/notes/up.md)"));

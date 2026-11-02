@@ -804,8 +804,11 @@ fn ask_claude_about_a_finding_and_run_its_proposal() {
 fn claude_gets_only_the_gateway() {
     let r = Remote::new("myserver", &cfg());
     let p = super::ask::profile(&r, "Debian 13", "6.12", None);
+    // Nothing allowed but the gateway; Read/Edit/Write (laptop files) are there only to be
+    // asked for, and refused unless granted.
     assert_eq!(p.allowed, ["Bash(sentry-server exec myserver:*)"]);
-    assert_eq!(p.tools, ["Bash"]);
+    assert_eq!(p.tools, ["Bash", "Read", "Edit", "Write"]);
+    assert!(p.denied.contains(&"Bash(scp:*)".to_string()));
     assert!(p.denied.contains(&"Bash(ssh:*)".to_string()));
     assert!(p.denied.contains(&"Bash(sudo:*)".to_string()));
     assert!(

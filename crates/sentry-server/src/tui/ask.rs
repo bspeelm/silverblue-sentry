@@ -13,7 +13,9 @@ use sentry_core::workflows::state::StepStatus;
 /// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
 pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
-    let mut p = profile(r, os, kernel, sudo).with_notes(&r.cfg.maintenance.notes);
+    let mut p = profile(r, os, kernel, sudo)
+        .with_notes(&r.cfg.maintenance.notes)
+        .without_edits();
     p.system.push_str(
         " For this question you may also read the web with the WebFetch and WebSearch tools \
          (release notes: fetch the GitHub release pages given; never curl), and the notes files \
@@ -64,7 +66,8 @@ root, say so and give the command for the user.{sudo} Files on the laptop (the u
             crate::gateway::summary(),
             sentry_core::claude::GRANTS
         ),
-        tools: vec!["Bash".into()],
+        // Read/Edit/Write: files on this laptop, refused unless granted (they can be asked for).
+        tools: ["Bash", "Read", "Edit", "Write"].map(String::from).to_vec(),
         allowed: vec![format!("Bash(sentry-server exec {name}:*)")],
         denied: Profile::denied_for_servers(),
         dirs: Vec::new(),
