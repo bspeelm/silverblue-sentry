@@ -326,14 +326,15 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
             return 2;
         }
     };
-    if s.maintenance.items.is_empty() {
-        println!("{n}: no maintenance: items in server_config.yaml");
+    // With what's tracked from the Maintenance tab (`t`) added, as the TUI shows it.
+    let r = Remote::new(&n, &s).with_inventory();
+    if r.cfg.maintenance.items.is_empty() {
+        println!("{n}: no maintenance items (server_config.yaml, or t on the Maintenance tab)");
         return 0;
     }
-    let r = Remote::new(&n, &s).with_inventory();
     if refresh {
         eprintln!("looking up upstream versions…");
-        maint::upstream::refresh(&n, &s);
+        maint::upstream::refresh(&n, &r.cfg);
     }
     let up_age = maint::upstream::load(&n).map(|c| c.age_secs(jiff::Timestamp::now()));
     let st = super::collect::maint_status(&r);
@@ -371,6 +372,19 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
     match up_age {
         Some(a) => println!("(upstream looked up {})", crate::fmt::ago(a)),
         None => println!("(upstream not looked up yet: --refresh)"),
+    }
+    let log = maint::log::list(&n);
+    let due = crate::maint::tasks::recs(
+        &crate::maint::tasks::load(&n),
+        &log,
+        None,
+        jiff::Timestamp::now(),
+    );
+    if !due.is_empty() {
+        println!("\ntasks due:");
+        for t in &due {
+            println!("  [{}] {}: {}", t.level.word(), t.title, t.why);
+        }
     }
     0
 }

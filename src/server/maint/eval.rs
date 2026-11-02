@@ -235,7 +235,7 @@ pub fn findings(statuses: &[Status], items: &[MaintItem]) -> Vec<Finding> {
                 format!("{}: newer releases mention security fixes ({})", s.id, fixes.join(", ")),
                 "Upstream released versions after the pinned one whose notes mention a security fix.",
                 format!("Pinned at {pinned}; the fix may matter for how this server uses it."),
-                "Assess it (A on the Maintenance tab), then move it with its workflow (p).".into(),
+                "Plan the move (p on the Maintenance tab): Claude reads the release notes first.".into(),
             ));
         }
         if s.has(Flag::Drift) {
@@ -282,7 +282,7 @@ pub fn findings(statuses: &[Status], items: &[MaintItem]) -> Vec<Finding> {
                 ),
                 "It's held deliberately until a date that has passed.",
                 "The reason for holding it may no longer apply.".into(),
-                "Assess it (A), then move it (p), or set a new date (z).".into(),
+                "Plan the move (p), or set a new date (z).".into(),
             ));
         }
         let held = s.has(Flag::Held);
@@ -293,7 +293,7 @@ pub fn findings(statuses: &[Status], items: &[MaintItem]) -> Vec<Finding> {
                 format!("{}: {pinned} → {newest} ({} newer)", s.id, s.newer.len()),
                 "Newer versions exist upstream.",
                 "Staying far behind makes the eventual move bigger.".into(),
-                "Assess it (A on the Maintenance tab).".into(),
+                "Plan the move when it suits (p on the Maintenance tab).".into(),
             ));
         }
         if s.has(Flag::Retire) {

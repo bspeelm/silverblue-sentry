@@ -279,9 +279,6 @@ pub struct App {
     plan_view: Option<(String, usize)>,
     review_view: Option<usize>,
     review: Option<crate::maint::review::ReviewDoc>,
-    /// A plan whose workflow is being started; the plan the current run applies, and where
-    /// it went when the run completed.
-    plan_pending: Option<String>,
     wf_plan: Option<String>,
     wf_plan_path: Option<std::path::PathBuf>,
 }
@@ -340,7 +337,6 @@ impl App {
             plan_view: None,
             review_view: None,
             review: crate::maint::review::latest(crate::maint::LOCAL),
-            plan_pending: None,
             wf_plan: None,
             wf_plan_path: None,
         };
@@ -458,7 +454,6 @@ impl App {
             plan_view: None,
             review_view: None,
             review: None,
-            plan_pending: None,
             wf_plan: None,
             wf_plan_path: None,
         }
@@ -493,6 +488,10 @@ impl App {
     // ---------------------------------------------------------------- scheduling
 
     fn enter(&mut self, id: ScreenId, now: Instant) {
+        // Coming back to Maintenance from another screen shows its list, not a view left open.
+        if id == ScreenId::Maint && self.screen != id {
+            self.screens.maint.view = None;
+        }
         self.screen = id;
         self.dirty = true;
         match id {
@@ -1666,11 +1665,15 @@ impl App {
                         self.input = Input::Prompt(Prompt::PlanNote(wf), String::new());
                     }
                 }
-                Effect::PlanWrite(wf, note) => self.plan_write(&wf, note),
+                Effect::PlanWrite(wf, note) => {
+                    if self.records {
+                        let _ = crate::maint::plan::retire(crate::maint::LOCAL, &wf);
+                    }
+                    self.plan_write(&wf, note)
+                }
                 Effect::PlanApply(wf) => match self.data.plans.get(&wf) {
-                    Some(doc) => {
-                        self.screens.preset_workflow(doc.head.vars.clone());
-                        self.plan_pending = Some(wf.clone());
+                    // Starting the workflow picks up its ready plan (Upgrade's Enter).
+                    Some(_) => {
                         self.plan_view = None;
                         self.workflow_command(Some(&wf), now);
                     }
@@ -1760,7 +1763,13 @@ impl App {
                     Ok(s) => {
                         self.wf = Some(s);
                         self.wf_from = self.booted_version();
-                        self.wf_plan = self.plan_pending.take().filter(|p| *p == name);
+                        // However it was started, a ready plan for it is what this run applies.
+                        self.wf_plan = self
+                            .data
+                            .plans
+                            .get(&name)
+                            .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)
+                            .map(|_| name.clone());
                         self.wf_plan_path = None;
                         // Entering the screen arms the session and runs the first auto step.
                         self.enter(ScreenId::Upgrade, now);
@@ -1960,8 +1969,8 @@ impl App {
     }
 
     fn open_maint_view(&mut self, s: Sub, now: Instant) {
-        self.screens.maint.open(s);
         self.enter(ScreenId::Maint, now);
+        self.screens.maint.open(s);
     }
 
     fn writing_plan(&self, wf: &str) -> bool {

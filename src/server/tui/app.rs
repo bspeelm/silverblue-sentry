@@ -237,10 +237,6 @@ pub struct App {
     pub last_log: Option<crate::server::maint::log::LogEntry>,
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
-    /// The open chat is an assessment (its follow-ups keep the web and notes access).
-    chat_assess: bool,
-    /// The item it assesses (its answer is saved when a turn ends).
-    assess_item: Option<String>,
     /// A plan waiting for its note: (item, plan, the note typed so far).
     plan_note: Option<(String, PlanDoc, String)>,
     /// Claude writing a plan, in the background.
@@ -317,8 +313,6 @@ impl App {
             log_note: None,
             last_log: None,
             suspend_edit: false,
-            chat_assess: false,
-            assess_item: None,
             plan_note: None,
             writer: None,
             plan_view: None,
@@ -581,7 +575,6 @@ impl App {
                     if c.hidden {
                         self.toast("Claude answered · A opens the chat");
                     }
-                    self.save_assessment();
                     self.offer_reads(ReadsFor::Chat);
                 }
             }
@@ -877,6 +870,19 @@ impl App {
             } else if matches!(a, Action::Esc) {
                 self.run_view = false;
                 return;
+            } else if !matches!(
+                a,
+                Action::Quit
+                    | Action::Interrupt
+                    | Action::Command
+                    | Action::Screen(_)
+                    | Action::NextScreen
+                    | Action::PrevScreen
+                    | Action::Help
+                    | Action::Ask
+            ) {
+                // The tab underneath isn't on screen: its keys don't act on it.
+                return;
             }
         }
         let n = self.rows();
@@ -1139,11 +1145,19 @@ impl App {
                     }
                 }
                 Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
-                Effect::PlanWrite(id, doc, prompt) => self.write_plan(id, doc, prompt, None),
+                Effect::PlanWrite(id, doc, prompt) => {
+                    if !self.offline {
+                        let _ = crate::maint::plan::retire(&self.remote.name, &id);
+                    }
+                    self.write_plan(id, doc, prompt, None)
+                }
                 Effect::Snooze(id, until) => {
                     match crate::server::maint::snooze(&self.remote.name, &id, until) {
                         Ok(()) => {
                             self.toast(&format!("{id}: look again {until}"));
+                            // The recommendations filter on the loaded state: read it again.
+                            self.store.maint_state =
+                                crate::server::maint::load_state(&self.remote.name);
                             self.fetch(Kind::Maint);
                         }
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
@@ -2496,33 +2510,6 @@ impl App {
         self.offer_reads(ReadsFor::Plan);
     }
 
-    /// An assessment's turn ended: keep what Claude said, for `L` and the item's details.
-    fn save_assessment(&mut self) {
-        let (Some(id), Some(c)) = (self.assess_item.clone(), self.chat.as_ref()) else {
-            return;
-        };
-        let text = c
-            .entries
-            .iter()
-            .filter(|(k, _)| *k == chatmod::Kind::Claude)
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if text.trim().is_empty() {
-            return;
-        }
-        if !self.offline {
-            let _ = crate::server::maint::save_assessment(&self.remote.name, &id, &text);
-        }
-        self.store.maint_state.assessments.insert(
-            id,
-            crate::server::maint::Assessment {
-                at: Some(jiff::Timestamp::now()),
-                text,
-            },
-        );
-    }
-
     fn open_log(&mut self, item: Option<String>) {
         let entries = if self.offline {
             Vec::new()
@@ -2857,13 +2844,6 @@ impl App {
     fn ask_turn(&mut self, turn: AskTurn) {
         match turn {
             AskTurn::First(ask) => {
-                // Questions in the chat are never assessments now (plans assess).
-                self.chat_assess = false;
-                self.assess_item = if self.chat_assess {
-                    super::maint::selected(&self.view()).map(|(s, _)| s.id.clone())
-                } else {
-                    None
-                };
                 let p = ask.prompt();
                 let q = ask.question.lines().next().unwrap_or("").to_string();
                 // A hidden chat still answering is replaced: stop it first.
@@ -2882,13 +2862,8 @@ impl App {
 
     /// Send one turn to Claude, into the open chat or the background plan.
     fn start_turn(&mut self, to: ReadsFor, prompt: &str, shown: String, resume: Option<String>) {
-        let assess = self.chat_assess;
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = if assess {
-            super::ask::assess_profile(&self.remote, &os, &kernel, self.store.sudo.value)
-        } else {
-            super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
-        };
+        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value);
         let cmd = claude::turn_cmd_with(prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
@@ -3618,7 +3593,7 @@ impl App {
             if self.store.sudo.value == Some(SudoMode::Password) {
                 h.push(("I", "read with sudo"));
             }
-            // The Maintenance tab names its own `A` (assess).
+            // Maintenance's own keys fill the bar there.
             match self.chat.as_ref().filter(|c| c.hidden) {
                 Some(c) => h.push(("A", c.hidden_word())),
                 None if claude::available() && self.tab != Tab::Maint => {
@@ -3747,10 +3722,6 @@ impl App {
             Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
             _ => None,
         }
-    }
-    /// Tests: Claude's turn ended (there's no claude process offline).
-    pub fn turn_ended(&mut self) {
-        self.save_assessment();
     }
     /// Tests: the plan writer answered.
     pub fn writer_answered(&mut self, answer: &str) {

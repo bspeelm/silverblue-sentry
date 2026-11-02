@@ -25,6 +25,8 @@ pub enum PlanStatus {
     Done,
     /// Dropped without applying it.
     Dropped,
+    /// A new plan for the same item took its place (`P`).
+    Replaced,
 }
 
 impl PlanStatus {
@@ -36,6 +38,7 @@ impl PlanStatus {
             PlanStatus::Failed => "failed",
             PlanStatus::Done => "done",
             PlanStatus::Dropped => "dropped",
+            PlanStatus::Replaced => "replaced",
         }
     }
 }
@@ -112,8 +115,7 @@ impl PlanDoc {
             Some(Some(t)) => {
                 self.head.status = PlanStatus::Ready;
                 if self.head.vars.contains_key("service") {
-                    let tag =
-                        crate::server::maint::version::like_pin(&t, self.head.from.as_deref());
+                    let tag = super::version::like_pin(&t, self.head.from.as_deref());
                     if let Some(repo) = &self.head.repo {
                         self.head
                             .vars
@@ -195,6 +197,21 @@ pub fn close(doc: &PlanDoc, status: PlanStatus) -> anyhow::Result<PathBuf> {
     Ok(to)
 }
 
+/// A new plan is about to be written for `item`: an existing one moves to `done/` as
+/// replaced (one still being written is just written over).
+pub fn retire(server: &str, item: &str) -> anyhow::Result<Option<PathBuf>> {
+    let Some(old) = std::fs::read_to_string(path(server, item))
+        .ok()
+        .and_then(|t| PlanDoc::parse(&t).ok())
+    else {
+        return Ok(None);
+    };
+    if old.head.status == PlanStatus::Writing {
+        return Ok(None);
+    }
+    close(&old, PlanStatus::Replaced).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +246,23 @@ mod tests {
         let mut w = doc();
         w.take_answer("TARGET: wait\n# Plan: web\nNot until 1.5.3.");
         assert_eq!(w.head.status, PlanStatus::Wait);
+    }
+
+    #[test]
+    fn planning_again_keeps_the_old_plan_in_done() {
+        let mut d = doc();
+        d.head.server = "retire-test".into();
+        d.take_answer("TARGET: 1.5.2\n# Plan");
+        save(&d).unwrap();
+        let moved = retire("retire-test", "web").unwrap().expect("moved");
+        assert!(!path("retire-test", "web").exists());
+        let old = PlanDoc::parse(&std::fs::read_to_string(&moved).unwrap()).unwrap();
+        assert_eq!(old.head.status, PlanStatus::Replaced);
+        assert_eq!(
+            retire("retire-test", "web").unwrap(),
+            None,
+            "nothing left to move"
+        );
     }
 
     #[test]

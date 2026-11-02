@@ -5,11 +5,10 @@
 pub mod discover;
 pub mod eval;
 pub mod local;
-pub use crate::maint::{log, plan, review};
+pub use crate::maint::{log, plan, review, version};
 pub mod recommend;
 pub mod tracked;
 pub mod upstream;
-pub mod version;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,13 +18,12 @@ use serde::{Deserialize, Serialize};
 use crate::paths;
 
 /// What sentry-server writes itself, next to the config (never in it): review dates moved
-/// with `z`, saved plans (`p`) and the last assessment of each item (`A`).
+/// with `z`, and plans from before plans were files (migrated, then cleared).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
     pub snooze: BTreeMap<String, jiff::civil::Date>,
     pub plans: BTreeMap<String, Plan>,
-    pub assessments: BTreeMap<String, Assessment>,
 }
 
 /// A change decided on but not made yet: kept until it's run to the end or dropped.
@@ -51,14 +49,6 @@ pub struct Plan {
     pub session: Option<String>,
 }
 
-/// Claude's last assessment of an item.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Assessment {
-    pub at: Option<jiff::Timestamp>,
-    pub text: String,
-}
-
 fn state_path(server: &str) -> PathBuf {
     paths::config_dir()
         .join("servers")
@@ -77,7 +67,7 @@ fn update(server: &str, f: impl FnOnce(&mut State)) -> anyhow::Result<()> {
     let mut st = load_state(server);
     f(&mut st);
     let text = format!(
-        "# Written by sentry-server's Maintenance tab: review dates (z), plans (p), assessments (A).\n\
+        "# Written by sentry-server's Maintenance tab: review dates (z).\n\
          # Edit freely.\n{}",
         toml::to_string(&st)?
     );
@@ -110,18 +100,6 @@ fn clear_old_plans(server: &str) -> anyhow::Result<()> {
     update(server, |st| st.plans.clear())
 }
 
-pub fn save_assessment(server: &str, id: &str, text: &str) -> anyhow::Result<()> {
-    update(server, |st| {
-        st.assessments.insert(
-            id.to_string(),
-            Assessment {
-                at: Some(jiff::Timestamp::now()),
-                text: text.to_string(),
-            },
-        );
-    })
-}
-
 /// One change made through a workflow started from an item.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Change {
@@ -134,10 +112,11 @@ pub struct Change {
     pub result: String,
 }
 
-/// An item's changes, newest first (from the maintenance log).
-pub fn history(server: &str, item: &str) -> Vec<Change> {
-    log::for_item(server, item)
-        .into_iter()
+/// An item's changes, newest first (from the maintenance log, newest first).
+pub fn history(log: &[log::LogEntry], item: &str) -> Vec<Change> {
+    log.iter()
+        .filter(|e| e.head.item.as_deref() == Some(item))
+        .cloned()
         .map(|e| Change {
             at: e.head.ended.or(e.head.started).unwrap_or_default(),
             item: item.to_string(),
@@ -193,7 +172,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_round_trips_with_plans_and_long_assessments() {
+    fn state_round_trips_with_old_plans() {
         let mut st = State::default();
         st.snooze
             .insert("web".into(), jiff::civil::date(2027, 1, 1));
@@ -212,14 +191,15 @@ mod tests {
                 session: None,
             },
         );
-        st.assessments.insert(
-            "web".into(),
-            Assessment {
-                at: None,
-                text: "**What changed**\n- a \"quoted\" line\n\n**Recommendation**: wait".into(),
-            },
-        );
         let back: State = toml::from_str(&toml::to_string(&st).unwrap()).unwrap();
         assert_eq!(back, st);
+    }
+
+    #[test]
+    fn a_file_with_old_assessments_keeps_its_review_dates() {
+        let st: State =
+            toml::from_str("[snooze]\nweb = \"2027-01-01\"\n\n[assessments.web]\ntext = \"old\"\n")
+                .unwrap();
+        assert_eq!(st.snooze["web"], jiff::civil::date(2027, 1, 1));
     }
 }

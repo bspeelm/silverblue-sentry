@@ -816,6 +816,8 @@ fn maintenance_keys_and_views() {
     // x marks it expected: it leaves the list.
     let before = render_to_string(&mut a, 158, 41);
     key(&mut a, KeyCode::Char('x'));
+    assert!(render_to_string(&mut a, 158, 41).contains("Mark it expected"));
+    key(&mut a, KeyCode::Char('y'));
     let after = render_to_string(&mut a, 158, 41);
     assert_ne!(before, after);
     // The views open and Esc comes back.
@@ -1242,6 +1244,24 @@ fn claude_plans_a_workflow_and_reviews_maintenance() {
     key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Review maintenance with Claude"), "{s}");
+}
+
+#[test]
+fn a_ready_plan_goes_with_its_workflow_however_it_starts() {
+    let mut a = app(ScreenId::Maint);
+    a.plan_written_for_test(
+        "quick-update",
+        Default::default(),
+        "TARGET: 44\n# Plan: quick-update\n\n## Before\n- back up",
+    );
+    key(&mut a, KeyCode::Esc);
+    // Started from the Upgrade screen, not from the plan: the plan still comes along.
+    a.apply_for_test(vec![crate::tui::app::Effect::StartWorkflow(
+        "quick-update".into(),
+    )]);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Start quick-update"), "{s}");
+    assert!(s.contains("With Claude's plan"), "{s}");
 }
 
 const REVIEW_WITH_TASKS: &str = "Reading the ledger.\n# Maintenance review\n\n## Now\n- update\n\n\

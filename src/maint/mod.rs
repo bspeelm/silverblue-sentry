@@ -9,6 +9,7 @@ pub mod retention;
 pub mod review;
 pub mod snooze;
 pub mod tasks;
+pub mod version;
 
 use std::path::PathBuf;
 
