@@ -11,7 +11,9 @@ use crate::maint::{self, LOCAL};
 /// What Claude may use: the machine's read-only commands (as for Ask Claude), the web for
 /// release notes, and Read on your notes and the maintenance log.
 fn profile(cfg: &Config, system: String) -> Profile {
-    let mut p = Profile::local().with_notes(&cfg.maintenance.notes);
+    let mut p = Profile::local()
+        .with_notes(&cfg.maintenance.notes)
+        .without_edits();
     p.system = system;
     p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
     p.allowed

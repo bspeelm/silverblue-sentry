@@ -141,10 +141,12 @@ impl Chat {
                         "  {} {}{}",
                         g.word(),
                         g.path,
-                        if g.access == crate::claude::Access::Write {
-                            "  (backed up first)"
-                        } else {
-                            ""
+                        match g.access {
+                            crate::claude::Access::Write => "  (backed up first)",
+                            crate::claude::Access::Run => {
+                                "  (that exact command; sentry doesn't know it: read it first)"
+                            }
+                            crate::claude::Access::Read => "",
                         }
                     ),
                     t.fg(),
@@ -157,7 +159,7 @@ impl Chat {
         }
         l.push(Line::raw(""));
         l.push(Line::styled(
-            "What Claude reads is sent to Anthropic. It can't run commands: those stay yours.",
+            "What Claude reads or runs is sent to Anthropic. Commands that change things stay yours.",
             t.dim(),
         ));
         l
@@ -663,10 +665,14 @@ mod tests {
                 Kind::Tool,
                 Kind::Tool,
                 Kind::ToolErr,
-                Kind::Claude
+                Kind::Claude,
+                Kind::Info
             ]
         );
         assert_eq!(c.entries[5].1, "Port 27500 is owned by root.");
+        // The refused `sudo ss`: asked for, but never grantable.
+        assert_eq!(c.requests[0].path, "sudo ss -tlnp");
+        assert!(crate::claude::grantable(&c.requests[0]).is_err());
         assert_eq!(
             c.session.as_deref(),
             Some("11111111-2222-3333-4444-555555555555")
