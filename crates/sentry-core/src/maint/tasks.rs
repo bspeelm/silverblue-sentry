@@ -164,31 +164,10 @@ const FENCE: &str = "```sentry-tasks";
 /// Claude's review answer → the review without its tasks block, and the tasks in it. Entries
 /// that don't parse are dropped; a `run`/`plan` of something unknown becomes by hand.
 pub fn take_suggestions(answer: &str, known: &Known) -> (String, Vec<Task>) {
-    let lines: Vec<&str> = answer.lines().collect();
-    let Some(start) = lines.iter().position(|l| l.trim_start().starts_with(FENCE)) else {
-        return (answer.to_string(), Vec::new());
-    };
-    // The closing fence is the first one outside a TOML multi-line string: `steps` may hold
-    // Markdown with fences of its own.
-    let mut quoted = false;
-    let end = lines[start + 1..]
-        .iter()
-        .position(|l| {
-            let closes = !quoted && l.trim() == "```";
-            if l.matches("\"\"\"").count() % 2 == 1 {
-                quoted = !quoted;
-            }
-            closes
-        })
-        .map_or(lines.len(), |n| start + 1 + n);
-    let block = lines[start + 1..end].join("\n");
-    let rest: Vec<&str> = lines[..start]
-        .iter()
-        .chain(lines.get(end + 1..).unwrap_or_default())
-        .copied()
-        .collect();
-    let body = rest.join("\n").trim().to_string();
-    (body, parse_block(&block, known))
+    match super::fenced_block(answer, FENCE) {
+        Some((body, block)) => (body, parse_block(&block, known)),
+        None => (answer.to_string(), Vec::new()),
+    }
 }
 
 fn parse_block(block: &str, known: &Known) -> Vec<Task> {

@@ -1289,7 +1289,9 @@ fn a_ready_plan_goes_with_its_workflow_however_it_starts() {
     key(&mut a, KeyCode::Char('1'));
     let p = a.consent_text().expect("consent");
     assert!(
-        p.contains("Claude's plan for it") && p.contains("back up") && p.contains("press `w`"),
+        p.contains("Claude's plan for it")
+            && p.contains("back up")
+            && p.contains("workflow = \"quick-update\""),
         "{p}"
     );
 }
@@ -1345,9 +1347,17 @@ fn review_suggestions_become_maintenance_tasks() {
         "{s}"
     );
     assert!(!s.contains("Install the waiting updates"), "skipped: {s}");
+    // Enter: with Claude (it plans, sentry applies); m: the steps, to do it yourself.
     key(&mut a, KeyCode::Enter);
+    let p = a.consent_text().expect("Enter asks Claude");
+    assert!(
+        p.contains("Help me apply this") && p.contains("Check the UPS battery"),
+        "{p}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('m'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("mark done"), "Enter shows the steps: {s}");
+    assert!(s.contains("mark done"), "m shows the steps: {s}");
     key(&mut a, KeyCode::Char('n'));
     key(&mut a, KeyCode::Char('d'));
     // Logged at once (it's off the list); the note is asked after, and Esc only skips it.
@@ -1449,7 +1459,7 @@ fn claude_helps_apply_the_updates_beside_quick_update() {
         "{p}"
     );
     assert!(
-        p.contains("press `w`") && p.contains("Never propose"),
+        p.contains("workflow = \"quick-update\"") && p.contains("never its commands"),
         "{p}"
     );
     // `2`: the plain question, no apply rules.
@@ -1457,7 +1467,7 @@ fn claude_helps_apply_the_updates_beside_quick_update() {
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('2'));
     let p = a.consent_text().expect("consent");
-    assert!(!p.contains("press `w`"), "{p}");
+    assert!(!p.contains("sentry-apply"), "{p}");
 }
 
 #[test]
@@ -1561,4 +1571,87 @@ fn g_shows_the_files_claude_asked_for() {
         "{s}"
     );
     assert!(s.contains("Cargo.toml"), "{s}");
+}
+
+#[test]
+fn claude_plans_once_and_sentry_applies_the_plan() {
+    use crate::claude::{Apply, Ask, Event};
+    use crate::tui::chat::Chat;
+    // A file under home (edits are only allowed there), removed at the end.
+    let dir = crate::paths::home().join(".cache/sentry-applyplan-apptest");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join(format!("cheatsheet-{}.md", std::process::id()));
+    std::fs::write(&f, "# Cheatsheet\n**Layered:** akmods code\nend\n").unwrap();
+    let file = f.display().to_string();
+    let answer = |old: &str| {
+        format!(
+            "The layered line is stale.\n\n```sentry-apply\nsummary = \"Fix the layered line\"\n\
+             rollback = \"sentry restores the backup\"\n\n[[step]]\ntitle = \"Line 2\"\n\
+             edit = \"{file}\"\nold = \"\"\"{old}\"\"\"\nnew = \"\"\"**Layered:** akmods ghostty\"\"\"\n```\n"
+        )
+    };
+    let chat = |text: String| {
+        let mut c = Chat::new(Ask::apply(
+            "the cheatsheet",
+            "ctx",
+            Apply {
+                key: "task:sheet".into(),
+                task: Some("sheet".into()),
+                ..Default::default()
+            },
+        ));
+        c.begin_turn("q", 1, 1);
+        c.on_event(Event::Text(text));
+        c.on_exit(0);
+        c
+    };
+    // A plan whose old text isn't in the file: shown, not appliable.
+    let mut a = app(ScreenId::Maint);
+    let mut c = chat(answer("**Layered:** nope"));
+    c.plan_problems = crate::applyplan::problems(&c.apply_run.as_ref().unwrap().plan, &[]);
+    a.set_chat(c);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("can't be applied as it is") && s.contains("isn't in the file"),
+        "{s}"
+    );
+    assert!(!s.contains("apply the plan"), "{s}");
+    // The real one: shown as one plan, no proposals; `a`, `y`, and sentry does it.
+    let mut c = chat(answer("**Layered:** akmods code"));
+    c.plan_problems = crate::applyplan::problems(&c.apply_run.as_ref().unwrap().plan, &[]);
+    a.set_chat(c);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Plan: Fix the layered line · a applies it"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("Proposed commands") && !s.contains("```"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('a'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Apply the plan") && s.contains("+ **Layered:** akmods ghostty"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "# Cheatsheet\n**Layered:** akmods ghostty\nend\n"
+    );
+    let c = a.chat_for_test().unwrap();
+    assert!(
+        c.offer
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sentry applied all 1 steps"),
+        "{:?}",
+        c.offer
+    );
+    let e = &a.log_for_test()[0];
+    assert_eq!(e.head.kind, "apply");
+    assert!(e.head.tags.contains(&"apply:task:sheet".to_string()));
+    assert!(e.head.tags.contains(&format!("file:{file}")));
+    let _ = std::fs::remove_dir_all(&dir);
 }

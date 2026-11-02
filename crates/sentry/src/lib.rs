@@ -2,7 +2,7 @@
 //! side, the recorder. What it shares with sentry-server is `sentry_core`, re-exported here
 //! under the same names.
 
-pub use sentry_core::{baseline, cache, claude, config, exec, finding, fmt, paths};
+pub use sentry_core::{applyplan, baseline, cache, claude, config, exec, finding, fmt, paths};
 
 pub mod audit;
 pub mod checks;

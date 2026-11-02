@@ -96,6 +96,8 @@ pub enum Effect {
     LogEvent(Box<crate::maint::log::LogEntry>),
     /// Grant the files Claude asked for, then tell it (the next turn).
     ChatGrant,
+    /// The plan was approved: carry it out.
+    ApplyStart,
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -750,6 +752,7 @@ impl App {
                         self.toast("Claude answered · A opens the chat");
                     }
                     self.chat_edits();
+                    self.chat_plan_check();
                 }
             }
             self.dirty = true;
@@ -1133,6 +1136,17 @@ impl App {
                     AskTurn::Follow(text.clone()),
                 ));
             }
+            // Claude's plan: shown whole, approved once, then sentry carries it out.
+            KeyCode::Char('a') if idle && c.can_apply() => {
+                let t = self.theme;
+                let lines = c.approval_lines(&t);
+                self.modal = Some(Modal {
+                    title: "Apply the plan".into(),
+                    color: t.yellow,
+                    lines,
+                    yes: Some(("apply".into(), vec![Effect::ApplyStart])),
+                });
+            }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
                 let t = self.theme;
@@ -1329,6 +1343,30 @@ impl App {
 
     /// A chat command finished: audit again if it changed something, else offer the output.
     fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
+        // A step of the approved plan: its end is the plan's next step.
+        if let Some(c) = self.chat.as_mut()
+            && let Some(i) = c.plan_step.take()
+        {
+            let out = crate::applyplan::tail(&output, 15);
+            let note = if out.trim().is_empty() {
+                format!("exit {code}")
+            } else {
+                format!("exit {code}\n{out}")
+            };
+            c.push(
+                super::chat::Kind::Info,
+                format!(
+                    "{} step {} · exit {code}",
+                    if code == 0 { "✓" } else { "✗" },
+                    i + 1
+                ),
+            );
+            let a = c.apply_run.as_mut().map(|r| r.step_done(code == 0, note));
+            if let Some(a) = a {
+                self.plan_drive(a, Instant::now());
+            }
+            return;
+        }
         // Applying something: what you ran that changes anything goes in the log. Never a
         // task's tag: `d` or the workflow's own run says it's done.
         if let Some(a) = self
@@ -1452,6 +1490,20 @@ impl App {
 
     /// An apply chat for the workflow that just ended: what happened, ready for `s`.
     fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
+        // The approved plan was waiting for this run: its result is the step's.
+        if let Some(c) = self.chat.as_mut()
+            && let Some(r) = c.apply_run.as_mut()
+            && let crate::applyplan::RunState::WaitingWorkflow(i) = r.state
+            && matches!(&r.plan.steps[i].kind, crate::applyplan::Kind::Workflow(w) if *w == e.head.workflow)
+        {
+            let ok = e.head.result == "done";
+            let a = r.step_done(
+                ok,
+                format!("{} {}: {}", e.head.workflow, e.head.result, e.head.summary),
+            );
+            self.plan_drive(a, Instant::now());
+            return;
+        }
         let Some(c) = self.chat.as_mut().filter(|c| {
             c.ask
                 .applying()
@@ -1558,7 +1610,7 @@ impl App {
         let mut hints = self.screens.hints(self.screen, &self.view());
         // Maintenance's list: every row key, not only the selected row's.
         if self.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
-            let row = ["Enter", "p", "P", "t", "d", "e", "x", "B", "z", "A"];
+            let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
             hints = super::maintlist::GRAMMAR
                 .iter()
                 .copied()
@@ -2010,6 +2062,16 @@ impl App {
                 Effect::TaskDone(id) => self.task_done(&id),
                 Effect::LogEvent(e) => self.log_event(*e),
                 Effect::ChatGrant => self.chat_grant(),
+                Effect::ApplyStart => {
+                    let a = self
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.apply_run.as_mut())
+                        .map(|r| r.start());
+                    if let Some(a) = a {
+                        self.plan_drive(a, now);
+                    }
+                }
                 Effect::Quit => self.quit = true,
             }
         }
@@ -2751,6 +2813,108 @@ impl App {
     }
 
     /// `d` on a task: logged as done by hand (tagged `task:<id>`, which takes it off the list).
+    /// After Claude's turn: what stops its plan (edits that don't fit, unknown workflows).
+    fn chat_plan_check(&mut self) {
+        let names = self.workflow_names();
+        if let Some(c) = self.chat.as_mut()
+            && let Some(r) = &c.apply_run
+            && r.state == crate::applyplan::RunState::Proposed
+        {
+            c.plan_problems = crate::applyplan::problems(&r.plan, &names);
+        }
+    }
+
+    /// Carry out the approved plan from `a` on: edits here, commands like a proposal (sudo
+    /// hands the terminal over), a workflow started; each one's end comes back here.
+    fn plan_drive(&mut self, mut a: crate::applyplan::Action, now: Instant) {
+        use crate::applyplan::{Action, apply_edit};
+        loop {
+            let Some(c) = self.chat.as_mut() else { return };
+            let Some(r) = c.apply_run.as_mut() else {
+                return;
+            };
+            match a {
+                Action::Edit(i) => {
+                    let (ok, note) = match apply_edit(&r.plan.steps[i]) {
+                        Ok((b, before, after)) => (
+                            true,
+                            format!("{before} → {after} lines · backup {}", b.display()),
+                        ),
+                        Err(e) => (false, e),
+                    };
+                    let line = format!("{} step {}: {note}", if ok { "✓" } else { "✗" }, i + 1);
+                    a = r.step_done(ok, note);
+                    c.push(super::chat::Kind::Info, line);
+                }
+                Action::Command { idx, cmd } => {
+                    c.plan_step = Some(idx);
+                    let why = r.plan.steps[idx].title.clone();
+                    self.chat_run(crate::claude::Proposed {
+                        cmd,
+                        why,
+                        undo: None,
+                        known: false,
+                    });
+                    return;
+                }
+                Action::StartWorkflow(_, wf) => {
+                    c.hidden = true;
+                    self.toast(format!(
+                        "starting {wf} · the plan carries on when its run ends"
+                    ));
+                    self.apply(vec![Effect::StartWorkflow(wf)], now);
+                    return;
+                }
+                Action::Finished => return self.plan_finished(),
+            }
+        }
+    }
+
+    /// The plan ran (or stopped): Claude gets the report (`s`), the log one entry.
+    fn plan_finished(&mut self) {
+        let Some(c) = self.chat.as_mut() else { return };
+        let Some(r) = c.apply_run.as_ref() else {
+            return;
+        };
+        let report = r.report();
+        let ok = r.state == crate::applyplan::RunState::Done;
+        let tags: Vec<String> = c
+            .ask
+            .applying()
+            .map(|a| format!("apply:{}", a.key))
+            .into_iter()
+            .chain(r.plan.steps.iter().filter_map(|s| match &s.kind {
+                crate::applyplan::Kind::Edit { file, .. } => Some(format!("file:{file}")),
+                _ => None,
+            }))
+            .collect();
+        let summary = format!("{}\n\n{report}", r.plan.summary);
+        c.hidden = false;
+        c.offer = Some(report);
+        c.push(
+            super::chat::Kind::Info,
+            if ok {
+                "plan applied · s sends the results to Claude".to_string()
+            } else {
+                "plan stopped · s sends what happened to Claude".to_string()
+            },
+        );
+        self.log_event(crate::maint::log::LogEntry::event(
+            crate::maint::LOCAL,
+            "apply",
+            "apply",
+            ok,
+            &summary,
+            &tags,
+            jiff::Timestamp::now(),
+        ));
+        self.toast(if ok {
+            "plan applied"
+        } else {
+            "plan stopped at a failed step"
+        });
+    }
+
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
     fn chat_grant(&mut self) {
         use crate::claude::{Access, backup, grantable};

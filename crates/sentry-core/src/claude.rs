@@ -251,32 +251,43 @@ pub fn fix_question(extra: &str) -> String {
 
 /// Help me apply it: before, the change (a workflow's, or the commands), verify, roll back.
 pub fn apply_question(a: &Apply) -> String {
-    let change = match &a.workflow {
+    let wf = match &a.workflow {
         Some(wf) => format!(
-            "**Apply**: sentry's workflow `{wf}` makes the change, with its own confirm steps and \
-             log. Never propose its commands (upgrades, rebases, pin or image edits, `compose up`, \
-             reboots): when Before is clear, tell me to press `w` to start it. I'll send you how \
-             each step goes."
+            " sentry's workflow `{wf}` makes this change, with its own confirm steps and log: put \
+             it in the plan as a `workflow = \"{wf}\"` step and never its commands (upgrades, \
+             rebases, pin or image edits, `compose up`, reboots)."
         ),
-        None => "**Apply**: the commands that make the change, in order, one block each.".into(),
+        None => String::new(),
     };
     let done = if a.can_mark_done() {
-        " When it's all done and verified, tell me to press `d` to mark it done."
+        " After the plan has run, say whether it's done; I mark it done (`d`)."
     } else {
         ""
     };
     format!(
-        "Help me apply this, step by step. Investigate with your read-only commands first. \
-         Commands are mine to run: I run what you propose myself, through sentry, and send you \
-         the output. A file you need to change, edit it with the Edit tool: I'm asked whether to \
-         grant that file first. Answer in four parts:\n\
-         **Before**: what to check or back up first, and the commands for it.\n\
-         {change}\n\
-         **Verify**: the commands that show it worked.\n\
-         **If it goes wrong**: how to roll back.\n\
-         Each command I should run goes in its own ```bash fenced block whose first line is a \
-         `# why: ...` comment. Use sudo only where it's needed. If something in the plan no \
-         longer fits what you find, say so before anything else.{done}"
+        "Help me apply this. Investigate with your read-only commands first (read files with the \
+         Read tool). Then answer with a short assessment (what you found, anything in the task \
+         that no longer fits) and ONE plan, as a single ```sentry-apply fenced TOML block, and \
+         no other code blocks:\n\
+         ```sentry-apply\n\
+         summary = \"what the plan does, in one line\"\n\
+         rollback = \"how to undo it, in words\"\n\n\
+         [[step]]\n\
+         title = \"what this step does\"\n\
+         edit = \"/absolute/path/of/the/file\"\n\
+         old = \"\"\"exact text in the file as it is now, unique in it\"\"\"\n\
+         new = \"\"\"its replacement\"\"\"\n\n\
+         [[step]]\n\
+         title = \"check it worked\"\n\
+         check = \"a command that exits 0 when it did\"\n\
+         ```\n\
+         Each step has exactly one of: `edit` (with `old` and `new`), `run` (a command that \
+         changes something; sudo where needed), `check` (a command that must exit 0, or the \
+         plan stops) or `workflow` (one of sentry's workflows). Order them as they must happen \
+         and end with the checks that show it worked. sentry shows me the plan; once I approve \
+         it, sentry backs up every file it edits and runs the steps in order. So don't back \
+         anything up yourself, and don't run or edit anything now. If a step fails, sentry \
+         sends you what happened and you send a plan for the rest.{wf}{done}"
     )
 }
 

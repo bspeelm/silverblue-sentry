@@ -54,6 +54,8 @@ pub struct Verbs {
     pub done: bool,
     /// `e` sets how often it recurs (a task).
     pub every: bool,
+    /// `m` shows the steps to do it yourself (a task done by hand).
+    pub manual: bool,
     pub dismiss: Option<Dismiss>,
     /// `B`: everything like this finding is expected too.
     pub like: bool,
@@ -77,6 +79,9 @@ pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
     }
     if v.every {
         h.push(("e", "every"));
+    }
+    if v.manual {
+        h.push(("m", "steps"));
     }
     if let Some(d) = v.dismiss {
         h.push(("x", d.word()));
@@ -102,6 +107,7 @@ pub const GRAMMAR: &[(&str, &str)] = &[
         "e",
         "how often a task recurs (30d, off); written to tasks.toml",
     ),
+    ("m", "a task's steps, to do it yourself (then mark it done)"),
     (
         "x",
         "expected (a finding) · ignore · untrack · remove (a task) · drop the plan; asks first",
@@ -110,7 +116,7 @@ pub const GRAMMAR: &[(&str, &str)] = &[
     ("z", "look again later: 7, 30 or 90 days"),
     (
         "A",
-        "Claude: help me apply it (it proposes, you run each step) or just ask",
+        "Claude: help me apply it (it plans, you approve, sentry applies) or just ask",
     ),
 ];
 
