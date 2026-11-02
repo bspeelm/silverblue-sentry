@@ -1552,12 +1552,50 @@ dependencies = [
  "jiff",
  "ratatui",
  "rustix",
+ "sentry-core",
  "serde",
- "serde-saphyr",
  "serde_ignored",
  "serde_json",
  "signal-hook 0.4.5",
  "sysinfo",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sentry-core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "ratatui",
+ "rustix",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "signal-hook 0.4.5",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "sentry-server"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "insta",
+ "jiff",
+ "ratatui",
+ "rustix",
+ "sentry-core",
+ "serde",
+ "serde-saphyr",
+ "serde_ignored",
+ "serde_json",
  "thiserror 2.0.21",
  "toml",
  "tracing",

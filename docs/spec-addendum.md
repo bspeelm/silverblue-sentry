@@ -3,7 +3,7 @@
 Decided 2026-10-23 during build prep, after probing the target machine. Where this file and `spec.md` disagree, **this file wins**.
 
 ## A1. Runtime environment
-- Development happens inside a Fedora 44 **toolbox**. `rpm-ostree`, `flatpak` and `podman` exist only on the host. Every external command goes through `src/exec.rs`. When `/run/.containerenv` exists it adds the prefix `flatpak-spawn --host`. Binary availability is probed by path (`/run/host/usr/bin/<bin>` in a toolbox, `$PATH` otherwise) **before** spawning, because a missing binary via flatpak-spawn shows up as exit 1 with a portal error rather than 127.
+- Development happens inside a Fedora 44 **toolbox**. `rpm-ostree`, `flatpak` and `podman` exist only on the host. Every external command goes through `crates/sentry-core/src/exec.rs`. When `/run/.containerenv` exists it adds the prefix `flatpak-spawn --host`. Binary availability is probed by path (`/run/host/usr/bin/<bin>` in a toolbox, `$PATH` otherwise) **before** spawning, because a missing binary via flatpak-spawn shows up as exit 1 with a portal error rather than 127.
 - Host `/etc` is read via `paths::host_root()` (`/run/host` in a toolbox). `/proc`, `/sys` and `/var/lib/flatpak` are shared and read directly.
 - `SENTRY_HOST_EXEC=direct|spawn` overrides the detection.
 
@@ -84,7 +84,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `sentry workflow list|lint [name]|abandon|<name> [--var k=v]`.
 
 ## A13. Recorder and History (milestone 6)
-- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
+- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `crates/sentry/src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
 - `metrics/recorder.pid` marks a live recorder. Only one runs at a time, and the file is removed on Ctrl-C/SIGTERM/SIGHUP.
 - Footprint, measured on the host with a release build at a 10 s interval: **0.07% of one core including children, 9.8 MB RSS**. Getting there meant:
   - top-3 processes from a CPU-only process refresh (kernel names) once a minute;
@@ -121,7 +121,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 ## A17. Audit, explained (supersedes parts of A9)
 - Every finding carries `what` / `why` / `fix` text. The screen shows them in a detail box, and the raw evidence underneath.
 - Severity is shown as **check** (high), **review** (medium) or **info** (low). Stored values are unchanged.
-- **Listeners are grouped by service.** `src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
+- **Listeners are grouped by service.** `crates/sentry/src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
   - Reach is described in words (all networks / LAN / VPN / link-local).
   - An unknown root-owned service is **check**, with the `sudo ss` command that names it.
   - A known remote-access service open to every network is **review**. A stock desktop service is **info**.
@@ -220,8 +220,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **quick-update fixes the GL runtimes itself:** a `flatpak-gl-update` step (`flatpak update -y`, confirm, `when = "!flatpak_gl_nvidia"`) runs before the `flatpak-gl` check. The earlier `flatpak` step runs before the new driver is loaded, so it can't pull the matching GL runtimes; the check used to fail and leave the command to the user.
 
 ## A23. sentry-server
-- A second binary (`src/bin/sentry-server.rs`) over the same library (`src/lib.rs`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`src/server/config.rs`, sample in `assets/`).
+- A second binary (`crates/sentry-server/src/main.rs`) over the shared library (`crates/sentry-core`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`crates/sentry-server/src/config.rs`, sample in `assets/`).
 - Transport: `exec::Site::Ssh`. Captured commands share one multiplexed connection (`ControlPersist=15s`); streamed and interactive ones get their own, so killing them stops the remote side (`-tt`). Exit 127 = not found there, 255 = unreachable.
-- Collectors (`src/server/collect/`) parse synthetic fixtures in `tests/fixtures/server/`; the audit (`src/server/audit.rs`) derives `srv:*` findings from a snapshot.
+- Collectors (`crates/sentry-server/src/collect/`) parse synthetic fixtures in `tests/fixtures/server/`; the audit (`crates/sentry-server/src/audit.rs`) derives `srv:*` findings from a snapshot.
 - Workflows reuse `workflows::runner` with a remote `Env` (built-ins and conditions over ssh, `Env::builtins`/`live`), `LintRules`, and runs under the server's own data dir. `sentry-server cond` steps run locally and read the server.
-- Ask Claude uses `claude::Profile`: Claude may only run `sentry-server exec <server>` (`src/server/gateway.rs` allowlist); ssh, scp, sftp and rsync are denied.
+- Ask Claude uses `claude::Profile`: Claude may only run `sentry-server exec <server>` (`crates/sentry-server/src/gateway.rs` allowlist); ssh, scp, sftp and rsync are denied.
+
+## A24. Workspace (2026-11)
+- One repo, a cargo workspace of three crates: `sentry-core` (what both programs share: `exec`, `paths`, `config`, `baseline`, `finding`, `claude`, `maint`, the workflow format and runner, a few parsers, the TUI kit), `sentry` (this machine) and `sentry-server`. The compiler keeps the direction: core depends on neither binary.
+- `sentry` re-exports the core modules under their old names (`crate::exec`, `crate::maint`, …), and its `maint`, `workflows`, `collectors` and `tui` add their local parts to core's. sentry-server names core as `sentry_core::…` (its own `config`, `maint`, `tui` and `audit` would clash).
+- Tests: core's `testing` feature (scratch dirs per process, Claude Code counted as installed) is turned on only by the other crates' dev-dependencies; release builds never have it.
+

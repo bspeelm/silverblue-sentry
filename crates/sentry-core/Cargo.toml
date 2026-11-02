@@ -1,0 +1,28 @@
+[package]
+name = "sentry-core"
+description = "What sentry and sentry-server share: commands, paths, the maintenance records, workflows, Claude, the TUI kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# Test support for the other crates' tests (they turn it on through their dev-dependencies,
+# so a real build never has it): paths go to a scratch root per process; Claude Code counts
+# as installed unless a test says otherwise.
+testing = []
+
+[dependencies]
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+serde_ignored.workspace = true
+jiff.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+signal-hook.workspace = true
+rustix.workspace = true
