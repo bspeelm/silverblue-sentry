@@ -69,39 +69,171 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         return h;
     }
     let mut h = maintlist::hints(&m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default());
-    // Narrow: the bar drops these from the end.
-    h.extend([
-        ("c", "check all"),
-        ("R", "review"),
-        ("v", "records"),
-        ("F", "report"),
-        ("C", "cleanup"),
-        ("w", "workflows"),
-    ]);
+    // The screen's own few; F, C, w and the rest are in `?`.
+    h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
     h
 }
 
 /// The keys a row takes besides Enter.
 pub fn verbs(v: &View, r: &Rec) -> Verbs {
+    let enter = match &r.action {
+        Do::Fix(_) => "fix",
+        Do::Audit => "audit",
+        Do::CheckUpdates => "check",
+        Do::Run(wf) if wf == local::UPDATE_WORKFLOW => "install",
+        Do::Run(_) => "start",
+        Do::Reboot => "reboot",
+        Do::Cleanup => "clean up",
+        Do::OpenRun => "open run",
+        Do::OpenPlan(_) => "open plan",
+        Do::Task(id) => match task(v, id).map(|t| t.action()) {
+            Some(TaskDo::Run(_)) => "start",
+            Some(TaskDo::Audit) => "audit",
+            Some(TaskDo::Job(j)) if j.starts_with("cleanup") => "clean up",
+            Some(TaskDo::Job(_)) => "run",
+            _ => "steps",
+        },
+    };
+    let base = Verbs {
+        enter,
+        ..Default::default()
+    };
     match &r.action {
         Do::Fix(_) => Verbs {
             dismiss: Some(Dismiss::Expected),
             like: true,
-            ..Default::default()
+            ..base
         },
         Do::Run(wf) | Do::OpenPlan(wf) => Verbs {
             plan: true,
             planned: v.d.plans.contains_key(wf),
-            ..Default::default()
+            ..base
         },
         Do::Task(_) => Verbs {
             done: true,
             every: true,
             dismiss: Some(Dismiss::Remove),
+            ..base
+        },
+        _ => base,
+    }
+}
+
+/// A workflow for Claude: what it does and its steps, in order.
+fn workflow_text(wf: &str) -> String {
+    match crate::workflows::find(wf).map(|e| e.wf) {
+        Some(Ok(w)) => {
+            let steps: Vec<String> = w
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("  {}. {} ({})", i + 1, s.title, s.id))
+                .collect();
+            format!(
+                "sentry's workflow `{wf}`: {}\nIts steps:\n{}",
+                w.description,
+                steps.join("\n")
+            )
+        }
+        _ => format!("sentry's workflow `{wf}` (its file couldn't be read)."),
+    }
+}
+
+/// Claude's plan for a workflow, when there's one ready.
+fn plan_text(v: &View, wf: &str) -> Option<String> {
+    let p =
+        v.d.plans
+            .get(wf)
+            .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)?;
+    Some(format!(
+        "Claude's plan for it, written earlier (plans/{wf}.md), target {}:\n{}",
+        p.head.to.as_deref().unwrap_or("-"),
+        p.body
+    ))
+}
+
+/// `A` → "help me apply it": what Claude is told about the row, and what the chat can do.
+/// None: the row is only asked about (a finding has its own fix flow; a reboot or a cleanup
+/// is applied by its own screen).
+pub fn apply_ask(v: &View, r: &Rec) -> Option<crate::claude::Ask> {
+    use crate::claude::{Apply, Ask};
+    let head = format!(
+        "A maintenance recommendation on my Silverblue machine: [{}] {}\nWhy: {}",
+        r.level.word(),
+        r.title,
+        r.why
+    );
+    let with_wf = |wf: &str, extra: String| {
+        let plan = plan_text(v, wf);
+        let mut ctx = format!("{head}\n\n{extra}{}", workflow_text(wf));
+        if let Some(p) = &plan {
+            ctx.push_str(&format!("\n\n{p}"));
+        }
+        Ask::apply(
+            r.title.clone(),
+            ctx,
+            Apply {
+                key: r.key.clone(),
+                workflow: Some(wf.to_string()),
+                plan: plan.map(|_| wf.to_string()),
+                ..Default::default()
+            },
+        )
+    };
+    match &r.action {
+        Do::Run(wf) | Do::OpenPlan(wf) if wf == local::UPDATE_WORKFLOW => Some(with_wf(
+            wf,
+            updates::ask(v).map_or(String::new(), |a| format!("{}\n\n", a.context)),
+        )),
+        Do::Run(wf) | Do::OpenPlan(wf) => Some(with_wf(wf, String::new())),
+        Do::Task(id) => {
+            let t = task(v, id)?;
+            let wf = match t.action() {
+                TaskDo::Run(wf) => Some(wf),
+                TaskDo::ByHand | TaskDo::Plan(_) => None,
+                TaskDo::Audit | TaskDo::Job(_) => return None,
+            };
+            let mut ctx = format!(
+                "{head}\n\nA task ({}): {}\n{}",
+                t.when(),
+                t.title,
+                if t.steps.trim().is_empty() {
+                    "(no steps written)".to_string()
+                } else {
+                    format!("Its steps:\n{}", t.steps.trim())
+                }
+            );
+            if let Some(wf) = &wf {
+                ctx.push_str(&format!("\n\n{}", workflow_text(wf)));
+            }
+            Some(Ask::apply(
+                t.title.clone(),
+                ctx,
+                Apply {
+                    key: r.key.clone(),
+                    workflow: wf,
+                    task: Some(t.id.clone()),
+                    ..Default::default()
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// `A` in the Plan view: apply that plan with Claude.
+pub fn plan_apply_ask(v: &View, wf: &str) -> Option<crate::claude::Ask> {
+    let plan = plan_text(v, wf)?;
+    Some(crate::claude::Ask::apply(
+        format!("the plan for {wf}"),
+        format!("{plan}\n\n{}", workflow_text(wf)),
+        crate::claude::Apply {
+            key: format!("plan:{wf}"),
+            workflow: Some(wf.to_string()),
+            plan: Some(wf.to_string()),
             ..Default::default()
         },
-        _ => Verbs::default(),
-    }
+    ))
 }
 
 /// The recommendations, from what's loaded.
@@ -508,6 +640,15 @@ impl Maint {
         );
     }
 
+    /// `A` → "help me apply it", for the selected row (None in a view, or when it's only asked
+    /// about).
+    pub fn apply_ask(&self, v: &View) -> Option<crate::claude::Ask> {
+        if self.view.is_some() {
+            return None;
+        }
+        apply_ask(v, &self.selected(v)?)
+    }
+
     pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
         if let Some(s) = self.view {
             return match s {
@@ -566,19 +707,11 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
     }
     l.push(Line::raw(""));
     l.push(Line::styled(action_words(&r.action), t.s(t.cyan)));
-    if let Do::Run(wf) = &r.action {
-        l.push(Line::styled(
-            format!("Same as {wf} on the Upgrade screen (0), where you can watch it."),
-            t.dim(),
-        ));
-    }
-    l.push(Line::styled("z: look again later", t.dim()));
     match &r.action {
         Do::Fix(id) => {
             if let Some(fd) = finding(v, id) {
                 l.push(Line::raw(""));
                 l.extend(audit::finding_lines(t, fd, w, "Enter"));
-                l.push(Line::styled("x: expected (baseline.toml)", t.dim()));
             }
         }
         Do::Run(wf) if wf == local::UPDATE_WORKFLOW => {
@@ -604,11 +737,6 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
                     l.push(Line::raw(""));
                     l.extend(crate::tui::docview::markdown(t, &task.steps));
                 }
-                l.push(Line::raw(""));
-                l.push(Line::styled(
-                    "d: done (logs it) · x: remove it (tasks.toml)",
-                    t.dim(),
-                ));
             }
         }
         Do::Cleanup => {

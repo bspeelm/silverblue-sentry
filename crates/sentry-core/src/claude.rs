@@ -30,6 +30,30 @@ pub enum Target {
         idx: usize,
         id: String,
     },
+    /// Applying a Maintenance recommendation or a plan, with Claude alongside.
+    Apply(Apply),
+}
+
+/// What's being applied: what the chat's own keys do around the commands you run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Apply {
+    /// The Maintenance row's key (the log tags what you run `apply:<key>`).
+    pub key: String,
+    /// The workflow that makes the change: `w` in the chat starts it.
+    pub workflow: Option<String>,
+    /// The sentry-server item it's about.
+    pub item: Option<String>,
+    /// A task: `d` in the chat marks it done.
+    pub task: Option<String>,
+    /// There's a plan for it (by item, or by workflow on this machine).
+    pub plan: Option<String>,
+}
+
+impl Apply {
+    /// `d` marks it done: a task, or a plan with no workflow (done by hand).
+    pub fn can_mark_done(&self) -> bool {
+        self.task.is_some() || (self.plan.is_some() && self.workflow.is_none())
+    }
 }
 
 /// What sentry knows about a failed workflow step (built by the Upgrade screen).
@@ -171,6 +195,25 @@ impl Ask {
         }
     }
 
+    /// Help applying a recommendation or a plan (`context`: what sentry knows about it).
+    pub fn apply(subject: impl Into<String>, context: impl Into<String>, a: Apply) -> Self {
+        Self {
+            subject: format!("apply · {}", subject.into()),
+            context: context.into(),
+            question: apply_question(&a),
+            known: Vec::new(),
+            target: Some(Target::Apply(a)),
+        }
+    }
+
+    /// What's being applied, when that's what the chat is about.
+    pub fn applying(&self) -> Option<&Apply> {
+        match &self.target {
+            Some(Target::Apply(a)) => Some(a),
+            _ => None,
+        }
+    }
+
     pub fn finding(&self) -> Option<&str> {
         match &self.target {
             Some(Target::Finding(id)) => Some(id),
@@ -203,6 +246,36 @@ pub fn fix_question(extra: &str) -> String {
          **Commands**: each command I should run in its own ```bash fenced block, whose first \
          line is a `# why: ...` comment. Use sentry's known fix when one fits. Use sudo only \
          where it's needed. If nothing should be run, say so and give no blocks.{extra}"
+    )
+}
+
+/// Help me apply it: before, the change (a workflow's, or the commands), verify, roll back.
+pub fn apply_question(a: &Apply) -> String {
+    let change = match &a.workflow {
+        Some(wf) => format!(
+            "**Apply**: sentry's workflow `{wf}` makes the change, with its own confirm steps and \
+             log. Never propose its commands (upgrades, rebases, pin or image edits, `compose up`, \
+             reboots): when Before is clear, tell me to press `w` to start it. I'll send you how \
+             each step goes."
+        ),
+        None => "**Apply**: the commands that make the change, in order, one block each.".into(),
+    };
+    let done = if a.can_mark_done() {
+        " When it's all done and verified, tell me to press `d` to mark it done."
+    } else {
+        ""
+    };
+    format!(
+        "Help me apply this, step by step. Investigate with your read-only commands first. You \
+         cannot change anything: I run what you propose myself, through sentry, and send you the \
+         output. Answer in four parts:\n\
+         **Before**: what to check or back up first, and the commands for it.\n\
+         {change}\n\
+         **Verify**: the commands that show it worked.\n\
+         **If it goes wrong**: how to roll back.\n\
+         Each command I should run goes in its own ```bash fenced block whose first line is a \
+         `# why: ...` comment. Use sudo only where it's needed. If something in the plan no \
+         longer fits what you find, say so before anything else.{done}"
     )
 }
 

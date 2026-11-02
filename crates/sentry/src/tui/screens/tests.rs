@@ -227,7 +227,7 @@ fn updates_are_applied_by_quick_update() {
     let mut a = app(ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Same as quick-update on the Upgrade screen (0)"),
+        s.contains("Enter: install these updates") && s.contains("Enter  install"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
@@ -1279,6 +1279,19 @@ fn a_ready_plan_goes_with_its_workflow_however_it_starts() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Start quick-update"), "{s}");
     assert!(s.contains("With Claude's plan"), "{s}");
+    key(&mut a, KeyCode::Char('n'));
+    // In the Plan view, A: apply it with Claude, told the plan and the workflow.
+    a.apply_for_test(vec![crate::tui::app::Effect::PlanOpen(
+        "quick-update".into(),
+    )]);
+    assert!(render_to_string(&mut a, 158, 41).contains("A  claude"));
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('1'));
+    let p = a.consent_text().expect("consent");
+    assert!(
+        p.contains("Claude's plan for it") && p.contains("back up") && p.contains("press `w`"),
+        "{p}"
+    );
 }
 
 const REVIEW_WITH_TASKS: &str = "Reading the ledger.\n# Maintenance review\n\n## Now\n- update\n\n\
@@ -1416,4 +1429,99 @@ fn records_show_every_task_and_bring_back_what_was_put_off() {
     key(&mut a, KeyCode::Esc);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Updates waiting"), "back: {s}");
+}
+
+#[test]
+fn claude_helps_apply_the_updates_beside_quick_update() {
+    let mut a = app(ScreenId::Maint);
+    key(&mut a, KeyCode::Char('A'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("help me apply it") && s.contains("just ask"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    let p = a.consent_text().expect("consent");
+    // What's waiting, the workflow's steps, and the rule: the workflow makes the change.
+    assert!(p.contains("pending rpm-ostree update"), "{p}");
+    assert!(
+        p.contains("workflow `quick-update`") && p.contains("Its steps:"),
+        "{p}"
+    );
+    assert!(
+        p.contains("press `w`") && p.contains("Never propose"),
+        "{p}"
+    );
+    // `2`: the plain question, no apply rules.
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('2'));
+    let p = a.consent_text().expect("consent");
+    assert!(!p.contains("press `w`"), "{p}");
+}
+
+#[test]
+fn an_apply_chat_logs_what_you_run_and_hears_how_the_run_goes() {
+    use crate::claude::{Apply, Ask};
+    use crate::tui::chat::Chat;
+    use crate::tui::wf::Session;
+    use crate::workflows::parse;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::RunState;
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
+    // A task's apply chat: what you run is logged as apply, never as the task's own tag.
+    a.set_chat(Chat::new(Ask::apply(
+        "Check the UPS battery",
+        "ctx",
+        Apply {
+            key: "task:ups".into(),
+            task: Some("ups".into()),
+            ..Default::default()
+        },
+    )));
+    a.chat_done_for_test("sudo upsc ups battery.test", 0, "ok");
+    let e = &a.log_for_test()[0];
+    assert_eq!(e.head.kind, "apply");
+    assert!(
+        e.head.tags.contains(&"apply:task:ups".to_string()),
+        "{:?}",
+        e.head.tags
+    );
+    assert!(
+        !e.head.tags.iter().any(|t| t.starts_with("task:")),
+        "{:?}",
+        e.head.tags
+    );
+    // Read-only commands aren't logged.
+    let n = a.log_for_test().len();
+    a.chat_done_for_test("systemctl status nut-server", 0, "ok");
+    assert_eq!(a.log_for_test().len(), n);
+    // Beside a workflow: a failed step is offered to Claude (s sends it).
+    let wf = parse(
+        "name = \"flag-test\"\ndescription = \"test\"\n[[steps]]\nid = \"flag\"\n\
+         title = \"Flag file exists\"\nrun = \"test -f /tmp/flag\"\ngate = \"auto\"\n",
+    )
+    .unwrap();
+    let mut st = RunState::new("flag-test", &["flag".to_string()], Default::default());
+    runner::finish(&mut st, 0, 1, None);
+    a.set_wf(Session::for_test(wf, st, Next::Stopped(0)));
+    a.set_chat(Chat::new(Ask::apply(
+        "flag",
+        "ctx",
+        Apply {
+            key: "wf:flag-test".into(),
+            workflow: Some("flag-test".into()),
+            ..Default::default()
+        },
+    )));
+    a.step_exit_for_test(0, 1);
+    let offer = a
+        .chat_for_test()
+        .and_then(|c| c.offer.clone())
+        .unwrap_or_default();
+    assert!(
+        offer.contains("Step 1/1 of flag-test, Flag file exists (flag)")
+            && offer.contains("exit 1"),
+        "{offer}"
+    );
 }

@@ -39,9 +39,11 @@ impl Dismiss {
     }
 }
 
-/// The keys the selected row takes, besides Enter.
+/// The keys the selected row takes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Verbs {
+    /// What Enter does, in a word or two ("install", "fix", "open plan"); empty: "do it".
+    pub enter: &'static str,
     /// `p` plans it.
     pub plan: bool,
     /// It has a plan (or one is being written): `p` opens it, `P` plans again.
@@ -57,9 +59,11 @@ pub struct Verbs {
     pub like: bool,
 }
 
-/// The row's keys for the key bar, in the same order on both programs.
+/// The row's keys for the key bar, in the same order on both programs. The screen adds its
+/// few own keys after these; everything else is in `?`.
 pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![("j/k", "select"), ("Enter", "do it")];
+    let enter = if v.enter.is_empty() { "do it" } else { v.enter };
+    let mut h = vec![("Enter", enter)];
     if v.planned {
         h.extend([("p", "open plan"), ("P", "plan again")]);
     } else if v.plan {
@@ -81,12 +85,13 @@ pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
         h.push(("B", "all like it"));
     }
     h.push(("z", "later"));
+    h.push(("A", "claude"));
     h
 }
 
 /// Every row key, for `?`.
 pub const GRAMMAR: &[(&str, &str)] = &[
-    ("Enter", "do what the row says"),
+    ("Enter", "do what the row says (the key bar names it)"),
     ("p / P", "plan it (Claude writes the plan) / plan again"),
     ("t", "track it (something discovery found)"),
     (
@@ -103,6 +108,10 @@ pub const GRAMMAR: &[(&str, &str)] = &[
     ),
     ("B", "a finding: everything like it is expected"),
     ("z", "look again later: 7, 30 or 90 days"),
+    (
+        "A",
+        "Claude: help me apply it (it proposes, you run each step) or just ask",
+    ),
 ];
 
 pub fn level_color(t: &Theme, l: Level) -> Color {

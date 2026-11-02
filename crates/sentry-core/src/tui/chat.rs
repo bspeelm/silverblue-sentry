@@ -469,6 +469,15 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
             },
         ));
     }
+    // Applying something: start its workflow, or mark it done.
+    if let Some(a) = c.ask.applying().filter(|_| idle) {
+        if a.workflow.is_some() {
+            k.push(("w", "start the workflow"));
+        }
+        if a.can_mark_done() {
+            k.push(("d", "mark it done"));
+        }
+    }
     if idle && c.session.is_some() {
         k.push(("C", "continue in Claude Code"));
     }
@@ -562,6 +571,29 @@ mod tests {
         assert!(screen.contains("sentry's known fix"));
         c.set_offer("x", 0, "ok", Some("The finding is gone."));
         assert!(c.offer.as_deref().unwrap().contains("exit code 0"));
+    }
+
+    #[test]
+    fn an_apply_chat_offers_its_workflow_or_done() {
+        use crate::claude::{Apply, Ask};
+        let wf = Apply {
+            key: "updates".into(),
+            workflow: Some("quick-update".into()),
+            ..Default::default()
+        };
+        let c = Chat::new(Ask::apply("updates", "ctx", wf));
+        assert!(c.ask.prompt().contains("press `w`") && c.ask.prompt().contains("Never propose"));
+        assert!(keys(&c).iter().any(|(k, _)| *k == "w"));
+        assert!(!keys(&c).iter().any(|(k, _)| *k == "d"));
+        let task = Apply {
+            key: "task:ups".into(),
+            task: Some("ups".into()),
+            ..Default::default()
+        };
+        let c = Chat::new(Ask::apply("ups", "ctx", task));
+        assert!(c.ask.prompt().contains("press `d`") && !c.ask.prompt().contains("press `w`"));
+        assert!(keys(&c).iter().any(|(k, _)| *k == "d"));
+        assert!(!keys(&c).iter().any(|(k, _)| *k == "w"));
     }
 
     #[test]

@@ -110,61 +110,6 @@ pub fn draw_deployments(f: &mut Frame, area: Rect, v: &View) {
         }
         lines.push(Line::default());
     }
-    lines.push(Line::styled("─".repeat(w), t.s(t.rule)));
-    let checked =
-        v.d.ostree_checked
-            .map(|ts| fmt::ago(jiff::Timestamp::now().as_second() - ts.as_second()));
-    let checking = v.d.loading(Fetch::OstreeCheck);
-    let age = if checking {
-        "checking…".to_string()
-    } else {
-        checked.map_or("not checked yet".into(), |a| format!("checked {a}"))
-    };
-    match &o.update {
-        None => {
-            lines.push(Line::from(vec![
-                Span::styled("no pending update known  ", t.fg()),
-                Span::styled(age, t.dim()),
-            ]));
-        }
-        Some(u) => {
-            let n = u.upgraded.len() + u.added.len();
-            lines.push(Line::from(vec![
-                Span::styled(format!("{n} package updates"), t.s(t.yellow)),
-                Span::styled(
-                    format!(" → {}", u.version.as_deref().unwrap_or("?")),
-                    t.fg(),
-                ),
-                Span::styled(format!("  {} advisories  {age}", u.advisories), t.dim()),
-            ]));
-            let room = (r.height as usize).saturating_sub(lines.len() + 2);
-            // Kernel first, then the rest alphabetically.
-            let mut pkgs: Vec<_> = u.upgraded.iter().collect();
-            pkgs.sort_by_key(|p| (!p.name.starts_with("kernel"), p.name.clone()));
-            for p in pkgs.iter().take(room.saturating_sub(1)) {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<28}", trunc(&p.name, 28)), t.dim()),
-                    Span::styled(format!("{} → ", trunc(&p.old, 22)), t.dim()),
-                    Span::styled(trunc(&p.new, 24), t.fg()),
-                ]));
-            }
-            if pkgs.len() > room.saturating_sub(1) {
-                lines.push(Line::styled(
-                    format!("  … {} more", pkgs.len() - room.saturating_sub(1)),
-                    t.dim(),
-                ));
-            }
-            if u.kernel_changed {
-                lines.push(Line::styled(
-                    format!(
-                        "! kernel → {} · nvidia kmod ritual (quick-update runs it)",
-                        u.new_kernel.as_deref().unwrap_or("?")
-                    ),
-                    t.s(t.yellow),
-                ));
-            }
-        }
-    }
     f.render_widget(Paragraph::new(lines), r);
 }
 
@@ -194,6 +139,21 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
                         u.new_kernel.as_deref().unwrap_or("?")
                     ),
                     t.s(t.yellow),
+                ));
+            }
+            // Kernel first, then the rest alphabetically.
+            let mut pkgs: Vec<_> = u.upgraded.iter().collect();
+            pkgs.sort_by_key(|p| (!p.name.starts_with("kernel"), p.name.clone()));
+            for p in pkgs.iter().take(10) {
+                l.push(Line::styled(
+                    format!("  {}  {} → {}", p.name, p.old, p.new),
+                    t.dim(),
+                ));
+            }
+            if pkgs.len() > 10 {
+                l.push(Line::styled(
+                    format!("  … {} more", pkgs.len() - 10),
+                    t.dim(),
                 ));
             }
         }
@@ -242,10 +202,7 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
     let checked = v.d.ostree_checked.map_or("never".into(), |ts| {
         fmt::ago(now.as_second() - ts.as_second())
     });
-    l.push(Line::styled(
-        format!("Last check {checked} · c checks again"),
-        t.dim(),
-    ));
+    l.push(Line::styled(format!("Last checked {checked}"), t.dim()));
     l
 }
 

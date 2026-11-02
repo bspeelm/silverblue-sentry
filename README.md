@@ -114,9 +114,9 @@ Maintenance is one loop, the same in both programs: **notice** what needs doing 
 | `x` | dismiss it, after a confirm: a finding expected, a discovery ignored, a gone item untracked, a task removed (a built-in one turned off), a plan dropped |
 | `B` | a finding: everything like it is expected |
 | `z` | look again in 7, 30 or 90 days |
-| `A` | ask Claude about it |
+| `A` | Claude: **1** help me apply it, **2** just ask about it (a finding: its fix) |
 
-Besides the rows: `c` checks everything (the audit, OS, Flatpak and toolbox updates, what cleanup could free), `R` reviews it all with Claude, `v` opens Records, `w` the workflows (Upgrade), `F` the full audit report (marked `check` / `review` / `info`, known services named and grouped, the diff against the previous audit, `[`/`]` to browse reports, with the list's keys: `Enter` fixes, `x` expected on/off, `B`, and `c` audits again), `C` Cleanup. `:audit` opens the report, `:job <name>` shows a job's plan and runs it after a confirm; `:rollback` rolls back to the previous deployment behind its confirm.
+The key bar shows only the selected row's keys (`Enter` names what it does: `install`, `fix`, `start`, `open plan`…) and three of the screen's: `c` checks everything (the audit, OS, Flatpak and toolbox updates, what cleanup could free), `v` opens Records, `R` reviews it all with Claude. The rest are in `?`: `w` the workflows (Upgrade), `F` the full audit report (marked `check` / `review` / `info`, known services named and grouped, the diff against the previous audit, `[`/`]` to browse reports, with the list's keys: `Enter` fixes, `x` expected on/off, `B`, and `c` audits again), `C` Cleanup. `:audit` opens the report, `:job <name>` shows a job's plan and runs it after a confirm; `:rollback` rolls back to the previous deployment behind its confirm.
 
 **Records** (`v`, `:records`, `:log`, `:tasks`, `:plans`, `:reviews`, `:later`; both programs) keep everything about the maintenance in one view, a section each (`[`/`]` switch):
 - **Tasks**: every task that applies, due or not: what it does, how often, when it was last done and is next due, where it comes from (built in, the config, `tasks.toml`). `Enter` does it now, `d` done, `e` every, `x` remove (or off).
@@ -143,6 +143,14 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 - **You see what's sent.** Before every question, a screen shows the exact text that will go to Anthropic. `y` sends it.
 - **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. Claude Code refuses anything else, including `sudo` and any writes. The list is `ALLOWED` in `crates/sentry-core/src/claude.rs`.
 - **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
+
+### Applying a recommendation or a plan with Claude (`A` → 1, both programs)
+
+`A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**. Applying, Claude is told what the row is about: the updates waiting and the deployments, the item's standing and its upstream, the task's steps, the plan Claude wrote earlier, and the workflow that does it, step by step. It answers in four parts: what to check or back up **before**, the **change**, how to **verify**, and how to **roll back**. Each command it proposes is yours to run (`r`, behind a confirm box), and its output goes back with `s`.
+
+- **When a workflow makes the change** (quick-update, apt-maintenance, a compose bump), Claude doesn't propose its commands: it tells you to press **`w`** in the chat, which starts the workflow (with the plan's values, if there's a plan), and the chat steps aside. If a step fails, or when the run ends, the chat has the step's log or the run's result ready: `A` brings it back, `s` sends it, and Claude carries on (what went wrong; what to verify).
+- **A task, or a plan done by hand**: `d` in the chat marks it done, as on Maintenance.
+- What you run from the chat that changes something goes in the maintenance log (`kind = "apply"`, tagged with the row). Read-only commands aren't logged.
 
 ### Fixing a finding with Claude (`Enter` on a finding)
 

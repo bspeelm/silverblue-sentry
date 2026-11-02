@@ -95,6 +95,8 @@ pub enum Effect {
     EditConfig,
     /// Send a turn to Claude (after the consent box).
     AskSend(AskTurn),
+    /// What will be sent, then send it (a choice's option).
+    AskConsent(Box<sentry_core::claude::Ask>),
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
     /// A review's suggested task: added to `tasks.toml`, or skipped.
@@ -597,18 +599,30 @@ impl App {
                         c.push(chatmod::Kind::Info, format!("exit {code}"));
                         c.set_offer(&cmd, code, &output, None);
                         c.push(chatmod::Kind::Info, "s sends the output to Claude");
-                        // What Claude proposed and you ran on the server: the log keeps it.
-                        let tags: Vec<String> = c
-                            .ask
-                            .finding()
-                            .map(|f| vec![format!("finding:{f}")])
-                            .unwrap_or_default();
+                        // What Claude proposed and you ran on the server: the log keeps it. An
+                        // apply is tagged with what it applies, never a task (`d` or the
+                        // workflow's run says that's done).
+                        let (kind, tags): (&str, Vec<String>) = match c.ask.applying() {
+                            Some(a) => (
+                                "apply",
+                                std::iter::once(format!("apply:{}", a.key))
+                                    .chain(a.item.as_ref().map(|i| format!("item:{i}")))
+                                    .collect(),
+                            ),
+                            None => (
+                                "fix",
+                                c.ask
+                                    .finding()
+                                    .map(|f| vec![format!("finding:{f}")])
+                                    .unwrap_or_default(),
+                            ),
+                        };
                         let tail: Vec<&str> = output.lines().rev().take(5).collect();
                         let tail: Vec<&str> = tail.into_iter().rev().collect();
                         let e = sentry_core::maint::log::LogEntry::event(
                             &self.remote.name,
-                            "fix",
-                            "fix",
+                            kind,
+                            kind,
                             code == 0,
                             &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
                             &tags,
@@ -632,6 +646,10 @@ impl App {
                 StreamMsg::Line { text, .. } => s.on_line(&text),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, code);
+                    if code != 0 {
+                        self.apply_step_failed(idx, code);
+                    }
+                    let Some(s) = self.wf.as_mut() else { return };
                     if s.sudo_refused() {
                         // sudo changed under us: r now retries with the terminal.
                         self.fresh_sudo();
@@ -983,18 +1001,27 @@ impl App {
                 let mut keys = tabs::hints(self.tab, &self.view());
                 // Maintenance: every row key, not only the selected row's.
                 if self.tab == Tab::Maint {
-                    let row = ["j/k", "Enter", "p", "P", "t", "d", "x", "B", "z"];
+                    let row = ["Enter", "p", "P", "t", "d", "e", "x", "B", "z", "A"];
                     keys = sentry_core::tui::maintlist::GRAMMAR
                         .iter()
                         .copied()
                         .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
+                        // Not on the key bar, to keep it to what the row takes.
+                        .chain([
+                            ("w", "start a workflow"),
+                            (
+                                "e",
+                                "edit server_config.yaml (on a task: where it's written)",
+                            ),
+                        ])
                         .collect();
                 }
+                let own_a = keys.iter().any(|(k, _)| *k == "A");
                 let lines = keys
                     .into_iter()
                     .chain(super::actions::hints(self.tab))
+                    .chain((!own_a).then_some(("A", "ask Claude")))
                     .chain([
-                        ("A", "ask Claude"),
                         ("I", "read what needs root, once, with your sudo password"),
                         ("1-4", "tabs (or Tab, h/l)"),
                         ("0", "the workflow run (:wf too)"),
@@ -1030,17 +1057,32 @@ impl App {
                 } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
+                    if self.tab == Tab::Maint && !self.run_view && self.wf_entries.is_empty() {
+                        self.load_wf_entries();
+                    }
                     let v = self.view();
                     let ask = match self.wf.as_ref().filter(|_| self.run_view) {
                         Some(s) => Some(super::ask::ask_run(&v, &self.remote, s)),
                         None => super::ask::ask_for(self.tab, &v, &self.remote),
                     };
-                    match ask {
-                        Some(ask) => {
+                    let apply = (self.tab == Tab::Maint && !self.run_view)
+                        .then(|| {
+                            super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf))
+                        })
+                        .flatten();
+                    match (ask, apply) {
+                        (Some(ask), Some(apply)) => {
+                            self.chooser = Some(claude_choice(apply, ask));
+                        }
+                        (None, Some(apply)) => {
+                            let text = apply.prompt();
+                            self.modal = Some(self.consent(&text, AskTurn::First(apply)));
+                        }
+                        (Some(ask), None) => {
                             let text = ask.prompt();
                             self.modal = Some(self.consent(&text, AskTurn::First(ask)));
                         }
-                        None => {
+                        (None, None) => {
                             let why = super::ask::nothing_here(self.tab, &v);
                             self.toast(why);
                         }
@@ -1094,6 +1136,10 @@ impl App {
                 Effect::Goto(t) => self.enter(t, now),
                 Effect::Wf(c) => self.wf_cmd(c),
                 Effect::AskSend(turn) => self.ask_turn(turn),
+                Effect::AskConsent(ask) => {
+                    let text = ask.prompt();
+                    self.modal = Some(self.consent(&text, AskTurn::First(*ask)));
+                }
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
@@ -1465,6 +1511,80 @@ impl App {
         }
     }
 
+    /// A workflow for Claude: what it does and its steps, in order.
+    fn workflow_text(&self, wf: &str) -> String {
+        match self.wf_entries.iter().find(|e| e.name == wf).map(|e| &e.wf) {
+            Some(Ok(w)) => {
+                let steps: Vec<String> = w
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  {}. {} ({})", i + 1, s.title, s.id))
+                    .collect();
+                format!(
+                    "sentry-server's workflow `{wf}`: {}\nIts steps:\n{}",
+                    w.description,
+                    steps.join("\n")
+                )
+            }
+            _ => format!("sentry-server's workflow `{wf}`."),
+        }
+    }
+
+    /// An apply chat for the workflow that's running: how a step went wrong, ready for `s`.
+    fn apply_step_failed(&mut self, idx: usize, code: i32) {
+        let Some(s) = self.wf.as_ref() else { return };
+        let Some(c) = self.chat.as_mut().filter(|c| {
+            c.ask
+                .applying()
+                .is_some_and(|a| a.workflow.as_deref() == Some(s.wf.name.as_str()))
+        }) else {
+            return;
+        };
+        let step = &s.wf.steps[idx];
+        let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
+        let tail: Vec<&str> = log.lines().rev().take(40).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        c.offer = Some(format!(
+            "Step {}/{} of {}, {} ({}), failed (exit {code}). Last lines of its log:\n{}\n\nWhat now?",
+            idx + 1,
+            s.wf.steps.len(),
+            s.wf.name,
+            step.title,
+            step.id,
+            tail.join("\n")
+        ));
+        self.toast("a step failed · A: Claude is waiting (s sends it the log)");
+    }
+
+    /// An apply chat for the workflow that just ended: what happened, ready for `s`.
+    fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
+        let Some(c) = self.chat.as_mut().filter(|c| {
+            c.ask
+                .applying()
+                .is_some_and(|a| a.workflow.as_deref() == Some(e.head.workflow.as_str()))
+        }) else {
+            return;
+        };
+        let h = &e.head;
+        let list = |what: &str, v: &[String]| {
+            if v.is_empty() {
+                String::new()
+            } else {
+                format!(" {what}: {}.", v.join(", "))
+            }
+        };
+        c.offer = Some(format!(
+            "The {} run ended: {}.{}{}{} What should I verify now?",
+            h.workflow,
+            h.result,
+            list("Failed", &h.failed),
+            list("Done by hand", &h.by_hand),
+            list("Skipped", &h.skipped),
+        ));
+        self.toast("the run ended · A: Claude is waiting with the next step (s)");
+    }
+
     /// When the workflow started from a maintenance item has ended: log the change.
     fn wf_log_change(&mut self) {
         let Some(s) = self.wf.as_ref().filter(|s| s.done()) else {
@@ -1516,6 +1636,7 @@ impl App {
             None,
         );
         sentry_core::maint::tasks::tag_run(&mut entry, &super::maint::all_tasks(&self.view()));
+        self.apply_run_ended(&entry);
         if !self.offline {
             if let Err(e) = log::write(&entry) {
                 self.toast(&format!("couldn't write the maintenance log: {e}"));
@@ -2823,6 +2944,32 @@ impl App {
             .is_some_and(|w| w.item == id && w.running());
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => self.plan_view = None,
+            // Claude alongside: apply this plan, or ask about it.
+            KeyCode::Char('A') if !writing => {
+                if !claude::available() {
+                    return self.toast("Claude Code isn't installed (or not on PATH)");
+                }
+                if self.wf_entries.is_empty() {
+                    self.load_wf_entries();
+                }
+                let v = self.view();
+                let apply =
+                    super::ask::apply_item(&v, &self.remote, &id, format!("plan:{id}"), &|wf| {
+                        self.workflow_text(wf)
+                    });
+                match apply {
+                    Some(apply) => {
+                        let ask = sentry_core::claude::Ask::new(
+                            format!("{} · the plan for {id}", self.remote.name),
+                            apply.context.clone(),
+                            "Is this plan still right for the server as it is now? What would you \
+                             check or change first?",
+                        );
+                        self.chooser = Some(claude_choice(apply, ask));
+                    }
+                    None => self.toast(&format!("{id} isn't tracked any more")),
+                }
+            }
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pid) = self
                     .writer
@@ -3316,6 +3463,34 @@ impl App {
                 let text = c.offer.take().unwrap_or_default();
                 self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
             }
+            // Applying something: start its workflow (the chat steps aside), or mark it done.
+            KeyCode::Char('w')
+                if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
+            {
+                let a = c.ask.applying().cloned().unwrap_or_default();
+                c.hidden = true;
+                self.toast("A brings Claude back; it hears how the run goes when you send it (s)");
+                let has_plan = a
+                    .plan
+                    .as_ref()
+                    .is_some_and(|p| self.store.plans.contains_key(p));
+                match (a.plan, a.workflow) {
+                    (Some(item), _) if has_plan => self.apply_plan(&item, Instant::now()),
+                    (_, Some(wf)) => self.apply(vec![Effect::StartWorkflow(wf)], Instant::now()),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('d') if idle && c.ask.applying().is_some_and(|a| a.can_mark_done()) => {
+                let a = c.ask.applying().cloned().unwrap_or_default();
+                c.hidden = true;
+                match (a.task, a.plan) {
+                    (Some(id), _) => self.task_done(&id),
+                    (None, Some(item)) => {
+                        self.apply(vec![Effect::PlanDoneByHand(item)], Instant::now())
+                    }
+                    _ => {}
+                }
+            }
             KeyCode::Char('k') if ctrl => c.scroll_by(1),
             KeyCode::Char('j') if ctrl => c.scroll_by(-1),
             KeyCode::Up => c.scroll_by(1),
@@ -3471,6 +3646,9 @@ impl App {
                 s.tty_output(idx, &capture);
             }
             s.on_exit(idx, code);
+            if code != 0 {
+                self.apply_step_failed(idx, code);
+            }
             self.wf_auto();
             return;
         }
@@ -3869,6 +4047,7 @@ impl App {
             } else {
                 vec![
                     ("Enter", "apply"),
+                    ("A", "claude"),
                     ("r", "revise"),
                     ("x", "drop"),
                     ("j/k PgUp/Dn", "scroll"),
@@ -3899,8 +4078,14 @@ impl App {
                 h.push(("I", "read with sudo"));
             }
             match self.chat.as_ref().filter(|c| c.hidden) {
-                Some(c) => h.push(("A", c.hidden_word())),
-                None if claude::available() => h.push(("A", "ask Claude")),
+                Some(c) => {
+                    h.retain(|(k, _)| *k != "A");
+                    h.push(("A", c.hidden_word()));
+                }
+                // Maintenance names its own `A` (apply or ask).
+                None if claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
+                    h.push(("A", "ask Claude"))
+                }
                 None => {}
             }
             h.extend([("?", "help"), ("q", "quit")]);
@@ -4149,4 +4334,24 @@ pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
         out.push('\n');
     }
     out
+}
+
+/// `A` where Claude can help apply something: apply it with Claude, or just ask.
+fn claude_choice(
+    apply: sentry_core::claude::Ask,
+    ask: sentry_core::claude::Ask,
+) -> (String, Vec<(String, Vec<Effect>)>) {
+    (
+        "Claude".into(),
+        vec![
+            (
+                "help me apply it: Claude proposes each step, you run it".into(),
+                vec![Effect::AskConsent(Box::new(apply))],
+            ),
+            (
+                "just ask about it".into(),
+                vec![Effect::AskConsent(Box::new(ask))],
+            ),
+        ],
+    )
 }

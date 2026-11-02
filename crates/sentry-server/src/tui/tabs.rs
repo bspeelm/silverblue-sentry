@@ -94,13 +94,8 @@ pub fn hints(tab: Tab, v: &View) -> Vec<(&'static str, &'static str)> {
         // The selected row's keys, then the tab's.
         Tab::Maint => {
             let mut h = sentry_core::tui::maintlist::hints(&super::maint::verbs(v));
-            h.extend([
-                ("c", "check all"),
-                ("w", "workflow"),
-                ("R", "review"),
-                ("v", "records"),
-                ("e", "edit"),
-            ]);
+            // The tab's own few; w, e and the rest are in `?`.
+            h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
             h
         }
     }
