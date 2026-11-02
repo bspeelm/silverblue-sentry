@@ -47,6 +47,9 @@ pub struct Apply {
     pub task: Option<String>,
     /// There's a plan for it (by item, or by workflow on this machine).
     pub plan: Option<String>,
+    /// It's on a server (sentry-server): its files change through `run` steps there; only
+    /// files on this machine (the notes) are `edit` steps.
+    pub remote: bool,
 }
 
 impl Apply {
@@ -249,8 +252,9 @@ pub fn fix_question(extra: &str) -> String {
     )
 }
 
-/// Help me apply it: before, the change (a workflow's, or the commands), verify, roll back.
+/// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
+    let files = files_rule(a);
     let wf = match &a.workflow {
         Some(wf) => format!(
             " sentry's workflow `{wf}` makes this change, with its own confirm steps and log: put \
@@ -258,11 +262,6 @@ pub fn apply_question(a: &Apply) -> String {
              rebases, pin or image edits, `compose up`, reboots)."
         ),
         None => String::new(),
-    };
-    let done = if a.can_mark_done() {
-        " After the plan has run, say whether it's done; I mark it done (`d`)."
-    } else {
-        ""
     };
     format!(
         "Help me apply this. Investigate with your read-only commands first (read files with the \
@@ -283,11 +282,48 @@ pub fn apply_question(a: &Apply) -> String {
          ```\n\
          Each step has exactly one of: `edit` (with `old` and `new`), `run` (a command that \
          changes something; sudo where needed), `check` (a command that must exit 0, or the \
-         plan stops) or `workflow` (one of sentry's workflows). Order them as they must happen \
-         and end with the checks that show it worked. sentry shows me the plan; once I approve \
-         it, sentry backs up every file it edits and runs the steps in order. So don't back \
-         anything up yourself, and don't run or edit anything now. If a step fails, sentry \
-         sends you what happened and you send a plan for the rest.{wf}{done}"
+         plan stops) or `workflow` (one of sentry's workflows). {files} Order the steps as they must happen and end with \
+         the checks that show it worked. sentry shows me the plan; once I approve it, sentry \
+         backs up every file it edits, asks me for my sudo password if a step needs it, and \
+         runs the steps in order. So don't back anything up yourself, and don't run or edit \
+         anything now. If a step fails, sentry sends you what happened and you send a plan for \
+         the rest. When the plan has run, sentry sends you the results to verify.{wf}"
+    )
+}
+
+/// Where a plan's file changes go: `edit` steps on this machine, `run` steps on a server.
+fn files_rule(a: &Apply) -> &'static str {
+    if a.remote {
+        "The commands run on the server. Change the server's files with `run` steps there \
+         (sudo where needed); `edit` steps are only for my files on this machine (the notes)."
+    } else {
+        "Change files with `edit` steps, never with sed or tee: my own files anywhere, and \
+         root's configuration under /etc (sentry writes those with my sudo)."
+    }
+}
+
+/// sentry couldn't use the plan (`why`: each step and what's wrong, or the block didn't
+/// parse), or a step failed (`why`: the run's report): a corrected plan, please.
+pub fn apply_fix(why: &str) -> String {
+    format!(
+        "{why}\n\nSend the plan again, corrected, as one ```sentry-apply block (all the steps \
+         still to do, the ones that were fine included), with a line on what you changed. \
+         Investigate first if you need to."
+    )
+}
+
+/// The plan ran: verify it (`report`: every step's result).
+pub fn apply_verify(report: &str) -> String {
+    format!(
+        "{report}\n\nVerify the result with your read-only commands. Then answer in a few \
+         lines and end with one ```sentry-verdict fenced TOML block, and no other code blocks:\n\
+         ```sentry-verdict\n\
+         status = \"done\"     # done: it worked · more: something's left · failed: it didn't\n\
+         summary = \"what changed, in one line\"\n\
+         next = \"what I should do later, if anything (e.g. reboot to confirm), in words\"\n\
+         ```\n\
+         With `more`, also send one ```sentry-apply block for what's left. Never give me \
+         commands to run: sentry runs plans, and `next` is words."
     )
 }
 
@@ -644,11 +680,23 @@ pub fn grantable(g: &Grant) -> Result<(), &'static str> {
         Access::Run => Ok(()),
         Access::Read if !p.is_file() => Err("not a file"),
         Access::Read => Ok(()),
-        Access::Write if !p.starts_with(&home) || p == home => Err("only files in your home"),
         Access::Write if p.exists() && !p.is_file() => Err("not a file"),
         Access::Write if !p.parent().is_some_and(|d| d.is_dir()) => Err("its folder doesn't exist"),
+        Access::Write if !yours(p, &home) => Err("only files you own"),
         Access::Write => Ok(()),
     }
+}
+
+/// The file (or, for a new one, its folder) belongs to whoever owns the home folder: the
+/// user's own files anywhere (a work tree under /var/mnt too), never root's or another user's.
+fn yours(p: &std::path::Path, home: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(me) = std::fs::metadata(home).map(|m| m.uid()) else {
+        return false;
+    };
+    let of = if p.exists() { Some(p) } else { p.parent() };
+    of.and_then(|q| std::fs::metadata(q).ok())
+        .is_some_and(|m| m.uid() == me)
 }
 
 /// A copy of `path` before Claude may write it: `cache_dir/claude/backups/<when>-<name>`.
@@ -1170,6 +1218,10 @@ mod tests {
         assert!(grantable(&g(Access::Read, home.join(".ssh/id_ed25519"))).is_err());
         assert!(grantable(&g(Access::Write, "/etc/hosts".into())).is_err());
         assert!(grantable(&g(Access::Write, home.join("sentry-grant-test-new.md"))).is_ok());
+        // Yours outside home too (this crate's own source tree, wherever it's checked out).
+        let mine = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        assert!(grantable(&g(Access::Write, mine.into())).is_ok());
+        assert!(grantable(&g(Access::Write, "/".into())).is_err());
         assert!(grantable(&g(Access::Read, home.join("sentry-grant-test-new.md"))).is_err());
         let here = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
         assert!(grantable(&g(Access::Read, here.into())).is_ok());

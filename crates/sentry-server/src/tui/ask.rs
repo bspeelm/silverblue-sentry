@@ -354,6 +354,7 @@ pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option
                         key: x.key.clone(),
                         workflow: Some(wf.clone()),
                         item: x.item.clone(),
+                        remote: true,
                         ..Default::default()
                     },
                 ))
@@ -390,6 +391,7 @@ pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option
                         workflow: wf,
                         item: it,
                         task: Some(t.id.clone()),
+                        remote: true,
                         ..Default::default()
                     },
                 ))
@@ -440,6 +442,7 @@ pub fn apply_item(
             workflow: wf,
             item: Some(id.to_string()),
             plan: plan.map(|_| id.to_string()),
+            remote: true,
             ..Default::default()
         },
     ))

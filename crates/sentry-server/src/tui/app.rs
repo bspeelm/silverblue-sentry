@@ -93,15 +93,12 @@ pub enum Effect {
     PlanDoneByHand(String),
     /// Open server_config.yaml in $EDITOR, then reload it.
     EditConfig,
-    /// Send a turn to Claude (after the consent box).
-    AskSend(AskTurn),
-    /// What will be sent, then send it (a choice's option).
+    /// Open a conversation with Claude showing what it would send (a choice's option);
+    /// nothing is sent before Enter. Applying something opens an apply session.
     AskConsent(Box<sentry_core::claude::Ask>),
     /// Grant the files Claude asked for, then tell it (the next turn).
     ChatGrant,
-    /// The plan was approved: carry it out.
-    ApplyStart,
-    /// Apply the selected Maintenance row with Claude (its consent box first).
+    /// Apply the selected Maintenance row with Claude (an apply session).
     ApplyAsk,
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
@@ -114,12 +111,6 @@ pub enum Effect {
     TaskDone(String),
     /// Open this server's tasks.toml in $EDITOR (read again after).
     EditTasks,
-}
-
-#[derive(Clone, Debug)]
-pub enum AskTurn {
-    First(Ask),
-    Follow(String),
 }
 
 /// Where the answer to read requests goes back to.
@@ -250,7 +241,6 @@ pub struct App {
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
     /// The suspended command is a step of an approved plan (its exit advances the plan).
-    suspend_plan: bool,
     /// A plan waiting for its note: (item, plan, the note typed so far).
     plan_note: Option<(String, PlanDoc, String)>,
     /// Claude writing a plan, in the background.
@@ -285,6 +275,10 @@ pub struct App {
     /// A workflow reboot with the terminal handed over: the boot id it had.
     reboot_old: Option<String>,
     chat: Option<Chat>,
+    /// Applying something with Claude: the one session, start to finish.
+    apply: Option<sentry_core::apply::session::Session>,
+    /// sudo's check for the session running (stream id; true: the password's check).
+    apply_aux: Option<(u64, bool)>,
     /// The `:` command line being typed.
     cmdline: Option<String>,
     /// A workflow's vars being asked for.
@@ -329,7 +323,6 @@ impl App {
             note_add: false,
             last_log: None,
             suspend_edit: false,
-            suspend_plan: false,
             plan_note: None,
             writer: None,
             plan_view: None,
@@ -348,6 +341,8 @@ impl App {
             wf_reboot_id: None,
             reboot_old: None,
             chat: None,
+            apply: None,
+            apply_aux: None,
             cmdline: None,
             var_input: None,
             filters: Default::default(),
@@ -574,6 +569,10 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.apply_stream(id, &m) {
+            self.dirty = true;
+            return;
+        }
         if let Some(c) = self.chat.as_mut()
             && c.live.is_some_and(|(cid, _)| cid == id)
         {
@@ -593,7 +592,6 @@ impl App {
                         self.toast("Claude answered · A opens the chat");
                     }
                     self.chat_edits();
-                    self.chat_plan_check();
                     self.offer_reads(ReadsFor::Chat);
                 }
             }
@@ -606,16 +604,6 @@ impl App {
             match m {
                 StreamMsg::Line { text, .. } => c.on_job_line(text),
                 StreamMsg::Exit { code, .. } => {
-                    if c.plan_step.is_some()
-                        && let Some((_, _, Job::Proposal { output, .. })) = c.job.take()
-                    {
-                        self.plan_step_exit(code, output);
-                        for k in [Kind::Units, Kind::Docker] {
-                            self.fetch(k);
-                        }
-                        self.dirty = true;
-                        return;
-                    }
                     if let Some((_, _, Job::Proposal { cmd, output, .. })) = c.job.take() {
                         c.push(chatmod::Kind::Info, format!("exit {code}"));
                         c.set_offer(&cmd, code, &output, None);
@@ -667,9 +655,6 @@ impl App {
                 StreamMsg::Line { text, .. } => s.on_line(&text),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, code);
-                    if code != 0 {
-                        self.apply_step_failed(idx, code);
-                    }
                     let Some(s) = self.wf.as_mut() else { return };
                     if s.sudo_refused() {
                         // sudo changed under us: r now retries with the terminal.
@@ -873,8 +858,18 @@ impl App {
             self.plan_view_key(k, now);
             return;
         }
-        // The chat takes raw keys (Backspace, any character) before the keymap, which knows
-        // neither; boxes opened from the chat still come first.
+        // The apply session and the chat take raw keys (Backspace, any character) before the
+        // keymap, which knows neither; boxes opened from the chat still come first.
+        if self.apply.as_ref().is_some_and(|s| !s.chat.hidden)
+            && self.pane.is_none()
+            && self.chooser.is_none()
+            && self.modal.is_none()
+        {
+            let fx = self.apply.as_mut().map(|s| s.key(k)).unwrap_or_default();
+            self.apply_fx(fx);
+            self.dirty = true;
+            return;
+        }
         if self.chat.as_ref().is_some_and(|c| !c.hidden)
             && self.pane.is_none()
             && self.chooser.is_none()
@@ -1073,7 +1068,9 @@ impl App {
                 self.apply(e, now);
             }
             Action::Ask => {
-                if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
+                if let Some(sess) = self.apply.as_mut().filter(|s| s.chat.hidden) {
+                    sess.chat.hidden = false;
+                } else if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
                     c.hidden = false;
                 } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
@@ -1095,14 +1092,8 @@ impl App {
                         (Some(ask), Some(apply)) => {
                             self.chooser = Some(claude_choice(apply, ask));
                         }
-                        (None, Some(apply)) => {
-                            let text = apply.prompt();
-                            self.modal = Some(self.consent(&text, AskTurn::First(apply)));
-                        }
-                        (Some(ask), None) => {
-                            let text = ask.prompt();
-                            self.modal = Some(self.consent(&text, AskTurn::First(ask)));
-                        }
+                        (None, Some(apply)) => self.open_ask(apply),
+                        (Some(ask), None) => self.open_ask(ask),
                         (None, None) => {
                             let why = super::ask::nothing_here(self.tab, &v);
                             self.toast(why);
@@ -1156,7 +1147,6 @@ impl App {
                 }
                 Effect::Goto(t) => self.enter(t, now),
                 Effect::Wf(c) => self.wf_cmd(c),
-                Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::ChatGrant => self.chat_grant(),
                 Effect::ApplyAsk => {
                     if self.wf_entries.is_empty() {
@@ -1166,27 +1156,11 @@ impl App {
                     let apply =
                         super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf));
                     match apply {
-                        Some(ask) => {
-                            let text = ask.prompt();
-                            self.modal = Some(self.consent(&text, AskTurn::First(ask)));
-                        }
+                        Some(ask) => self.open_ask(ask),
                         None => self.toast("nothing for Claude to apply here"),
                     }
                 }
-                Effect::ApplyStart => {
-                    let a = self
-                        .chat
-                        .as_mut()
-                        .and_then(|c| c.apply_run.as_mut())
-                        .map(|r| r.start());
-                    if let Some(a) = a {
-                        self.plan_drive(a);
-                    }
-                }
-                Effect::AskConsent(ask) => {
-                    let text = ask.prompt();
-                    self.modal = Some(self.consent(&text, AskTurn::First(*ask)));
-                }
+                Effect::AskConsent(ask) => self.open_ask(*ask),
                 Effect::ChatRun(p) => self.chat_run(p),
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
@@ -1301,8 +1275,7 @@ impl App {
                         let v = self.view();
                         if let Some(f) = super::maint::finding(&v, &id) {
                             let ask = super::ask::ask_finding(&v, &self.remote, f);
-                            let text = ask.prompt();
-                            self.modal = Some(self.consent(&text, AskTurn::First(ask)));
+                            self.open_ask(ask);
                         }
                     }
                 }
@@ -1578,72 +1551,262 @@ impl App {
         }
     }
 
-    /// An apply chat for the workflow that's running: how a step went wrong, ready for `s`.
-    fn apply_step_failed(&mut self, idx: usize, code: i32) {
-        let Some(s) = self.wf.as_ref() else { return };
-        let Some(c) = self.chat.as_mut().filter(|c| {
-            c.ask
-                .applying()
-                .is_some_and(|a| a.workflow.as_deref() == Some(s.wf.name.as_str()))
-        }) else {
-            return;
+    /// A stream that belongs to the apply session (Claude's turn, a step, sudo's check).
+    fn apply_stream(&mut self, id: u64, m: &StreamMsg) -> bool {
+        use sentry_core::apply::session::Phase;
+        let Some(sess) = self.apply.as_mut() else {
+            return false;
         };
-        let step = &s.wf.steps[idx];
-        let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
-        let tail: Vec<&str> = log.lines().rev().take(40).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        c.offer = Some(format!(
-            "Step {}/{} of {}, {} ({}), failed (exit {code}). Last lines of its log:\n{}\n\nWhat now?",
-            idx + 1,
-            s.wf.steps.len(),
-            s.wf.name,
-            step.title,
-            step.id,
-            tail.join("\n")
-        ));
-        self.toast("a step failed · A: Claude is waiting (s sends it the log)");
+        if sess.chat.live.is_some_and(|(cid, _)| cid == id) {
+            match m {
+                StreamMsg::Line {
+                    stderr: false,
+                    text,
+                } => {
+                    for e in claude::parse_line(text) {
+                        sess.chat.on_event(e);
+                    }
+                }
+                StreamMsg::Line { stderr: true, text } => sess.chat.on_raw(text.clone()),
+                StreamMsg::Exit { code, .. } => {
+                    let names = self.store.workflows.clone();
+                    let Some(sess) = self.apply.as_mut() else {
+                        return true;
+                    };
+                    let fx = sess.turn_ended(*code, &names);
+                    if sess.chat.hidden && !sess.busy() {
+                        self.toast("Claude answered · A opens it");
+                    }
+                    self.apply_fx(fx);
+                }
+            }
+            return true;
+        }
+        if sess.job.is_some_and(|(jid, _)| jid == id) {
+            match m {
+                StreamMsg::Line { text, .. } => sess.step_line(text.clone()),
+                StreamMsg::Exit { code, .. } => {
+                    let fx = sess.step_ended(*code);
+                    self.apply_fx(fx);
+                    for k in [Kind::Units, Kind::Docker] {
+                        self.fetch(k);
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some((_, password)) = self.apply_aux.filter(|(aid, _)| *aid == id) {
+            if let StreamMsg::Exit { code, .. } = m {
+                self.apply_aux = None;
+                let fx = match (password, sess.phase) {
+                    (true, Phase::Password { .. }) => sess.password_checked(*code == 0),
+                    (false, Phase::SudoCheck) => sess.sudo_checked(*code != 0),
+                    _ => Vec::new(),
+                };
+                self.apply_fx(fx);
+            }
+            return true;
+        }
+        false
     }
 
-    /// An apply chat for the workflow that just ended: what happened, ready for `s`.
-    fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
-        // The approved plan was waiting for this run: its result is the step's.
-        if let Some(c) = self.chat.as_mut()
-            && let Some(r) = c.apply_run.as_mut()
-            && let sentry_core::applyplan::RunState::WaitingWorkflow(i) = r.state
-            && matches!(&r.plan.steps[i].kind, sentry_core::applyplan::Kind::Workflow(w) if *w == e.head.workflow)
-        {
-            let ok = e.head.result == "done";
-            let a = r.step_done(
-                ok,
-                format!("{} {}: {}", e.head.workflow, e.head.result, e.head.summary),
-            );
-            self.plan_drive(a);
-            return;
+    /// Carry out what the apply session asks for: commands on the server, edits of local
+    /// files (the session does those), Claude's turns with the gateway.
+    fn apply_fx(&mut self, fx: Vec<sentry_core::apply::session::Fx>) {
+        use sentry_core::apply::session::Fx;
+        for f in fx {
+            match f {
+                Fx::Turn { prompt, shown } => {
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let resume = sess.chat.session.clone();
+                    let grants = sess.chat.grants.clone();
+                    let r = self.spawn_turn(&prompt, resume.as_deref(), &grants);
+                    let Some(sess) = self.apply.as_mut() else {
+                        return;
+                    };
+                    match (r, shown) {
+                        (Ok((id, pid)), Some(q)) => sess.chat.begin_turn(&q, id, pid),
+                        (Ok((id, pid)), None) => sess.chat.begin_quiet(id, pid),
+                        (Err(e), _) => {
+                            sess.chat
+                                .push(chatmod::Kind::Err, format!("couldn't start claude: {e}"));
+                            let names = self.store.workflows.clone();
+                            if let Some(sess) = self.apply.as_mut() {
+                                let fx = sess.turn_ended(-1, &names);
+                                self.apply_fx(fx);
+                            }
+                        }
+                    }
+                }
+                Fx::Kill(pid) => {
+                    let _ = kill(pid);
+                }
+                Fx::Command { cmd, sudo } => {
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let c = if sudo && sess.secret_ok {
+                        self.remote
+                            .sh(&sentry_core::apply::sudo::wrap(&cmd))
+                            .input(sess.secret.stdin())
+                    } else {
+                        self.remote.sh(&cmd)
+                    }
+                    .timeout(None);
+                    self.run_seq += 1;
+                    let id = self.run_seq;
+                    let r = if self.offline {
+                        Ok(0)
+                    } else {
+                        let tx = self.tx.clone();
+                        c.stream(move |m| {
+                            let _ = tx.send(Ev::Run(id, m));
+                        })
+                        .map_err(|e| e.to_string())
+                    };
+                    let Some(sess) = self.apply.as_mut() else {
+                        return;
+                    };
+                    match r {
+                        Ok(pid) => sess.step_started(id, pid),
+                        Err(e) => {
+                            sess.step_line(format!("couldn't start it: {e}"));
+                            let fx = sess.step_ended(-1);
+                            self.apply_fx(fx);
+                        }
+                    }
+                }
+                Fx::CheckSudo | Fx::CheckPassword => {
+                    let password = f == Fx::CheckPassword;
+                    let Some(sess) = self.apply.as_ref() else {
+                        return;
+                    };
+                    let c = if password {
+                        self.remote
+                            .sh(sentry_core::apply::sudo::check_script())
+                            .input(sess.secret.stdin())
+                    } else {
+                        self.remote.sh("sudo -n true")
+                    }
+                    .timeout(None);
+                    self.run_seq += 1;
+                    let id = self.run_seq;
+                    self.apply_aux = Some((id, password));
+                    if !self.offline {
+                        let tx = self.tx.clone();
+                        if let Err(e) = c.stream(move |m| {
+                            let _ = tx.send(Ev::Run(id, m));
+                        }) {
+                            self.apply_aux = None;
+                            self.toast(&format!("couldn't run sudo: {e}"));
+                        }
+                    }
+                }
+                Fx::StartWorkflow(wf) => {
+                    let item = self
+                        .apply
+                        .as_ref()
+                        .and_then(|s| s.chat.ask.applying())
+                        .and_then(|a| a.item.clone())
+                        .filter(|i| self.store.plans.contains_key(i));
+                    match item {
+                        Some(i) => self.apply_plan(&i, Instant::now()),
+                        None => self.apply(vec![Effect::StartWorkflow(wf.clone())], Instant::now()),
+                    }
+                    let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
+                    if !going || self.var_input.is_some() {
+                        if let Some(sess) = self.apply.as_mut() {
+                            sess.chat.hidden = true;
+                        }
+                        self.toast(&format!(
+                            "{wf} needs you · the plan carries on when its run ends (A shows it)"
+                        ));
+                    }
+                }
+                Fx::OpenRun => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.chat.hidden = true;
+                    }
+                    self.run_view = true;
+                    self.toast("the plan carries on when the run ends · A shows it");
+                }
+                Fx::Log { ok, body, tags } => {
+                    let mut tags = tags;
+                    if let Some(i) = self
+                        .apply
+                        .as_ref()
+                        .and_then(|s| s.chat.ask.applying())
+                        .and_then(|a| a.item.clone())
+                    {
+                        tags.push(format!("item:{i}"));
+                    }
+                    let e = sentry_core::maint::log::LogEntry::event(
+                        &self.remote.name,
+                        "apply",
+                        "apply",
+                        ok,
+                        &body,
+                        &tags,
+                        jiff::Timestamp::now(),
+                    );
+                    self.log_event(e);
+                }
+                Fx::TaskDone(id) => {
+                    let e =
+                        sentry_core::maint::log::LogEntry::task(&self.remote.name, &id, &id, None);
+                    self.log_event(e);
+                }
+                Fx::Hide => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.chat.hidden = true;
+                    }
+                    self.toast("it carries on · A brings it back");
+                }
+                Fx::Close => self.apply = None,
+            }
         }
-        let Some(c) = self.chat.as_mut().filter(|c| {
-            c.ask
-                .applying()
-                .is_some_and(|a| a.workflow.as_deref() == Some(e.head.workflow.as_str()))
-        }) else {
+    }
+
+    /// How the workflow the apply session waits for is doing, for its step.
+    fn wf_glimpse(&self) -> Vec<String> {
+        let Some(name) = self.apply.as_ref().and_then(|s| s.waiting_workflow()) else {
+            return Vec::new();
+        };
+        let Some(s) = self.wf.as_ref().filter(|s| s.wf.name == name) else {
+            return vec![format!("{name}: waiting to start · Enter opens it")];
+        };
+        let n = s.wf.steps.len();
+        if let Some(l) = &s.live {
+            return vec![format!(
+                "{name} · step {}/{n}: {}",
+                l.idx + 1,
+                s.wf.steps[l.idx].title
+            )];
+        }
+        match s.next.idx() {
+            Some(i) => vec![format!(
+                "{name} · step {}/{n}: {} · it needs you: Enter opens it",
+                i + 1,
+                s.wf.steps[i].title
+            )],
+            None => vec![format!("{name} · finishing")],
+        }
+    }
+
+    /// A workflow run ended: the apply session waiting for it carries on (and shows again).
+    fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
+        let Some(sess) = self.apply.as_mut() else {
             return;
         };
         let h = &e.head;
-        let list = |what: &str, v: &[String]| {
-            if v.is_empty() {
-                String::new()
-            } else {
-                format!(" {what}: {}.", v.join(", "))
-            }
-        };
-        c.offer = Some(format!(
-            "The {} run ended: {}.{}{}{} What should I verify now?",
-            h.workflow,
-            h.result,
-            list("Failed", &h.failed),
-            list("Done by hand", &h.by_hand),
-            list("Skipped", &h.skipped),
-        ));
-        self.toast("the run ended · A: Claude is waiting with the next step (s)");
+        let note = format!("{} {}: {}", h.workflow, h.result, h.summary);
+        let fx = sess.workflow_ended(&h.workflow, h.result == "done", note);
+        if !fx.is_empty() || sess.phase != sentry_core::apply::session::Phase::Applying {
+            sess.chat.hidden = false;
+        }
+        self.apply_fx(fx);
     }
 
     /// When the workflow started from a maintenance item has ended: log the change.
@@ -3303,60 +3466,70 @@ impl App {
         }
     }
 
-    fn consent(&self, text: &str, turn: AskTurn) -> Modal {
-        let t = self.theme;
-        let mut lines = vec![
-            Line::styled(
-                "Sent to Claude through your Claude Code login (Anthropic):",
-                t.fg(),
-            ),
-            Line::raw(""),
-        ];
-        let shown: Vec<&str> = text.lines().collect();
-        for l in shown.iter().take(22) {
-            lines.push(Line::styled(format!("  {l}"), t.dim()));
-        }
-        if shown.len() > 22 {
-            lines.push(Line::styled(
-                format!("  … {} more lines", shown.len() - 22),
-                t.dim(),
-            ));
-        }
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            format!(
-                "Claude may run read-only commands on {} through `sentry-server exec` (nothing \
-                 that changes it); it can't use ssh. Whatever it proposes, you run here after a \
-                 confirm box.",
-                self.remote.name
-            ),
-            t.s(t.yellow),
-        ));
-        Modal {
-            title: "Ask Claude".into(),
-            color: t.mag,
-            lines,
-            yes: Some(("send".into(), vec![Effect::AskSend(turn)])),
-        }
+    /// What Claude may do with what's sent, on this server (shown with the brief).
+    fn privacy(&self) -> String {
+        format!(
+            "Claude may run read-only commands on {} through `sentry-server exec` (nothing \
+             that changes it); it can't use ssh.",
+            self.remote.name
+        )
     }
 
-    fn ask_turn(&mut self, turn: AskTurn) {
-        match turn {
-            AskTurn::First(ask) => {
-                let p = ask.prompt();
-                let q = ask.question.lines().next().unwrap_or("").to_string();
-                // A hidden chat still answering is replaced: stop it first.
-                if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
-                    let _ = kill(pid);
-                }
-                self.chat = Some(Chat::new(ask));
-                self.start_turn(ReadsFor::Chat, &p, q, None);
-            }
-            AskTurn::Follow(text) => {
-                let session = self.chat.as_ref().and_then(|c| c.session.clone());
-                self.start_turn(ReadsFor::Chat, &text, text.clone(), session);
-            }
+    /// Open the conversation, nothing sent yet: an apply session, or a chat, showing the
+    /// brief; Enter sends it.
+    fn open_ask(&mut self, ask: Ask) {
+        if !claude::available() {
+            self.toast("Claude Code isn't installed (or not on PATH)");
+            return;
         }
+        if ask.applying().is_some() {
+            if let Some(pid) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.1)) {
+                let _ = kill(pid);
+            }
+            let mut sess = sentry_core::apply::session::Session::new(ask);
+            sess.chat.privacy = self.privacy();
+            self.apply = Some(sess);
+            return;
+        }
+        if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
+            let _ = kill(pid);
+        }
+        let mut c = Chat::new(ask);
+        c.pending = true;
+        c.privacy = self.privacy();
+        self.chat = Some(c);
+    }
+
+    /// A follow-up in the open chat, as typed (or what sentry offered to send).
+    fn ask_turn(&mut self, text: String) {
+        let session = self.chat.as_ref().and_then(|c| c.session.clone());
+        self.start_turn(ReadsFor::Chat, &text, text.clone(), session);
+    }
+
+    /// Start a Claude turn with the gateway, the notes files and `grants`. Offline (tests):
+    /// nothing starts; the id is real, the pid 0.
+    fn spawn_turn(
+        &mut self,
+        prompt: &str,
+        resume: Option<&str>,
+        grants: &[sentry_core::claude::Grant],
+    ) -> Result<(u64, u32), String> {
+        let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
+        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+            .with_notes(&self.remote.cfg.maintenance.notes)
+            .with_grants(grants);
+        self.run_seq += 1;
+        let id = self.run_seq;
+        if self.offline {
+            return Ok((id, 0));
+        }
+        let cmd = claude::turn_cmd_with(prompt, resume, &profile);
+        let tx = self.tx.clone();
+        cmd.stream(move |m| {
+            let _ = tx.send(Ev::Run(id, m));
+        })
+        .map(|pid| (id, pid))
+        .map_err(|e| e.to_string())
     }
 
     /// Send one turn to Claude, into the open chat or the background plan.
@@ -3376,6 +3549,7 @@ impl App {
         let id = self.run_seq;
         let _ = to;
         let Some(c) = self.chat.as_mut() else { return };
+        c.pending = false;
         if self.offline {
             c.push(chatmod::Kind::You, shown);
             return;
@@ -3489,7 +3663,7 @@ impl App {
         text.push_str("\nContinue from here.");
         match to {
             ReadsFor::Plan => self.writer_follow(planview::reads_back(&text)),
-            _ if self.chat.is_some() => self.ask_turn(AskTurn::Follow(text)),
+            _ if self.chat.is_some() => self.ask_turn(text),
             _ => self.toast("the conversation is closed: the output wasn't sent"),
         }
     }
@@ -3507,6 +3681,30 @@ impl App {
             {
                 self.modal = Some(proposal_modal(&t, &server, p));
             }
+            return;
+        }
+        if c.pending {
+            match k.code {
+                KeyCode::Esc => self.chat = None,
+                KeyCode::Enter => {
+                    let note = std::mem::take(&mut c.input);
+                    let mut prompt = c.ask.prompt();
+                    let shown = match note.trim() {
+                        "" => c.ask.question.lines().next().unwrap_or("").to_string(),
+                        n => {
+                            prompt.push_str(&format!("\n\nFrom me: {n}"));
+                            n.to_string()
+                        }
+                    };
+                    self.start_turn(ReadsFor::Chat, &prompt, shown, None);
+                }
+                KeyCode::Backspace => {
+                    c.input.pop();
+                }
+                KeyCode::Char(ch) if !ctrl => c.input.push(ch),
+                _ => {}
+            }
+            self.dirty = true;
             return;
         }
         let idle = c.input.is_empty() && !c.busy();
@@ -3530,17 +3728,7 @@ impl App {
             }
             KeyCode::Char('s') if idle && c.offer.is_some() => {
                 let text = c.offer.take().unwrap_or_default();
-                self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
-            }
-            // Claude's plan: shown whole, approved once, then sentry carries it out.
-            KeyCode::Char('a') if idle && c.can_apply() => {
-                let lines = c.approval_lines(&t);
-                self.modal = Some(Modal {
-                    title: "Apply the plan".into(),
-                    color: t.yellow,
-                    lines,
-                    yes: Some(("apply".into(), vec![Effect::ApplyStart])),
-                });
+                self.ask_turn(text);
             }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
@@ -3551,34 +3739,6 @@ impl App {
                     lines,
                     yes: Some(("grant".into(), vec![Effect::ChatGrant])),
                 });
-            }
-            // Applying something: start its workflow (the chat steps aside), or mark it done.
-            KeyCode::Char('w')
-                if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
-            {
-                let a = c.ask.applying().cloned().unwrap_or_default();
-                c.hidden = true;
-                self.toast("A brings Claude back; it hears how the run goes when you send it (s)");
-                let has_plan = a
-                    .plan
-                    .as_ref()
-                    .is_some_and(|p| self.store.plans.contains_key(p));
-                match (a.plan, a.workflow) {
-                    (Some(item), _) if has_plan => self.apply_plan(&item, Instant::now()),
-                    (_, Some(wf)) => self.apply(vec![Effect::StartWorkflow(wf)], Instant::now()),
-                    _ => {}
-                }
-            }
-            KeyCode::Char('d') if idle && c.ask.applying().is_some_and(|a| a.can_mark_done()) => {
-                let a = c.ask.applying().cloned().unwrap_or_default();
-                c.hidden = true;
-                match (a.task, a.plan) {
-                    (Some(id), _) => self.task_done(&id),
-                    (None, Some(item)) => {
-                        self.apply(vec![Effect::PlanDoneByHand(item)], Instant::now())
-                    }
-                    _ => {}
-                }
             }
             KeyCode::Char('k') if ctrl => c.scroll_by(1),
             KeyCode::Char('j') if ctrl => c.scroll_by(-1),
@@ -3595,9 +3755,10 @@ impl App {
                     self.toast("Claude carries on · A brings the chat back");
                 }
             }
+            // What you typed is what's sent: no box.
             KeyCode::Enter if !c.running() && !c.input.trim().is_empty() => {
                 let text = std::mem::take(&mut c.input);
-                self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
+                self.ask_turn(text);
             }
             KeyCode::Backspace => {
                 c.input.pop();
@@ -3629,7 +3790,6 @@ impl App {
                 format!("sentry-server · {} on {}", p.cmd, self.remote.name),
                 vec![Kind::Units, Kind::Docker],
             ));
-            self.suspend_plan = self.chat.as_ref().is_some_and(|c| c.plan_step.is_some());
             return;
         }
         self.run_seq += 1;
@@ -3658,141 +3818,6 @@ impl App {
             }
             Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start it: {e}")),
         }
-    }
-
-    /// After Claude's turn: what stops its plan (edits that don't fit, unknown workflows).
-    fn chat_plan_check(&mut self) {
-        let names = self.store.workflows.clone();
-        if let Some(c) = self.chat.as_mut()
-            && let Some(r) = &c.apply_run
-            && r.state == sentry_core::applyplan::RunState::Proposed
-        {
-            c.plan_problems = sentry_core::applyplan::problems(&r.plan, &names);
-        }
-    }
-
-    /// A plan step's command ended: the plan's next step.
-    fn plan_step_exit(&mut self, code: i32, output: String) {
-        let Some(c) = self.chat.as_mut() else { return };
-        let Some(i) = c.plan_step.take() else { return };
-        let out = sentry_core::applyplan::tail(&output, 15);
-        let note = if out.trim().is_empty() {
-            format!("exit {code}")
-        } else {
-            format!("exit {code}\n{out}")
-        };
-        c.push(
-            chatmod::Kind::Info,
-            format!(
-                "{} step {} · exit {code}",
-                if code == 0 { "✓" } else { "✗" },
-                i + 1
-            ),
-        );
-        let a = c.apply_run.as_mut().map(|r| r.step_done(code == 0, note));
-        if let Some(a) = a {
-            self.plan_drive(a);
-        }
-    }
-
-    /// Carry out the approved plan from `a` on: edits (files on this laptop) here, commands on
-    /// the server like a proposal, a workflow started; each one's end comes back here.
-    fn plan_drive(&mut self, mut a: sentry_core::applyplan::Action) {
-        use sentry_core::applyplan::{Action, apply_edit};
-        loop {
-            let Some(c) = self.chat.as_mut() else { return };
-            let Some(r) = c.apply_run.as_mut() else {
-                return;
-            };
-            match a {
-                Action::Edit(i) => {
-                    let (ok, note) = match apply_edit(&r.plan.steps[i]) {
-                        Ok((b, before, after)) => (
-                            true,
-                            format!("{before} → {after} lines · backup {}", b.display()),
-                        ),
-                        Err(e) => (false, e),
-                    };
-                    let line = format!("{} step {}: {note}", if ok { "✓" } else { "✗" }, i + 1);
-                    a = r.step_done(ok, note);
-                    c.push(chatmod::Kind::Info, line);
-                }
-                Action::Command { idx, cmd } => {
-                    c.plan_step = Some(idx);
-                    let why = r.plan.steps[idx].title.clone();
-                    self.chat_run(sentry_core::claude::Proposed {
-                        cmd,
-                        why,
-                        undo: None,
-                        known: false,
-                    });
-                    return;
-                }
-                Action::StartWorkflow(_, wf) => {
-                    c.hidden = true;
-                    let item = c
-                        .ask
-                        .applying()
-                        .and_then(|x| x.item.clone())
-                        .filter(|i| self.store.plans.contains_key(i));
-                    self.toast(&format!(
-                        "starting {wf} · the plan carries on when its run ends"
-                    ));
-                    match item {
-                        Some(i) => self.apply_plan(&i, Instant::now()),
-                        None => self.apply(vec![Effect::StartWorkflow(wf)], Instant::now()),
-                    }
-                    return;
-                }
-                Action::Finished => return self.plan_finished(),
-            }
-        }
-    }
-
-    /// The plan ran (or stopped): Claude gets the report (`s`), the log one entry.
-    fn plan_finished(&mut self) {
-        let Some(c) = self.chat.as_mut() else { return };
-        let Some(r) = c.apply_run.as_ref() else {
-            return;
-        };
-        let report = r.report();
-        let ok = r.state == sentry_core::applyplan::RunState::Done;
-        let tags: Vec<String> = c
-            .ask
-            .applying()
-            .map(|a| format!("apply:{}", a.key))
-            .into_iter()
-            .chain(r.plan.steps.iter().filter_map(|s| match &s.kind {
-                sentry_core::applyplan::Kind::Edit { file, .. } => Some(format!("file:{file}")),
-                _ => None,
-            }))
-            .collect();
-        let summary = format!("{}\n\n{report}", r.plan.summary);
-        c.hidden = false;
-        c.offer = Some(report);
-        c.push(
-            chatmod::Kind::Info,
-            if ok {
-                "plan applied · s sends the results to Claude".to_string()
-            } else {
-                "plan stopped · s sends what happened to Claude".to_string()
-            },
-        );
-        let e = sentry_core::maint::log::LogEntry::event(
-            &self.remote.name,
-            "apply",
-            "apply",
-            ok,
-            &summary,
-            &tags,
-            jiff::Timestamp::now(),
-        );
-        self.log_event(e);
-        self.toast(if ok {
-            "plan applied"
-        } else {
-            "plan stopped at a failed step"
-        });
     }
 
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
@@ -3827,7 +3852,7 @@ impl App {
             }
         }
         if let Some(text) = c.grant() {
-            self.ask_turn(AskTurn::Follow(text));
+            self.ask_turn(text);
         }
     }
 
@@ -3930,15 +3955,6 @@ impl App {
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
-        // A plan step that needed the terminal for sudo: its exit is the step's.
-        if std::mem::take(&mut self.suspend_plan) {
-            let code = match &status {
-                Ok(st) => st.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            self.plan_step_exit(code, "(ran in the terminal)".into());
-            return;
-        }
         if let Some((idx, capture)) = self.suspend_step.take()
             && let Some(s) = self.wf.as_mut()
         {
@@ -3950,9 +3966,6 @@ impl App {
                 s.tty_output(idx, &capture);
             }
             s.on_exit(idx, code);
-            if code != 0 {
-                self.apply_step_failed(idx, code);
-            }
             self.wf_auto();
             return;
         }
@@ -4108,6 +4121,10 @@ impl App {
         self.draw_keybar(f, keybar);
         if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
             chatmod::draw(f, body, &t, c);
+        }
+        if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
+            let wf = self.wf_glimpse();
+            sentry_core::tui::applyview::draw(f, body, &t, sess, &wf);
         }
         if let Some(p) = &self.pane {
             draw_pane(f, body, &t, p);
@@ -4381,10 +4398,27 @@ impl App {
             if self.store.sudo.value == Some(SudoMode::Password) {
                 h.push(("I", "read with sudo"));
             }
-            match self.chat.as_ref().filter(|c| c.hidden) {
-                Some(c) => {
+            let hidden = self
+                .apply
+                .as_ref()
+                .filter(|s| s.chat.hidden)
+                .map(|s| {
+                    if s.busy() {
+                        "applying…"
+                    } else {
+                        "the apply session"
+                    }
+                })
+                .or_else(|| {
+                    self.chat
+                        .as_ref()
+                        .filter(|c| c.hidden)
+                        .map(|c| c.hidden_word())
+                });
+            match hidden {
+                Some(word) => {
                     h.retain(|(k, _)| *k != "A");
-                    h.push(("A", c.hidden_word()));
+                    h.push(("A", word));
                 }
                 // Maintenance names its own `A` (apply or ask).
                 None if claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
@@ -4497,22 +4531,84 @@ impl App {
         self.wf_entries = e;
         self.keep_maint_selection();
     }
-    /// Tests: the request waiting in a box (a review's).
+    /// Tests: the request waiting in a box (a review's), or the brief of a conversation
+    /// just opened.
     pub fn consent_text_any(&self) -> Option<String> {
-        match self.modal.as_ref()?.yes.as_ref()?.1.first()? {
-            Effect::ReviewWrite(p) => Some(p.clone()),
-            Effect::PlanWrite(_, _, p) => Some(p.clone()),
-            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
-            _ => None,
+        match self.modal.as_ref().and_then(|m| m.yes.as_ref()?.1.first()) {
+            Some(Effect::ReviewWrite(p)) => Some(p.clone()),
+            Some(Effect::PlanWrite(_, _, p)) => Some(p.clone()),
+            _ => self.consent_text(),
         }
     }
-    /// Tests: the question waiting in the consent box.
+    /// Tests: what the conversation just opened would send (nothing sent yet).
     pub fn consent_text(&self) -> Option<String> {
-        let m = self.modal.as_ref()?;
-        match m.yes.as_ref()?.1.first()? {
-            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
-            _ => None,
+        if let Some(s) = self
+            .apply
+            .as_ref()
+            .filter(|s| s.phase == sentry_core::apply::session::Phase::Brief)
+        {
+            return Some(s.chat.ask.prompt());
         }
+        self.chat
+            .as_ref()
+            .filter(|c| c.pending)
+            .map(|c| c.ask.prompt())
+    }
+    /// Tests: the apply session.
+    pub fn apply_session(&mut self) -> Option<&mut sentry_core::apply::session::Session> {
+        self.apply.as_mut()
+    }
+    /// Tests: Claude's answer to the apply session's turn (nothing was sent).
+    pub fn apply_answer_for_test(&mut self, text: &str) {
+        let id = self
+            .apply
+            .as_ref()
+            .and_then(|s| s.chat.live.map(|l| l.0))
+            .expect("no turn running");
+        let line = serde_json::json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
+        })
+        .to_string();
+        self.on_event(
+            Ev::Run(
+                id,
+                StreamMsg::Line {
+                    stderr: false,
+                    text: line,
+                },
+            ),
+            Instant::now(),
+        );
+        self.on_event(
+            Ev::Run(
+                id,
+                StreamMsg::Exit {
+                    code: 0,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// Tests: the apply session's running step (or sudo's check) ended (nothing ran).
+    pub fn apply_exit_for_test(&mut self, code: i32) {
+        let id = self
+            .apply
+            .as_ref()
+            .and_then(|s| s.job.map(|j| j.0))
+            .or(self.apply_aux.map(|a| a.0))
+            .expect("nothing running");
+        self.on_event(
+            Ev::Run(
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
     }
     /// Tests: the plan writer answered.
     pub fn writer_answered(&mut self, answer: &str) {

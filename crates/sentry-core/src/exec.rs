@@ -33,6 +33,23 @@ pub struct Cmd {
     argv: Vec<OsString>,
     timeout: Option<Duration>,
     dir: Option<PathBuf>,
+    input: Option<Input>,
+}
+
+/// What a command reads on stdin (a sudo password among it): never shown, never logged.
+#[derive(Clone, PartialEq)]
+struct Input(Vec<u8>);
+
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Input({} bytes)", self.0.len())
+    }
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.0.iter_mut().for_each(|b| *b = 0);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +139,7 @@ impl Cmd {
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
+            input: None,
         }
     }
 
@@ -132,6 +150,7 @@ impl Cmd {
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
+            input: None,
         }
     }
 
@@ -146,6 +165,7 @@ impl Cmd {
             argv: vec![bin.into()],
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
+            input: None,
         }
     }
 
@@ -167,6 +187,31 @@ impl Cmd {
     pub fn dir(mut self, d: impl Into<PathBuf>) -> Self {
         self.dir = Some(d.into());
         self
+    }
+
+    /// Bytes written to the command's stdin, which is then closed (otherwise stdin is
+    /// /dev/null). Over ssh the remote command gets no terminal, so nothing is echoed.
+    pub fn input(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.input = Some(Input(bytes.into()));
+        self
+    }
+
+    /// Feed `input` (if any) to the child's stdin from a thread, then close it.
+    fn feed(&self, child: &mut std::process::Child) {
+        if let (Some(i), Some(mut w)) = (self.input.clone(), child.stdin.take()) {
+            thread::spawn(move || {
+                use std::io::Write;
+                let _ = w.write_all(&i.0);
+            });
+        }
+    }
+
+    fn stdin(&self) -> Stdio {
+        if self.input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        }
     }
 
     pub fn timeout(mut self, t: Option<Duration>) -> Self {
@@ -293,10 +338,11 @@ impl Cmd {
         self.check()?;
         let mut child = self
             .command()
-            .stdin(Stdio::null())
+            .stdin(self.stdin())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        self.feed(&mut child);
         let mut out = child.stdout.take().expect("piped");
         let mut err = child.stderr.take().expect("piped");
         let t_out = thread::spawn(move || {
@@ -354,15 +400,18 @@ impl Cmd {
     ) -> Result<u32, ExecError> {
         self.check()?;
         let mut child = self
-            .command_tty(if matches!(self.site, Site::Ssh(_)) {
-                Tty::Forced
-            } else {
-                Tty::No
-            })
-            .stdin(Stdio::null())
+            .command_tty(
+                if matches!(self.site, Site::Ssh(_)) && self.input.is_none() {
+                    Tty::Forced
+                } else {
+                    Tty::No
+                },
+            )
+            .stdin(self.stdin())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        self.feed(&mut child);
         let pid = child.id();
         let sink = Arc::new(sink);
         let readers: Vec<_> = [
@@ -669,5 +718,27 @@ mod tests {
         assert!(lines.contains(&"a") && lines.contains(&"b") && lines.contains(&"y"));
         // `ssh -tt` ends lines with \r\n: the text survives.
         assert!(lines.contains(&"crlf"), "{lines:?}");
+    }
+    #[test]
+    fn input_goes_to_stdin_and_never_shows() {
+        let c = Cmd::local("sh")
+            .arg("-c")
+            .arg("IFS= read -r p; echo \"got ${#p}\"; cat")
+            .input("hunter2\nrest\n");
+        assert!(!format!("{c:?}").contains("hunter2"));
+        assert_eq!(c.output().unwrap(), "got 7\nrest\n");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        c.stream(move |m| tx.lock().unwrap().send(m).unwrap())
+            .unwrap();
+        let lines: Vec<String> = rx
+            .iter()
+            .take_while(|m| !matches!(m, StreamMsg::Exit { .. }))
+            .filter_map(|m| match m {
+                StreamMsg::Line { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, ["got 7", "rest"]);
     }
 }

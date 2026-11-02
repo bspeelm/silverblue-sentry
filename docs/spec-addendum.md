@@ -246,3 +246,10 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `a` shows the whole plan with its diffs; `y` approves it once. sentry backs up every edited file and runs the steps in order; a failing step stops the rest. The report goes to Claude with `s` (on a failure, the steps done, for a plan for the rest). One log entry per run (`kind = "apply"`).
 - A plan with an edit that doesn't fit the file, a file outside home or an unknown workflow can't be approved (shown in red).
 
+## A28. Applying is one session (2026-11, replaces A27's approval box, offers and `s`)
+- `apply::Session` (sentry-core) is the whole of it, a state machine both programs drive: Brief → Investigating → Review → (sudo check → inline password) → Applying → Verifying → Settled. Two decisions are the user's: start (Enter on the brief) and approve (Enter on the plan). Everything else follows by itself.
+- No consent box: the brief is shown in the window, with an input to add to it; Enter sends. Follow-ups you type are sent as typed. The same for ask and fix chats (their first turn opens as a brief). Modals take Enter as yes.
+- A plan with problems, or a failed step, goes back to Claude without a key (at most 2 rounds, then the user says what to do). After the last step the results go to Claude to verify; it answers with a ```` ```sentry-verdict ```` block (`done` / `more` + a new plan / `failed`). `done` tags the apply log entry `task:<id>`, which marks the task done.
+- Root edits: an `edit` of a root-owned file under /etc (not sudoers, PAM, passwd/shadow/group) is written with sudo: backup as the user, new text to a 0600 temp file, `sudo sh -c 'cat "$1" > "$2"'` keeps owner, mode and label. A sudo password is typed inline, checked (`sudo -S`), and fed on stdin to a shell where `sudo` reads it (`apply::sudo::wrap`); `Cmd::input` writes stdin, and ssh gets no tty then, so nothing is echoed.
+- In an apply session there are no proposals and no offers. The ask and fix chats keep theirs (`r`, `s`); their sudo proposals still hand the terminal over.
+
