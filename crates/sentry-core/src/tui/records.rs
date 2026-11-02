@@ -550,6 +550,7 @@ mod tests {
                     off: false,
                     source: tasks::Source::Default,
                     review: None,
+                    after: None,
                 })
                 .to_vec(),
             log: vec![LogEntry::event(

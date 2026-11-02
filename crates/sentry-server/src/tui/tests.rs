@@ -2301,6 +2301,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
                 off: false,
                 source: Default::default(),
                 review: None,
+                after: None,
             },
         ))],
         Instant::now(),

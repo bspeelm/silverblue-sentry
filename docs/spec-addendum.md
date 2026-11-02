@@ -253,3 +253,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Root edits: an `edit` of a root-owned file under /etc (not sudoers, PAM, passwd/shadow/group) is written with sudo: backup as the user, new text to a 0600 temp file, `sudo sh -c 'cat "$1" > "$2"'` keeps owner, mode and label. A sudo password is typed inline, checked (`sudo -S`), and fed on stdin to a shell where `sudo` reads it (`apply::sudo::wrap`); `Cmd::input` writes stdin, and ssh gets no tty then, so nothing is echoed.
 - In an apply session there are no proposals and no offers. The ask and fix chats keep theirs (`r`, `s`); their sudo proposals still hand the terminal over.
 
+## A29. Checks for later, and desktop settings Claude may read (2026-11)
+- A verdict may carry a `[follow_up]` (`title`, read-only `steps`, `after`): on `done`, sentry adds it to `tasks.toml` as a one-time by-hand task (`check-<slug>-<date>`), so the check doesn't depend on remembering it.
+- `Task.after`: a sentry workflow (due once it next ends well after the task was added) or a wait (`7d` from when it was added). An `after` sentry doesn't know goes into the steps, and the task is due now.
+- Claude's read-only allowlist includes `gsettings get/list-keys/list-recursively/range/describe` (never `set`/`reset`).
+

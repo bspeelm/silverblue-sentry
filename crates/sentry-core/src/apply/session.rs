@@ -97,6 +97,8 @@ pub enum Fx {
         body: String,
         tags: Vec<String>,
     },
+    /// A check for later, as a one-time task on Maintenance (due after its `after`).
+    AddTask(Box<crate::maint::tasks::Task>),
     /// A task done with nothing else logged: logged as such (tagged `task:<id>`). Usually
     /// the apply entry carries the tag instead.
     TaskDone(String),
@@ -728,7 +730,16 @@ impl Session {
                 self.chat
                     .push(Kind::Good, format!("✓ Done · {}", v.summary));
                 next(self);
-                self.settle_with(End::Done, Some(&v.summary))
+                let mut fx = self.settle_with(End::Done, Some(&v.summary));
+                if let Some(f) = &v.follow_up {
+                    let t = self.follow_up_task(f, workflows);
+                    self.chat.push(
+                        Kind::Info,
+                        format!("follow-up on Maintenance: {} ({})", t.title, t.when()),
+                    );
+                    fx.push(Fx::AddTask(Box::new(t)));
+                }
+                fx
             }
             Status::Failed => {
                 self.chat
@@ -751,6 +762,62 @@ impl Session {
                     _ => self.settle_with(End::Unverified, Some(&v.summary)),
                 }
             }
+        }
+    }
+
+    /// Claude's check for later, as a task: done by hand (Enter works it out with Claude),
+    /// due after the workflow's next good run or the wait. An `after` sentry doesn't know
+    /// goes into the steps instead.
+    fn follow_up_task(
+        &self,
+        f: &verdict::FollowUp,
+        workflows: &[String],
+    ) -> crate::maint::tasks::Task {
+        let slug: String = f
+            .title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let slug: String = slug.chars().take(40).collect();
+        let now = jiff::Timestamp::now();
+        let known = |a: &String| {
+            a.parse::<crate::config::Dur>().is_ok() || workflows.iter().any(|w| w == a)
+        };
+        let mut steps = f.steps.clone();
+        let after = match &f.after {
+            Some(a) if known(a) => Some(a.clone()),
+            Some(a) => {
+                steps = format!("Once {a}:\n\n{steps}");
+                None
+            }
+            None => None,
+        };
+        crate::maint::tasks::Task {
+            id: format!(
+                "check-{}-{}",
+                slug.trim_end_matches('-'),
+                now.strftime("%Y%m%d")
+            ),
+            title: f.title.clone(),
+            why: format!(
+                "A follow-up of: {}",
+                self.chat.ask.subject.trim_start_matches("apply · ")
+            ),
+            level: crate::maint::Level::Routine,
+            every: None,
+            act: "by-hand".into(),
+            item: self.chat.ask.applying().and_then(|a| a.item.clone()),
+            steps,
+            added: Some(now),
+            off: false,
+            source: Default::default(),
+            review: None,
+            after,
         }
     }
 
@@ -1042,6 +1109,46 @@ mod tests {
         assert_eq!(s.phase, Phase::Settled(End::Stopped));
         assert!(matches!(&fx[..], [Fx::Log { ok: false, .. }]), "{fx:?}");
         assert!(s.secret.is_empty() && !s.secret_ok);
+    }
+
+    #[test]
+    fn a_check_for_later_becomes_a_task() {
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, &plan(CHECKS));
+        key(&mut s, KeyCode::Enter);
+        s.step_ended(0);
+        let fx = s.step_ended(0);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"done\"\nsummary = \"off\"\n[follow_up]\n\
+             title = \"Confirm GNOME Software starts no upgrade\"\n\
+             steps = \"journalctl -u rpm-ostreed -g 'Initiated txn Upgrade'\"\nafter = \"quick-update\"\n```",
+        );
+        let Some(Fx::AddTask(t)) = fx.iter().find(|f| matches!(f, Fx::AddTask(_))) else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            t.id.starts_with("check-confirm-gnome-software-starts-no-upgrade-"),
+            "{}",
+            t.id
+        );
+        assert_eq!(t.after.as_deref(), Some("quick-update"));
+        assert_eq!(t.act, "by-hand");
+        assert!(t.why.contains("the cheatsheet"));
+        assert!(s.chat.entries.iter().any(|(_, x)| x
+            == "follow-up on Maintenance: Confirm GNOME Software starts no upgrade (once, after the next quick-update run)"));
+        // An `after` sentry doesn't know: due now, the condition in its steps.
+        let t = s.follow_up_task(
+            &verdict::FollowUp {
+                title: "x".into(),
+                steps: "look".into(),
+                after: Some("next boot".into()),
+            },
+            &[],
+        );
+        assert!(t.after.is_none() && t.steps.starts_with("Once next boot:"));
     }
 
     #[test]

@@ -1758,6 +1758,7 @@ impl App {
                         sentry_core::maint::log::LogEntry::task(&self.remote.name, &id, &id, None);
                     self.log_event(e);
                 }
+                Fx::AddTask(t) => self.task_add(*t),
                 Fx::Hide => {
                     if let Some(sess) = self.apply.as_mut() {
                         sess.chat.hidden = true;

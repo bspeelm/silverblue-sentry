@@ -145,6 +145,7 @@ mod tests {
             steps: String::new(),
             added: None,
             review: None,
+            after: None,
             off: false,
             source: Default::default(),
         }

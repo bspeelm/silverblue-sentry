@@ -323,7 +323,15 @@ pub fn apply_verify(report: &str) -> String {
          next = \"what I should do later, if anything (e.g. reboot to confirm), in words\"\n\
          ```\n\
          With `more`, also send one ```sentry-apply block for what's left. Never give me \
-         commands to run: sentry runs plans, and `next` is words."
+         commands to run: sentry runs plans, and `next` is words. When something can only be \
+         confirmed later (after the next update, a reboot, a few days), add to the verdict \
+         block a check for later, which sentry puts on my Maintenance list when it's due:\n\
+         ```\n\
+         [follow_up]\n\
+         title = \"what to confirm, in a few words\"\n\
+         steps = \"how to confirm it, read-only\"\n\
+         after = \"quick-update\"   # a sentry workflow whose next good run makes it due, or a wait like \"7d\"\n\
+         ```"
     )
 }
 
@@ -505,6 +513,12 @@ pub const ALLOWED: &[&str] = &[
     "Bash(mokutil --sb-state:*)",
     "Bash(mokutil --list-enrolled:*)",
     "Bash(uname:*)",
+    // Desktop settings, read only (dconf: `get` and the listings, never `set`/`reset`).
+    "Bash(gsettings get:*)",
+    "Bash(gsettings list-keys:*)",
+    "Bash(gsettings list-recursively:*)",
+    "Bash(gsettings range:*)",
+    "Bash(gsettings describe:*)",
     "Bash(cat /proc/:*)",
     "Read(//etc/**)",
     "Read(//proc/**)",
@@ -529,7 +543,7 @@ pub fn allowlist_summary() -> String {
     "Claude may also run read-only commands (ss, ip, systemctl status/list-units/cat/show, \
      firewall-cmd --list-all, journalctl, \
      rpm -q, rpm-ostree status/db diff, flatpak info/list, podman ps/inspect, ps, df, nvidia-smi, \
-     modinfo, mokutil, uname) and read files under /etc, /proc, /usr/lib/systemd. Nothing that \
+     modinfo, mokutil, uname, gsettings get/list) and read files under /etc, /proc, /usr/lib/systemd. Nothing that \
      changes the system is allowed."
         .into()
 }
@@ -1140,6 +1154,18 @@ mod tests {
             !ALLOWED
                 .iter()
                 .any(|a| a.contains("rm") || a.contains("sudo") || a.contains("install"))
+        );
+        // gsettings reads only: `set` and `reset` aren't allowed, nor read-only to sentry.
+        assert!(read_only(
+            "gsettings get org.gnome.software download-updates"
+        ));
+        assert!(!read_only(
+            "gsettings set org.gnome.software download-updates false"
+        ));
+        assert!(
+            !ALLOWED
+                .iter()
+                .any(|a| a.contains("gsettings set") || a.contains("gsettings reset"))
         );
     }
 

@@ -134,6 +134,7 @@ fn tasks_with(cfg: &Config, ov: &BTreeMap<String, String>) -> Vec<Task> {
         off: e.0.is_none(),
         source: e.1,
         review: None,
+        after: None,
     };
     let mut out = Vec::new();
     if let Some(e) = every(JobId::Audit) {
