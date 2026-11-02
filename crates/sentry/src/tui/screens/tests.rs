@@ -929,6 +929,9 @@ fn fixing_a_finding_is_an_apply_session() {
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
+    // A quiet step still shows it's alive.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("… running 0:00, no output yet"), "{s}");
     a.apply_step_exit_for_test(0);
     // The plan ran: sentry audits again before Claude verifies.
     let s = render_to_string(&mut a, 158, 41);
