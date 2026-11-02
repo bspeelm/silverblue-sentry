@@ -132,6 +132,29 @@ pub fn save(doc: &ReviewDoc) -> anyhow::Result<PathBuf> {
     Ok(p)
 }
 
+/// Every review written, newest first, with its file.
+pub fn list(server: &str) -> Vec<(PathBuf, ReviewDoc)> {
+    let mut v: Vec<(PathBuf, ReviewDoc)> = std::fs::read_dir(dir(server))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|p| {
+            let d = ReviewDoc::parse(&std::fs::read_to_string(&p).ok()?).ok()?;
+            Some((p, d))
+        })
+        .filter(|(_, d)| d.head.status == PlanStatus::Ready)
+        .collect();
+    v.sort_by_key(|(_, d)| std::cmp::Reverse(d.head.created));
+    v
+}
+
+/// One review, from its file.
+pub fn read(p: &std::path::Path) -> Option<ReviewDoc> {
+    ReviewDoc::parse(&std::fs::read_to_string(p).ok()?).ok()
+}
+
 /// The newest review that was written.
 pub fn latest(server: &str) -> Option<ReviewDoc> {
     let mut v: Vec<ReviewDoc> = std::fs::read_dir(dir(server))

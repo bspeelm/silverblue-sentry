@@ -51,7 +51,7 @@ pub fn recs(v: &View) -> Vec<Rec> {
         apt: v.s.apt.value.as_ref(),
         log: &v.s.log,
         workflows: &v.s.workflows,
-        snooze: &v.s.maint_state.snooze,
+        snooze: &v.s.later,
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
@@ -781,7 +781,7 @@ fn dismiss(v: &View, title: &str, what: &str, how: &str, e: Effect) -> Vec<Effec
 }
 
 /// Enter on a task: its workflow, the item's plan, the audit, or (by hand) its steps.
-fn task_enter(v: &View, id: &str) -> Vec<Effect> {
+pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     use crate::maint::tasks::Do;
     let t = v.t;
     let Some(task) = all_tasks(v).into_iter().find(|x| x.id == id) else {

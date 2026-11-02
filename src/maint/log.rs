@@ -327,6 +327,25 @@ impl LogEntry {
         }
     }
 
+    /// A note added later (Records › Log, `n`): appended, dated.
+    pub fn add_note(&mut self, note: &str) {
+        let day = jiff::Zoned::now().strftime("%Y-%m-%d");
+        self.body = format!(
+            "{}\n\n## Note ({day})\n\n{}",
+            self.body.trim_end(),
+            note.trim()
+        );
+        if self.head.summary.is_empty() {
+            self.head.summary = note
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
+        }
+    }
+
     pub fn to_md(&self) -> String {
         format!(
             "{FENCE}\n{}{FENCE}\n\n{}\n",
