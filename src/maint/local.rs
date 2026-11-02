@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use jiff::Timestamp;
 
 use super::Level;
+use super::later::Snoozes;
 use super::log::LogEntry;
 use super::plan::{PlanDoc, PlanStatus};
 use super::rec::Target;
-use super::snooze::Snoozes;
 use super::tasks::Task;
 use crate::audit::{Report, Sev};
 use crate::baseline::Baseline;

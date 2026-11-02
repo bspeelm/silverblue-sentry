@@ -199,7 +199,7 @@ pub struct DataStore {
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
     /// Recommendations put off with `z` (`maint.toml`), and Claude's plans (`plans/`).
-    pub snoozes: crate::maint::snooze::Snoozes,
+    pub snoozes: crate::maint::later::Snoozes,
     pub plans: std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
     /// Tasks taken from reviews (`tasks.toml`), and the maintenance log that says which are done.
     pub tasks: Vec<crate::maint::tasks::Task>,
@@ -217,7 +217,7 @@ impl DataStore {
         // Old jobs.json / cadence.toml into the log and tasks.toml, once, before they're read.
         crate::jobs::state::migrate(&cfg);
         d.baseline = Baseline::effective(&cfg);
-        d.snoozes = crate::maint::snooze::load();
+        d.snoozes = crate::maint::later::load(crate::maint::LOCAL);
         d.plans = crate::maint::plan::list(crate::maint::LOCAL);
         d.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
         d.maint_log = crate::maint::log::list(crate::maint::LOCAL);

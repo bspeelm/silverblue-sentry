@@ -244,7 +244,7 @@ pub fn maint_read(
         &cfg.maintenance.items,
         &read.local,
         lookups.as_ref(),
-        &maint::load_state(&r.name),
+        &crate::maint::later::load(&r.name),
         today,
     );
     let facts = maint::discover::read_facts(r, cfg).ok();

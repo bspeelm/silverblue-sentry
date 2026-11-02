@@ -145,8 +145,8 @@ pub struct Store {
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
     /// When upstream was last looked up.
     pub upstream_at: Option<jiff::Timestamp>,
-    /// Review dates sentry-server keeps (`servers/<name>.maint.toml`).
-    pub maint_state: maint::State,
+    /// What's put off with `z`, and items' review dates (`servers/<name>/later.toml`).
+    pub later: crate::maint::later::Snoozes,
     /// Open plans, by item (`servers/<name>/plans/<item>.md`).
     pub plans: BTreeMap<String, maint::plan::PlanDoc>,
     /// What discovery found: untracked things, tracked ones gone.

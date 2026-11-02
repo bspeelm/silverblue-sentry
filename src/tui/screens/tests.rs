@@ -1187,11 +1187,11 @@ gate = "confirm"
         "{s}"
     );
     key(&mut a, KeyCode::Char('n'));
-    // `v`: the Log view, Esc closes it.
+    // `v`: Records on its Log, Esc closes it.
     key(&mut a, KeyCode::Char('v'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Maintenance log") && s.contains("Nothing logged yet"),
+        s.contains("Records") && s.contains("Maintenance log   3 run(s)"),
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
@@ -1381,4 +1381,39 @@ fn live_maintenance() {
         println!("{}", render_to_string(&mut a, 158, 41));
         key(&mut a, KeyCode::Esc);
     }
+}
+
+#[test]
+fn records_show_every_task_and_bring_back_what_was_put_off() {
+    let mut d = store();
+    d.snoozes.insert(
+        "updates".into(),
+        jiff::Zoned::now()
+            .date()
+            .checked_add(jiff::Span::new().days(30))
+            .unwrap(),
+    );
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Updates waiting"), "put off: {s}");
+    key(&mut a, KeyCode::Char('v'));
+    // Tasks: the jobs' cadences, done yesterday, with when they're next due.
+    key(&mut a, KeyCode::Char('['));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Records   Tasks 3  Log 3  Plans 0  Reviews 0  Later 1"),
+        "{s}"
+    );
+    assert!(
+        s.contains("Check for updates") && s.contains("job update-check") && s.contains("built in"),
+        "{s}"
+    );
+    // Later: the snooze; u brings the updates back.
+    key(&mut a, KeyCode::Char('['));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("put off") && s.contains("updates"), "{s}");
+    key(&mut a, KeyCode::Char('u'));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Updates waiting"), "back: {s}");
 }

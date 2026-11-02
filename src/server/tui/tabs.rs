@@ -98,7 +98,7 @@ pub fn hints(tab: Tab, v: &View) -> Vec<(&'static str, &'static str)> {
                 ("c", "check all"),
                 ("w", "workflow"),
                 ("R", "review"),
-                ("v", "log"),
+                ("v", "records"),
                 ("e", "edit"),
             ]);
             h

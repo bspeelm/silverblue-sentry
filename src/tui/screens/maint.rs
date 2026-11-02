@@ -73,7 +73,7 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
     h.extend([
         ("c", "check all"),
         ("R", "review"),
-        ("v", "log"),
+        ("v", "records"),
         ("F", "report"),
         ("C", "cleanup"),
         ("w", "workflows"),
@@ -437,36 +437,7 @@ impl Maint {
             },
             Do::OpenRun => vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Do::OpenPlan(wf) => vec![Effect::PlanOpen(wf.clone())],
-            Do::Task(id) => {
-                let Some(task) = task(v, id) else {
-                    return Vec::new();
-                };
-                match task.action() {
-                    TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
-                    TaskDo::Audit => vec![audit::audit_run()],
-                    TaskDo::Job(j) => job_effects(&j),
-                    // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
-                    TaskDo::ByHand | TaskDo::Plan(_) => {
-                        let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
-                        if task.steps.trim().is_empty() {
-                            lines.push(Line::styled("(no steps given: see the review)", t.dim()));
-                        } else {
-                            lines.extend(crate::tui::docview::markdown(t, &task.steps));
-                        }
-                        lines.push(Line::raw(""));
-                        lines.push(Line::styled(
-                            "Do it yourself, then mark it done: it's logged, and leaves the list.",
-                            t.dim(),
-                        ));
-                        vec![Effect::Confirm(Modal {
-                            title: task.title.clone(),
-                            color: t.cyan,
-                            lines,
-                            yes: Some(("mark done".into(), vec![Effect::TaskDone(id.clone())])),
-                        })]
-                    }
-                }
-            }
+            Do::Task(id) => task_effects(v, id),
         }
     }
 
@@ -696,6 +667,39 @@ fn task_words(task: &Task) -> String {
         TaskDo::Job(j) => format!("Enter runs {j}; it's done when it has run."),
         TaskDo::ByHand | TaskDo::Plan(_) => {
             "By hand: Enter shows the steps, then marks it done.".into()
+        }
+    }
+}
+
+/// Enter on a task: what its `do` says (by hand: its steps, then mark it done).
+pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
+    let t = v.t;
+    let Some(task) = task(v, id) else {
+        return Vec::new();
+    };
+    match task.action() {
+        TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
+        TaskDo::Audit => vec![audit::audit_run()],
+        TaskDo::Job(j) => job_effects(&j),
+        // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
+        TaskDo::ByHand | TaskDo::Plan(_) => {
+            let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
+            if task.steps.trim().is_empty() {
+                lines.push(Line::styled("(no steps given: see the review)", t.dim()));
+            } else {
+                lines.extend(crate::tui::docview::markdown(t, &task.steps));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Do it yourself, then mark it done: it's logged, and leaves the list.",
+                t.dim(),
+            ));
+            vec![Effect::Confirm(Modal {
+                title: task.title.clone(),
+                color: t.cyan,
+                lines,
+                yes: Some(("mark done".into(), vec![Effect::TaskDone(id.to_string())])),
+            })]
         }
     }
 }

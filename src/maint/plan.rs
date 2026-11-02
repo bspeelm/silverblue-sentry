@@ -171,6 +171,28 @@ pub fn list(server: &str) -> BTreeMap<String, PlanDoc> {
     read_dir_md(&dir(server))
 }
 
+/// Every plan with its file: the open ones, then those done (`done/`), newest first.
+pub fn all(server: &str) -> Vec<(PathBuf, PlanDoc)> {
+    let read = |d: PathBuf| -> Vec<(PathBuf, PlanDoc)> {
+        let mut v: Vec<(PathBuf, PlanDoc)> = std::fs::read_dir(&d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+            .filter_map(|p| {
+                let doc = PlanDoc::parse(&std::fs::read_to_string(&p).ok()?).ok()?;
+                Some((p, doc))
+            })
+            .collect();
+        v.sort_by_key(|(_, d)| std::cmp::Reverse(d.head.updated.or(d.head.created)));
+        v
+    };
+    let mut v = read(dir(server));
+    v.extend(read(dir(server).join("done")));
+    v
+}
+
 fn read_dir_md(d: &Path) -> BTreeMap<String, PlanDoc> {
     std::fs::read_dir(d)
         .into_iter()

@@ -1765,7 +1765,7 @@ fn the_maintenance_log_can_be_reviewed() {
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
-    assert!(a.log_view.is_none());
+    assert!(a.rec_view.is_none());
     // With entries: the ledger as a list, the item's entries marked; Enter opens one.
     let entry = |text: &str| crate::server::maint::log::LogEntry::parse(text).unwrap();
     let web = entry(
@@ -1779,12 +1779,20 @@ fn the_maintenance_log_can_be_reviewed() {
         "+++\nserver = \"myserver\"\nkind = \"system\"\nworkflow = \"apt-maintenance\"\n\
          result = \"abandoned\"\nended = \"2026-10-25T09:00:00Z\"\nsummary = \"mirror down\"\n+++\n\n# apt",
     );
-    a.log_view = Some(crate::tui::docview::LogView {
-        entries: vec![apt, web],
-        cur: 1,
-        open: None,
-        item: Some("web".into()),
-    });
+    a.rec_view = Some(crate::tui::records::Records::new(
+        crate::tui::records::Data {
+            dir: "~/.config/sentry/servers/myserver".into(),
+            tasks: Vec::new(),
+            log: vec![apt, web],
+            plans: Vec::new(),
+            reviews: Vec::new(),
+            later: Vec::new(),
+            audited: None,
+            now: "2026-10-26T12:00:00Z".parse().unwrap(),
+        },
+        crate::tui::records::Section::Log,
+        Some("web".into()),
+    ));
     let s = screen(&mut a);
     assert!(s.contains("2 run(s)") && s.contains("mirror down"), "{s}");
     assert!(
@@ -1804,13 +1812,31 @@ fn the_maintenance_log_can_be_reviewed() {
     key(&mut a, KeyCode::Esc);
     assert!(screen(&mut a).contains("2 run(s)"), "back to the list");
     key(&mut a, KeyCode::Esc);
-    assert!(a.log_view.is_none());
+    assert!(a.rec_view.is_none());
     // :log from anywhere.
     for c in ":log".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.log_view.is_some());
+    assert!(a.rec_view.is_some());
+    // Later: what's put off; u brings it back.
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('z'));
+    key(&mut a, KeyCode::Char('1'));
+    assert!(!screen(&mut a).contains("4 package update(s) waiting"));
+    for c in ":later".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("put off") && s.contains("wf:apt-maintenance:updates"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('u'));
+    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("4 package update(s) waiting"));
 }
 
 #[test]
@@ -1909,8 +1935,12 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
         screen(&mut a).contains("last review"),
         "the panel says there's one"
     );
+    // R: Records on the reviews (every one kept); Enter opens it.
     key(&mut a, KeyCode::Char('R'));
-    assert!(screen(&mut a).contains("web: plan 1.5.2"), "R opens it");
+    let s = screen(&mut a);
+    assert!(s.contains("Records") && s.contains("Reviews 1"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("web: plan 1.5.2"), "Enter opens it");
 }
 
 /// Read-only against the real server: every recommendation and what discovery found.

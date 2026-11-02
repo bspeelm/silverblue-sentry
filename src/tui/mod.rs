@@ -12,6 +12,7 @@ pub(crate) mod keys;
 pub(crate) mod maintlist;
 pub(crate) mod modal;
 mod plans;
+pub(crate) mod records;
 mod screens;
 pub(crate) mod theme;
 mod wf;
