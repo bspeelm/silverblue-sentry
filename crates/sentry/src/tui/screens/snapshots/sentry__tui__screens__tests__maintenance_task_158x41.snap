@@ -12,7 +12,7 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │ A task: Enter does it                                               │
 ┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │                                                                     │
-│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ By hand: Enter shows the steps, then marks it done.                 │
+│ ● fedora:fedora/44/x86_64/silverblue  booted                                       │ │ By hand: Enter works it out with Claude (it plans, sentry applies). │
 │   version 44.20261002.0 · 2026-10-02                                               │ │ every 90d · from the review 2026-10-27-1200.md                      │
 │   layered  akmods brave-browser ghostty kmodtool mpv rasdaemon steam-devices xor…  │ │                                                                     │
 │   local    kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64 rpmfusion…  │ │  Run `upsc ups` and read the charge.                                │
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  steps   d  done   e  every   x  remove   z  later   A  claude   c  check   v  records   R  review   ?  help   q  quit                  skipped update
+ Enter  with Claude   d  done   e  every   m  steps   x  remove   z  later   A  claude   c  check   v  records   ?  help   q  quit             skipped update

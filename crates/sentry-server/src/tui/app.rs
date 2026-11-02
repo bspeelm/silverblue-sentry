@@ -101,6 +101,8 @@ pub enum Effect {
     ChatGrant,
     /// The plan was approved: carry it out.
     ApplyStart,
+    /// Apply the selected Maintenance row with Claude (its consent box first).
+    ApplyAsk,
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
     /// A review's suggested task: added to `tasks.toml`, or skipped.
@@ -1020,7 +1022,7 @@ impl App {
                 let mut keys = tabs::hints(self.tab, &self.view());
                 // Maintenance: every row key, not only the selected row's.
                 if self.tab == Tab::Maint {
-                    let row = ["Enter", "p", "P", "t", "d", "e", "x", "B", "z", "A"];
+                    let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
                     keys = sentry_core::tui::maintlist::GRAMMAR
                         .iter()
                         .copied()
@@ -1156,6 +1158,21 @@ impl App {
                 Effect::Wf(c) => self.wf_cmd(c),
                 Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::ChatGrant => self.chat_grant(),
+                Effect::ApplyAsk => {
+                    if self.wf_entries.is_empty() {
+                        self.load_wf_entries();
+                    }
+                    let v = self.view();
+                    let apply =
+                        super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf));
+                    match apply {
+                        Some(ask) => {
+                            let text = ask.prompt();
+                            self.modal = Some(self.consent(&text, AskTurn::First(ask)));
+                        }
+                        None => self.toast("nothing for Claude to apply here"),
+                    }
+                }
                 Effect::ApplyStart => {
                     let a = self
                         .chat

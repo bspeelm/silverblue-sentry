@@ -187,12 +187,22 @@ pub fn verbs(v: &View) -> Verbs {
                 dismiss: Some(Dismiss::Expected),
                 ..only("fix")
             },
-            Action::Task(_) => Verbs {
-                done: true,
-                every: true,
-                dismiss: Some(Dismiss::Remove),
-                ..only("do it")
-            },
+            Action::Task(id) => {
+                let by_hand = all_tasks(v)
+                    .iter()
+                    .any(|t| &t.id == id && t.action() == sentry_core::maint::tasks::Do::ByHand);
+                Verbs {
+                    done: true,
+                    every: true,
+                    manual: by_hand,
+                    dismiss: Some(Dismiss::Remove),
+                    ..only(if by_hand && sentry_core::claude::available() {
+                        "with Claude"
+                    } else {
+                        "do it"
+                    })
+                }
+            }
             Action::Audit => only("audit"),
             Action::Run(_) => match r.item.as_deref() {
                 Some(id) => item(id, "start"),
@@ -229,7 +239,7 @@ fn task_words(task: &sentry_core::maint::tasks::Task) -> String {
         Do::Plan(id) => format!("Enter: Claude plans {id}; it's done when {id}'s change is."),
         Do::Audit => "Enter audits now; it's done with the audit.".into(),
         Do::Job(j) => format!("{j} is one of sentry's jobs (a desktop's): d marks it done."),
-        Do::ByHand => "By hand: Enter shows the steps, then marks it done.".into(),
+        Do::ByHand => "By hand: Enter works it out with Claude (it plans, sentry applies).".into(),
     }
 }
 
@@ -754,6 +764,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         ],
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
+        ('m', Action::Task(id)) => task_manual(v, id),
         // Where it's written: the config (a cadence) or tasks.toml.
         ('e', Action::Task(id)) => match all_tasks(v).iter().find(|t| &t.id == id) {
             Some(t) if t.source == sentry_core::maint::tasks::Source::Config => {
@@ -804,7 +815,6 @@ fn dismiss(v: &View, title: &str, what: &str, how: &str, e: Effect) -> Vec<Effec
 /// Enter on a task: its workflow, the item's plan, the audit, or (by hand) its steps.
 pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     use sentry_core::maint::tasks::Do;
-    let t = v.t;
     let Some(task) = all_tasks(v).into_iter().find(|x| x.id == id) else {
         return Vec::new();
     };
@@ -821,6 +831,21 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
         Do::Job(j) => vec![Effect::Toast(format!(
             "{j} is a job of sentry's (on a desktop), not the server's: d marks it done"
         ))],
+        // By hand: with Claude, who plans it and sentry applies it (without Claude Code, or
+        // with `m`, the steps to do it yourself).
+        Do::ByHand if sentry_core::claude::available() => vec![Effect::ApplyAsk],
+        Do::ByHand => task_manual(v, id),
+    }
+}
+
+/// `m` on a task done by hand: its steps, to do it yourself, then mark it done.
+pub fn task_manual(v: &View, id: &str) -> Vec<Effect> {
+    use sentry_core::maint::tasks::Do;
+    let t = v.t;
+    let Some(task) = all_tasks(v).into_iter().find(|x| x.id == id) else {
+        return Vec::new();
+    };
+    match task.action() {
         Do::ByHand => {
             let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
             if task.steps.trim().is_empty() {
@@ -840,6 +865,7 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
                 yes: Some(("mark done".into(), vec![Effect::TaskDone(id.to_string())])),
             })]
         }
+        _ => Vec::new(),
     }
 }
 

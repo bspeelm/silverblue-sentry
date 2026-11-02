@@ -1347,9 +1347,17 @@ fn review_suggestions_become_maintenance_tasks() {
         "{s}"
     );
     assert!(!s.contains("Install the waiting updates"), "skipped: {s}");
+    // Enter: with Claude (it plans, sentry applies); m: the steps, to do it yourself.
     key(&mut a, KeyCode::Enter);
+    let p = a.consent_text().expect("Enter asks Claude");
+    assert!(
+        p.contains("Help me apply this") && p.contains("Check the UPS battery"),
+        "{p}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('m'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("mark done"), "Enter shows the steps: {s}");
+    assert!(s.contains("mark done"), "m shows the steps: {s}");
     key(&mut a, KeyCode::Char('n'));
     key(&mut a, KeyCode::Char('d'));
     // Logged at once (it's off the list); the note is asked after, and Esc only skips it.

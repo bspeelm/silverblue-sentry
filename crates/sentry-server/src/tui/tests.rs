@@ -2252,3 +2252,44 @@ fn claude_plans_once_and_sentry_applies_the_plan() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    a.apply(
+        vec![super::app::Effect::TaskAdd(Box::new(
+            sentry_core::maint::tasks::Task {
+                id: "ups".into(),
+                title: "Check the UPS battery".into(),
+                why: "It is old.".into(),
+                level: sentry_core::maint::Level::Soon,
+                every: None,
+                act: "by-hand".into(),
+                item: None,
+                steps: "Run `upsc ups`.".into(),
+                added: None,
+                off: false,
+                source: Default::default(),
+                review: None,
+            },
+        ))],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("task:ups".into())],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("By hand: Enter works it out with Claude"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let p = a.consent_text().expect("Enter asks Claude");
+    assert!(
+        p.contains("Help me apply this") && p.contains("Check the UPS battery"),
+        "{p}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('m'));
+    assert!(screen(&mut a).contains("mark done"));
+}

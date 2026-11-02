@@ -174,7 +174,7 @@ pub fn key(tab: Tab, c: char, v: &View, r: &crate::remote::Remote) -> Vec<Effect
             Some(ct) => actions::containers(v, r, c, &ct.name, ct.compose.as_deref()),
             None => Vec::new(),
         },
-        (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't' | 'd') => super::maint::key(c, v),
+        (Tab::Maint, 'z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm') => super::maint::key(c, v),
         // A task: where it's written; anything else: the config.
         (Tab::Maint, 'e') => match super::maint::key(c, v) {
             e if e.is_empty() => vec![Effect::EditConfig],

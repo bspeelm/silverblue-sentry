@@ -91,6 +91,7 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
             Some(TaskDo::Audit) => "audit",
             Some(TaskDo::Job(j)) if j.starts_with("cleanup") => "clean up",
             Some(TaskDo::Job(_)) => "run",
+            _ if crate::claude::available() => "with Claude",
             _ => "steps",
         },
     };
@@ -109,9 +110,11 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
             planned: v.d.plans.contains_key(wf),
             ..base
         },
-        Do::Task(_) => Verbs {
+        Do::Task(id) => Verbs {
             done: true,
             every: true,
+            manual: task(v, id)
+                .is_some_and(|t| matches!(t.action(), TaskDo::ByHand | TaskDo::Plan(_))),
             dismiss: Some(Dismiss::Remove),
             ..base
         },
@@ -412,6 +415,10 @@ impl Maint {
                 _ => vec![Effect::Toast(
                     "plans are for workflows: p on updates, or on Upgrade (0)".into(),
                 )],
+            },
+            Action::Char('m') => match &r.action {
+                Do::Task(id) => manual_effects(v, id),
+                _ => Vec::new(),
             },
             Action::Char('d') => match &r.action {
                 Do::Task(id) => vec![Effect::TaskDone(id.clone())],
@@ -794,14 +801,13 @@ fn task_words(task: &Task) -> String {
         }
         TaskDo::Job(j) => format!("Enter runs {j}; it's done when it has run."),
         TaskDo::ByHand | TaskDo::Plan(_) => {
-            "By hand: Enter shows the steps, then marks it done.".into()
+            "By hand: Enter works it out with Claude (it plans, sentry applies).".into()
         }
     }
 }
 
-/// Enter on a task: what its `do` says (by hand: its steps, then mark it done).
+/// Enter on a task: what its `do` says (by hand: with Claude, who plans it; `m`: the steps).
 pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
-    let t = v.t;
     let Some(task) = task(v, id) else {
         return Vec::new();
     };
@@ -809,7 +815,29 @@ pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
         TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
         TaskDo::Audit => vec![audit::audit_run()],
         TaskDo::Job(j) => job_effects(&j),
-        // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
+        // By hand (a plan of an item is sentry-server's): with Claude, who plans it and
+        // sentry applies it; without Claude Code, the steps (`m` shows them anyway).
+        TaskDo::ByHand | TaskDo::Plan(_) => {
+            let apply = recs(v)
+                .into_iter()
+                .find(|r| r.key == task.key())
+                .and_then(|r| apply_ask(v, &r))
+                .filter(|_| crate::claude::available());
+            match apply {
+                Some(a) => vec![Effect::AskConsent(a)],
+                None => manual_effects(v, id),
+            }
+        }
+    }
+}
+
+/// `m` on a task done by hand: its steps, to do it yourself, then mark it done.
+pub fn manual_effects(v: &View, id: &str) -> Vec<Effect> {
+    let t = v.t;
+    let Some(task) = task(v, id) else {
+        return Vec::new();
+    };
+    match task.action() {
         TaskDo::ByHand | TaskDo::Plan(_) => {
             let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
             if task.steps.trim().is_empty() {
@@ -829,6 +857,7 @@ pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
                 yes: Some(("mark done".into(), vec![Effect::TaskDone(id.to_string())])),
             })]
         }
+        _ => Vec::new(),
     }
 }
 

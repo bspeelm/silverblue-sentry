@@ -1610,7 +1610,7 @@ impl App {
         let mut hints = self.screens.hints(self.screen, &self.view());
         // Maintenance's list: every row key, not only the selected row's.
         if self.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
-            let row = ["Enter", "p", "P", "t", "d", "e", "x", "B", "z", "A"];
+            let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
             hints = super::maintlist::GRAMMAR
                 .iter()
                 .copied()
