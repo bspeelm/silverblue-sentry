@@ -50,7 +50,7 @@ pub fn review_request(context: &str, tasks: &str) -> String {
 
 /// Claude's instructions for writing a plan: not Ask Claude's (no length cap, no chat).
 pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
-    let mut p = super::ask::assess_profile(r, os, kernel, sudo);
+    let mut p = super::ask::writer_profile(r, os, kernel, sudo);
     let name = &r.name;
     p.system = format!(
         "You write maintenance execution plans for the server `{name}` ({os}, kernel {kernel}), \

@@ -613,31 +613,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
             t.s(t.cyan),
         ));
     }
-    if let Some(a) =
-        v.s.maint_state
-            .assessments
-            .get(&s.id)
-            .filter(|_| !v.plans.contains_key(&s.id))
-    {
-        l.push(Line::raw(""));
-        l.push(Line::styled(
-            format!(
-                "Assessment{} (L shows it all)",
-                a.at.map_or(String::new(), |t| format!(" {}", t.strftime("%Y-%m-%d")))
-            ),
-            t.dim(),
-        ));
-        // Its recommendation if it has one, else its start.
-        let lines: Vec<&str> = a.text.lines().filter(|x| !x.trim().is_empty()).collect();
-        let from = lines
-            .iter()
-            .position(|x| x.to_lowercase().contains("recommendation"))
-            .unwrap_or(0);
-        for x in lines.iter().skip(from).take(4) {
-            l.push(Line::styled(x.to_string(), t.fg()));
-        }
-    }
-    let hist = maint::history(v.name, &s.id);
+    let hist = maint::history(&v.s.log, &s.id);
     if !hist.is_empty() {
         l.push(Line::raw(""));
         l.push(Line::styled("Changes", t.dim()));
@@ -718,13 +694,31 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             None => Vec::new(),
         },
         ('x', Action::Track(n)) => match found.candidates.get(*n) {
-            Some(c) => vec![Effect::Ignore(c.key.clone(), c.item.id.clone())],
+            Some(c) => dismiss(
+                v,
+                "Ignore this",
+                &r.title,
+                "Discovery stops suggesting it (ignore: in items.toml).",
+                Effect::Ignore(c.key.clone(), c.item.id.clone()),
+            ),
             None => Vec::new(),
         },
-        ('\n' | 'x', Action::Remove(id)) => vec![Effect::Untrack(id.clone())],
+        ('\n' | 'x', Action::Remove(id)) => dismiss(
+            v,
+            "Stop tracking it",
+            &r.title,
+            "It comes off items.toml; the log keeps its history.",
+            Effect::Untrack(id.clone()),
+        ),
         ('\n', Action::Look(id)) if !id.is_empty() => vec![Effect::MaintJump(id.clone())],
         ('\n', Action::Fix(id)) => vec![Effect::FixFinding(id.clone())],
-        ('x', Action::Fix(id)) => vec![Effect::Expected(id.clone(), true)],
+        ('x', Action::Fix(id)) => dismiss(
+            v,
+            "Mark it expected",
+            &r.title,
+            "The audit stops listing it (the server's baseline.toml).",
+            Effect::Expected(id.clone(), true),
+        ),
         ('\n', Action::Audit) => vec![
             Effect::Fetch(super::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
@@ -755,6 +749,19 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         },
         _ => Vec::new(),
     }
+}
+
+/// `x` on a recommendation: say what it writes where, then do it.
+fn dismiss(v: &View, title: &str, what: &str, how: &str, e: Effect) -> Vec<Effect> {
+    vec![Effect::Confirm(Modal {
+        title: title.into(),
+        color: v.t.yellow,
+        lines: vec![
+            Line::styled(what.to_string(), v.t.fg()),
+            Line::styled(how.to_string(), v.t.dim()),
+        ],
+        yes: Some(("yes".into(), vec![e])),
+    })]
 }
 
 /// Enter on a task: its workflow, the item's plan, the audit, or (by hand) its steps.

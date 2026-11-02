@@ -1063,6 +1063,45 @@ fn workflow_vars_are_asked_before_it_starts() {
 }
 
 #[test]
+fn the_run_view_keeps_the_tab_keys_to_itself() {
+    let mut a = app();
+    // Starting a run copies the workflow file: give it a real one (scratch config dir).
+    let (name, text) = crate::server::workflow::SEEDS
+        .iter()
+        .find(|(n, _)| *n == "apt-maintenance")
+        .unwrap();
+    let path = crate::paths::config_dir().join("run-view-test-apt-maintenance.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    a.set_wf_entries(vec![crate::workflows::Entry {
+        name: name.to_string(),
+        path,
+        wf: crate::workflows::parse(text),
+        issues: Vec::new(),
+    }]);
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
+            "apt-maintenance".into(),
+        ))],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(a.wf.is_some(), "{}", screen(&mut a));
+    // z (later) and x belong to the Maintenance rows, which aren't on screen.
+    key(&mut a, KeyCode::Char('z'));
+    key(&mut a, KeyCode::Char('x'));
+    let s = screen(&mut a);
+    assert!(!s.contains("look again in 7 days"), "{s}");
+    assert!(!s.contains("Mark it expected"), "{s}");
+    // Esc leaves the run going and gives the tab its keys back.
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('z'));
+    assert!(screen(&mut a).contains("look again in 7 days"));
+}
+
+#[test]
 fn ask_works_on_the_updates_recommendation() {
     let mut a = app();
     // Updates live on Maintenance now: A on their recommendation.
@@ -1489,9 +1528,21 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
 }
 
 #[test]
-fn the_assessment_profile_adds_the_web_and_only_the_notes() {
+fn later_takes_the_row_off_at_once() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    assert!(screen(&mut a).contains("4 package update(s) waiting"));
+    key(&mut a, KeyCode::Char('z'));
+    key(&mut a, KeyCode::Char('1'));
+    let s = screen(&mut a);
+    assert!(!s.contains("4 package update(s) waiting"), "{s}");
+}
+
+#[test]
+fn the_writer_profile_adds_the_web_and_only_the_notes() {
     let r = Remote::new("myserver", &cfg());
-    let p = super::ask::assess_profile(&r, "Debian 12", "6.1", None);
+    let p = super::ask::writer_profile(&r, "Debian 12", "6.1", None);
     assert!(p.tools.contains(&"WebFetch".to_string()));
     assert!(
         !p.denied.iter().any(|d| d.starts_with("Web")),

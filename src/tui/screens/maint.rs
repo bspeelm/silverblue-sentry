@@ -302,10 +302,25 @@ impl Maint {
                     yes: Some(("remove".into(), vec![Effect::TaskRemove(id.clone())])),
                 })],
                 Do::Fix(id) => finding(v, id).map_or(Vec::new(), |f| {
-                    vec![
-                        audit::expected_toggle(v, f),
-                        Effect::Toast("marked expected (baseline.toml)".into()),
-                    ]
+                    vec![Effect::Confirm(Modal {
+                        title: "Mark it expected".into(),
+                        color: t.yellow,
+                        lines: vec![
+                            Line::styled(r.title.clone(), t.fg()),
+                            Line::styled(
+                                "The audit stops listing it (baseline.toml; b in the report \
+                                 (F) takes it back).",
+                                t.dim(),
+                            ),
+                        ],
+                        yes: Some((
+                            "yes".into(),
+                            vec![
+                                audit::expected_toggle(v, f),
+                                Effect::Toast("marked expected (baseline.toml)".into()),
+                            ],
+                        )),
+                    })]
                 }),
                 _ => vec![Effect::Toast(
                     "only findings can be marked expected: z puts this off".into(),

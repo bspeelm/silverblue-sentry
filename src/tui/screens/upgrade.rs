@@ -1,8 +1,6 @@
 //! Upgrade (`0`): workflows. Idle: the list with lint status and the step chain. Running: the
 //! step list with status glyphs, the streaming log, and a gate card for the current step.
 
-use std::collections::BTreeMap;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -24,8 +22,6 @@ use crate::workflows::state::{RunStatus, StepStatus};
 #[derive(Default)]
 pub struct Upgrade {
     pub cur: Cursor,
-    /// Values to start the next workflow with (a plan's), as the prompts' defaults.
-    pub preset: BTreeMap<String, String>,
 }
 
 /// A workflow file plus its most recent run (for the idle list).
@@ -290,7 +286,9 @@ impl Upgrade {
                 let Ok(wf) = &info.entry.wf else {
                     return Vec::new();
                 };
-                let preset = std::mem::take(&mut self.preset);
+                // A plan ready for this workflow: its values, and the run applies it.
+                let plan = ready_plan(v, &info.entry.name);
+                let preset = plan.map(|p| p.head.vars.clone()).unwrap_or_default();
                 let vars = match initial_vars(wf, &RealEnv, &preset) {
                     Ok(v) => v,
                     Err(e) => return vec![Effect::Toast(e)],
@@ -315,17 +313,24 @@ impl Upgrade {
                     )];
                 }
                 let chain: Vec<&str> = wf.steps.iter().map(|s| s.id.as_str()).collect();
+                let mut lines = vec![
+                    Line::styled(wf.description.clone(), t.fg()),
+                    Line::styled(chain.join(" → "), t.dim()),
+                    Line::styled(
+                        "Auto steps run right away; every other step waits for Enter. Reboots never run on their own.",
+                        t.dim(),
+                    ),
+                ];
+                if plan.is_some() {
+                    lines.push(Line::styled(
+                        "With Claude's plan (its values): it closes when the run ends well. To start without it, drop it first (x in the plan).",
+                        t.s(t.cyan),
+                    ));
+                }
                 vec![Effect::Confirm(Modal {
                     title: format!("Start {}", info.entry.name),
                     color: t.yellow,
-                    lines: vec![
-                        Line::styled(wf.description.clone(), t.fg()),
-                        Line::styled(chain.join(" → "), t.dim()),
-                        Line::styled(
-                            "Auto steps run right away; every other step waits for Enter. Reboots never run on their own.",
-                            t.dim(),
-                        ),
-                    ],
+                    lines,
                     yes: Some((
                         "start".into(),
                         vec![Effect::Wf(WfCmd::Begin(info.entry.name.clone(), vars))],
@@ -1102,4 +1107,11 @@ fn ask_finished(s: &Session) -> crate::claude::Ask {
             "What happened in this run, what state is my machine in now, and what should I do next?"
         },
     )
+}
+
+/// The plan ready for this workflow, if there is one.
+pub fn ready_plan<'a>(v: &View<'a>, wf: &str) -> Option<&'a crate::maint::plan::PlanDoc> {
+    v.d.plans
+        .get(wf)
+        .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)
 }

@@ -10,9 +10,9 @@ use crate::server::workflow::Session;
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
 
-/// The assessment profile (`A` on Maintenance): the gateway, plus the web for release notes
+/// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
-pub fn assess_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
+pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
     let mut p = profile(r, os, kernel, sudo);
     p.system.push_str(
         " For this question you may also read the web with the WebFetch and WebSearch tools \

@@ -145,7 +145,7 @@ pub struct Store {
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
     /// When upstream was last looked up.
     pub upstream_at: Option<jiff::Timestamp>,
-    /// Review dates and assessments sentry-server keeps (`servers/<name>.maint.toml`).
+    /// Review dates sentry-server keeps (`servers/<name>.maint.toml`).
     pub maint_state: maint::State,
     /// Open plans, by item (`servers/<name>/plans/<item>.md`).
     pub plans: BTreeMap<String, maint::plan::PlanDoc>,
