@@ -1120,7 +1120,8 @@ fn ask_works_on_the_updates_recommendation() {
     let prompt = a.consent_text().expect("consent");
     assert!(prompt.contains("Updates (simulated)"), "{prompt}");
     assert!(
-        prompt.contains("workflow `apt-maintenance`") && prompt.contains("press `w`"),
+        prompt.contains("workflow `apt-maintenance`")
+            && prompt.contains("workflow = \"apt-maintenance\""),
         "{prompt}"
     );
     key(&mut a, KeyCode::Char('n'));
@@ -1128,7 +1129,7 @@ fn ask_works_on_the_updates_recommendation() {
     key(&mut a, KeyCode::Char('2'));
     let prompt = a.consent_text().expect("consent");
     assert!(
-        prompt.contains("Updates (simulated)") && !prompt.contains("press `w`"),
+        prompt.contains("Updates (simulated)") && !prompt.contains("sentry-apply"),
         "{prompt}"
     );
 }
@@ -2207,4 +2208,47 @@ fn files_claude_was_refused_can_be_granted_for_the_conversation() {
         "{:?}",
         c.entries
     );
+}
+
+#[test]
+fn claude_plans_once_and_sentry_applies_the_plan() {
+    use sentry_core::claude::{Apply, Ask, Event};
+    use sentry_core::tui::chat::Chat;
+    let dir = sentry_core::paths::home().join(".cache/sentry-applyplan-srvtest");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join(format!("notes-{}.md", std::process::id()));
+    std::fs::write(&f, "web runs 1.4.2\n").unwrap();
+    let file = f.display().to_string();
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    let mut c = Chat::new(Ask::apply(
+        "web",
+        "ctx",
+        Apply {
+            key: "web".into(),
+            item: Some("web".into()),
+            ..Default::default()
+        },
+    ));
+    c.begin_turn("q", 1, 1);
+    c.on_event(Event::Text(format!(
+        "Notes are stale.\n```sentry-apply\nsummary = \"Update the notes\"\nrollback = \"backup\"\n\
+         [[step]]\ntitle = \"The version\"\nedit = \"{file}\"\nold = \"1.4.2\"\nnew = \"1.5.1\"\n```\n"
+    )));
+    c.on_exit(0);
+    a.open_chat(c);
+    let s = screen(&mut a);
+    assert!(s.contains("Plan: Update the notes · a applies it"), "{s}");
+    key(&mut a, KeyCode::Char('a'));
+    assert!(screen(&mut a).contains("Apply the plan"));
+    key(&mut a, KeyCode::Char('y'));
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "web runs 1.5.1\n");
+    let c = a.chat_for_test().unwrap();
+    assert!(
+        c.offer
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("sentry applied all 1 steps")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

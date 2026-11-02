@@ -85,6 +85,12 @@ pub struct Chat {
     pub grants: Vec<crate::claude::Grant>,
     /// Files Claude may write: path, its hash when last seen, its backup.
     pub watched: Vec<(String, u64, std::path::PathBuf)>,
+    /// An apply chat's plan (from Claude's latest answer), proposed or being carried out.
+    pub apply_run: Option<crate::applyplan::Run>,
+    /// What stops the plan from being approved (set by the app, which knows the workflows).
+    pub plan_problems: Vec<(usize, String)>,
+    /// The plan step whose command is running (its end advances the plan).
+    pub plan_step: Option<usize>,
 }
 
 /// A file's contents, hashed (0: it doesn't exist).
@@ -125,7 +131,209 @@ impl Chat {
             requests: Vec::new(),
             grants: Vec::new(),
             watched: Vec::new(),
+            apply_run: None,
+            plan_problems: Vec::new(),
+            plan_step: None,
         }
+    }
+
+    /// `a` is offered: a plan is shown, not started, and nothing stops it.
+    pub fn can_apply(&self) -> bool {
+        self.apply_run
+            .as_ref()
+            .is_some_and(|r| r.state == crate::applyplan::RunState::Proposed)
+            && self.plan_problems.is_empty()
+    }
+
+    /// An apply chat's latest answer: its plan block taken out of the text (shown as the
+    /// plan instead), the proposals cleared (the plan is what runs).
+    fn take_plan(&mut self) {
+        if self.ask.applying().is_none() {
+            return;
+        }
+        let Some(i) = self.entries.iter().rposition(|(k, _)| *k == Kind::Claude) else {
+            return;
+        };
+        if self.entries[i + 1..].iter().any(|(k, _)| *k == Kind::You) {
+            return;
+        }
+        let (body, plan) = crate::applyplan::take(&self.entries[i].1);
+        match plan {
+            None => {}
+            Some(Ok(p)) => {
+                self.entries[i].1 = body;
+                // A new plan replaces one not started, or one that stopped.
+                if self
+                    .apply_run
+                    .as_ref()
+                    .is_none_or(|r| r.state == crate::applyplan::RunState::Proposed || r.finished())
+                {
+                    self.apply_run = Some(crate::applyplan::Run::new(p));
+                    self.plan_problems.clear();
+                }
+                self.proposals.clear();
+            }
+            Some(Err(why)) => {
+                self.entries[i].1 = body;
+                self.proposals.clear();
+                self.push(Kind::Err, format!("the plan block didn't parse: {why}"));
+                self.offer = Some(format!(
+                    "Your sentry-apply block didn't parse: {why}. Send the plan again, fixed."
+                ));
+            }
+        }
+    }
+
+    /// The plan, under the answer: each step with its state, an edit's first changed lines.
+    fn plan_lines(&self, t: &Theme, w: usize) -> Vec<Line<'static>> {
+        use crate::applyplan::{Kind as K, RunState};
+        let Some(r) = &self.apply_run else {
+            return Vec::new();
+        };
+        let head = match r.state {
+            RunState::Proposed if self.plan_problems.is_empty() => "a applies it",
+            RunState::Proposed => "can't be applied as it is",
+            RunState::Running => "applying…",
+            RunState::WaitingWorkflow(_) => "waiting for its workflow",
+            RunState::Done => "applied",
+            RunState::Failed(_) => "stopped",
+        };
+        let mut l = vec![Line::styled(
+            widgets::trunc(
+                &format!("       Plan: {} · {head}", r.plan.summary),
+                w.saturating_sub(1).max(10),
+            ),
+            t.s(t.yellow),
+        )];
+        for (i, s) in r.plan.steps.iter().enumerate() {
+            let (glyph, color) = match (r.results.get(i), r.state) {
+                (Some(x), _) if x.ok => ("✓", t.green),
+                (Some(_), _) => ("✗", t.red),
+                (None, RunState::WaitingWorkflow(k)) if k == i => ("⏸", t.yellow),
+                (None, RunState::Running) if i == r.current() => ("▶", t.cyan),
+                _ => ("○", t.dim),
+            };
+            l.push(Line::from(vec![
+                Span::styled(format!("     {glyph} "), t.s(color)),
+                Span::styled(
+                    widgets::trunc(
+                        &format!("{}. {}", i + 1, s.title),
+                        w.saturating_sub(8).max(10),
+                    ),
+                    t.fg(),
+                ),
+            ]));
+            let target = |x: &str| widgets::trunc(x, w.saturating_sub(11).max(10));
+            match &s.kind {
+                K::Edit { file, old, new } => {
+                    l.push(Line::styled(
+                        format!("         edit {}", target(file)),
+                        t.dim(),
+                    ));
+                    for x in old.lines().take(2) {
+                        l.push(Line::styled(
+                            format!("         - {}", target(x)),
+                            t.s(t.red),
+                        ));
+                    }
+                    for x in new.lines().take(2) {
+                        l.push(Line::styled(
+                            format!("         + {}", target(x)),
+                            t.s(t.green),
+                        ));
+                    }
+                }
+                K::Run(c) | K::Check(c) => {
+                    let c1 = c.lines().next().unwrap_or("");
+                    let color = if crate::claude::risky(c).is_some() {
+                        t.red
+                    } else {
+                        t.cyan
+                    };
+                    l.push(Line::styled(
+                        format!("         {} {}", s.kind.word(), target(c1)),
+                        t.s(color),
+                    ));
+                }
+                K::Workflow(wf) => {
+                    l.push(Line::styled(format!("         workflow {wf}"), t.s(t.cyan)));
+                }
+            }
+            for (_, why) in self.plan_problems.iter().filter(|(k, _)| *k == i) {
+                l.push(Line::styled(
+                    format!("         ✗ {}", target(why)),
+                    t.s(t.red),
+                ));
+            }
+            if let Some(x) = r.results.get(i) {
+                let first = x.note.lines().next().unwrap_or("");
+                l.push(Line::styled(
+                    format!("         → {}", target(first)),
+                    t.dim(),
+                ));
+            }
+        }
+        l
+    }
+
+    /// The box `a` opens: the whole plan, approved at once.
+    pub fn approval_lines(&self, t: &Theme) -> Vec<Line<'static>> {
+        use crate::applyplan::Kind as K;
+        let Some(r) = &self.apply_run else {
+            return Vec::new();
+        };
+        let mut l = vec![Line::styled(r.plan.summary.clone(), t.fg()), Line::raw("")];
+        for (i, s) in r.plan.steps.iter().enumerate() {
+            l.push(Line::styled(format!("{}. {}", i + 1, s.title), t.fg()));
+            match &s.kind {
+                K::Edit { file, old, new } => {
+                    l.push(Line::styled(format!("   edit {file}"), t.dim()));
+                    for x in old.lines().take(4) {
+                        l.push(Line::styled(format!("   - {x}"), t.s(t.red)));
+                    }
+                    for x in new.lines().take(4) {
+                        l.push(Line::styled(format!("   + {x}"), t.s(t.green)));
+                    }
+                }
+                K::Run(c) | K::Check(c) => {
+                    for (j, x) in c.lines().enumerate() {
+                        let w = if j == 0 { s.kind.word() } else { "" };
+                        l.push(Line::styled(
+                            format!("   {w:<5} $ {x}"),
+                            t.s(if crate::claude::risky(c).is_some() {
+                                t.red
+                            } else {
+                                t.cyan
+                            }),
+                        ));
+                    }
+                    if c.contains("sudo") {
+                        l.push(Line::styled(
+                            "   needs sudo: the terminal is handed over for your password",
+                            t.dim(),
+                        ));
+                    }
+                }
+                K::Workflow(wf) => {
+                    l.push(Line::styled(
+                        format!("   workflow {wf} (its own confirm steps)"),
+                        t.s(t.cyan),
+                    ));
+                }
+            }
+        }
+        l.push(Line::raw(""));
+        l.push(Line::styled(
+            "Files are backed up first. The steps run in order; one that fails stops the rest.",
+            t.dim(),
+        ));
+        if !r.plan.rollback.trim().is_empty() {
+            l.push(Line::styled(
+                format!("To undo: {}", r.plan.rollback.trim()),
+                t.dim(),
+            ));
+        }
+        l
     }
 
     /// The box `g` opens: what Claude asked for, what's granted, what isn't and why.
@@ -384,6 +592,7 @@ impl Chat {
             self.push(Kind::Err, format!("claude exited with {code}"));
         }
         self.refresh_proposals();
+        self.take_plan();
         if !self.requests.is_empty() {
             let what: Vec<String> = self
                 .requests
@@ -484,6 +693,13 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
             }
         }
         if matches!(kind, Kind::Claude | Kind::Err) {
+            lines.push(Line::raw(""));
+        }
+    }
+    if !c.running() {
+        let plan = c.plan_lines(t, w);
+        if !plan.is_empty() {
+            lines.extend(plan);
             lines.push(Line::raw(""));
         }
     }
@@ -610,6 +826,9 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
                 "retry the step"
             },
         ));
+    }
+    if idle && c.can_apply() {
+        k.push(("a", "apply the plan"));
     }
     if idle && !c.requests.is_empty() {
         k.push(("g", "grant files"));
@@ -776,7 +995,12 @@ mod tests {
             ..Default::default()
         };
         let c = Chat::new(Ask::apply("updates", "ctx", wf));
-        assert!(c.ask.prompt().contains("press `w`") && c.ask.prompt().contains("Never propose"));
+        assert!(
+            c.ask.prompt().contains("```sentry-apply")
+                && c.ask.prompt().contains("never its commands"),
+            "{}",
+            c.ask.prompt()
+        );
         assert!(keys(&c).iter().any(|(k, _)| *k == "w"));
         assert!(!keys(&c).iter().any(|(k, _)| *k == "d"));
         let task = Apply {
@@ -785,7 +1009,7 @@ mod tests {
             ..Default::default()
         };
         let c = Chat::new(Ask::apply("ups", "ctx", task));
-        assert!(c.ask.prompt().contains("press `d`") && !c.ask.prompt().contains("press `w`"));
+        assert!(c.ask.prompt().contains("(`d`)") && !c.ask.prompt().contains("workflow = "));
         assert!(keys(&c).iter().any(|(k, _)| *k == "d"));
         assert!(!keys(&c).iter().any(|(k, _)| *k == "w"));
     }

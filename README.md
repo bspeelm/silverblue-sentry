@@ -147,11 +147,16 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 
 ### Applying a recommendation or a plan with Claude (`A` → 1, both programs)
 
-`A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**. Applying, Claude is told what the row is about: the updates waiting and the deployments, the item's standing and its upstream, the task's steps, the plan Claude wrote earlier, and the workflow that does it, step by step. It answers in four parts: what to check or back up **before**, the **change**, how to **verify**, and how to **roll back**. Each command it proposes is yours to run (`r`, behind a confirm box), and its output goes back with `s`.
+`A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**. Applying, Claude is told what the row is about (the updates waiting and the deployments, the item's standing and its upstream, the task's steps, the plan written earlier, and the workflow that does it, step by step). It looks around read-only, then answers with **one plan**: exact steps, in order.
 
-- **When a workflow makes the change** (quick-update, apt-maintenance, a compose bump), Claude doesn't propose its commands: it tells you to press **`w`** in the chat, which starts the workflow (with the plan's values, if there's a plan), and the chat steps aside. If a step fails, or when the run ends, the chat has the step's log or the run's result ready: `A` brings it back, `s` sends it, and Claude carries on (what went wrong; what to verify).
+- **`edit`**: a file change, as the exact old text and its replacement (shown as a diff).
+- **`check`**: a command that must succeed (verification); a failing check stops the plan.
+- **`run`**: a command that changes something (sudo hands the terminal over for your password).
+- **`workflow`**: when one of sentry's workflows makes the change (quick-update, apt-maintenance, a compose bump): it's started with its own confirm steps, and the plan waits for its run to end.
+
+The chat shows the plan, numbered, with its diffs, and nothing runs. **`a`** opens it whole, and **`y`** approves it once: sentry backs up every file it edits, then carries the steps out in order, each one's result in the chat (✓ / ✗). A plan that can't be applied as it is (an edit whose old text isn't in the file, a file outside your home, a workflow that doesn't exist) is marked in red, and `a` isn't offered. When the plan has run, or stopped at a failed step, the report is ready for Claude (`s`): what happened, and on a failure the steps already done, so Claude can send a plan for the rest. The run is one entry in the maintenance log (`kind = "apply"`, tagged with the row and every file edited, backups listed). To change the plan before approving it, just say so (Enter); Claude answers with a new one.
+
 - **A task, or a plan done by hand**: `d` in the chat marks it done, as on Maintenance.
-- What you run from the chat that changes something goes in the maintenance log (`kind = "apply"`, tagged with the row). Read-only commands aren't logged.
 
 ### Fixing a finding with Claude (`Enter` on a finding)
 

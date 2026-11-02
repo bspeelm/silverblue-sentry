@@ -85,6 +85,35 @@ pub fn read_rules(notes: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// A fenced block whose opening line starts with `fence` (```` ```sentry-tasks ````) taken out
+/// of an answer: (the answer without it, the block's text). The closing fence is the first
+/// one outside a TOML multi-line string, since a string may hold Markdown with fences of its
+/// own.
+pub fn fenced_block(answer: &str, fence: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = answer.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(fence))?;
+    let mut quoted = false;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| {
+            let closes = !quoted && l.trim() == "```";
+            if l.matches("\"\"\"").count() % 2 == 1 {
+                quoted = !quoted;
+            }
+            closes
+        })
+        .map_or(lines.len(), |n| start + 1 + n);
+    let block = lines[start + 1..end].join("\n");
+    let rest: Vec<&str> = lines[..start]
+        .iter()
+        .chain(lines.get(end + 1..).unwrap_or_default())
+        .copied()
+        .collect();
+    Some((rest.join("\n").trim().to_string(), block))
+}
+
 /// How soon a recommendation should be acted on.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,

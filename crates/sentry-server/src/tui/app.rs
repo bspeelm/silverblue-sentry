@@ -99,6 +99,8 @@ pub enum Effect {
     AskConsent(Box<sentry_core::claude::Ask>),
     /// Grant the files Claude asked for, then tell it (the next turn).
     ChatGrant,
+    /// The plan was approved: carry it out.
+    ApplyStart,
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
     /// A review's suggested task: added to `tasks.toml`, or skipped.
@@ -245,6 +247,8 @@ pub struct App {
     pub last_log: Option<crate::maint::log::LogEntry>,
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
+    /// The suspended command is a step of an approved plan (its exit advances the plan).
+    suspend_plan: bool,
     /// A plan waiting for its note: (item, plan, the note typed so far).
     plan_note: Option<(String, PlanDoc, String)>,
     /// Claude writing a plan, in the background.
@@ -323,6 +327,7 @@ impl App {
             note_add: false,
             last_log: None,
             suspend_edit: false,
+            suspend_plan: false,
             plan_note: None,
             writer: None,
             plan_view: None,
@@ -586,6 +591,7 @@ impl App {
                         self.toast("Claude answered · A opens the chat");
                     }
                     self.chat_edits();
+                    self.chat_plan_check();
                     self.offer_reads(ReadsFor::Chat);
                 }
             }
@@ -598,6 +604,16 @@ impl App {
             match m {
                 StreamMsg::Line { text, .. } => c.on_job_line(text),
                 StreamMsg::Exit { code, .. } => {
+                    if c.plan_step.is_some()
+                        && let Some((_, _, Job::Proposal { output, .. })) = c.job.take()
+                    {
+                        self.plan_step_exit(code, output);
+                        for k in [Kind::Units, Kind::Docker] {
+                            self.fetch(k);
+                        }
+                        self.dirty = true;
+                        return;
+                    }
                     if let Some((_, _, Job::Proposal { cmd, output, .. })) = c.job.take() {
                         c.push(chatmod::Kind::Info, format!("exit {code}"));
                         c.set_offer(&cmd, code, &output, None);
@@ -1140,6 +1156,16 @@ impl App {
                 Effect::Wf(c) => self.wf_cmd(c),
                 Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::ChatGrant => self.chat_grant(),
+                Effect::ApplyStart => {
+                    let a = self
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.apply_run.as_mut())
+                        .map(|r| r.start());
+                    if let Some(a) = a {
+                        self.plan_drive(a);
+                    }
+                }
                 Effect::AskConsent(ask) => {
                     let text = ask.prompt();
                     self.modal = Some(self.consent(&text, AskTurn::First(*ask)));
@@ -1563,6 +1589,20 @@ impl App {
 
     /// An apply chat for the workflow that just ended: what happened, ready for `s`.
     fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
+        // The approved plan was waiting for this run: its result is the step's.
+        if let Some(c) = self.chat.as_mut()
+            && let Some(r) = c.apply_run.as_mut()
+            && let sentry_core::applyplan::RunState::WaitingWorkflow(i) = r.state
+            && matches!(&r.plan.steps[i].kind, sentry_core::applyplan::Kind::Workflow(w) if *w == e.head.workflow)
+        {
+            let ok = e.head.result == "done";
+            let a = r.step_done(
+                ok,
+                format!("{} {}: {}", e.head.workflow, e.head.result, e.head.summary),
+            );
+            self.plan_drive(a);
+            return;
+        }
         let Some(c) = self.chat.as_mut().filter(|c| {
             c.ask
                 .applying()
@@ -3475,6 +3515,16 @@ impl App {
                 let text = c.offer.take().unwrap_or_default();
                 self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
             }
+            // Claude's plan: shown whole, approved once, then sentry carries it out.
+            KeyCode::Char('a') if idle && c.can_apply() => {
+                let lines = c.approval_lines(&t);
+                self.modal = Some(Modal {
+                    title: "Apply the plan".into(),
+                    color: t.yellow,
+                    lines,
+                    yes: Some(("apply".into(), vec![Effect::ApplyStart])),
+                });
+            }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
                 let lines = c.grant_lines(&t);
@@ -3562,6 +3612,7 @@ impl App {
                 format!("sentry-server · {} on {}", p.cmd, self.remote.name),
                 vec![Kind::Units, Kind::Docker],
             ));
+            self.suspend_plan = self.chat.as_ref().is_some_and(|c| c.plan_step.is_some());
             return;
         }
         self.run_seq += 1;
@@ -3590,6 +3641,141 @@ impl App {
             }
             Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start it: {e}")),
         }
+    }
+
+    /// After Claude's turn: what stops its plan (edits that don't fit, unknown workflows).
+    fn chat_plan_check(&mut self) {
+        let names = self.store.workflows.clone();
+        if let Some(c) = self.chat.as_mut()
+            && let Some(r) = &c.apply_run
+            && r.state == sentry_core::applyplan::RunState::Proposed
+        {
+            c.plan_problems = sentry_core::applyplan::problems(&r.plan, &names);
+        }
+    }
+
+    /// A plan step's command ended: the plan's next step.
+    fn plan_step_exit(&mut self, code: i32, output: String) {
+        let Some(c) = self.chat.as_mut() else { return };
+        let Some(i) = c.plan_step.take() else { return };
+        let out = sentry_core::applyplan::tail(&output, 15);
+        let note = if out.trim().is_empty() {
+            format!("exit {code}")
+        } else {
+            format!("exit {code}\n{out}")
+        };
+        c.push(
+            chatmod::Kind::Info,
+            format!(
+                "{} step {} · exit {code}",
+                if code == 0 { "✓" } else { "✗" },
+                i + 1
+            ),
+        );
+        let a = c.apply_run.as_mut().map(|r| r.step_done(code == 0, note));
+        if let Some(a) = a {
+            self.plan_drive(a);
+        }
+    }
+
+    /// Carry out the approved plan from `a` on: edits (files on this laptop) here, commands on
+    /// the server like a proposal, a workflow started; each one's end comes back here.
+    fn plan_drive(&mut self, mut a: sentry_core::applyplan::Action) {
+        use sentry_core::applyplan::{Action, apply_edit};
+        loop {
+            let Some(c) = self.chat.as_mut() else { return };
+            let Some(r) = c.apply_run.as_mut() else {
+                return;
+            };
+            match a {
+                Action::Edit(i) => {
+                    let (ok, note) = match apply_edit(&r.plan.steps[i]) {
+                        Ok((b, before, after)) => (
+                            true,
+                            format!("{before} → {after} lines · backup {}", b.display()),
+                        ),
+                        Err(e) => (false, e),
+                    };
+                    let line = format!("{} step {}: {note}", if ok { "✓" } else { "✗" }, i + 1);
+                    a = r.step_done(ok, note);
+                    c.push(chatmod::Kind::Info, line);
+                }
+                Action::Command { idx, cmd } => {
+                    c.plan_step = Some(idx);
+                    let why = r.plan.steps[idx].title.clone();
+                    self.chat_run(sentry_core::claude::Proposed {
+                        cmd,
+                        why,
+                        undo: None,
+                        known: false,
+                    });
+                    return;
+                }
+                Action::StartWorkflow(_, wf) => {
+                    c.hidden = true;
+                    let item = c
+                        .ask
+                        .applying()
+                        .and_then(|x| x.item.clone())
+                        .filter(|i| self.store.plans.contains_key(i));
+                    self.toast(&format!(
+                        "starting {wf} · the plan carries on when its run ends"
+                    ));
+                    match item {
+                        Some(i) => self.apply_plan(&i, Instant::now()),
+                        None => self.apply(vec![Effect::StartWorkflow(wf)], Instant::now()),
+                    }
+                    return;
+                }
+                Action::Finished => return self.plan_finished(),
+            }
+        }
+    }
+
+    /// The plan ran (or stopped): Claude gets the report (`s`), the log one entry.
+    fn plan_finished(&mut self) {
+        let Some(c) = self.chat.as_mut() else { return };
+        let Some(r) = c.apply_run.as_ref() else {
+            return;
+        };
+        let report = r.report();
+        let ok = r.state == sentry_core::applyplan::RunState::Done;
+        let tags: Vec<String> = c
+            .ask
+            .applying()
+            .map(|a| format!("apply:{}", a.key))
+            .into_iter()
+            .chain(r.plan.steps.iter().filter_map(|s| match &s.kind {
+                sentry_core::applyplan::Kind::Edit { file, .. } => Some(format!("file:{file}")),
+                _ => None,
+            }))
+            .collect();
+        let summary = format!("{}\n\n{report}", r.plan.summary);
+        c.hidden = false;
+        c.offer = Some(report);
+        c.push(
+            chatmod::Kind::Info,
+            if ok {
+                "plan applied · s sends the results to Claude".to_string()
+            } else {
+                "plan stopped · s sends what happened to Claude".to_string()
+            },
+        );
+        let e = sentry_core::maint::log::LogEntry::event(
+            &self.remote.name,
+            "apply",
+            "apply",
+            ok,
+            &summary,
+            &tags,
+            jiff::Timestamp::now(),
+        );
+        self.log_event(e);
+        self.toast(if ok {
+            "plan applied"
+        } else {
+            "plan stopped at a failed step"
+        });
     }
 
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
@@ -3727,6 +3913,15 @@ impl App {
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
+        // A plan step that needed the terminal for sudo: its exit is the step's.
+        if std::mem::take(&mut self.suspend_plan) {
+            let code = match &status {
+                Ok(st) => st.code().unwrap_or(-1),
+                Err(_) => -1,
+            };
+            self.plan_step_exit(code, "(ran in the terminal)".into());
+            return;
+        }
         if let Some((idx, capture)) = self.suspend_step.take()
             && let Some(s) = self.wf.as_mut()
         {

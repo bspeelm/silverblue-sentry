@@ -241,3 +241,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Edits: only files under $HOME; never `~/.ssh`, `~/.gnupg`, `~/.local/share/keyrings`, `~/.password-store`. The file is backed up first (`~/.cache/sentry/claude/backups/`); a change shows in the chat and is logged (`kind = "edit"`, `file:<path>`).
 - Commands are unchanged: Claude proposes, the user runs them behind a confirm box.
 
+## A27. Apply with Claude: one plan, approved once (2026-11, replaces the four-part answer of A25)
+- Applying, Claude answers with one plan (a ```` ```sentry-apply ```` TOML block): steps in order, each `edit` (exact old → new text in a file under $HOME), `check` (must exit 0), `run` (changes something; sudo hands the terminal over) or `workflow` (started; the plan waits for its run). No other code blocks, so no list of proposals to pick from.
+- `a` shows the whole plan with its diffs; `y` approves it once. sentry backs up every edited file and runs the steps in order; a failing step stops the rest. The report goes to Claude with `s` (on a failure, the steps done, for a plan for the rest). One log entry per run (`kind = "apply"`).
+- A plan with an edit that doesn't fit the file, a file outside home or an unknown workflow can't be approved (shown in red).
+
