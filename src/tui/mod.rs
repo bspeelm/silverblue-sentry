@@ -9,6 +9,7 @@ pub(crate) mod chat;
 mod data;
 pub(crate) mod docview;
 pub(crate) mod keys;
+pub(crate) mod maintlist;
 pub(crate) mod modal;
 mod plans;
 mod screens;

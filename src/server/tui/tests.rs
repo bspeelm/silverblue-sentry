@@ -1481,13 +1481,17 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("Claude advises waiting: r revises it"));
     key(&mut a, KeyCode::Esc);
-    // z offers later dates; A isn't an assessment here any more (plans assess, R reviews).
+    // z offers later dates; A asks about the item among everything recommended.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 30 days"));
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('A'));
-    assert!(screen(&mut a).contains("p has Claude plan an item"));
+    let prompt = a.consent_text().expect("consent");
+    assert!(
+        prompt.contains("recommends maintaining") && prompt.contains("About \"web\""),
+        "{prompt}"
+    );
 }
 
 #[test]

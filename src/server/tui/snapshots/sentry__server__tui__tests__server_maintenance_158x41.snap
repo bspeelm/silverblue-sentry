@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                          ││                                                                │
 └──────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  do it   p  plan   t  track   R  review   w  workflow   x  drop/ignore   v  log   z  later   c  check all   e  edit   ?  help   q  quit
+ j/k  select   Enter  do it   z  later   c  check all   w  workflow   R  review   v  log   e  edit   A  ask Claude   ?  help   q  quit

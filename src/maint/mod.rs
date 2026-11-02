@@ -5,6 +5,7 @@
 pub mod local;
 pub mod log;
 pub mod plan;
+pub mod rec;
 pub mod retention;
 pub mod review;
 pub mod snooze;

@@ -19,6 +19,7 @@ use crate::server::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::server::maint::recommend::{self, Action, Level, Rec};
 use crate::server::maint::{self, local};
 use crate::server::remote::Remote;
+use crate::tui::maintlist::{self, Dismiss, Verbs};
 use crate::tui::widgets::{self, TableSpec, inner, panel};
 
 /// Items in table order (the config's), filtered.
@@ -141,11 +142,42 @@ pub fn row_of(v: &View, id: &str) -> Option<usize> {
 }
 
 fn level_color(v: &View, l: Level) -> Color {
-    match l {
-        Level::Now => v.t.red,
-        Level::Soon => v.t.yellow,
-        Level::Routine => v.t.cyan,
-        Level::Tidy => v.t.dim,
+    maintlist::level_color(v.t, l)
+}
+
+/// The keys the selected row takes besides Enter (the key bar shows only these).
+pub fn verbs(v: &View) -> Verbs {
+    let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
+    let item = |id: &str| Verbs {
+        plan: true,
+        planned: planned(id),
+        dismiss: v.plans.contains_key(id).then_some(Dismiss::DropPlan),
+        ..Default::default()
+    };
+    match pick(v) {
+        None => Verbs::default(),
+        Some(Sel::Item(s, _)) => item(&s.id),
+        Some(Sel::Rec(r)) => match &r.action {
+            Action::Track(_) => Verbs {
+                track: true,
+                dismiss: Some(Dismiss::Ignore),
+                ..Default::default()
+            },
+            Action::Remove(_) => Verbs {
+                dismiss: Some(Dismiss::Untrack),
+                ..Default::default()
+            },
+            Action::Fix(_) => Verbs {
+                dismiss: Some(Dismiss::Expected),
+                ..Default::default()
+            },
+            Action::Task(_) => Verbs {
+                done: true,
+                dismiss: Some(Dismiss::Remove),
+                ..Default::default()
+            },
+            _ => r.item.as_deref().map_or_else(Verbs::default, item),
+        },
     }
 }
 
@@ -441,65 +473,34 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
 
 fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
     let t = v.t;
-    let b = panel(
-        t,
-        "Recommended",
-        if v.s.maint.value.is_none() {
-            String::new()
-        } else {
-            match &v.s.review {
-                Some(r) => format!(
-                    "{} · last review {}: R opens it",
-                    recs.len(),
-                    r.head
-                        .updated
-                        .or(r.head.created)
-                        .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
-                ),
-                None => format!("{} · R reviews it all with Claude", recs.len()),
-            }
-        },
-    );
-    let r = inner(&b, area);
-    f.render_widget(b, area);
-    if v.s.maint.value.is_none() {
-        f.render_widget(Paragraph::new(Line::styled("reading…", t.dim())), r);
-        return;
-    }
-    if recs.is_empty() {
-        f.render_widget(
-            Paragraph::new(Line::styled(
-                "✓ nothing to maintain right now",
-                t.s(t.green),
-            )),
-            r,
-        );
-        return;
-    }
-    let rows: Vec<Row> = recs
-        .iter()
-        .map(|x| {
-            Row::new(vec![
-                Cell::from(x.level.word()).style(t.s(level_color(v, x.level))),
-                Cell::from(x.title.clone()).style(t.fg()),
-                Cell::from(x.why.clone()).style(t.dim()),
-            ])
-        })
-        .collect();
-    widgets::table(
+    let note = if v.s.maint.value.is_none() {
+        String::new()
+    } else {
+        match &v.s.review {
+            Some(r) => format!(
+                "{} · last review {}: R opens it",
+                recs.len(),
+                r.head
+                    .updated
+                    .or(r.head.created)
+                    .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
+            ),
+            None => format!("{} · R reviews it all with Claude", recs.len()),
+        }
+    };
+    let empty = if v.s.maint.value.is_none() {
+        ("reading…", t.dim())
+    } else {
+        ("✓ nothing to maintain right now", t.s(t.green))
+    };
+    maintlist::draw(
         f,
-        r,
+        area,
         t,
-        TableSpec {
-            header: vec!["", "What", "Why"],
-            widths: vec![
-                Constraint::Length(8),
-                Constraint::Fill(3),
-                Constraint::Fill(4),
-            ],
-            rows,
-            selected: (v.cur < recs.len()).then_some(v.cur),
-        },
+        note,
+        recs,
+        (v.cur < recs.len()).then_some(v.cur),
+        empty,
     );
 }
 

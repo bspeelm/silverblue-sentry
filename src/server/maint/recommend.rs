@@ -13,6 +13,7 @@ use crate::server::collect::apt::Apt;
 use crate::server::config::{MaintItem, Risk};
 
 pub use crate::maint::Level;
+use crate::maint::rec::Target;
 
 /// What Enter does on a recommendation.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,15 +38,22 @@ pub enum Action {
     Task(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rec {
-    pub level: Level,
-    /// For `z` (look again later): the item's id, `wf:<name>`, or the discovery key.
-    pub key: String,
-    pub title: String,
-    pub why: String,
-    pub action: Action,
-    pub item: Option<String>,
+/// Keys (for `z`): the item's id, `wf:<name>`, `finding:<id>`, `audit`, `reboot`, the
+/// discovery key, `gone:<id>`, `task:<id>`.
+pub type Rec = crate::maint::rec::Rec<Action>;
+
+impl crate::maint::rec::Act for Action {
+    fn target(&self) -> Target {
+        match self {
+            Action::Run(wf) => Target::Workflow(wf.clone()),
+            Action::Plan(id) | Action::OpenPlan(id) => Target::Item(id.clone()),
+            Action::Audit => Target::Audit,
+            _ => Target::None,
+        }
+    }
+    fn task(id: String) -> Self {
+        Action::Task(id)
+    }
 }
 
 pub struct Inputs<'a> {
@@ -392,18 +400,6 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             item: Some(g.id.clone()),
         });
     }
-    for t in crate::maint::tasks::recs(i.tasks, i.log, i.audited, i.now) {
-        out.push(Rec {
-            level: t.level,
-            key: t.key,
-            title: t.title,
-            why: t.why,
-            action: Action::Task(t.id),
-            item: t.item,
-        });
-    }
-    // Put off with z.
-    out.retain(|r| i.snooze.get(&r.key).is_none_or(|d| *d <= today));
     let risk = |r: &Rec| {
         r.item
             .as_deref()
@@ -416,7 +412,17 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             .then(risk(b).cmp(&risk(a)))
             .then(a.title.cmp(&b.title))
     });
-    out
+    crate::maint::rec::finish(
+        out,
+        &crate::maint::rec::Tail {
+            tasks: i.tasks,
+            log: i.log,
+            audited: i.audited,
+            now: i.now,
+            snooze: i.snooze,
+            today,
+        },
+    )
 }
 
 #[cfg(test)]

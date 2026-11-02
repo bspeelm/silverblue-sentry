@@ -7,7 +7,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use super::{Cursor, Hints, View, audit, jobs, updates};
 use crate::audit::Finding;
@@ -17,8 +17,8 @@ use crate::maint::tasks::{Do as TaskDo, Task};
 use crate::tui::app::{Choice, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
-use crate::tui::theme::Theme;
-use crate::tui::widgets::{TableSpec, inner, panel, placeholder, table, wrap};
+use crate::tui::maintlist::{self, Dismiss, Verbs};
+use crate::tui::widgets::{inner, panel, wrap};
 
 /// A view opened inside Maintenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,28 +72,40 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         h.insert(0, ("Esc", "back"));
         return h;
     }
-    let mut h = vec![("j/k", "select"), ("Enter", "do it")];
-    if let Some(r) = m.selected(v) {
-        if matches!(r.action, Do::Fix(_)) {
-            h.push(("x", "expected"));
-        }
-        if matches!(r.action, Do::Run(_) | Do::OpenPlan(_)) {
-            h.push(("p", "plan"));
-        }
-        if matches!(r.action, Do::Task(_)) {
-            h.extend([("d", "done"), ("x", "remove")]);
-        }
-        h.push(("z", "later"));
-    }
+    let mut h = maintlist::hints(&m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default());
+    // Narrow: the bar drops these from the end.
     h.extend([
         ("c", "check all"),
+        ("R", "review"),
+        ("v", "log"),
         ("F", "report"),
         ("J", "jobs"),
         ("C", "cleanup"),
-        ("R", "review"),
-        ("v", "log"),
+        ("w", "workflows"),
     ]);
     h
+}
+
+/// The keys a row takes besides Enter.
+pub fn verbs(v: &View, r: &Rec) -> Verbs {
+    match &r.action {
+        Do::Fix(_) => Verbs {
+            dismiss: Some(Dismiss::Expected),
+            like: true,
+            ..Default::default()
+        },
+        Do::Run(wf) | Do::OpenPlan(wf) => Verbs {
+            plan: true,
+            planned: v.d.plans.contains_key(wf),
+            ..Default::default()
+        },
+        Do::Task(_) => Verbs {
+            done: true,
+            dismiss: Some(Dismiss::Remove),
+            ..Default::default()
+        },
+        _ => Verbs::default(),
+    }
 }
 
 /// The recommendations, from what's loaded.
@@ -169,14 +181,7 @@ pub fn badge(v: &View) -> Option<(usize, Level)> {
     Some((urgent.len(), urgent.first()?.level))
 }
 
-pub fn level_color(t: &Theme, l: Level) -> ratatui::style::Color {
-    match l {
-        Level::Now => t.red,
-        Level::Soon => t.yellow,
-        Level::Routine => t.cyan,
-        Level::Tidy => t.dim,
-    }
-}
+pub use crate::tui::maintlist::level_color;
 
 /// Check everything: audit, OS/Flatpak/toolbox updates, and what cleanup could free.
 pub fn check_all() -> Vec<Effect> {
@@ -263,6 +268,7 @@ impl Maint {
                 return Vec::new();
             }
             Action::Char('C') => return vec![Effect::Goto(crate::tui::ScreenId::Clean)],
+            Action::Char('w') => return vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Action::Char('v') => return vec![Effect::LogOpen],
             Action::Char('R') => return vec![Effect::ReviewOpen],
             _ => {}
@@ -502,45 +508,21 @@ impl Maint {
                     )
                 })
                 .unwrap_or_else(|| "no audit yet".into());
-        let b = panel(t, "Recommended", format!("{} · {audited}", recs.len()));
-        let r = inner(&b, area);
-        f.render_widget(b, area);
-        self.cur.page = r.height as usize;
-        if recs.is_empty() {
-            let msg = if v.filter.is_some() {
-                "nothing matches the filter"
-            } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Jobs) {
-                "reading…"
-            } else {
-                "✓ nothing to maintain right now · c checks everything again"
-            };
-            placeholder(f, r, t, &[(msg, t.dim())]);
-            return;
-        }
-        let rows: Vec<Row> = recs
-            .iter()
-            .map(|x| {
-                Row::new(vec![
-                    Cell::from(x.level.word()).style(t.s(level_color(t, x.level))),
-                    Cell::from(x.title.clone()).style(t.fg()),
-                    Cell::from(x.why.clone()).style(t.dim()),
-                ])
-            })
-            .collect();
-        table(
+        let empty = if v.filter.is_some() {
+            "nothing matches the filter"
+        } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Jobs) {
+            "reading…"
+        } else {
+            "✓ nothing to maintain right now · c checks everything again"
+        };
+        self.cur.page = maintlist::draw(
             f,
-            r,
+            area,
             t,
-            TableSpec {
-                header: vec!["", "What", "Why"],
-                widths: vec![
-                    Constraint::Length(8),
-                    Constraint::Fill(3),
-                    Constraint::Fill(4),
-                ],
-                rows,
-                selected: Some(self.cur.sel),
-            },
+            format!("{} · {audited}", recs.len()),
+            recs,
+            Some(self.cur.sel),
+            (empty, t.dim()),
         );
     }
 

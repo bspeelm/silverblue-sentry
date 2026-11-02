@@ -835,7 +835,7 @@ fn maintenance_keys_and_views() {
 
 #[test]
 fn audit_fix_key() {
-    // Without Claude Code, `f` is sentry's own list of fixes.
+    // Without Claude Code, Enter (or f) is sentry's own list of fixes.
     crate::claude::TEST_AVAILABLE.with(|c| c.set(false));
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
@@ -844,10 +844,10 @@ fn audit_fix_key() {
     // Row 1 is "com.visualstudio.code gained filesystem=host": one fix → confirm box.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Fix    press f: Take the permission away"),
+        s.contains("Fix    press Enter: Take the permission away"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('f'));
+    key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("$ flatpak override --user --nofilesystem=host com.visualstudio.code"),

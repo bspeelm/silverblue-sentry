@@ -934,7 +934,17 @@ impl App {
             Action::PageDown => *cur = (*cur + 10).min(n.saturating_sub(1)),
             Action::PageUp => *cur = cur.saturating_sub(10),
             Action::Help => {
-                let lines = tabs::hints(self.tab, &self.view())
+                let mut keys = tabs::hints(self.tab, &self.view());
+                // Maintenance: every row key, not only the selected row's.
+                if self.tab == Tab::Maint {
+                    let row = ["j/k", "Enter", "p", "P", "t", "d", "x", "B", "z"];
+                    keys = crate::tui::maintlist::GRAMMAR
+                        .iter()
+                        .copied()
+                        .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
+                        .collect();
+                }
+                let lines = keys
                     .into_iter()
                     .chain(super::actions::hints(self.tab))
                     .chain([
@@ -3593,12 +3603,9 @@ impl App {
             if self.store.sudo.value == Some(SudoMode::Password) {
                 h.push(("I", "read with sudo"));
             }
-            // Maintenance's own keys fill the bar there.
             match self.chat.as_ref().filter(|c| c.hidden) {
                 Some(c) => h.push(("A", c.hidden_word())),
-                None if claude::available() && self.tab != Tab::Maint => {
-                    h.push(("A", "ask Claude"))
-                }
+                None if claude::available() => h.push(("A", "ask Claude")),
                 None => {}
             }
             h.extend([("?", "help"), ("q", "quit")]);
