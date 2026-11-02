@@ -1,5 +1,6 @@
 //! The "ask Claude" pane: a transcript of one Claude Code session (questions, the read-only
-//! commands Claude ran, streamed answers) with an input line for follow-ups.
+//! commands Claude ran, streamed answers) with an input line for follow-ups. A chat only
+//! explains: anything that changes the system is an apply session (`a` hands it over).
 
 use std::time::Instant;
 
@@ -10,7 +11,7 @@ use ratatui::widgets::Paragraph;
 
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
-use crate::claude::{Ask, Event, Proposed};
+use crate::claude::{Ask, Event};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -24,33 +25,6 @@ pub enum Kind {
     Good,
     /// Where an apply session's plan goes (the text is its index); drawn by the session.
     Plan,
-}
-
-/// A command sentry runs on the user's behalf from inside the chat (not Claude).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Job {
-    /// A proposed command; `output` collects what it prints.
-    Proposal {
-        cmd: String,
-        output: String,
-        changes: bool,
-    },
-    /// `sentry job audit` after a change; the command and its result wait for it.
-    Audit {
-        cmd: String,
-        code: i32,
-        output: String,
-    },
-}
-
-/// Where the failed workflow step a fix chat is about stands (kept up to date by the app).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepState {
-    Failed,
-    Running,
-    /// Its dry run passed: `t` runs it for real.
-    DryOk,
-    Done,
 }
 
 pub struct Chat {
@@ -69,16 +43,8 @@ pub struct Chat {
     drawn: std::cell::Cell<usize>,
     pub cost: f64,
     got_done: bool,
-    /// Commands from Claude's latest answer, runnable with `r` + 1–9.
-    pub proposals: Vec<Proposed>,
-    /// `r` pressed: the next digit picks a proposal.
-    pub picking: bool,
-    /// Stream id, pid and kind of the command sentry is running for the chat.
-    pub job: Option<(u64, u32, Job)>,
-    /// A finished command's report, ready to send to Claude with `s`.
-    pub offer: Option<String>,
-    /// Set for a chat about a failed workflow step.
-    pub step: Option<StepState>,
+    /// What `a` applies (an apply ask for what the chat is about), if anything.
+    pub apply_with: Option<Ask>,
     /// Esc while Claude answers: out of sight, still running (`A` brings it back).
     pub hidden: bool,
     /// The last tool Claude called (name, input): a refusal right after names what it wanted.
@@ -122,12 +88,8 @@ impl Chat {
             drawn: Default::default(),
             cost: 0.0,
             got_done: false,
-            proposals: Vec::new(),
-            picking: false,
             hidden: false,
-            job: None,
-            offer: None,
-            step: ask.step().map(|_| StepState::Failed),
+            apply_with: None,
             ask,
             last_tool: None,
             requests: Vec::new(),
@@ -231,63 +193,12 @@ impl Chat {
     }
 
     pub fn busy(&self) -> bool {
-        self.live.is_some() || self.job.is_some() || self.step == Some(StepState::Running)
+        self.live.is_some()
     }
 
-    /// `t` is offered: the step can be retried (or run for real after its dry run).
-    pub fn can_retry(&self) -> bool {
-        matches!(self.step, Some(StepState::Failed | StepState::DryOk))
-    }
-
-    /// Re-read the proposals from the newest answer (after a turn ends).
-    fn refresh_proposals(&mut self) {
-        let last = self
-            .entries
-            .iter()
-            .rev()
-            .take_while(|(k, _)| *k != Kind::You)
-            .filter(|(k, _)| *k == Kind::Claude)
-            .map(|(_, t)| t.as_str())
-            .collect::<Vec<_>>();
-        let text: String = last.into_iter().rev().collect::<Vec<_>>().join("\n");
-        let p = crate::claude::parse_commands(&text, &self.ask.known);
-        if !p.is_empty() || self.proposals.is_empty() {
-            self.proposals = p;
-        }
-    }
-
-    /// Output from the command sentry runs for the chat.
-    pub fn on_job_line(&mut self, text: String) {
-        let out = match self.job.as_mut() {
-            Some((_, _, Job::Proposal { output, .. })) => output,
-            // The audit's own progress isn't interesting here.
-            _ => return,
-        };
-        if out.len() < 16_000 {
-            out.push_str(&text);
-            out.push('\n');
-        }
-        self.push(Kind::Tool, format!("  {text}"));
-    }
-
-    /// The report sent back to Claude after a command (and the audit after it).
-    pub fn set_offer(&mut self, cmd: &str, code: i32, output: &str, after: Option<&str>) {
-        let tail: Vec<&str> = output.lines().rev().take(60).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        let mut text = format!(
-            "I ran this through sentry:\n$ {cmd}\nexit code {code}\noutput (last {} lines):\n{}",
-            tail.len(),
-            if tail.is_empty() {
-                "(none)".to_string()
-            } else {
-                tail.join("\n")
-            }
-        );
-        if let Some(a) = after {
-            text.push_str(&format!("\n\n{a}"));
-        }
-        text.push_str("\n\nDid it work? What, if anything, should I do next?");
-        self.offer = Some(text);
+    /// `a` is offered: there's something to apply, and nothing running.
+    pub fn can_apply(&self) -> bool {
+        self.apply_with.is_some() && self.input.is_empty() && !self.busy()
     }
 
     fn offset(&self) -> usize {
@@ -399,7 +310,6 @@ impl Chat {
         if code != 0 && !self.got_done {
             self.push(Kind::Err, format!("claude exited with {code}"));
         }
-        self.refresh_proposals();
         if !self.requests.is_empty() {
             let what: Vec<String> = self
                 .requests
@@ -420,7 +330,7 @@ impl Chat {
     /// Esc: hide it while Claude (or a command for it) is still running; otherwise it's done
     /// with (true: close it).
     pub fn esc(&mut self) -> bool {
-        if self.running() || self.job.is_some() {
+        if self.running() {
             self.hidden = true;
             false
         } else {
@@ -460,55 +370,6 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     if c.pending {
         lines.extend(brief_lines(c, t, w, false));
     }
-    if !c.proposals.is_empty() && !c.running() {
-        lines.push(Line::styled(
-            "       Proposed commands (sentry runs them, after you confirm; Claude can't):",
-            t.s(t.yellow),
-        ));
-        for (i, p) in c.proposals.iter().take(9).enumerate() {
-            let first = p.cmd.lines().next().unwrap_or("");
-            let more = if p.cmd.lines().count() > 1 {
-                " …"
-            } else {
-                ""
-            };
-            let color = if crate::claude::risky(&p.cmd).is_some() {
-                t.red
-            } else {
-                t.cyan
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("     {} ", i + 1),
-                    ratatui::style::Style::new().fg(t.ink).bg(t.yellow),
-                ),
-                Span::styled(
-                    widgets::trunc(&format!(" {first}{more}"), w.saturating_sub(8).max(10)),
-                    t.s(color),
-                ),
-            ]));
-            let mut note = p.why.clone();
-            if p.known {
-                note.push_str(" (sentry's known fix)");
-            }
-            for l in wrap(&note, w.saturating_sub(9).max(10)) {
-                lines.push(Line::styled(format!("         {l}"), t.dim()));
-            }
-        }
-        lines.push(Line::raw(""));
-    }
-    if c.step == Some(StepState::Running) {
-        lines.push(Line::styled(
-            "       … the step is running (its output is in the workflow log behind this)",
-            t.dim(),
-        ));
-    } else if let Some((_, _, job)) = &c.job {
-        let what = match job {
-            Job::Proposal { .. } => "       … running (C-c stops it)",
-            Job::Audit { .. } => "       … auditing again",
-        };
-        lines.push(Line::styled(what, t.dim()));
-    }
     if c.running() {
         let s = c.started.map_or(0, |s| s.elapsed().as_secs());
         lines.push(Line::styled(
@@ -523,11 +384,6 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     );
     let prompt = if c.running() {
         Line::styled("  (answering… C-c stops it)", t.dim())
-    } else if c.picking {
-        Line::styled(
-            format!("  run which? 1–{} (Esc cancels)", c.proposals.len().min(9)),
-            t.s(t.yellow),
-        )
     } else {
         Line::from(vec![
             Span::styled("› ", t.s(t.cyan)),
@@ -689,21 +545,8 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     }
     let mut k = vec![("Enter", "follow-up")];
     let idle = c.input.is_empty() && !c.busy();
-    if idle && !c.proposals.is_empty() {
-        k.push(("r", "run a proposed command"));
-    }
-    if idle && c.offer.is_some() {
-        k.push(("s", "send to Claude"));
-    }
-    if idle && c.can_retry() {
-        k.push((
-            "t",
-            if c.step == Some(StepState::DryOk) {
-                "run the step"
-            } else {
-                "retry the step"
-            },
-        ));
+    if c.can_apply() {
+        k.push(("a", "apply it"));
     }
     if idle && !c.requests.is_empty() {
         k.push(("g", "grant files"));
@@ -713,7 +556,7 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     }
     k.push((
         "Esc",
-        if c.running() || c.job.is_some() {
+        if c.running() {
             "hide (it carries on)"
         } else {
             "close"
@@ -764,47 +607,31 @@ mod tests {
         );
         assert!(!c.running());
         assert!((c.cost - 0.0312).abs() < 1e-9);
-        assert!(c.proposals.is_empty());
-        assert!(!keys(&c).iter().any(|(k, _)| *k == "r"));
+        assert!(!keys(&c).iter().any(|(k, _)| *k == "r" || *k == "a"));
         assert!(keys(&c).iter().any(|(k, _)| *k == "C"));
     }
 
     #[test]
-    fn proposals_after_answer() {
+    fn a_chat_explains_and_hands_applying_over() {
         let f = crate::finding::Finding {
             id: "unit-failed:system:systemd-remount-fs.service".into(),
             message: "systemd-remount-fs.service failed".into(),
             ..Default::default()
         };
-        let known = vec![crate::claude::KnownFix {
-            cmd: "sudo systemctl reset-failed systemd-remount-fs.service".into(),
-            undo: None,
-        }];
-        let mut c = Chat::new(crate::claude::Ask::for_finding(&f, known, &[]));
+        let mut c = Chat::new(crate::claude::Ask::new("s", "ctx", "What is this?"));
         c.begin_turn("q", 1, 42);
         c.on_event(Event::Text(
-            "**What's going on** read-only root.\n**Commands**\n```bash\n# why: harmless on composefs\nsudo systemctl reset-failed systemd-remount-fs.service\n```\n".into(),
+            "It fails on composefs.\n```bash\nsudo systemctl reset-failed x\n```\n".into(),
         ));
         c.on_exit(0);
-        assert_eq!(c.proposals.len(), 1);
-        assert!(c.proposals[0].known);
-        assert!(keys(&c).iter().any(|(k, _)| *k == "r"));
-        let backend = ratatui::backend::TestBackend::new(100, 30);
-        let mut term = ratatui::Terminal::new(backend).unwrap();
-        let t = Theme::truecolor();
-        term.draw(|fr| draw(fr, fr.area(), &t, &c)).unwrap();
-        let screen: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|x| x.symbol())
-            .collect();
-        assert!(screen.contains("Proposed commands"));
-        assert!(screen.contains("sudo systemctl reset-failed systemd-remount-fs.service"));
-        assert!(screen.contains("sentry's known fix"));
-        c.set_offer("x", 0, "ok", Some("The finding is gone."));
-        assert!(c.offer.as_deref().unwrap().contains("exit code 0"));
+        // Commands in an answer are just text: nothing to run.
+        assert!(!keys(&c).iter().any(|(k, _)| *k == "r" || *k == "s"));
+        assert!(!c.can_apply());
+        // What the chat is about can be applied: `a` hands it to a session.
+        c.apply_with = Some(crate::claude::Ask::for_finding(&f, &[]));
+        assert!(keys(&c).iter().any(|(k, w)| *k == "a" && *w == "apply it"));
+        c.input.push('x');
+        assert!(!c.can_apply(), "typing: the letter is text");
     }
 
     #[test]

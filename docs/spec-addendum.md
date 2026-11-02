@@ -258,3 +258,10 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `Task.after`: a sentry workflow (due once it next ends well after the task was added) or a wait (`7d` from when it was added). An `after` sentry doesn't know goes into the steps, and the task is due now.
 - Claude's read-only allowlist includes `gsettings get/list-keys/list-recursively/range/describe` (never `set`/`reset`).
 
+## A30. Every fix is an apply session; chats only explain (2026-11, replaces the proposals of A20–A26 and the last line of A28)
+- `fix_question`, proposals (`r`), offers (`s`), the chat's jobs and the terminal handover for a proposal's sudo are gone. `Ask::for_finding` and `Ask::step_fix` are apply asks (`Apply.finding`, `Apply.step`); so are sentry-server's finding, unit and container fixes and a failed step in its run view (`remote: true`).
+- A finding's session audits again after the last step (`Fx::Reaudit`, local) and tells Claude whether the finding is gone; its log entry is tagged `finding:<id>`. A step's session ends with Enter retrying the step (`Fx::RetryStep`).
+- Settled, Enter on an empty input does the next thing: close (done), retry the step, audit again (a finding not done), mark it done (a task Claude didn't verify). Review without a plan: Enter asks for one.
+- A chat explains; `a` hands it to a session (`Session::from_chat`: the transcript and Claude's session go on) when its screen has an apply ask for the selection (`A` → 2 keeps it as `Chat::apply_with`).
+- A missing or broken verdict is asked for again as a verify turn.
+

@@ -1,12 +1,12 @@
 //! Ask Claude about the selected thing on a server. Claude reaches the server only through
-//! `sentry-server exec <server>` (read-only allowlist); whatever it proposes, you run through
-//! sentry-server after a confirm box.
+//! `sentry-server exec <server>` (read-only allowlist). Fixing something is an apply session:
+//! Claude plans, you approve, sentry-server runs it.
 
 use super::Tab;
 use super::tabs::View;
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::Session;
-use sentry_core::claude::{Ask, Profile, fix_question};
+use sentry_core::claude::{Apply, Ask, Profile, StepRef};
 use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
@@ -81,9 +81,6 @@ fn header(v: &View, r: &Remote) -> String {
     });
     format!("Server `{}`: {os}, kernel {kernel}{up}.\n", r.name)
 }
-
-const ON_SERVER: &str =
-    "\nThe commands run on the server, through sentry-server, after I confirm each one.";
 
 /// Why `A` had nothing to ask about, when it doesn't.
 pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
@@ -160,7 +157,7 @@ pub fn ask_updates(v: &View, r: &Remote) -> Option<Ask> {
 /// An audit finding: how to fix it (Enter on its recommendation, or `A`).
 pub fn ask_finding(v: &View, r: &Remote, f: &sentry_core::finding::Finding) -> Ask {
     let h = header(v, r);
-    Ask::new(
+    Ask::apply(
         format!("{} · {}", r.name, f.message),
         format!(
             "{h}Audit finding ({}, {}): {}\nid: {}\nwhat: {}\nwhy: {}\nsuggested: {}\nevidence: {}",
@@ -173,7 +170,12 @@ pub fn ask_finding(v: &View, r: &Remote, f: &sentry_core::finding::Finding) -> A
             f.fix,
             f.evidence
         ),
-        fix_question(ON_SERVER),
+        Apply {
+            key: format!("finding:{}", f.id),
+            finding: Some(f.id.clone()),
+            remote: true,
+            ..Default::default()
+        },
     )
 }
 
@@ -191,17 +193,19 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
         }
         Tab::Services => {
             let u = super::tabs::selected_unit(v)?;
-            Some(Ask::new(
+            Some(Ask::apply(
                 format!("{} · {u}", r.name),
                 format!("{h}{}", super::tabs::unit_text(v, &u)),
-                fix_question(&format!(
-                    "{ON_SERVER} If {u} is fine, say so and stop there."
-                )),
+                Apply {
+                    key: format!("unit:{u}"),
+                    remote: true,
+                    ..Default::default()
+                },
             ))
         }
         Tab::Containers => {
             let c = super::tabs::selected_container(v)?;
-            Some(Ask::new(
+            Some(Ask::apply(
                 format!("{} · container {}", r.name, c.name),
                 format!(
                     "{h}Container {}: image {}, {} (exit {}{}), health {}, {} restarts, compose \
@@ -221,9 +225,11 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
                         ""
                     }
                 ),
-                fix_question(&format!(
-                    "{ON_SERVER} If the container is fine, say so and stop there."
-                )),
+                Apply {
+                    key: format!("container:{}", c.name),
+                    remote: true,
+                    ..Default::default()
+                },
             ))
         }
         // A finding: fix it; updates or the reboot: safe now? Anything else: what to do first.
@@ -304,20 +310,28 @@ fn ask_step(h: &str, r: &Remote, s: &Session) -> Ask {
             tail.join("\n")
         }
     );
-    let question = if failed {
-        fix_question(&format!(
-            "{ON_SERVER} End the Recommendation with one of: retry (r), done by hand (d), \
-             skip (s), abandon (a). Never do a later step of the workflow yourself."
-        ))
-    } else {
-        "This step hasn't run yet. What will it do on this server, is it safe to run now, and \
-         what should I check first? Don't run it yourself."
-            .to_string()
-    };
+    let subject = format!("{} · {} · {}", r.name, s.wf.name, step.id);
+    if failed {
+        return Ask::apply(
+            subject,
+            ctx,
+            Apply {
+                key: format!("step:{}:{}", s.wf.name, step.id),
+                step: Some(StepRef {
+                    workflow: s.wf.name.clone(),
+                    idx: i,
+                    id: step.id.clone(),
+                }),
+                remote: true,
+                ..Default::default()
+            },
+        );
+    }
     Ask::new(
-        format!("{} · {} · {}", r.name, s.wf.name, step.id),
+        subject,
         ctx,
-        question,
+        "This step hasn't run yet. What will it do on this server, is it safe to run now, and \
+         what should I check first? Don't run it yourself.",
     )
 }
 

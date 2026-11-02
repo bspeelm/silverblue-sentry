@@ -144,7 +144,7 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 - **You see what's sent.** A conversation opens showing the exact text that will go to Anthropic, with a line to add to it; nothing leaves before Enter. What you type later is sent as you typed it.
 - **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, `gsettings get`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. It may also read your notes files (`[maintenance] notes`, or a server's `notes:`). Claude Code refuses anything else, including `sudo` and any writes, unless you grant it (below). The list is `ALLOWED` in `crates/sentry-core/src/claude.rs`.
 - **Granting files (`g`).** When Claude tries to read or edit a file it isn't allowed, the chat says so ("Claude asked to read … · g grants it"). `g` shows exactly which files, read or edit; Enter grants them for the rest of that conversation and tells Claude to carry on. Only that file is opened, by its exact path. Edits are only for files you own (anywhere, a work tree under `/var/mnt` too; never root's), never `~/.ssh`, `~/.gnupg`, keyrings or `~/.password-store`, and the file is backed up first (`~/.cache/sentry/claude/backups/`). After each answer, a file Claude changed shows in the chat ("✎ edited … · backup …") and goes in the maintenance log (`kind = "edit"`). What Claude reads is sent to Anthropic. Commands stay yours to run.
-- **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
+- **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. A chat only explains: commands in an answer are text, never run from it. When what you asked about can be applied, **`a`** turns the conversation into an apply session (below) without starting over. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
 
 ### Applying a recommendation or a plan with Claude (`A` → 1, both programs)
 
@@ -164,23 +164,15 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 
 The window's top line says where it stands (`brief › investigate › plan › apply › verify › done`) and the key bar shows only what makes sense now. Esc hides a session that's working (`A` brings it back) and closes one that's done. Everything that ran is one entry in the maintenance log (`kind = "apply"`, tagged with the row, every file edited and, when done, the task; backups and how to undo it listed).
 
-### Fixing a finding with Claude (`Enter` on a finding)
+### Fixing a finding, a failed step, a unit or a container
 
-`Enter` on a finding (on Maintenance or in the audit report) sends the finding and sentry's known fixes for it, and asks Claude for three things: what's going on, what it recommends (leaving it alone and marking it expected is a valid answer), and the commands to run, each with a `# why:` line.
+Fixing anything is the same apply session as above, never a chat with commands to run:
 
-- **Claude proposes; you run.** Claude still can't change anything. Its commands show up as a numbered list under the answer. Press `r` (then `1`–`9`) to see one in a confirm box: the exact command, why, the undo if it's one of sentry's known fixes, and whether it needs sudo. Patterns like `curl … | sh` or `rm -rf /` are shown in red. `y` runs it: sentry runs it as you, not Claude.
-  - `sudo` commands hand over the terminal so you type your own password.
-  - Other commands stream into the chat.
-  - Commands that change something are followed by a re-audit, and the chat says whether the finding is gone.
-- **The output stays with you** until you press `s`, which sends it ("I ran X, exit N, output…").
-- **`C` continues in Claude Code.** It opens the same conversation as an interactive `claude` session in this terminal. Read-only commands are pre-allowed and sudo and file edits stay off; Claude Code asks you before anything else. Quit it to return to sentry, which audits again.
+- **A finding** (`Enter` on it on Maintenance, `f` in the audit report): Claude gets the finding, its evidence and sentry's own fixes for it. If leaving it alone is right, it says so and sends no plan (mark it expected with `x`). After the plan has run, sentry audits again before Claude checks the result, and the log entry is tagged with the finding. If it's still there when the session ends, Enter audits again.
+- **A failed workflow step** (`f` on its card on Upgrade): Claude gets the step's command, exit code, log, the workflow's own advice and the steps still to come, and is told not to change deployments, run akmods, reboot or do a later step itself. When the fix is done, **Enter retries the step** and shows the run.
+- **sentry-server**: a finding, a unit (Services) or a container (Containers), and a failed step in the run view, the same way; commands run on the server, sudo's password asked inline.
 
-### Fixing a failed workflow step (`f` on Upgrade)
-
-When a workflow step fails, the failure card offers `[f] fix with Claude`. Claude gets the step's command, exit code, the last 60 lines of its log, the workflow's own advice for that failure, the steps still to come, and the actions open to you (retry, done by hand, skip, rollback, abandon). It answers in the same three parts, ending with which of those actions to take; when the system is already the way the step checks for, it says so and recommends done by hand. It's told not to change deployments (upgrade, rebase, rollback, install/uninstall, override), run akmods or reboot, and not to do later steps itself, because the workflow does those and would fall out of step with the system.
-
-- `r` runs one of its commands, as above. If a command would change deployments or reboot while a workflow is in progress, the confirm box warns you.
-- **`t` retries the step** from the chat, after a confirm box showing the step's command. The step's output goes to the workflow log; the chat says whether it passed or failed again, and `s` sends the new log to Claude. The conversation carries on across retries.
+When a session ends without Claude saying it's done (a task, or a plan done by hand), Enter marks it done by hand.
 
 ### Plans and reviews by Claude
 
