@@ -1156,7 +1156,7 @@ pub fn ledger_path(server: &str) -> String {
     real_path(&maint::log::dir(server).join("LOG.md"))
 }
 
-pub use sentry_core::maint::{read_rules, real_path, resolve_notes};
+pub use sentry_core::maint::real_path;
 
 /// Vars a prefilled start shows: the workflow's own, with the item's values as defaults.
 pub fn merge_defaults(

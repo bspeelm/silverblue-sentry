@@ -97,6 +97,8 @@ pub enum Effect {
     AskSend(AskTurn),
     /// What will be sent, then send it (a choice's option).
     AskConsent(Box<sentry_core::claude::Ask>),
+    /// Grant the files Claude asked for, then tell it (the next turn).
+    ChatGrant,
     /// Run one of Claude's proposals on the server (after its confirm box).
     ChatRun(Proposed),
     /// A review's suggested task: added to `tasks.toml`, or skipped.
@@ -583,6 +585,7 @@ impl App {
                     if c.hidden {
                         self.toast("Claude answered · A opens the chat");
                     }
+                    self.chat_edits();
                     self.offer_reads(ReadsFor::Chat);
                 }
             }
@@ -1136,6 +1139,7 @@ impl App {
                 Effect::Goto(t) => self.enter(t, now),
                 Effect::Wf(c) => self.wf_cmd(c),
                 Effect::AskSend(turn) => self.ask_turn(turn),
+                Effect::ChatGrant => self.chat_grant(),
                 Effect::AskConsent(ask) => {
                     let text = ask.prompt();
                     self.modal = Some(self.consent(&text, AskTurn::First(*ask)));
@@ -3301,7 +3305,15 @@ impl App {
     /// Send one turn to Claude, into the open chat or the background plan.
     fn start_turn(&mut self, to: ReadsFor, prompt: &str, shown: String, resume: Option<String>) {
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value);
+        // The gateway, plus the notes files, plus what the user granted in this conversation.
+        let grants = self
+            .chat
+            .as_ref()
+            .map(|c| c.grants.clone())
+            .unwrap_or_default();
+        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+            .with_notes(&self.remote.cfg.maintenance.notes)
+            .with_grants(&grants);
         let cmd = claude::turn_cmd_with(prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
@@ -3463,6 +3475,16 @@ impl App {
                 let text = c.offer.take().unwrap_or_default();
                 self.modal = Some(self.consent(&text, AskTurn::Follow(text.clone())));
             }
+            // Claude was refused files: grant them (shown first, for this conversation).
+            KeyCode::Char('g') if idle && !c.requests.is_empty() => {
+                let lines = c.grant_lines(&t);
+                self.modal = Some(Modal {
+                    title: "Grant files to Claude".into(),
+                    color: t.yellow,
+                    lines,
+                    yes: Some(("grant".into(), vec![Effect::ChatGrant])),
+                });
+            }
             // Applying something: start its workflow (the chat steps aside), or mark it done.
             KeyCode::Char('w')
                 if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
@@ -3567,6 +3589,76 @@ impl App {
                 ))
             }
             Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start it: {e}")),
+        }
+    }
+
+    /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
+    fn chat_grant(&mut self) {
+        use sentry_core::claude::{Access, backup, grantable};
+        let offline = self.offline;
+        let Some(c) = self.chat.as_mut() else { return };
+        for g in c.requests.clone() {
+            if g.access == Access::Write && grantable(&g).is_ok() {
+                let b = if offline {
+                    Ok(std::path::PathBuf::from("(offline: no backup)"))
+                } else {
+                    backup(&g.path)
+                };
+                match b {
+                    Ok(b) => {
+                        c.push(
+                            chatmod::Kind::Info,
+                            format!("backed up {} → {}", g.path, b.display()),
+                        );
+                        c.watch(&g.path, b);
+                    }
+                    Err(e) => {
+                        // No backup, no write.
+                        c.requests.retain(|r| r != &g);
+                        c.push(
+                            chatmod::Kind::Err,
+                            format!("couldn't back up {}: {e} (not granted)", g.path),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(text) = c.grant() {
+            self.ask_turn(AskTurn::Follow(text));
+        }
+    }
+
+    /// After Claude's turn: files it changed (granted, watched) go in the chat and the log.
+    fn chat_edits(&mut self) {
+        let Some(c) = self.chat.as_mut() else { return };
+        let key = c.ask.applying().map(|a| a.key.clone());
+        let changed = c.changed();
+        for (path, b, before, after) in &changed {
+            c.push(
+                chatmod::Kind::Info,
+                format!(
+                    "✎ edited {path} ({before} → {after} lines) · backup {}",
+                    b.display()
+                ),
+            );
+        }
+        for (path, b, before, after) in changed {
+            let tags: Vec<String> = std::iter::once(format!("file:{path}"))
+                .chain(key.as_ref().map(|k| format!("apply:{k}")))
+                .collect();
+            let e = sentry_core::maint::log::LogEntry::event(
+                &self.remote.name,
+                "edit",
+                "edit",
+                true,
+                &format!(
+                    "Claude edited {path} ({before} → {after} lines). Backup: {}",
+                    b.display()
+                ),
+                &tags,
+                jiff::Timestamp::now(),
+            );
+            self.log_event(e);
         }
     }
 
@@ -4230,6 +4322,10 @@ impl App {
     /// Tests: open a conversation without asking Claude anything.
     pub fn open_chat(&mut self, c: Chat) {
         self.chat = Some(c);
+    }
+    /// Tests: the conversation, if one is open.
+    pub fn chat_for_test(&self) -> Option<&Chat> {
+        self.chat.as_ref()
     }
     /// Tests: a chat turn ended (online: reads Claude asked for are offered).
     pub fn turn_ended_online_for_reads(&mut self) {

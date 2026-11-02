@@ -11,28 +11,20 @@ use crate::maint::{self, LOCAL};
 /// What Claude may use: the machine's read-only commands (as for Ask Claude), the web for
 /// release notes, and Read on your notes and the maintenance log.
 fn profile(cfg: &Config, system: String) -> Profile {
-    let mut p = Profile::local();
+    let mut p = Profile::local().with_notes(&cfg.maintenance.notes);
     p.system = system;
     p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
     p.allowed
         .extend(["WebFetch", "WebSearch"].map(String::from));
     p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
-    let notes = maint::resolve_notes(&cfg.maintenance.notes);
-    p.allowed.extend(maint::read_rules(&notes));
     let log_dir = maint::real_path(&maint::log::dir(LOCAL));
     p.allowed.push(format!("Read(/{log_dir}/**)"));
-    let mut dirs: Vec<String> = notes
-        .iter()
-        .filter_map(|n| std::path::Path::new(n).parent())
-        .map(|d| d.display().to_string())
-        .collect();
     // Claude Code can only add a directory that exists (the log appears with the first run).
     if std::path::Path::new(&log_dir).is_dir() {
-        dirs.push(log_dir);
+        p.dirs.push(log_dir);
     }
-    dirs.sort();
-    dirs.dedup();
-    p.dirs = dirs;
+    p.dirs.sort();
+    p.dirs.dedup();
     p
 }
 

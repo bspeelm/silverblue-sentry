@@ -94,6 +94,8 @@ pub enum Effect {
     TaskDone(String),
     /// Into the maintenance log now (a reboot, before it happens).
     LogEvent(Box<crate::maint::log::LogEntry>),
+    /// Grant the files Claude asked for, then tell it (the next turn).
+    ChatGrant,
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -747,6 +749,7 @@ impl App {
                     if c.hidden {
                         self.toast("Claude answered · A opens the chat");
                     }
+                    self.chat_edits();
                 }
             }
             self.dirty = true;
@@ -1130,6 +1133,17 @@ impl App {
                     AskTurn::Follow(text.clone()),
                 ));
             }
+            // Claude was refused files: grant them (shown first, for this conversation).
+            KeyCode::Char('g') if idle && !c.requests.is_empty() => {
+                let t = self.theme;
+                let lines = c.grant_lines(&t);
+                self.modal = Some(Modal {
+                    title: "Grant files to Claude".into(),
+                    color: t.yellow,
+                    lines,
+                    yes: Some(("grant".into(), vec![Effect::ChatGrant])),
+                });
+            }
             // Applying something: start its workflow (the chat steps aside), or mark it done.
             KeyCode::Char('w')
                 if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
@@ -1217,7 +1231,16 @@ impl App {
                 (text.clone(), text, session)
             }
         };
-        let cmd = crate::claude::turn_cmd(&prompt, resume.as_deref());
+        // Read-only, plus the notes files, plus what the user granted in this conversation.
+        let grants = self
+            .chat
+            .as_ref()
+            .map(|c| c.grants.clone())
+            .unwrap_or_default();
+        let profile = crate::claude::Profile::local()
+            .with_notes(&self.cfg.maintenance.notes)
+            .with_grants(&grants);
+        let cmd = crate::claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         self.run_seq += 1;
         let id = self.run_seq;
         let tx = self.tx.clone();
@@ -1986,6 +2009,7 @@ impl App {
                 }
                 Effect::TaskDone(id) => self.task_done(&id),
                 Effect::LogEvent(e) => self.log_event(*e),
+                Effect::ChatGrant => self.chat_grant(),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -2727,6 +2751,69 @@ impl App {
     }
 
     /// `d` on a task: logged as done by hand (tagged `task:<id>`, which takes it off the list).
+    /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
+    fn chat_grant(&mut self) {
+        use crate::claude::{Access, backup, grantable};
+        let Some(c) = self.chat.as_mut() else { return };
+        for g in c.requests.clone() {
+            if g.access == Access::Write && grantable(&g).is_ok() {
+                match backup(&g.path) {
+                    Ok(b) => {
+                        c.push(
+                            super::chat::Kind::Info,
+                            format!("backed up {} → {}", g.path, b.display()),
+                        );
+                        c.watch(&g.path, b);
+                    }
+                    Err(e) => {
+                        // No backup, no write.
+                        c.requests.retain(|r| r != &g);
+                        c.push(
+                            super::chat::Kind::Err,
+                            format!("couldn't back up {}: {e} (not granted)", g.path),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(text) = c.grant() {
+            self.ask_turn(AskTurn::Follow(text));
+        }
+    }
+
+    /// After Claude's turn: files it changed (granted, watched) go in the chat and the log.
+    fn chat_edits(&mut self) {
+        let Some(c) = self.chat.as_mut() else { return };
+        let key = c.ask.applying().map(|a| a.key.clone());
+        let changed = c.changed();
+        for (path, b, before, after) in &changed {
+            c.push(
+                super::chat::Kind::Info,
+                format!(
+                    "✎ edited {path} ({before} → {after} lines) · backup {}",
+                    b.display()
+                ),
+            );
+        }
+        for (path, b, before, after) in changed {
+            let tags: Vec<String> = std::iter::once(format!("file:{path}"))
+                .chain(key.as_ref().map(|k| format!("apply:{k}")))
+                .collect();
+            self.log_event(crate::maint::log::LogEntry::event(
+                crate::maint::LOCAL,
+                "edit",
+                "edit",
+                true,
+                &format!(
+                    "Claude edited {path} ({before} → {after} lines). Backup: {}",
+                    b.display()
+                ),
+                &tags,
+                jiff::Timestamp::now(),
+            ));
+        }
+    }
+
     /// Something done outside a workflow (a job, a reboot, a fix, a toolbox upgrade): into
     /// the maintenance log.
     fn log_event(&mut self, e: crate::maint::log::LogEntry) {

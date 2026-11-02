@@ -1601,7 +1601,7 @@ fn the_writer_profile_adds_the_web_and_only_the_notes() {
             .any(|a| a == "Read" || a.starts_with("Bash(ssh"))
     );
     assert_eq!(
-        super::maint::read_rules(&["/srv/notes.md".into()]),
+        sentry_core::maint::read_rules(&["/srv/notes.md".into()]),
         ["Read(//srv/notes.md)"]
     );
 }
@@ -2152,5 +2152,56 @@ fn review_suggestions_become_maintenance_tasks() {
     assert!(
         !s.contains("soon     Test a backup restore"),
         "done for 180 days: {s}"
+    );
+}
+
+#[test]
+fn files_claude_was_refused_can_be_granted_for_the_conversation() {
+    use sentry_core::claude::{Ask, Event};
+    use sentry_core::tui::chat::Chat;
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    let notes = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+    let key_file = format!("{}/.ssh/id_ed25519", sentry_core::paths::home().display());
+    let mut c = Chat::new(Ask::new("myserver", "ctx", "q"));
+    c.begin_turn("q", 1, 1);
+    for (tool, path, how) in [
+        ("Read", &notes, "read from"),
+        ("Read", &key_file, "read from"),
+    ] {
+        c.on_event(Event::ToolUse {
+            name: tool.into(),
+            input: path.clone(),
+        });
+        c.on_event(Event::ToolResult {
+            summary: format!("denied: Claude requested permissions to {how} {path}, but no."),
+            is_error: true,
+        });
+    }
+    c.on_exit(0);
+    a.open_chat(c);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("g grants it") && s.contains("grant files"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('g'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Grant files to Claude") && s.contains("Cargo.toml"),
+        "{s}"
+    );
+    assert!(s.contains("not granted: keys and"), "{s}");
+    key(&mut a, KeyCode::Char('y'));
+    // The grantable one is granted, and Claude is told (offline: nothing is sent).
+    let c = a.chat_for_test().expect("chat");
+    assert_eq!(c.grants.len(), 1);
+    assert!(c.grants[0].path.ends_with("Cargo.toml"));
+    assert!(
+        c.entries
+            .iter()
+            .any(|(_, t)| t.starts_with("I've granted you: read")),
+        "{:?}",
+        c.entries
     );
 }

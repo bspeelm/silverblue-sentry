@@ -1525,3 +1525,40 @@ fn an_apply_chat_logs_what_you_run_and_hears_how_the_run_goes() {
         "{offer}"
     );
 }
+
+#[test]
+fn g_shows_the_files_claude_asked_for() {
+    use crate::claude::{Ask, Event};
+    use crate::tui::chat::Chat;
+    let mut a = app(ScreenId::Maint);
+    let file = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+    let mut c = Chat::new(Ask::new("s", "ctx", "q"));
+    c.begin_turn("q", 1, 1);
+    c.on_event(Event::ToolUse {
+        name: "Edit".into(),
+        input: "/etc/hosts".into(),
+    });
+    c.on_event(Event::ToolResult {
+        summary: "denied: Claude requested permissions to write to /etc/hosts, but no.".into(),
+        is_error: true,
+    });
+    c.on_event(Event::ToolUse {
+        name: "Read".into(),
+        input: file.clone(),
+    });
+    c.on_event(Event::ToolResult {
+        summary: format!("denied: Claude requested permissions to read from {file}, but no."),
+        is_error: true,
+    });
+    c.on_exit(0);
+    a.set_chat(c);
+    key(&mut a, KeyCode::Char('g'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Grant files to Claude"), "{s}");
+    // The real path (in a toolbox /etc/hosts is /run/host/etc/hosts): outside home, refused.
+    assert!(
+        s.contains("etc/hosts") && s.contains("not granted: only files in your home"),
+        "{s}"
+    );
+    assert!(s.contains("Cargo.toml"), "{s}");
+}

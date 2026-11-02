@@ -236,3 +236,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - When a workflow makes the change, Claude never proposes its commands: `w` in the chat starts the workflow (a plan's values when there's one) and the chat steps aside; a failed step or the run's end is offered to Claude (`s`). `d` marks a task or a by-hand plan done. Commands that change something are logged `kind = "apply"`, tagged `apply:<row key>` (never `task:`).
 - The key bar shows the selected row's keys (Enter named by what it does) and `c`, `v`, `R`; the rest is in `?`. Details say what Enter does once, without key hints; the update list is in Details only.
 
+## A26. Granting files to Claude (2026-11)
+- Chats may read the configured notes files (as plans and reviews do). Anything else Claude is refused shows in the chat; `g` lists the files (read or edit) and `y` grants them for the rest of that conversation, by exact path, then tells Claude to carry on.
+- Edits: only files under $HOME; never `~/.ssh`, `~/.gnupg`, `~/.local/share/keyrings`, `~/.password-store`. The file is backed up first (`~/.cache/sentry/claude/backups/`); a change shows in the chat and is logged (`kind = "edit"`, `file:<path>`).
+- Commands are unchanged: Claude proposes, the user runs them behind a confirm box.
+
