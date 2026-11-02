@@ -141,7 +141,7 @@ Measured on the host: the open dashboard uses about 0.8% of one core including c
 Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/claude-code) about the selected thing: a finding, a listener, a process, a container, a Flatpak, a pending update, a cleanup item, a failed workflow step, or the dashboard as a whole. It uses the `claude` CLI and the login you already have, so there's no API key and nothing to configure. If `claude` isn't installed, `A` just says so.
 
 - **You see what's sent.** Before every question, a screen shows the exact text that will go to Anthropic. `y` sends it.
-- **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. Claude Code refuses anything else, including `sudo` and any writes. The list is `ALLOWED` in `src/claude.rs`.
+- **Claude can investigate, read-only.** It may run a fixed allowlist of read-only commands (`ss`, `systemctl status`, `journalctl`, `rpm -q`, `rpm-ostree status`, `flatpak info`, `podman inspect`, `firewall-cmd --list-all`, …) and read `/etc`, `/proc` and `/usr/lib/systemd`. Claude Code refuses anything else, including `sudo` and any writes. The list is `ALLOWED` in `crates/sentry-core/src/claude.rs`.
 - **The answer streams into a chat pane.** You'll see the commands Claude ran and their results. Type a follow-up and press Enter to continue the same session. Esc while Claude is still answering hides the pane and lets it finish (the key bar says so; `A` brings it back); Esc on a finished answer closes it. Quitting sentry stops Claude.
 
 ### Fixing a finding with Claude (`Enter` on a finding)
@@ -251,7 +251,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 
 ## Development
 
-`make check` (build, tests, clippy, fmt). Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
+`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (what both programs share), `crates/sentry` and `crates/sentry-server`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
 
 ## Docs
 

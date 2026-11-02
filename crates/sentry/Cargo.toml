@@ -1,0 +1,34 @@
+[package]
+name = "sentry"
+description = "Daemon-free monitor & maintenance TUI for Fedora Silverblue"
+readme = "../../README.md"
+keywords = ["silverblue", "fedora", "rpm-ostree", "nvidia", "tui"]
+categories = ["command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+sentry-core.workspace = true
+ratatui.workspace = true
+sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+serde_ignored.workspace = true
+jiff.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+signal-hook.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+sentry-core = { workspace = true, features = ["testing"] }
+insta.workspace = true
