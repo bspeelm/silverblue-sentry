@@ -65,6 +65,13 @@ pub fn ignore(server: &str, key: &str) -> anyhow::Result<()> {
     save(server, &t)
 }
 
+/// Suggest it again (Records › Later, `u`).
+pub fn unignore(server: &str, key: &str) -> anyhow::Result<()> {
+    let mut t = load(server);
+    t.ignore.retain(|k| k != key);
+    save(server, &t)
+}
+
 /// Stop tracking one of sentry-server's own items (one from the YAML stays: edit it there).
 pub fn untrack(server: &str, id: &str) -> anyhow::Result<bool> {
     let mut t = load(server);

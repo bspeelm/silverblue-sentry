@@ -70,13 +70,9 @@ pub fn hints(v: &View) -> Hints {
             ("e", "edit toml"),
             ("r", "reload"),
             ("p", "plan with Claude"),
-            ("v", "maintenance log"),
+            ("v", "records"),
         ],
-        Some(s) if s.done() => vec![
-            ("Enter", "close"),
-            ("L", "step log"),
-            ("v", "maintenance log"),
-        ],
+        Some(s) if s.done() => vec![("Enter", "close"), ("L", "step log"), ("v", "records")],
         Some(s) => {
             // `l` is next-tab everywhere, so the log is `L`.
             let mut h = if failed(s) {

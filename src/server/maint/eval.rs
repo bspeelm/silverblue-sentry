@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::local::Local;
 use super::upstream::{self, Eol, Lookups, Release};
-use super::{State, version};
+use super::version;
 use crate::audit::{Finding, Sev};
 use crate::server::config::{MaintItem, Risk};
 
@@ -81,12 +81,12 @@ pub fn evaluate(
     items: &[MaintItem],
     local: &BTreeMap<String, Local>,
     lookups: Option<&Lookups>,
-    state: &State,
+    later: &crate::maint::later::Snoozes,
     today: jiff::civil::Date,
 ) -> Vec<Status> {
     items
         .iter()
-        .map(|it| one(it, local.get(&it.id), lookups, state, today))
+        .map(|it| one(it, local.get(&it.id), lookups, later, today))
         .collect()
 }
 
@@ -94,7 +94,7 @@ fn one(
     it: &MaintItem,
     l: Option<&Local>,
     lookups: Option<&Lookups>,
-    state: &State,
+    later: &crate::maint::later::Snoozes,
     today: jiff::civil::Date,
 ) -> Status {
     let l = l.cloned().unwrap_or_default();
@@ -103,7 +103,7 @@ fn one(
         risk: it.risk,
         pinned: l.pinned.clone(),
         running: l.running.clone(),
-        review_by: state.snooze.get(&it.id).copied().or(it.review_by),
+        review_by: later.get(&it.id).copied().or(it.review_by),
         note: l.note.clone(),
         ..Default::default()
     };
@@ -421,7 +421,7 @@ mod tests {
             &items,
             &local,
             Some(&lk),
-            &State::default(),
+            &Default::default(),
             d("2026-10-27"),
         );
         let web = &st[0];
@@ -441,11 +441,11 @@ mod tests {
     #[test]
     fn a_held_item_only_nags_once_its_review_is_due() {
         let (items, local, lk) = setup();
-        let ids = |today: &str, state: &State| -> Vec<String> {
-            let st = evaluate(&items, &local, Some(&lk), state, d(today));
+        let ids = |today: &str, later: &crate::maint::later::Snoozes| -> Vec<String> {
+            let st = evaluate(&items, &local, Some(&lk), later, d(today));
             findings(&st, &items).into_iter().map(|f| f.id).collect()
         };
-        let now = ids("2026-10-27", &State::default());
+        let now = ids("2026-10-27", &Default::default());
         assert!(now.contains(&"srv:maint:security:web".to_string()));
         assert!(now.contains(&"srv:maint:drift:web".to_string()));
         assert!(
@@ -458,12 +458,12 @@ mod tests {
         );
         assert!(now.contains(&"srv:maint:retire:legacy".to_string()));
         assert!(now.contains(&"srv:maint:eol:os".to_string()));
-        let later = ids("2027-02-01", &State::default());
+        let later = ids("2027-02-01", &Default::default());
         assert!(later.contains(&"srv:maint:review:web".to_string()));
         assert!(later.contains(&"srv:maint:behind:web".to_string()));
         // A snooze moves the review date.
-        let mut snoozed = State::default();
-        snoozed.snooze.insert("web".into(), d("2027-06-01"));
+        let mut snoozed = crate::maint::later::Snoozes::new();
+        snoozed.insert("web".into(), d("2027-06-01"));
         let s = ids("2027-02-01", &snoozed);
         assert!(!s.contains(&"srv:maint:review:web".to_string()));
     }

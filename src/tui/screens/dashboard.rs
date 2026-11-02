@@ -645,18 +645,14 @@ fn draw_status(
             String::new(),
         )),
     }
-    match v.d.job_runs.get() {
-        Some(runs) => {
-            let due = runs.due_jobs(v.cfg, now);
-            let names: Vec<&str> = due.iter().map(|j| j.name()).collect();
-            rows.push((
-                "jobs due",
-                due.len().to_string(),
-                if due.is_empty() { t.fg } else { t.yellow },
-                names.join(", "),
-            ));
-        }
-        None => rows.push(("jobs due", "—".into(), t.dim, String::new())),
+    {
+        let due = tasks_due(v, now);
+        rows.push((
+            "tasks due",
+            due.len().to_string(),
+            if due.is_empty() { t.fg } else { t.yellow },
+            due.join(", "),
+        ));
     }
     match v.wf.filter(|s| !s.done()) {
         Some(s) => rows.push((
@@ -703,7 +699,7 @@ fn draw_status(
                 "reboot" => (ScreenId::Maint, Some("reboot")),
                 "findings" => (ScreenId::Maint, Some("finding:")),
                 "failed units" => (ScreenId::Maint, Some("finding:unit-failed")),
-                "jobs due" => (ScreenId::Maint, Some("job:")),
+                "tasks due" => (ScreenId::Maint, Some("task:")),
                 "workflow" => (ScreenId::Upgrade, None),
                 "recorder" => (ScreenId::Hist, None),
                 _ => last, // continuation rows (kernel note) go where their parent goes
@@ -772,14 +768,10 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
             lines.push(format!("failed unit: {} ({})", f.unit, f.scope));
         }
     }
-    if let Some(rec) = d.job_runs.get() {
-        let due: Vec<&str> = rec
-            .due_jobs(v.cfg, jiff::Timestamp::now())
-            .iter()
-            .map(|j| j.name())
-            .collect();
+    {
+        let due = tasks_due(v, jiff::Timestamp::now());
         lines.push(format!(
-            "jobs due: {}",
+            "tasks due: {}",
             if due.is_empty() {
                 "none".into()
             } else {
@@ -821,4 +813,18 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
         ),
         "Anything here I should act on, and in what order?",
     ))
+}
+
+/// The titles of the tasks due (the jobs' cadences among them).
+fn tasks_due(v: &View, now: jiff::Timestamp) -> Vec<String> {
+    let all = super::maint::all_tasks(v);
+    let audited =
+        v.d.reports
+            .get()
+            .and_then(|r| r.last())
+            .map(|s| s.report.taken_at);
+    crate::maint::tasks::recs(&all, &v.d.maint_log, audited, now)
+        .into_iter()
+        .map(|r| r.title)
+        .collect()
 }

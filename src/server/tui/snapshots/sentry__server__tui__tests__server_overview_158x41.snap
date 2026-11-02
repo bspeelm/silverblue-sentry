@@ -24,7 +24,7 @@ expression: body(&s)
 │                                                                             ││ ● down: backup.service                                                      │
 │ SMART  sda ok 31°C   sdc asleep                                             ││ ● 1 failed unit(s)                                                          │
 │                                                                             ││ ● 1 of 3 containers not running · 1 unhealthy                               │
-│                                                                             ││ ● 7 open finding(s) (audit 1h ago)                                          │
+│                                                                             ││ ● 5 open finding(s) (audit 1h ago)                                          │
 │                                                                             ││                                                                             │
 │                                                                             ││                                                                             │
 │                                                                             ││                                                                             │

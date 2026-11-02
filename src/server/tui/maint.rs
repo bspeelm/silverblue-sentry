@@ -19,6 +19,7 @@ use crate::server::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::server::maint::recommend::{self, Action, Level, Rec};
 use crate::server::maint::{self, local};
 use crate::server::remote::Remote;
+use crate::tui::maintlist::{self, Dismiss, Verbs};
 use crate::tui::widgets::{self, TableSpec, inner, panel};
 
 /// Items in table order (the config's), filtered.
@@ -49,16 +50,20 @@ pub fn recs(v: &View) -> Vec<Rec> {
         found: &v.s.maint_found,
         apt: v.s.apt.value.as_ref(),
         log: &v.s.log,
-        cadence: &v.cfg.maintenance.cadence,
         workflows: &v.s.workflows,
-        snooze: &v.s.maint_state.snooze,
+        snooze: &v.s.later,
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
-        tasks: &v.s.tasks,
+        tasks: &all_tasks(v),
     });
     r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
     r
+}
+
+/// Every task that applies: `tasks.toml`'s and `maintenance.cadence`.
+pub fn all_tasks(v: &View) -> Vec<crate::maint::tasks::Task> {
+    crate::maint::tasks::effective(&v.s.tasks, maint::cadence_tasks(v.cfg, &v.s.workflows))
 }
 
 /// The latest audit report, when there is one.
@@ -141,11 +146,43 @@ pub fn row_of(v: &View, id: &str) -> Option<usize> {
 }
 
 fn level_color(v: &View, l: Level) -> Color {
-    match l {
-        Level::Now => v.t.red,
-        Level::Soon => v.t.yellow,
-        Level::Routine => v.t.cyan,
-        Level::Tidy => v.t.dim,
+    maintlist::level_color(v.t, l)
+}
+
+/// The keys the selected row takes besides Enter (the key bar shows only these).
+pub fn verbs(v: &View) -> Verbs {
+    let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
+    let item = |id: &str| Verbs {
+        plan: true,
+        planned: planned(id),
+        dismiss: v.plans.contains_key(id).then_some(Dismiss::DropPlan),
+        ..Default::default()
+    };
+    match pick(v) {
+        None => Verbs::default(),
+        Some(Sel::Item(s, _)) => item(&s.id),
+        Some(Sel::Rec(r)) => match &r.action {
+            Action::Track(_) => Verbs {
+                track: true,
+                dismiss: Some(Dismiss::Ignore),
+                ..Default::default()
+            },
+            Action::Remove(_) => Verbs {
+                dismiss: Some(Dismiss::Untrack),
+                ..Default::default()
+            },
+            Action::Fix(_) => Verbs {
+                dismiss: Some(Dismiss::Expected),
+                ..Default::default()
+            },
+            Action::Task(_) => Verbs {
+                done: true,
+                every: true,
+                dismiss: Some(Dismiss::Remove),
+                ..Default::default()
+            },
+            _ => r.item.as_deref().map_or_else(Verbs::default, item),
+        },
     }
 }
 
@@ -160,7 +197,7 @@ fn action_words(a: &Action) -> String {
         Action::Look(_) => "Enter: go to the item".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it · x: it's expected here".into(),
         Action::Audit => "Enter (or c): audit the server now".into(),
-        Action::Task(_) => "A task you took from a review · d: done · x: remove it".into(),
+        Action::Task(_) => "A task: Enter does it · d: done · e: every · x: remove it".into(),
     }
 }
 
@@ -171,6 +208,7 @@ fn task_words(task: &crate::maint::tasks::Task) -> String {
         Do::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
         Do::Plan(id) => format!("Enter: Claude plans {id}; it's done when {id}'s change is."),
         Do::Audit => "Enter audits now; it's done with the audit.".into(),
+        Do::Job(j) => format!("{j} is one of sentry's jobs (a desktop's): d marks it done."),
         Do::ByHand => "By hand: Enter shows the steps, then marks it done.".into(),
     }
 }
@@ -398,15 +436,18 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 l.extend(super::tabs::updates_lines(v));
             }
             if let Action::Task(id) = &x.action
-                && let Some(task) = v.s.tasks.iter().find(|t| &t.id == id)
+                && let Some(task) = all_tasks(v).into_iter().find(|t| &t.id == id)
             {
                 l.push(Line::raw(""));
-                l.push(Line::styled(task_words(task), t.fg()));
+                l.push(Line::styled(task_words(&task), t.fg()));
                 l.push(Line::styled(
                     format!(
-                        "{} · from the review {}",
+                        "{} · {}",
                         task.when(),
-                        task.review.as_deref().unwrap_or("?")
+                        match &task.review {
+                            Some(r) => format!("from the review {r}"),
+                            None => format!("from {}", task.source.word()),
+                        }
                     ),
                     t.dim(),
                 ));
@@ -441,65 +482,34 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
 
 fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
     let t = v.t;
-    let b = panel(
-        t,
-        "Recommended",
-        if v.s.maint.value.is_none() {
-            String::new()
-        } else {
-            match &v.s.review {
-                Some(r) => format!(
-                    "{} · last review {}: R opens it",
-                    recs.len(),
-                    r.head
-                        .updated
-                        .or(r.head.created)
-                        .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
-                ),
-                None => format!("{} · R reviews it all with Claude", recs.len()),
-            }
-        },
-    );
-    let r = inner(&b, area);
-    f.render_widget(b, area);
-    if v.s.maint.value.is_none() {
-        f.render_widget(Paragraph::new(Line::styled("reading…", t.dim())), r);
-        return;
-    }
-    if recs.is_empty() {
-        f.render_widget(
-            Paragraph::new(Line::styled(
-                "✓ nothing to maintain right now",
-                t.s(t.green),
-            )),
-            r,
-        );
-        return;
-    }
-    let rows: Vec<Row> = recs
-        .iter()
-        .map(|x| {
-            Row::new(vec![
-                Cell::from(x.level.word()).style(t.s(level_color(v, x.level))),
-                Cell::from(x.title.clone()).style(t.fg()),
-                Cell::from(x.why.clone()).style(t.dim()),
-            ])
-        })
-        .collect();
-    widgets::table(
+    let note = if v.s.maint.value.is_none() {
+        String::new()
+    } else {
+        match &v.s.review {
+            Some(r) => format!(
+                "{} · last review {}: R opens it",
+                recs.len(),
+                r.head
+                    .updated
+                    .or(r.head.created)
+                    .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
+            ),
+            None => format!("{} · R reviews it all with Claude", recs.len()),
+        }
+    };
+    let empty = if v.s.maint.value.is_none() {
+        ("reading…", t.dim())
+    } else {
+        ("✓ nothing to maintain right now", t.s(t.green))
+    };
+    maintlist::draw(
         f,
-        r,
+        area,
         t,
-        TableSpec {
-            header: vec!["", "What", "Why"],
-            widths: vec![
-                Constraint::Length(8),
-                Constraint::Fill(3),
-                Constraint::Fill(4),
-            ],
-            rows,
-            selected: (v.cur < recs.len()).then_some(v.cur),
-        },
+        note,
+        recs,
+        (v.cur < recs.len()).then_some(v.cur),
+        empty,
     );
 }
 
@@ -725,6 +735,12 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         ],
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
+        // Where it's written: the config (a cadence) or tasks.toml.
+        ('e', Action::Task(id)) => match all_tasks(v).iter().find(|t| &t.id == id) {
+            Some(t) if t.source == crate::maint::tasks::Source::Config => vec![Effect::EditConfig],
+            Some(_) => vec![Effect::EditTasks],
+            None => Vec::new(),
+        },
         ('x', Action::Task(id)) => vec![Effect::Confirm(Modal {
             title: "Remove this task".into(),
             color: v.t.yellow,
@@ -765,10 +781,10 @@ fn dismiss(v: &View, title: &str, what: &str, how: &str, e: Effect) -> Vec<Effec
 }
 
 /// Enter on a task: its workflow, the item's plan, the audit, or (by hand) its steps.
-fn task_enter(v: &View, id: &str) -> Vec<Effect> {
+pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     use crate::maint::tasks::Do;
     let t = v.t;
-    let Some(task) = v.s.tasks.iter().find(|x| x.id == id) else {
+    let Some(task) = all_tasks(v).into_iter().find(|x| x.id == id) else {
         return Vec::new();
     };
     match task.action() {
@@ -781,6 +797,9 @@ fn task_enter(v: &View, id: &str) -> Vec<Effect> {
             Effect::Fetch(super::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
+        Do::Job(j) => vec![Effect::Toast(format!(
+            "{j} is a job of sentry's (on a desktop), not the server's: d marks it done"
+        ))],
         Do::ByHand => {
             let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
             if task.steps.trim().is_empty() {

@@ -1,15 +1,15 @@
 //! Maintenance (`6`): what to do on this machine next, ranked (`maint::local`): the audit's
-//! findings, updates and a staged reboot, jobs due by their cadence, space to reclaim, a
-//! workflow left in progress, plans ready to apply. Beside it the deployments and the
-//! selected recommendation's details. The audit report and the jobs open as views here
-//! (`F`, `J`); Esc comes back. Cleanup has its own screen (`7`, or `C` here).
+//! findings, updates and a staged reboot, tasks due (the jobs' cadences among them), a failed
+//! job, space to reclaim, a workflow left in progress, plans ready to apply. Beside it the
+//! deployments and the selected recommendation's details. The audit report opens as a view
+//! here (`F`); Esc comes back. Cleanup has its own screen (`7`, or `C` here).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
-use super::{Cursor, Hints, View, audit, jobs, updates};
+use super::{Cursor, Hints, View, audit, updates};
 use crate::audit::Finding;
 use crate::maint::Level;
 use crate::maint::local::{self, Action as Do, Inputs, Rec, RunInfo};
@@ -17,22 +17,20 @@ use crate::maint::tasks::{Do as TaskDo, Task};
 use crate::tui::app::{Choice, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
-use crate::tui::theme::Theme;
-use crate::tui::widgets::{TableSpec, inner, panel, placeholder, table, wrap};
+use crate::tui::maintlist::{self, Dismiss, Verbs};
+use crate::tui::widgets::{inner, panel, wrap};
 
 /// A view opened inside Maintenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sub {
     /// The audit report: findings, the diff against the previous one, `[`/`]` to browse.
     Report,
-    Jobs,
 }
 
 impl Sub {
     fn title(self) -> &'static str {
         match self {
             Sub::Report => "Audit report",
-            Sub::Jobs => "Jobs",
         }
     }
 }
@@ -46,13 +44,12 @@ pub struct Maint {
     pub find: Option<String>,
     pub view: Option<Sub>,
     pub audit: audit::Audit,
-    pub jobs: jobs::Jobs,
 }
 
 pub fn on_enter(v: &View) -> Vec<Effect> {
     let mut e = vec![
         Effect::Fetch(Fetch::Reports),
-        Effect::Fetch(Fetch::Jobs),
+        Effect::Fetch(Fetch::Log),
         Effect::Fetch(Fetch::Ostree),
         Effect::Fetch(Fetch::Disks),
     ];
@@ -67,33 +64,44 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
     if let Some(s) = m.view {
         let mut h = match s {
             Sub::Report => audit::hints(v),
-            Sub::Jobs => jobs::hints(),
         };
         h.insert(0, ("Esc", "back"));
         return h;
     }
-    let mut h = vec![("j/k", "select"), ("Enter", "do it")];
-    if let Some(r) = m.selected(v) {
-        if matches!(r.action, Do::Fix(_)) {
-            h.push(("x", "expected"));
-        }
-        if matches!(r.action, Do::Run(_) | Do::OpenPlan(_)) {
-            h.push(("p", "plan"));
-        }
-        if matches!(r.action, Do::Task(_)) {
-            h.extend([("d", "done"), ("x", "remove")]);
-        }
-        h.push(("z", "later"));
-    }
+    let mut h = maintlist::hints(&m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default());
+    // Narrow: the bar drops these from the end.
     h.extend([
         ("c", "check all"),
-        ("F", "report"),
-        ("J", "jobs"),
-        ("C", "cleanup"),
         ("R", "review"),
-        ("v", "log"),
+        ("v", "records"),
+        ("F", "report"),
+        ("C", "cleanup"),
+        ("w", "workflows"),
     ]);
     h
+}
+
+/// The keys a row takes besides Enter.
+pub fn verbs(v: &View, r: &Rec) -> Verbs {
+    match &r.action {
+        Do::Fix(_) => Verbs {
+            dismiss: Some(Dismiss::Expected),
+            like: true,
+            ..Default::default()
+        },
+        Do::Run(wf) | Do::OpenPlan(wf) => Verbs {
+            plan: true,
+            planned: v.d.plans.contains_key(wf),
+            ..Default::default()
+        },
+        Do::Task(_) => Verbs {
+            done: true,
+            every: true,
+            dismiss: Some(Dismiss::Remove),
+            ..Default::default()
+        },
+        _ => Verbs::default(),
+    }
 }
 
 /// The recommendations, from what's loaded.
@@ -132,13 +140,12 @@ pub fn recs(v: &View) -> Vec<Rec> {
             .tbx_updates
             .get()
             .map(|c| crate::collectors::toolbox::total(&c.data)),
-        jobs: v.d.job_runs.get(),
         reclaim,
         disk_tight,
         run,
         plans: &v.d.plans,
         snoozes: &v.d.snoozes,
-        tasks: &v.d.tasks,
+        tasks: &all_tasks(v),
         log: &v.d.maint_log,
     })
     .into_iter()
@@ -146,9 +153,14 @@ pub fn recs(v: &View) -> Vec<Rec> {
     .collect()
 }
 
+/// Every task that applies: `tasks.toml`'s and the jobs' cadences.
+pub fn all_tasks(v: &View) -> Vec<Task> {
+    crate::maint::tasks::effective(&v.d.tasks, crate::jobs::state::tasks(v.cfg))
+}
+
 /// The task behind a `Task` recommendation.
-fn task<'a>(v: &View<'a>, id: &str) -> Option<&'a Task> {
-    v.d.tasks.iter().find(|t| t.id == id)
+fn task(v: &View, id: &str) -> Option<Task> {
+    all_tasks(v).into_iter().find(|t| t.id == id)
 }
 
 /// The finding behind a `Fix` recommendation, from the newest report.
@@ -169,14 +181,7 @@ pub fn badge(v: &View) -> Option<(usize, Level)> {
     Some((urgent.len(), urgent.first()?.level))
 }
 
-pub fn level_color(t: &Theme, l: Level) -> ratatui::style::Color {
-    match l {
-        Level::Now => t.red,
-        Level::Soon => t.yellow,
-        Level::Routine => t.cyan,
-        Level::Tidy => t.dim,
-    }
-}
+pub use crate::tui::maintlist::level_color;
 
 /// Check everything: audit, OS/Flatpak/toolbox updates, and what cleanup could free.
 pub fn check_all() -> Vec<Effect> {
@@ -229,7 +234,6 @@ impl Maint {
             }
             return match s {
                 Sub::Report => self.audit.handle(a, v),
-                Sub::Jobs => self.jobs.handle(a, v),
             };
         }
         let recs = recs(v);
@@ -248,7 +252,7 @@ impl Maint {
                 return e;
             }
             Action::Refresh => {
-                return [Fetch::Reports, Fetch::Jobs, Fetch::Ostree, Fetch::Disks]
+                return [Fetch::Reports, Fetch::Log, Fetch::Ostree, Fetch::Disks]
                     .into_iter()
                     .map(Effect::Fetch)
                     .collect();
@@ -258,11 +262,8 @@ impl Maint {
                 self.view = Some(Sub::Report);
                 return Vec::new();
             }
-            Action::Char('J') => {
-                self.view = Some(Sub::Jobs);
-                return Vec::new();
-            }
             Action::Char('C') => return vec![Effect::Goto(crate::tui::ScreenId::Clean)],
+            Action::Char('w') => return vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Action::Char('v') => return vec![Effect::LogOpen],
             Action::Char('R') => return vec![Effect::ReviewOpen],
             _ => {}
@@ -281,10 +282,19 @@ impl Maint {
                 )],
             },
             Action::Char('d') => match &r.action {
-                Do::Task(id) => vec![Effect::Prompt(
-                    crate::tui::app::Prompt::TaskDone(id.clone()),
-                    String::new(),
-                )],
+                Do::Task(id) => vec![Effect::TaskDone(id.clone())],
+                _ => Vec::new(),
+            },
+            Action::Char('e') => match &r.action {
+                Do::Task(id) => {
+                    let now = task(v, id)
+                        .and_then(|t| t.every)
+                        .map_or(String::new(), |d| d.to_string());
+                    vec![Effect::Prompt(
+                        crate::tui::app::Prompt::TaskEvery(id.clone()),
+                        now,
+                    )]
+                }
                 _ => Vec::new(),
             },
             Action::Char('x') => match &r.action {
@@ -393,62 +403,41 @@ impl Maint {
                     ],
                     yes: Some((
                         "reboot".into(),
-                        vec![Effect::Run(RunSpec {
-                            title: "reboot".into(),
-                            cmd,
-                            queue: Vec::new(),
-                            then: Vec::new(),
-                            ok_toast: "rebooting…".into(),
-                        })],
+                        vec![
+                            // Logged first: after the reboot there's no one to write it.
+                            Effect::LogEvent(Box::new(crate::maint::log::LogEntry::event(
+                                crate::maint::LOCAL,
+                                "reboot",
+                                "reboot",
+                                true,
+                                &r.why,
+                                &[],
+                                jiff::Timestamp::now(),
+                            ))),
+                            Effect::Run(RunSpec {
+                                title: "reboot".into(),
+                                cmd,
+                                queue: Vec::new(),
+                                then: Vec::new(),
+                                ok_toast: "rebooting…".into(),
+                                log: None,
+                            }),
+                        ],
                     )),
                 })]
             }
-            Do::Cleanup => vec![Effect::Goto(crate::tui::ScreenId::Clean)],
-            Do::Jobs(j) => {
-                self.view = Some(Sub::Jobs);
-                self.jobs.cur.sel = crate::jobs::JobId::ALL
-                    .iter()
-                    .position(|x| x == j)
-                    .unwrap_or(0);
-                vec![Effect::Fetch(Fetch::Jobs)]
-            }
+            // A cleanup job that failed: Cleanup, with that job's items selected.
+            Do::Cleanup => match r
+                .key
+                .strip_prefix("job:")
+                .and_then(crate::jobs::JobId::from_name)
+            {
+                Some(j) => vec![Effect::CleanupFocus(j)],
+                None => vec![Effect::Goto(crate::tui::ScreenId::Clean)],
+            },
             Do::OpenRun => vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Do::OpenPlan(wf) => vec![Effect::PlanOpen(wf.clone())],
-            Do::Task(id) => {
-                let Some(task) = task(v, id) else {
-                    return Vec::new();
-                };
-                match task.action() {
-                    TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
-                    TaskDo::Audit => vec![audit::audit_run()],
-                    // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
-                    TaskDo::ByHand | TaskDo::Plan(_) => {
-                        let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
-                        if task.steps.trim().is_empty() {
-                            lines.push(Line::styled("(no steps given: see the review)", t.dim()));
-                        } else {
-                            lines.extend(crate::tui::docview::markdown(t, &task.steps));
-                        }
-                        lines.push(Line::raw(""));
-                        lines.push(Line::styled(
-                            "Do it yourself, then mark it done: it's logged, and leaves the list.",
-                            t.dim(),
-                        ));
-                        vec![Effect::Confirm(Modal {
-                            title: task.title.clone(),
-                            color: t.cyan,
-                            lines,
-                            yes: Some((
-                                "mark done".into(),
-                                vec![Effect::Prompt(
-                                    crate::tui::app::Prompt::TaskDone(id.clone()),
-                                    String::new(),
-                                )],
-                            )),
-                        })]
-                    }
-                }
-            }
+            Do::Task(id) => task_effects(v, id),
         }
     }
 
@@ -466,7 +455,6 @@ impl Maint {
             );
             match s {
                 Sub::Report => self.audit.render(f, body, v),
-                Sub::Jobs => self.jobs.render(f, body, v),
             }
             return;
         }
@@ -502,45 +490,21 @@ impl Maint {
                     )
                 })
                 .unwrap_or_else(|| "no audit yet".into());
-        let b = panel(t, "Recommended", format!("{} · {audited}", recs.len()));
-        let r = inner(&b, area);
-        f.render_widget(b, area);
-        self.cur.page = r.height as usize;
-        if recs.is_empty() {
-            let msg = if v.filter.is_some() {
-                "nothing matches the filter"
-            } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Jobs) {
-                "reading…"
-            } else {
-                "✓ nothing to maintain right now · c checks everything again"
-            };
-            placeholder(f, r, t, &[(msg, t.dim())]);
-            return;
-        }
-        let rows: Vec<Row> = recs
-            .iter()
-            .map(|x| {
-                Row::new(vec![
-                    Cell::from(x.level.word()).style(t.s(level_color(t, x.level))),
-                    Cell::from(x.title.clone()).style(t.fg()),
-                    Cell::from(x.why.clone()).style(t.dim()),
-                ])
-            })
-            .collect();
-        table(
+        let empty = if v.filter.is_some() {
+            "nothing matches the filter"
+        } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Log) {
+            "reading…"
+        } else {
+            "✓ nothing to maintain right now · c checks everything again"
+        };
+        self.cur.page = maintlist::draw(
             f,
-            r,
+            area,
             t,
-            TableSpec {
-                header: vec!["", "What", "Why"],
-                widths: vec![
-                    Constraint::Length(8),
-                    Constraint::Fill(3),
-                    Constraint::Fill(4),
-                ],
-                rows,
-                selected: Some(self.cur.sel),
-            },
+            format!("{} · {audited}", recs.len()),
+            recs,
+            Some(self.cur.sel),
+            (empty, t.dim()),
         );
     }
 
@@ -548,7 +512,6 @@ impl Maint {
         if let Some(s) = self.view {
             return match s {
                 Sub::Report => self.audit.ask(v),
-                Sub::Jobs => self.jobs.ask(v),
             };
         }
         let r = self.selected(v);
@@ -559,7 +522,6 @@ impl Maint {
             }
             Some(Do::Run(wf)) if wf == local::UPDATE_WORKFLOW => updates::ask(v),
             Some(Do::Reboot) => updates::ask(v),
-            Some(Do::Jobs(_)) => self.jobs.ask(v),
             _ => {
                 let lines: Vec<String> = recs(v)
                     .iter()
@@ -626,12 +588,15 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
         Do::Task(id) => {
             if let Some(task) = task(v, id) {
                 l.push(Line::raw(""));
-                l.push(Line::styled(task_words(task), t.fg()));
+                l.push(Line::styled(task_words(&task), t.fg()));
                 l.push(Line::styled(
                     format!(
-                        "{} · from the review {}",
+                        "{} · {}",
                         task.when(),
-                        task.review.as_deref().unwrap_or("?")
+                        match &task.review {
+                            Some(r) => format!("from the review {r}"),
+                            None => format!("from {}", task.source.word()),
+                        }
                     ),
                     t.dim(),
                 ));
@@ -685,10 +650,9 @@ fn action_words(a: &Do) -> String {
         Do::Run(wf) => format!("Enter: start {wf} (it asks before each step)"),
         Do::Reboot => "Enter: reboot (asks first)".into(),
         Do::Cleanup => "Enter: open Cleanup (7): pick what goes, see it, confirm".into(),
-        Do::Jobs(j) => format!("Enter: the job {} (its plan, then run)", j.name()),
         Do::OpenRun => "Enter: open the run on Upgrade (0)".into(),
         Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),
-        Do::Task(_) => "A task you took from a review".into(),
+        Do::Task(_) => "A task: Enter does it".into(),
     }
 }
 
@@ -697,9 +661,67 @@ fn task_words(task: &Task) -> String {
     match task.action() {
         TaskDo::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
         TaskDo::Audit => "Enter audits now; it's done with the audit.".into(),
+        TaskDo::Job(j) if j.starts_with("cleanup") => {
+            "Enter opens Cleanup; it's done when a cleanup runs.".into()
+        }
+        TaskDo::Job(j) => format!("Enter runs {j}; it's done when it has run."),
         TaskDo::ByHand | TaskDo::Plan(_) => {
             "By hand: Enter shows the steps, then marks it done.".into()
         }
+    }
+}
+
+/// Enter on a task: what its `do` says (by hand: its steps, then mark it done).
+pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
+    let t = v.t;
+    let Some(task) = task(v, id) else {
+        return Vec::new();
+    };
+    match task.action() {
+        TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
+        TaskDo::Audit => vec![audit::audit_run()],
+        TaskDo::Job(j) => job_effects(&j),
+        // By hand (a plan of an item is sentry-server's): Claude's steps, then done.
+        TaskDo::ByHand | TaskDo::Plan(_) => {
+            let mut lines = vec![Line::styled(task.why.clone(), t.fg()), Line::raw("")];
+            if task.steps.trim().is_empty() {
+                lines.push(Line::styled("(no steps given: see the review)", t.dim()));
+            } else {
+                lines.extend(crate::tui::docview::markdown(t, &task.steps));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Do it yourself, then mark it done: it's logged, and leaves the list.",
+                t.dim(),
+            ));
+            vec![Effect::Confirm(Modal {
+                title: task.title.clone(),
+                color: t.cyan,
+                lines,
+                yes: Some(("mark done".into(), vec![Effect::TaskDone(id.to_string())])),
+            })]
+        }
+    }
+}
+
+/// Enter on one of the jobs: the check runs here, a cleanup opens its screen.
+pub fn job_effects(job: &str) -> Vec<Effect> {
+    match job {
+        "audit" => vec![audit::audit_run()],
+        "update-check" => {
+            let mut e = check_all();
+            e.retain(|x| matches!(x, Effect::Fetch(f) if *f != Fetch::Cleanup));
+            e.push(Effect::Toast(
+                "checking OS, Flatpak and toolbox updates…".into(),
+            ));
+            e
+        }
+        j if j.starts_with("cleanup") => vec![Effect::Goto(crate::tui::ScreenId::Clean)],
+        "update-apply" => vec![Effect::Toast(format!(
+            "updates go through {}: Enter on the updates row, or Upgrade (0)",
+            local::UPDATE_WORKFLOW
+        ))],
+        j => vec![Effect::Toast(format!("no job {j}"))],
     }
 }
 

@@ -65,9 +65,15 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
+    // Its own temporary name: two threads (a worker and the UI) may write the same file.
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
     std::fs::write(&tmp, contents)?;
-    std::fs::rename(tmp, path)
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// `44.20261002.0` from host os-release `VERSION="44.20261002.0 (Silverblue)"`.

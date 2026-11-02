@@ -1,7 +1,6 @@
 //! What to maintain next, and why: rules over each item's standing, the plans, what
-//! discovery found, pending updates and reboots, and how long ago each routine workflow last
-//! ran (the maintenance log against `maintenance.cadence`), and the tasks you took from a
-//! review that are due. Pure.
+//! discovery found, pending updates and reboots, the audit's findings, and the tasks due
+//! (`maintenance.cadence` among them, as `cadence-<workflow>` tasks). Pure.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +12,7 @@ use crate::server::collect::apt::Apt;
 use crate::server::config::{MaintItem, Risk};
 
 pub use crate::maint::Level;
+use crate::maint::rec::Target;
 
 /// What Enter does on a recommendation.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,15 +37,22 @@ pub enum Action {
     Task(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rec {
-    pub level: Level,
-    /// For `z` (look again later): the item's id, `wf:<name>`, or the discovery key.
-    pub key: String,
-    pub title: String,
-    pub why: String,
-    pub action: Action,
-    pub item: Option<String>,
+/// Keys (for `z`): the item's id, `wf:<name>`, `finding:<id>`, `audit`, `reboot`, the
+/// discovery key, `gone:<id>`, `task:<id>`.
+pub type Rec = crate::maint::rec::Rec<Action>;
+
+impl crate::maint::rec::Act for Action {
+    fn target(&self) -> Target {
+        match self {
+            Action::Run(wf) => Target::Workflow(wf.clone()),
+            Action::Plan(id) | Action::OpenPlan(id) => Target::Item(id.clone()),
+            Action::Audit => Target::Audit,
+            _ => Target::None,
+        }
+    }
+    fn task(id: String) -> Self {
+        Action::Task(id)
+    }
 }
 
 pub struct Inputs<'a> {
@@ -55,7 +62,6 @@ pub struct Inputs<'a> {
     pub found: &'a Found,
     pub apt: Option<&'a Apt>,
     pub log: &'a [LogEntry],
-    pub cadence: &'a BTreeMap<String, crate::config::Dur>,
     pub workflows: &'a [String],
     /// Recommendations put off until a date (`z`), by key.
     pub snooze: &'a BTreeMap<String, jiff::civil::Date>,
@@ -235,45 +241,6 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             ));
         }
     }
-    // Routine workflows by cadence, from the log.
-    let mut by_cadence: Vec<&str> = Vec::new();
-    for (wf, every) in i.cadence {
-        let last = i
-            .log
-            .iter()
-            .filter(|e| &e.head.workflow == wf && e.head.result == "done")
-            .filter_map(|e| e.head.ended)
-            .max();
-        let every_s = every.0.as_secs() as i64;
-        let due = match last {
-            None => true,
-            Some(t) => i.now.as_second() - t.as_second() >= every_s,
-        };
-        if due && i.workflows.contains(wf) {
-            by_cadence.push(wf);
-            let overdue_twice =
-                last.is_some_and(|t| i.now.as_second() - t.as_second() >= 2 * every_s);
-            out.push(Rec {
-                level: if overdue_twice {
-                    Level::Soon
-                } else {
-                    Level::Routine
-                },
-                key: format!("wf:{wf}"),
-                title: format!("Run {wf}"),
-                why: match last {
-                    Some(t) => format!(
-                        "Last done {} days ago; due every {} days.",
-                        days(i.now.as_second() - t.as_second()),
-                        days(every_s)
-                    ),
-                    None => format!("Never run here; due every {} days.", days(every_s)),
-                },
-                action: Action::Run(wf.clone()),
-                item: None,
-            });
-        }
-    }
     // Updates and reboots waiting.
     if let Some(a) = i.apt {
         let has = |w: &str| i.workflows.iter().any(|x| x == w);
@@ -283,9 +250,8 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             .iter()
             .filter(|p| p.kind == crate::server::collect::apt::Kind::Security)
             .count();
-        // Security updates can't wait for the routine run.
-        if !a.upgrades.is_empty() && has(apt_wf) && (security > 0 || !by_cadence.contains(&apt_wf))
-        {
+        // A routine run of the same workflow that's due takes this in (rec::finish).
+        if !a.upgrades.is_empty() && has(apt_wf) {
             out.push(Rec {
                 level: if security > 0 {
                     Level::Now
@@ -392,18 +358,6 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             item: Some(g.id.clone()),
         });
     }
-    for t in crate::maint::tasks::recs(i.tasks, i.log, i.audited, i.now) {
-        out.push(Rec {
-            level: t.level,
-            key: t.key,
-            title: t.title,
-            why: t.why,
-            action: Action::Task(t.id),
-            item: t.item,
-        });
-    }
-    // Put off with z.
-    out.retain(|r| i.snooze.get(&r.key).is_none_or(|d| *d <= today));
     let risk = |r: &Rec| {
         r.item
             .as_deref()
@@ -416,7 +370,17 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             .then(risk(b).cmp(&risk(a)))
             .then(a.title.cmp(&b.title))
     });
-    out
+    crate::maint::rec::finish(
+        out,
+        &crate::maint::rec::Tail {
+            tasks: i.tasks,
+            log: i.log,
+            audited: i.audited,
+            now: i.now,
+            snooze: i.snooze,
+            today,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -481,8 +445,9 @@ mod tests {
                 why: "no container old any more".into(),
             }],
         };
-        let mut cadence = BTreeMap::new();
-        cadence.insert(
+        // maintenance.cadence: a recurring task.
+        let mut cfg = crate::server::config::Server::default();
+        cfg.maintenance.cadence.insert(
             "apt-maintenance".to_string(),
             crate::config::Dur::secs(30 * 86_400),
         );
@@ -494,6 +459,7 @@ mod tests {
             .unwrap(),
         ];
         let workflows = vec!["apt-maintenance".to_string(), "compose-bump".to_string()];
+        let cadence = crate::server::maint::cadence_tasks(&cfg, &workflows);
         let snooze = BTreeMap::new();
         let finding = |id: &str, sev, msg: &str| crate::audit::Finding {
             id: id.into(),
@@ -529,13 +495,12 @@ mod tests {
             found: &found,
             apt: None,
             log: &log,
-            cadence: &cadence,
             workflows: &workflows,
             snooze: &snooze,
             now,
             findings: &findings,
             audited: Some(now),
-            tasks: &[],
+            tasks: &cadence,
         };
         let r = recommend(&inputs);
         let got: Vec<(Level, &str)> = r.iter().map(|x| (x.level, x.title.as_str())).collect();
@@ -549,14 +514,19 @@ mod tests {
                     Level::Soon,
                     "engine: held, but newer releases fix security issues"
                 ),
-                (Level::Routine, "Run apt-maintenance"),
                 (Level::Routine, "db: 1.0 → 1.2 (1 newer)"),
+                (Level::Routine, "Run apt-maintenance"),
                 (Level::Tidy, "Track ui"),
                 (Level::Tidy, "old is gone"),
                 (Level::Tidy, "sshd: 3 banned"),
             ]
         );
-        assert_eq!(r[4].why, "Last done 37 days ago; due every 30 days.");
+        assert_eq!(r[5].key, "task:cadence-apt-maintenance");
+        assert!(
+            r[5].why.ends_with("(every 30d; last done 2026-09-20)"),
+            "{}",
+            r[5].why
+        );
         assert_eq!(r[0].action, Action::OpenPlan("planned".into()));
         assert_eq!(
             r[1].action,
@@ -574,7 +544,7 @@ mod tests {
         // z: put off until a date.
         let mut snooze = BTreeMap::new();
         snooze.insert(
-            "wf:apt-maintenance".to_string(),
+            "task:cadence-apt-maintenance".to_string(),
             jiff::civil::date(2026, 11, 20),
         );
         let r = recommend(&Inputs {
@@ -594,6 +564,8 @@ mod tests {
             steps: String::new(),
             added: Some("2026-10-20T00:00:00Z".parse().unwrap()),
             review: None,
+            off: false,
+            source: Default::default(),
         }];
         let r = recommend(&Inputs {
             tasks: &tasks,
@@ -603,5 +575,54 @@ mod tests {
         assert_eq!(t.action, Action::Task("web-next".into()));
         assert_eq!(t.item.as_deref(), Some("web"));
         assert_eq!(t.level, Level::Now);
+        // The rule about the same item is folded into the task's row.
+        assert!(
+            t.why.contains("also: web: security fix upstream"),
+            "{}",
+            t.why
+        );
+        assert!(!r.iter().any(|x| x.title.starts_with("web: security fix")));
+    }
+
+    #[test]
+    fn a_due_cadence_run_takes_in_the_updates_and_keeps_their_urgency() {
+        let apt = crate::server::collect::apt::parse(&crate::server::collect::fixture("apt.txt"));
+        let mut cfg = crate::server::config::Server::default();
+        cfg.maintenance.cadence.insert(
+            "apt-maintenance".to_string(),
+            crate::config::Dur::secs(30 * 86_400),
+        );
+        let workflows = vec!["apt-maintenance".to_string()];
+        let tasks = crate::server::maint::cadence_tasks(&cfg, &workflows);
+        let (snooze, plans) = (BTreeMap::new(), BTreeMap::new());
+        let now: jiff::Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
+        let i = Inputs {
+            items: &[],
+            statuses: &[],
+            plans: &plans,
+            found: &Found::default(),
+            apt: Some(&apt),
+            log: &[],
+            workflows: &workflows,
+            snooze: &snooze,
+            now,
+            findings: &[],
+            audited: Some(now),
+            tasks: &tasks,
+        };
+        let r = recommend(&i);
+        let apt_rows: Vec<&Rec> = r
+            .iter()
+            .filter(|x| x.title.contains("package update") || x.title == "Run apt-maintenance")
+            .collect();
+        assert_eq!(apt_rows.len(), 1, "{r:#?}");
+        assert_eq!(apt_rows[0].key, "task:cadence-apt-maintenance");
+        // The fixture has a security update: the routine run is now.
+        assert_eq!(apt_rows[0].level, Level::Now);
+        assert!(
+            apt_rows[0].why.contains("also: 4 package update(s)"),
+            "{}",
+            apt_rows[0].why
+        );
     }
 }

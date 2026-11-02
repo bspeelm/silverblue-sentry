@@ -90,6 +90,10 @@ pub enum Effect {
     TaskSkip(String),
     /// Take a task off `tasks.toml`.
     TaskRemove(String),
+    /// A task done by hand: logged now, then a note for it is asked.
+    TaskDone(String),
+    /// Into the maintenance log now (a reboot, before it happens).
+    LogEvent(Box<crate::maint::log::LogEntry>),
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
@@ -97,7 +101,8 @@ pub enum Effect {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Prompt {
-    Cadence(crate::jobs::JobId),
+    /// A task's cadence (its id): `30d`, `off`.
+    TaskEvery(String),
     /// One workflow var; `rest` are the vars still to ask, `vars` the values so far.
     WfVar {
         workflow: String,
@@ -112,14 +117,16 @@ pub enum Prompt {
     PlanNote(String),
     /// What to change in this workflow's plan.
     PlanRevise(String),
-    /// A task done by hand (its id): the note for its log entry.
-    TaskDone(String),
+    /// A task just logged as done: a note for its entry (optional).
+    TaskNote(Box<crate::maint::log::LogEntry>, String),
+    /// A note added to a log entry later (Records › Log, `n`).
+    LogAddNote(Box<crate::maint::log::LogEntry>),
 }
 
 impl Prompt {
     fn label(&self) -> String {
         match self {
-            Prompt::Cadence(j) => format!("cadence for {} (e.g. 30d, 7d, off): ", j.name()),
+            Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
             Prompt::WfVar { prompt, .. } => format!("{prompt}: "),
             Prompt::LogNote(e) => format!(
                 "{} {} · for the log, what to know next time (optional): ",
@@ -127,8 +134,9 @@ impl Prompt {
             ),
             Prompt::PlanNote(wf) => format!("plan {wf} · a note for Claude (optional): "),
             Prompt::PlanRevise(wf) => format!("revise the plan for {wf}: "),
-            Prompt::TaskDone(id) => {
-                format!("{id} done · for the log, how it went (optional; Esc cancels): ")
+            Prompt::LogAddNote(e) => format!("a note for {}: ", e.file_name()),
+            Prompt::TaskNote(_, title) => {
+                format!("{title}: done, logged · how it went, for the log (optional): ")
             }
         }
     }
@@ -203,6 +211,8 @@ pub struct RunSpec {
     /// Collectors to refresh once the command exits.
     pub then: Vec<Fetch>,
     pub ok_toast: String,
+    /// When it ends, a maintenance log entry: (kind, tags). Its result is the exit code.
+    pub log: Option<(String, Vec<String>)>,
 }
 
 pub type Modal = super::modal::Modal<Effect>;
@@ -217,6 +227,7 @@ struct RunPane {
     pid: Option<u32>,
     then: Vec<Fetch>,
     ok_toast: String,
+    log: Option<(String, Vec<String>)>,
     scroll: usize,
     queue: VecDeque<Cmd>,
 }
@@ -272,7 +283,8 @@ pub struct App {
     wf_logged: Option<std::path::PathBuf>,
     wf_from: Option<String>,
     /// The Log view, over the screen.
-    log_view: Option<super::docview::LogView>,
+    /// Records (`v`, `R`, `:log`): tasks, log, plans, reviews, what's put off.
+    rec_view: Option<super::records::Records>,
     /// Claude writing a plan or a review in the background.
     writer: Option<super::docview::Writer>,
     /// The Plan view (workflow, scroll) and the Review view (scroll), over the screen.
@@ -332,7 +344,7 @@ impl App {
             records: true,
             wf_logged: None,
             wf_from: None,
-            log_view: None,
+            rec_view: None,
             writer: None,
             plan_view: None,
             review_view: None,
@@ -449,7 +461,7 @@ impl App {
             records: false,
             wf_logged: None,
             wf_from: None,
-            log_view: None,
+            rec_view: None,
             writer: None,
             plan_view: None,
             review_view: None,
@@ -462,7 +474,7 @@ impl App {
     pub fn start(&mut self, now: Instant) {
         // State files only (cheap): the dashboard Status panel and tab badges need them.
         self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
-        self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
+        self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
         self.enter(self.screen, now);
     }
 
@@ -647,6 +659,10 @@ impl App {
                     self.toast(e.text());
                 }
                 self.data.apply(f, r);
+                // An update check is the update-check job: its run is in the log now.
+                if f == Fetch::OstreeCheck {
+                    self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
+                }
                 if let Fetch::Plan(job) = f
                     && let Some(p) = self.data.plan.take()
                     && self.modal.is_none()
@@ -785,6 +801,31 @@ impl App {
                 let code = run.done.map_or(code, |d| d.0);
                 run.pid = None;
                 let then = std::mem::take(&mut run.then);
+                let entry = run.log.take().map(|(kind, tags)| {
+                    let tail: Vec<&str> = run
+                        .lines
+                        .iter()
+                        .rev()
+                        .take(5)
+                        .map(|(l, _)| l.as_str())
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    crate::maint::log::LogEntry::event(
+                        crate::maint::LOCAL,
+                        &kind,
+                        &kind,
+                        code == 0,
+                        &format!(
+                            "{} (exit {code})\n\n```\n{}\n```",
+                            run.title,
+                            tail.join("\n")
+                        ),
+                        &tags,
+                        jiff::Timestamp::now(),
+                    )
+                });
                 let msg = if code == 0 {
                     run.ok_toast.clone()
                 } else {
@@ -792,6 +833,9 @@ impl App {
                 };
                 for f in then {
                     self.data.fetch(f, &self.cfg, &self.tx);
+                }
+                if let Some(e) = entry {
+                    self.log_event(e);
                 }
                 self.toast(msg);
             }
@@ -842,10 +886,23 @@ impl App {
             self.input_key(k, now);
             return;
         }
-        if let Some(lv) = self.log_view.as_mut() {
-            if !lv.key(k.code) {
-                self.log_view = None;
+        // Over Records, a plan or a review: a screen key goes there, `:` and `A` still work.
+        if self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some() {
+            match self.keys.resolve(&k) {
+                Some(Action::Screen(id)) => {
+                    self.close_docs();
+                    self.enter(id, now);
+                    return;
+                }
+                Some(Action::Command) => {
+                    self.input = Input::Command(String::new());
+                    return;
+                }
+                _ => {}
             }
+        }
+        if self.rec_view.is_some() {
+            self.records_key(k, now);
             return;
         }
         if self.plan_view.is_some() {
@@ -1208,6 +1265,26 @@ impl App {
 
     /// A chat command finished: audit again if it changed something, else offer the output.
     fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
+        // A command Claude proposed that changes something: the log keeps it.
+        if reaudit && !cmd.is_empty() {
+            let tags: Vec<String> = self
+                .chat
+                .as_ref()
+                .and_then(|c| c.ask.finding())
+                .map(|f| vec![format!("finding:{f}")])
+                .unwrap_or_default();
+            let tail: Vec<&str> = output.lines().rev().take(5).collect::<Vec<_>>();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            self.log_event(crate::maint::log::LogEntry::event(
+                crate::maint::LOCAL,
+                "fix",
+                "fix",
+                code == 0,
+                &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
+                &tags,
+                jiff::Timestamp::now(),
+            ));
+        }
         if reaudit {
             self.chat_job(
                 crate::tui::screens::sentry_cmd(&["job", "audit"]),
@@ -1304,7 +1381,7 @@ impl App {
 
     fn chat_audited(&mut self, cmd: String, code: i32, output: String, audit_ok: bool) {
         self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
-        self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
+        self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
         let Some(c) = self.chat.as_mut() else { return };
         let id = c.ask.finding().unwrap_or_default().to_string();
         let after = if !audit_ok {
@@ -1340,7 +1417,16 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        let hints = self.screens.hints(self.screen, &self.view());
+        let mut hints = self.screens.hints(self.screen, &self.view());
+        // Maintenance's list: every row key, not only the selected row's.
+        if self.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
+            let row = ["j/k", "Enter", "p", "P", "t", "d", "e", "x", "B", "z"];
+            hints = [("j/k", "select")]
+                .into_iter()
+                .chain(super::maintlist::GRAMMAR.iter().copied())
+                .chain(hints.into_iter().filter(|(k, _)| !row.contains(k)))
+                .collect();
+        }
         self.modal = Some(help_modal(&self.theme, self.screen.name(), &hints));
     }
 
@@ -1413,7 +1499,35 @@ impl App {
                 let w = super::docview::Writer::new(&wf, doc);
                 self.start_writer(w, super::plans::revise(text), session);
             }
-            Prompt::TaskDone(id) => self.task_done(&id, text),
+            Prompt::LogAddNote(_) if text.is_empty() => {}
+            Prompt::LogAddNote(old) => {
+                let mut new = (*old).clone();
+                new.add_note(text);
+                if self.records {
+                    if let Err(e) = crate::maint::log::write_replacing(&old, &new) {
+                        return self.toast(format!("couldn't write the note: {e}"));
+                    }
+                    self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
+                }
+                self.toast("noted in the maintenance log");
+                self.open_records(super::records::Section::Log);
+            }
+            Prompt::TaskNote(..) if text.is_empty() => {}
+            Prompt::TaskNote(old, title) => {
+                let new = crate::maint::log::LogEntry::task(
+                    crate::maint::LOCAL,
+                    old.head.item.as_deref().unwrap_or_default(),
+                    &title,
+                    Some(text),
+                );
+                if self.records {
+                    if let Err(e) = crate::maint::log::write_replacing(&old, &new) {
+                        return self.toast(format!("couldn't write the note: {e}"));
+                    }
+                    self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
+                }
+                self.toast("noted in the maintenance log (v opens it)");
+            }
             Prompt::LogNote(_) if text.is_empty() => {}
             Prompt::LogNote(_) => {
                 if self.wf.is_none() {
@@ -1431,22 +1545,31 @@ impl App {
                 }
                 self.toast("noted in the maintenance log (v opens it)");
             }
-            Prompt::Cadence(job) => {
-                use crate::jobs::state::{Every, set_every};
-                match Every::parse(text) {
-                    Ok(e) => match set_every(job, e) {
-                        Ok(()) => {
-                            self.toast(format!(
-                                "{} every {} (cadence.toml)",
-                                job.name(),
-                                e.label()
-                            ));
-                            self.data.fetch(Fetch::Jobs, &self.cfg, &self.tx);
-                        }
-                        Err(e) => self.toast(format!("cadence.toml: {e}")),
+            Prompt::TaskEvery(id) => {
+                let every = match text.trim() {
+                    "off" => None,
+                    d => match d.parse::<crate::config::Dur>() {
+                        Ok(d) => Some(d),
+                        Err(e) => return self.toast(e.to_string()),
                     },
-                    Err(e) => self.toast(e),
+                };
+                let all = crate::maint::tasks::effective(
+                    &self.data.tasks,
+                    crate::jobs::state::tasks(&self.cfg),
+                );
+                let Some(t) = all.iter().find(|t| t.id == id) else {
+                    return;
+                };
+                if self.records {
+                    if let Err(e) = crate::maint::tasks::set_every(crate::maint::LOCAL, t, every) {
+                        return self.toast(format!("tasks.toml: {e}"));
+                    }
+                    self.data.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
                 }
+                self.toast(match every {
+                    Some(d) => format!("{} every {d} (tasks.toml)", t.title),
+                    None => format!("{} is off (tasks.toml)", t.title),
+                });
             }
         }
     }
@@ -1457,14 +1580,18 @@ impl App {
             (Some("q" | "q!" | "quit" | "qa"), _) => self.quit = true,
             (Some("refresh" | "r"), _) => self.on_key(KeyEvent::from(KeyCode::Char('r')), now),
             (Some("help" | "h"), _) => self.show_help(),
+            // A job's plan, then a confirm, then it runs (as `sentry job <name>`).
             (Some("job"), Some(name)) => match crate::jobs::JobId::from_name(name) {
                 Some(j) => {
-                    self.open_maint_view(Sub::Jobs, now);
+                    self.enter(ScreenId::Maint, now);
                     self.data.fetch(Fetch::Plan(j), &self.cfg, &self.tx);
                 }
                 None => self.toast(format!("unknown job {name}")),
             },
-            (Some("job" | "jobs"), None) => self.open_maint_view(Sub::Jobs, now),
+            (Some("job" | "jobs"), None) => {
+                self.enter(ScreenId::Maint, now);
+                self.toast(":job <name> runs one; due jobs are tasks on Maintenance");
+            }
             (Some("audit"), None) => self.open_maint_view(Sub::Report, now),
             (Some("rollback"), None) => match self.data.ostree.get() {
                 Some(o) => {
@@ -1474,7 +1601,12 @@ impl App {
                 None => self.toast("rpm-ostree status isn't loaded yet"),
             },
             (Some("workflow" | "wf"), name) => self.workflow_command(name, now),
-            (Some("log"), None) => self.open_log(),
+            (Some("log"), None) => self.open_records(super::records::Section::Log),
+            (Some("records" | "rec"), None) => self.open_records(super::records::Section::Tasks),
+            (Some("tasks"), None) => self.open_records(super::records::Section::Tasks),
+            (Some("plans"), None) => self.open_records(super::records::Section::Plans),
+            (Some("reviews"), None) => self.open_records(super::records::Section::Reviews),
+            (Some("later"), None) => self.open_records(super::records::Section::Later),
             (Some(name), None) => match ScreenId::from_name(name) {
                 Some(id) => self.enter(id, now),
                 None => self.toast(format!("unknown command :{c}")),
@@ -1626,7 +1758,7 @@ impl App {
                 Effect::AskSend(turn) => self.ask_turn(turn),
                 Effect::Goto(id) => self.enter(id, now),
                 Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
-                Effect::LogOpen => self.open_log(),
+                Effect::LogOpen => self.open_records(super::records::Section::Log),
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
                     self.enter(ScreenId::Clean, now);
@@ -1641,12 +1773,13 @@ impl App {
                         .checked_add(jiff::Span::new().days(days))
                         .unwrap_or(today);
                     if self.records
-                        && let Err(e) = crate::maint::snooze::set(&key, until, today)
+                        && let Err(e) =
+                            crate::maint::later::set(crate::maint::LOCAL, &key, until, today)
                     {
                         self.toast(format!("couldn't save it: {e}"));
                     } else {
                         self.data.snoozes.insert(key, until);
-                        self.toast(format!("put off until {until} (maint.toml)"));
+                        self.toast(format!("put off until {until} (Records › Later)"));
                     }
                 }
                 Effect::PlanOpen(wf) => {
@@ -1691,9 +1824,12 @@ impl App {
                     self.plan_view = None;
                     self.toast(format!("the plan for {wf} is dropped (plans/done/)"));
                 }
+                // Being written: watch it. Written: every review is in Records. None: write one.
                 Effect::ReviewOpen => {
-                    if self.review.is_some() || self.writing_review() {
+                    if self.writing_review() {
                         self.review_view = Some(0);
+                    } else if self.review.is_some() {
+                        self.open_records(super::records::Section::Reviews);
                     } else {
                         self.review_box();
                     }
@@ -1702,14 +1838,33 @@ impl App {
                 Effect::TaskAdd(task) => self.task_add(*task),
                 Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
                 Effect::TaskRemove(id) => {
-                    if self.records
-                        && let Err(e) = crate::maint::tasks::remove(crate::maint::LOCAL, &id)
-                    {
-                        return self.toast(format!("couldn't remove it: {e}"));
+                    let all = crate::maint::tasks::effective(
+                        &self.data.tasks,
+                        crate::jobs::state::tasks(&self.cfg),
+                    );
+                    let Some(t) = all.iter().find(|t| t.id == id) else {
+                        return;
+                    };
+                    if self.records {
+                        match crate::maint::tasks::remove_or_off(
+                            crate::maint::LOCAL,
+                            t,
+                            &self.data.tasks,
+                        ) {
+                            Ok(off) => self.toast(if off {
+                                format!("{} is off (tasks.toml)", t.title)
+                            } else {
+                                format!("{} is off the list (tasks.toml)", t.title)
+                            }),
+                            Err(e) => return self.toast(format!("couldn't change it: {e}")),
+                        }
+                        self.data.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
+                    } else {
+                        self.data.tasks.retain(|t| t.id != id);
                     }
-                    self.data.tasks.retain(|t| t.id != id);
-                    self.toast(format!("{id} is off the list (tasks.toml)"));
                 }
+                Effect::TaskDone(id) => self.task_done(&id),
+                Effect::LogEvent(e) => self.log_event(*e),
                 Effect::Quit => self.quit = true,
             }
         }
@@ -1730,6 +1885,7 @@ impl App {
             pid: None,
             then: spec.then,
             ok_toast: spec.ok_toast,
+            log: spec.log,
             scroll: 0,
             queue: spec.queue.into(),
         };
@@ -1860,6 +2016,7 @@ impl App {
                                 queue: it.collect(),
                                 then: vec![Fetch::Ostree, Fetch::Workflows],
                                 ok_toast: "rollback steps done · workflow abandoned".into(),
+                                log: None,
                             });
                         }
                         Ok(None)
@@ -1958,14 +2115,16 @@ impl App {
             to: to.filter(|t| Some(t) != self.wf_from.as_ref()),
             plan,
         });
-        LogEntry::from_run(
+        let mut e = LogEntry::from_run(
             crate::maint::LOCAL,
             &s.wf,
             &s.run.state,
             &s.run.dir,
             info.as_ref(),
             note,
-        )
+        );
+        crate::maint::tasks::tag_run(&mut e, &super::screens::maint::all_tasks(&self.view()));
+        e
     }
 
     fn open_maint_view(&mut self, s: Sub, now: Instant) {
@@ -2101,8 +2260,11 @@ impl App {
 
     fn review_write(&mut self) {
         let v = self.view();
-        let tasks =
-            crate::maint::tasks::request_section(&self.workflow_names(), &[], &self.data.tasks);
+        let tasks = crate::maint::tasks::request_section(
+            &self.workflow_names(),
+            &[],
+            &super::screens::maint::all_tasks(&self.view()),
+        );
         let prompt = super::plans::review_request(
             &self.cfg,
             &super::screens::maint::recs_text(&v),
@@ -2426,37 +2588,223 @@ impl App {
     }
 
     /// `d` on a task: logged as done by hand (tagged `task:<id>`, which takes it off the list).
-    fn task_done(&mut self, id: &str, note: &str) {
-        let title = self
-            .data
-            .tasks
-            .iter()
-            .find(|t| t.id == id)
-            .map_or(id.to_string(), |t| t.title.clone());
-        let entry = crate::maint::log::LogEntry::task(
-            crate::maint::LOCAL,
-            id,
-            &title,
-            (!note.is_empty()).then_some(note),
-        );
+    /// Something done outside a workflow (a job, a reboot, a fix, a toolbox upgrade): into
+    /// the maintenance log.
+    fn log_event(&mut self, e: crate::maint::log::LogEntry) {
+        if self.records {
+            if let Err(err) = crate::maint::log::write(&e) {
+                return self.toast(format!("couldn't write the maintenance log: {err}"));
+            }
+            self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
+        } else {
+            self.data.maint_log.insert(0, e);
+        }
+    }
+
+    fn task_done(&mut self, id: &str) {
+        let title =
+            crate::maint::tasks::effective(&self.data.tasks, crate::jobs::state::tasks(&self.cfg))
+                .into_iter()
+                .find(|t| t.id == id)
+                .map_or(id.to_string(), |t| t.title);
+        let entry = crate::maint::log::LogEntry::task(crate::maint::LOCAL, id, &title, None);
         if self.records {
             if let Err(e) = crate::maint::log::write(&entry) {
                 return self.toast(format!("couldn't write the maintenance log: {e}"));
             }
             self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
         } else {
-            self.data.maint_log.insert(0, entry);
+            self.data.maint_log.insert(0, entry.clone());
         }
-        self.toast(format!("{title}: done, in the maintenance log (v)"));
+        // It's done whatever happens next; Esc only skips the note.
+        self.input = Input::Prompt(Prompt::TaskNote(Box::new(entry), title), String::new());
     }
 
-    fn open_log(&mut self) {
-        let entries = if self.records {
-            crate::maint::log::list(crate::maint::LOCAL)
-        } else {
-            Vec::new()
+    /// Close Records and any plan or review open over the screen.
+    fn close_docs(&mut self) {
+        self.rec_view = None;
+        self.plan_view = None;
+        self.review_view = None;
+    }
+
+    /// What Records shows, read now.
+    fn records_data(&self) -> super::records::Data {
+        use super::records::{LaterKind, LaterRow};
+        use crate::maint::{LOCAL, log, plan, review};
+        let v = self.view();
+        let mut later: Vec<LaterRow> = self
+            .data
+            .snoozes
+            .iter()
+            .filter(|(_, d)| **d > jiff::Zoned::now().date())
+            .map(|(k, d)| LaterRow {
+                kind: LaterKind::Snoozed(*d),
+                key: k.clone(),
+                file: "later.toml",
+            })
+            .collect();
+        if self.records {
+            let b = crate::baseline::BaselineFile::load();
+            later.extend(b.findings.into_iter().map(|k| LaterRow {
+                kind: LaterKind::Expected,
+                key: k,
+                file: "baseline.toml",
+            }));
+            later.extend(b.listeners.into_iter().map(|k| LaterRow {
+                kind: LaterKind::Listener,
+                key: k,
+                file: "baseline.toml",
+            }));
+        }
+        super::records::Data {
+            dir: if self.records {
+                widgets::short_home(&crate::maint::root(LOCAL))
+            } else {
+                "~/.config/sentry".into()
+            },
+            tasks: super::screens::maint::all_tasks(&v),
+            log: if self.records {
+                log::list(LOCAL)
+            } else {
+                self.data.maint_log.clone()
+            },
+            plans: if self.records {
+                plan::all(LOCAL)
+            } else {
+                Vec::new()
+            },
+            reviews: if self.records {
+                review::list(LOCAL)
+            } else {
+                // Tests: the one in memory.
+                self.review
+                    .iter()
+                    .map(|d| (review::dir(LOCAL).join(d.file_name()), d.clone()))
+                    .collect()
+            },
+            later,
+            audited: self
+                .data
+                .reports
+                .get()
+                .and_then(|r| r.last())
+                .map(|s| s.report.taken_at),
+            now: jiff::Timestamp::now(),
+        }
+    }
+
+    fn open_records(&mut self, s: super::records::Section) {
+        self.plan_view = None;
+        self.review_view = None;
+        self.rec_view = Some(super::records::Records::new(self.records_data(), s, None));
+    }
+
+    /// Records again after a change, on the same section.
+    fn refresh_records(&mut self) {
+        if let Some(r) = self.rec_view.as_ref() {
+            let s = r.section;
+            self.open_records(s);
+        }
+    }
+
+    fn records_key(&mut self, k: KeyEvent, now: Instant) {
+        use super::records::{Fx, LaterKind};
+        let Some(r) = self.rec_view.as_mut() else {
+            return;
         };
-        self.log_view = Some(super::docview::LogView::new(entries, None));
+        let Some(fx) = r.key(k.code) else {
+            return;
+        };
+        let t = self.theme;
+        match fx {
+            Fx::Close => self.rec_view = None,
+            Fx::TaskDo(id) => {
+                self.rec_view = None;
+                let e = super::screens::maint::task_effects(&self.view(), &id);
+                self.apply(e, now);
+            }
+            Fx::TaskEvery(id) => {
+                let cur = self
+                    .rec_view
+                    .as_ref()
+                    .and_then(|r| r.task())
+                    .and_then(|t| t.every)
+                    .map_or(String::new(), |d| d.to_string());
+                self.rec_view = None;
+                self.input = Input::Prompt(Prompt::TaskEvery(id), cur);
+            }
+            Fx::TaskRemove(id) => {
+                let title = self
+                    .rec_view
+                    .as_ref()
+                    .and_then(|r| r.task())
+                    .map_or(id.clone(), |t| t.title.clone());
+                self.modal = Some(Modal {
+                    title: "Remove this task".into(),
+                    color: t.yellow,
+                    lines: vec![
+                        Line::styled(title, t.fg()),
+                        Line::styled(
+                            "It comes off tasks.toml (a built-in one is turned off there). \
+                             The log keeps what was done.",
+                            t.dim(),
+                        ),
+                    ],
+                    yes: Some(("remove".into(), vec![Effect::TaskRemove(id)])),
+                });
+                self.rec_view = None;
+            }
+            Fx::TaskDone(id) => {
+                self.rec_view = None;
+                self.task_done(&id);
+            }
+            Fx::Note(e) => {
+                self.rec_view = None;
+                self.input = Input::Prompt(Prompt::LogAddNote(e), String::new());
+            }
+            Fx::OpenPlan(item) => {
+                self.rec_view = None;
+                self.apply(vec![Effect::PlanOpen(item)], now);
+            }
+            Fx::OpenReview(p) => match crate::maint::review::read(&p)
+                .or_else(|| self.review.clone().filter(|d| p.ends_with(d.file_name())))
+            {
+                Some(d) => {
+                    self.review = Some(d);
+                    self.rec_view = None;
+                    self.review_view = Some(0);
+                }
+                None => self.toast("couldn't read that review"),
+            },
+            Fx::NewReview => {
+                self.rec_view = None;
+                self.review_box();
+            }
+            Fx::Undo(row) => {
+                match row.kind {
+                    LaterKind::Snoozed(_) => {
+                        if self.records
+                            && let Err(e) =
+                                crate::maint::later::remove(crate::maint::LOCAL, &row.key)
+                        {
+                            return self.toast(format!("later.toml: {e}"));
+                        }
+                        self.data.snoozes.remove(&row.key);
+                    }
+                    LaterKind::Expected => self.apply(
+                        vec![Effect::Unbaseline(BaselineEdit::Finding(row.key.clone()))],
+                        now,
+                    ),
+                    LaterKind::Listener => self.apply(
+                        vec![Effect::Unbaseline(BaselineEdit::Listener(row.key.clone()))],
+                        now,
+                    ),
+                    LaterKind::Ignored => {}
+                }
+                self.toast(format!("{}: back on Maintenance", row.key));
+                self.refresh_records();
+            }
+        }
     }
 
     fn wf_exec(&mut self, e: Exec) {
@@ -2664,9 +3012,8 @@ impl App {
             wf: self.wf.as_ref(),
         };
         self.screens.render(self.screen, f, body, &v);
-        if let Some(lv) = &self.log_view {
-            let dir = crate::maint::log::dir(crate::maint::LOCAL);
-            super::docview::draw_log(f, body, &t, lv, &widgets::short_home(&dir));
+        if let Some(r) = &self.rec_view {
+            super::records::draw(f, body, &t, r);
         } else if let Some((wf, scroll)) = &self.plan_view {
             let w = self
                 .writer
@@ -2881,11 +3228,8 @@ impl App {
                     } else {
                         vec![("R", "review again"), ("j/k", "scroll"), ("Esc", "back")]
                     }
-                } else if let Some(lv) = &self.log_view {
-                    match lv.open {
-                        Some(_) => vec![("j/k", "scroll"), ("Esc", "back")],
-                        None => vec![("j/k", "select"), ("Enter", "open"), ("Esc", "close")],
-                    }
+                } else if let Some(r) = &self.rec_view {
+                    r.hints()
                 } else if self.run.is_some() {
                     if self.run.as_ref().is_some_and(|r| r.done.is_some()) {
                         vec![("Esc", "close"), ("j/k", "scroll")]
@@ -3310,6 +3654,7 @@ mod tests {
             queue: vec![sh("echo two"), sh("echo three")],
             then: vec![],
             ok_toast: "ok".into(),
+            log: None,
         };
         let (lines, done) = run(spec("echo one"));
         let text = lines.join("|");

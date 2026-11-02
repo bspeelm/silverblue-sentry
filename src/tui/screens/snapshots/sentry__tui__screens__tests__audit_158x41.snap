@@ -8,7 +8,7 @@ expression: body(&s)
  Maintenance › Audit report  Esc back
 ┌ Findings · 2026-10-23.json (2/2) ────────────────────────────────────────────┐  ┌ Diff · 2026-09-23 → 2026-10-23 ──────────────────────────────────────────┐
 │ Worth a look on this machine.                                                │  │ Changed: 1 listeners (reachable) · 2 flatpak                             │
-│ f = fix it (Claude helps) · b = expected on/off · A = ask Claude · Enter = … │  │                                                                          │
+│ Enter = fix it (Claude helps) · x = expected on/off · A = ask Claude · c = … │  │                                                                          │
 │        AREA      FINDING                                                     │  │ listeners (reachable)                                                    │
 │ check  flatpak   com.visualstudio.code gained filesystem=host                │  │ + tcp  0.0.0.0:22000/syncthing                      Syncthing            │
 │ review units     systemd-remount-fs.service failed                           │  │                                                                          │
@@ -36,9 +36,9 @@ expression: body(&s)
 │        take it back: Flatseal (Flatpaks tab, o) or `flatpak override --user  │  │                                                                          │
 │        --nofilesystem=host com.visualstudio.code`. If you expect it, press   │  │                                                                          │
 │        b.                                                                    │  │                                                                          │
-│ Fix    press f: Claude looks into it and tells you what to run (known fixes: │  │                                                                          │
-│        Take the permission away (a user override))                           │  │                                                                          │
+│ Fix    press Enter: Claude looks into it and tells you what to run (known    │  │                                                                          │
+│        fixes: Take the permission away (a user override))                    │  │                                                                          │
 │        [Context] filesystems=host;                                           │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Esc  back   j/k  select   f  fix (with Claude)   b  expected on/off   B  hide similar   Enter  run audit   A  ask Claude   ?  help   q  quit
+ Esc  back   j/k  select   Enter  fix (with Claude)   x  expected on/off   B  all like it   c  run audit   A  ask Claude   ?  help   q  quit

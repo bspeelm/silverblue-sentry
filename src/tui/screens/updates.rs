@@ -45,6 +45,7 @@ pub fn rollback_effects(t: &Theme, o: &Ostree) -> Vec<Effect> {
                 cmd,
                 then: vec![Fetch::Ostree],
                 ok_toast: "rollback staged · reboot to apply".into(),
+                log: None,
             })],
         )),
     })]

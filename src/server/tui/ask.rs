@@ -95,11 +95,31 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
     match tab {
         Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
         Tab::Services if v.s.units.value.is_none() => "the services are still loading",
-        Tab::Maint => {
-            "on Maintenance, p has Claude plan an item (it assesses it first) and R reviews everything"
-        }
+        Tab::Maint => "the maintenance is still loading",
         _ => "nothing selected to ask about here",
     }
+}
+
+/// The ranked recommendations, about one of them (`A` on Maintenance, any other row). A move
+/// itself is planned with `p`, which researches it; this is a question.
+fn ask_maintenance(v: &View, r: &Remote, about: &str) -> Ask {
+    let lines: Vec<String> = super::maint::recs(v)
+        .iter()
+        .map(|x| format!("- [{}] {}: {}", x.level.word(), x.title, x.why))
+        .collect();
+    Ask::new(
+        format!("{} · maintenance", r.name),
+        format!(
+            "{}What sentry-server recommends maintaining, ranked:\n{}",
+            header(v, r),
+            if lines.is_empty() {
+                "(nothing)".into()
+            } else {
+                lines.join("\n")
+            }
+        ),
+        format!("About \"{about}\": what should I know, and is it safe to put off?"),
+    )
 }
 
 /// The packages waiting: is it safe to upgrade now? (`A` on the updates recommendation.)
@@ -211,7 +231,7 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
                 )),
             ))
         }
-        // A finding: fix it; updates or the reboot: safe now? Items: plans assess them (p).
+        // A finding: fix it; updates or the reboot: safe now? Anything else: what to do first.
         Tab::Maint => match super::maint::pick(v)? {
             super::maint::Sel::Rec(x) => match &x.action {
                 crate::server::maint::recommend::Action::Fix(id) => {
@@ -220,9 +240,9 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
                 _ if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" => {
                     ask_updates(v, r)
                 }
-                _ => None,
+                _ => Some(ask_maintenance(v, r, &x.title)),
             },
-            super::maint::Sel::Item(..) => None,
+            super::maint::Sel::Item(s, _) => Some(ask_maintenance(v, r, &s.id)),
         },
     }
 }

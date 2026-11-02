@@ -1,6 +1,7 @@
-//! Last-run records (`~/.local/share/sentry/jobs.json`, written by the job process) and cadence:
-//! config `[jobs]` overridden by `~/.config/sentry/cadence.toml` (machine-written by the TUI `e`).
-//! Cadence is a reminder, never a trigger.
+//! What the jobs did, and when they're due. A run goes in the maintenance log (`kind = "job"`);
+//! each job's cadence (`[jobs]` in config.toml, else its default) is a recurring task
+//! (`tasks.toml` can replace it, `e` on its row writes that). Cadence is a reminder, never a
+//! trigger. The old `jobs.json` and `cadence.toml` are read once and moved aside (`migrate`).
 
 use std::collections::BTreeMap;
 
@@ -9,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::JobId;
 use crate::config::{Config, Dur};
+use crate::maint::Level;
+use crate::maint::tasks::{Source, Task};
 use crate::paths;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -28,57 +31,61 @@ fn cadence_path() -> std::path::PathBuf {
     paths::config_dir().join("cadence.toml")
 }
 
-pub fn load() -> Runs {
+fn load() -> Runs {
     std::fs::read_to_string(runs_path())
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
 }
 
+/// A job ran: it goes in the maintenance log (`kind = "job"`), which is what says a job task
+/// is done. The checks (audit, update-check) change nothing, so only their latest run is kept.
 pub fn record(job: JobId, ok: bool, summary: &str) -> anyhow::Result<()> {
-    let mut r = load();
-    r.insert(
-        job.name().into(),
-        Run {
-            at: Timestamp::now(),
-            ok,
-            summary: summary
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(200)
-                .collect(),
-        },
-    );
-    paths::write_atomic(&runs_path(), &serde_json::to_vec_pretty(&r)?)?;
+    record_at(job, ok, summary, Timestamp::now(), &[])
+}
+
+fn record_at(
+    job: JobId,
+    ok: bool,
+    summary: &str,
+    at: Timestamp,
+    extra: &[String],
+) -> anyhow::Result<()> {
+    use crate::maint::{LOCAL, log};
+    if matches!(job, JobId::Audit | JobId::UpdateCheck) {
+        log::remove_where(LOCAL, |e| {
+            e.head.kind == "job" && e.head.workflow == job.name()
+        })?;
+    }
+    log::write(&log::LogEntry::event(
+        LOCAL,
+        "job",
+        job.name(),
+        ok,
+        summary,
+        &std::iter::once(format!("job:{}", job.name()))
+            .chain(extra.iter().cloned())
+            .collect::<Vec<_>>(),
+        at,
+    ))?;
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Every {
-    /// No cadence applies (update-apply).
-    Never,
-    Off,
-    Interval(Dur),
-}
-
-impl Every {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s.trim() {
-            "off" => Ok(Every::Off),
-            "—" | "-" | "" => Ok(Every::Never),
-            d => d.parse().map(Every::Interval),
-        }
+/// The latest run of each job, from the log.
+pub fn last_runs(log: &[crate::maint::log::LogEntry]) -> BTreeMap<&'static str, Run> {
+    let mut out = BTreeMap::new();
+    // Newest first: the first one seen is the latest.
+    for e in log.iter().filter(|e| e.head.kind == "job") {
+        let Some(j) = JobId::from_name(&e.head.workflow) else {
+            continue;
+        };
+        out.entry(j.name()).or_insert_with(|| Run {
+            at: e.head.ended.or(e.head.started).unwrap_or_default(),
+            ok: e.head.result == "done",
+            summary: e.head.summary.clone(),
+        });
     }
-
-    pub fn label(self) -> String {
-        match self {
-            Every::Never => "—".into(),
-            Every::Off => "off".into(),
-            Every::Interval(d) => d.to_string(),
-        }
-    }
+    out
 }
 
 fn overrides() -> BTreeMap<String, String> {
@@ -88,98 +95,118 @@ fn overrides() -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Effective cadence: cadence.toml > config `[jobs]` > spec default.
-pub fn every_with(job: JobId, cfg: &Config, ov: &BTreeMap<String, String>) -> Every {
-    let s = ov
-        .get(job.name())
-        .cloned()
-        .or_else(|| {
-            cfg.jobs
-                .get(job.name())
-                .and_then(|j| j.suggested_every.clone())
-        })
-        .or_else(|| job.default_every().map(str::to_string));
-    match s {
-        None => Every::Never,
-        Some(s) => Every::parse(&s).unwrap_or(Every::Never),
-    }
+/// This machine's jobs as recurring tasks (`job-audit`, `job-update-check`, `job-cleanup`).
+/// update-apply has none: updates go through `quick-update`.
+pub fn tasks(cfg: &Config) -> Vec<Task> {
+    tasks_with(cfg, &BTreeMap::new())
 }
 
-/// Persist a cadence override from the TUI.
-pub fn set_every(job: JobId, e: Every) -> anyhow::Result<()> {
-    let mut ov = overrides();
-    ov.insert(job.name().into(), e.label());
-    let body = format!(
-        "# Written by sentry (Jobs screen, `e`). Overrides [jobs] in config.toml. Safe to edit.\n{}",
-        toml::to_string(&ov)?
-    );
-    paths::write_atomic(&cadence_path(), body.as_bytes())?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Due {
-    /// No cadence or disabled.
-    NotTracked,
-    Never,
-    /// Seconds until due (negative = overdue).
-    In(i64),
-}
-
-pub fn due(job: JobId, e: Every, runs: &Runs, now: Timestamp) -> Due {
-    let Every::Interval(d) = e else {
-        return Due::NotTracked;
+/// With cadence overrides (the old `cadence.toml`) on top of the config.
+fn tasks_with(cfg: &Config, ov: &BTreeMap<String, String>) -> Vec<Task> {
+    // A job's cadence and where it came from; None: no cadence at all.
+    let every = |j: JobId| -> Option<(Option<Dur>, Source)> {
+        let (s, src) = if let Some(s) = ov.get(j.name()) {
+            (s.clone(), Source::File)
+        } else if let Some(s) = cfg
+            .jobs
+            .get(j.name())
+            .and_then(|c| c.suggested_every.clone())
+        {
+            (s, Source::Config)
+        } else {
+            (j.default_every()?.to_string(), Source::Default)
+        };
+        match s.trim() {
+            "off" => Some((None, src)),
+            d => d.parse().ok().map(|d| (Some(d), src)),
+        }
     };
-    match runs.get(job.name()) {
-        None => Due::Never,
-        Some(r) => Due::In(r.at.as_second() + d.0.as_secs() as i64 - now.as_second()),
+    let task = |id: &str, act: &str, title: &str, why: &str, e: (Option<Dur>, Source)| Task {
+        id: id.into(),
+        title: title.into(),
+        why: why.into(),
+        level: Level::Routine,
+        every: e.0,
+        act: act.into(),
+        item: None,
+        steps: String::new(),
+        added: None,
+        off: e.0.is_none(),
+        source: e.1,
+        review: None,
+    };
+    let mut out = Vec::new();
+    if let Some(e) = every(JobId::Audit) {
+        out.push(task(
+            "job-audit",
+            "audit",
+            "Audit this machine",
+            "Read-only: what changed since the last audit, and what to look at.",
+            e,
+        ));
     }
+    if let Some(e) = every(JobId::UpdateCheck) {
+        out.push(task(
+            "job-update-check",
+            "job update-check",
+            "Check for updates",
+            "The OS, Flatpaks and toolboxes: what's waiting (nothing is installed).",
+            e,
+        ));
+    }
+    // The cleanups are one task: the soonest cadence of those that have one.
+    let cleanups: Vec<(Option<Dur>, Source)> =
+        JobId::CLEANUP.into_iter().filter_map(every).collect();
+    if !cleanups.is_empty() {
+        let soonest = cleanups.iter().filter_map(|c| c.0).min_by_key(|d| d.0);
+        let src = cleanups
+            .iter()
+            .map(|c| c.1)
+            .find(|s| *s != Source::Default)
+            .unwrap_or(Source::Default);
+        out.push(task(
+            "job-cleanup",
+            "job cleanup",
+            "Clean up",
+            "Old deployments, unused Flatpak runtimes, podman leftovers, caches: see what can go.",
+            (soonest, src),
+        ));
+    }
+    out
 }
 
-impl Due {
-    pub fn is_due(&self) -> bool {
-        match self {
-            Due::Never => true,
-            Due::In(s) => *s <= 0,
-            Due::NotTracked => false,
+/// Move the old records into the new ones, once: `jobs.json`'s last runs become log entries,
+/// `cadence.toml`'s overrides become tasks in `tasks.toml`. Each file is then renamed
+/// `*.migrated` (never deleted).
+pub fn migrate(cfg: &Config) {
+    let old_runs = runs_path();
+    if old_runs.exists() {
+        for (name, r) in load() {
+            if let Some(j) = JobId::from_name(&name) {
+                let _ = record_at(j, r.ok, &r.summary, r.at, &["migrated".into()]);
+            }
         }
+        let _ = std::fs::rename(&old_runs, old_runs.with_extension("json.migrated"));
     }
-}
-
-/// Names of jobs that are due now (`sentry status`).
-pub fn due_jobs(cfg: &Config, runs: &Runs, now: Timestamp) -> Vec<JobId> {
-    Records {
-        runs: runs.clone(),
-        cadence: overrides(),
-    }
-    .due_jobs(cfg, now)
-}
-
-/// Last runs plus cadence overrides, read together so the TUI doesn't re-read
-/// `cadence.toml` every frame.
-#[derive(Debug, Clone, Default)]
-pub struct Records {
-    pub runs: Runs,
-    pub cadence: BTreeMap<String, String>,
-}
-
-impl Records {
-    pub fn load() -> Self {
-        Self {
-            runs: load(),
-            cadence: overrides(),
+    let old_cadence = cadence_path();
+    if old_cadence.exists() {
+        let ov = overrides();
+        let plain = tasks_with(cfg, &BTreeMap::new());
+        for t in tasks_with(cfg, &ov) {
+            let same = plain
+                .iter()
+                .any(|p| p.id == t.id && p.every == t.every && p.off == t.off);
+            if !same {
+                let _ = crate::maint::tasks::add(
+                    crate::maint::LOCAL,
+                    Task {
+                        source: Source::File,
+                        ..t
+                    },
+                );
+            }
         }
-    }
-
-    pub fn every(&self, job: JobId, cfg: &Config) -> Every {
-        every_with(job, cfg, &self.cadence)
-    }
-
-    pub fn due_jobs(&self, cfg: &Config, now: Timestamp) -> Vec<JobId> {
-        JobId::ALL
-            .into_iter()
-            .filter(|j| due(*j, self.every(*j, cfg), &self.runs, now).is_due())
-            .collect()
+        let _ = std::fs::rename(&old_cadence, old_cadence.with_extension("toml.migrated"));
     }
 }
 
@@ -188,34 +215,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cadence_precedence_and_due() {
+    fn job_cadences_are_tasks() {
         let (mut cfg, _) = Config::parse("[jobs]\naudit.suggested_every = \"7d\"\n").unwrap();
-        let mut ov = BTreeMap::new();
+        cfg.jobs.remove("update-check");
+        let t = tasks(&cfg);
+        let ids: Vec<&str> = t.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["job-audit", "job-update-check", "job-cleanup"]);
+        assert_eq!(t[0].every, Some(Dur::secs(7 * 86400)));
+        assert_eq!(t[0].source, Source::Config);
+        assert_eq!(t[1].source, Source::Default);
+        // An override turns one off; the cleanups take the soonest cadence they have.
+        let ov: BTreeMap<String, String> = [
+            ("audit".to_string(), "off".to_string()),
+            ("cleanup-ostree".to_string(), "14d".to_string()),
+        ]
+        .into();
+        let t = tasks_with(&cfg, &ov);
+        assert!(t[0].off);
+        assert_eq!(t[2].every, Some(Dur::secs(14 * 86400)));
+    }
+
+    #[test]
+    fn job_runs_go_in_the_log_and_checks_keep_only_their_latest() {
+        use crate::maint::{LOCAL, log};
+        let at = |d: i64| Timestamp::from_second(d * 86400).unwrap();
+        record_at(JobId::Audit, true, "first", at(1), &[]).unwrap();
+        record_at(JobId::Audit, true, "second", at(2), &[]).unwrap();
+        record_at(JobId::CleanupOstree, true, "freed 1 GB", at(3), &[]).unwrap();
+        record_at(JobId::CleanupOstree, false, "it failed", at(4), &[]).unwrap();
+        let entries = log::list(LOCAL);
+        let audits = entries
+            .iter()
+            .filter(|e| e.head.kind == "job" && e.head.workflow == "audit")
+            .count();
+        assert_eq!(audits, 1);
+        let last = last_runs(&entries);
+        assert_eq!(last["audit"].summary, "second");
+        assert!(!last["cleanup-ostree"].ok, "the latest run counts");
+    }
+
+    #[test]
+    fn the_old_files_move_into_the_log_and_tasks_once() {
+        use crate::maint::{LOCAL, log, tasks};
+        std::fs::create_dir_all(paths::data_dir()).unwrap();
+        std::fs::create_dir_all(paths::config_dir()).unwrap();
+        std::fs::write(
+            runs_path(),
+            r#"{"cleanup-flatpak": {"at": "2026-09-01T00:00:00Z", "ok": true, "summary": "freed 2 GB"}}"#,
+        )
+        .unwrap();
+        std::fs::write(cadence_path(), "audit = \"off\"\n").unwrap();
+        migrate(&Config::default());
+        assert!(!runs_path().exists() && runs_path().with_extension("json.migrated").exists());
+        assert!(!cadence_path().exists());
+        let e = log::list(LOCAL)
+            .into_iter()
+            .find(|e| e.head.workflow == "cleanup-flatpak")
+            .expect("in the log");
+        assert!(
+            e.head.tags.contains(&"migrated".to_string()),
+            "{:?}",
+            e.head.tags
+        );
+        let t = tasks::load(LOCAL);
+        assert!(t.iter().any(|t| t.id == "job-audit" && t.off), "{t:?}");
+        // Again: nothing left to move.
+        migrate(&Config::default());
         assert_eq!(
-            every_with(JobId::Audit, &cfg, &ov),
-            Every::Interval(Dur::secs(7 * 86400))
+            log::list(LOCAL)
+                .iter()
+                .filter(|e| e.head.workflow == "cleanup-flatpak")
+                .count(),
+            1
         );
-        ov.insert("audit".into(), "off".into());
-        assert_eq!(every_with(JobId::Audit, &cfg, &ov), Every::Off);
-        assert_eq!(every_with(JobId::UpdateApply, &cfg, &ov), Every::Never);
-        assert_eq!(every_with(JobId::CleanupCache, &cfg, &ov), Every::Off);
-        cfg.jobs.clear();
-        let e = every_with(JobId::CleanupOstree, &cfg, &ov);
-        let now = Timestamp::from_second(100 * 86400).unwrap();
-        let mut runs = Runs::new();
-        assert_eq!(due(JobId::CleanupOstree, e, &runs, now), Due::Never);
-        runs.insert(
-            "cleanup-ostree".into(),
-            Run {
-                at: Timestamp::from_second(60 * 86400).unwrap(),
-                ok: true,
-                summary: String::new(),
-            },
-        );
-        assert_eq!(
-            due(JobId::CleanupOstree, e, &runs, now),
-            Due::In(-10 * 86400)
-        );
-        assert!(due(JobId::CleanupOstree, e, &runs, now).is_due());
     }
 }

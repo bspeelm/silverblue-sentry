@@ -15,14 +15,14 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::maint::tasks::Task;
 use crate::paths;
 
-/// What sentry-server writes itself, next to the config (never in it): review dates moved
-/// with `z`, and plans from before plans were files (migrated, then cleared).
+/// The old state file next to the config: plans from before plans were files (migrated,
+/// then cleared). Review dates moved with `z` are in `later.toml` now (`maint::later`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
-    pub snooze: BTreeMap<String, jiff::civil::Date>,
     pub plans: BTreeMap<String, Plan>,
 }
 
@@ -67,19 +67,12 @@ fn update(server: &str, f: impl FnOnce(&mut State)) -> anyhow::Result<()> {
     let mut st = load_state(server);
     f(&mut st);
     let text = format!(
-        "# Written by sentry-server's Maintenance tab: review dates (z).\n\
+        "# Written by sentry-server (old plans, before plans were files).\n\
          # Edit freely.\n{}",
         toml::to_string(&st)?
     );
     paths::write_atomic(&state_path(server), text.as_bytes())?;
     Ok(())
-}
-
-/// Move an item's review date (`z`).
-pub fn snooze(server: &str, id: &str, until: jiff::civil::Date) -> anyhow::Result<()> {
-    update(server, |st| {
-        st.snooze.insert(id.to_string(), until);
-    })
 }
 
 /// Save (or replace) an item's plan.
@@ -98,6 +91,30 @@ pub fn drop_plan(server: &str, id: &str) -> anyhow::Result<()> {
 /// After the old plans became files.
 fn clear_old_plans(server: &str) -> anyhow::Result<()> {
     update(server, |st| st.plans.clear())
+}
+
+/// `maintenance.cadence` as recurring tasks (`cadence-<workflow>`), for the workflows this
+/// server has. `tasks.toml` can replace one with the same id.
+pub fn cadence_tasks(cfg: &crate::server::config::Server, workflows: &[String]) -> Vec<Task> {
+    cfg.maintenance
+        .cadence
+        .iter()
+        .filter(|(wf, _)| workflows.contains(wf))
+        .map(|(wf, every)| Task {
+            id: format!("cadence-{wf}"),
+            title: format!("Run {wf}"),
+            why: "Routine (maintenance.cadence in server_config.yaml).".into(),
+            level: crate::maint::Level::Routine,
+            every: Some(*every),
+            act: format!("run {wf}"),
+            item: None,
+            steps: String::new(),
+            added: None,
+            off: false,
+            source: crate::maint::tasks::Source::Config,
+            review: None,
+        })
+        .collect()
 }
 
 /// One change made through a workflow started from an item.
@@ -174,8 +191,6 @@ mod tests {
     #[test]
     fn state_round_trips_with_old_plans() {
         let mut st = State::default();
-        st.snooze
-            .insert("web".into(), jiff::civil::date(2027, 1, 1));
         st.plans.insert(
             "web".into(),
             Plan {
@@ -193,13 +208,5 @@ mod tests {
         );
         let back: State = toml::from_str(&toml::to_string(&st).unwrap()).unwrap();
         assert_eq!(back, st);
-    }
-
-    #[test]
-    fn a_file_with_old_assessments_keeps_its_review_dates() {
-        let st: State =
-            toml::from_str("[snooze]\nweb = \"2027-01-01\"\n\n[assessments.web]\ntext = \"old\"\n")
-                .unwrap();
-        assert_eq!(st.snooze["web"], jiff::civil::date(2027, 1, 1));
     }
 }

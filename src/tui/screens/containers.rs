@@ -53,6 +53,13 @@ fn upgrade_run(targets: &[&Ctr], title: String) -> Option<Effect> {
         queue: cmds.collect(),
         then: vec![Fetch::Podman, Fetch::ToolboxUpdates],
         ok_toast: "toolbox upgrade done · re-checking".into(),
+        log: Some((
+            "toolbox".into(),
+            targets
+                .iter()
+                .map(|c| format!("toolbox:{}", c.name))
+                .collect(),
+        )),
     }))
 }
 
@@ -251,6 +258,7 @@ impl Containers {
                             cmd,
                             then,
                             ok_toast: format!("{} stopped", c.name),
+                            log: None,
                         })],
                     )),
                 })]
@@ -286,6 +294,7 @@ impl Containers {
                             cmd,
                             then,
                             ok_toast: format!("{} removed", c.name),
+                            log: None,
                         })],
                     )),
                 })]

@@ -221,6 +221,59 @@ impl LogEntry {
         e
     }
 
+    /// Something done outside a workflow and a plan: a job (`kind` "job"), a reboot, a command
+    /// Claude proposed for a finding ("fix"), a toolbox upgrade ("toolbox"). `what` is what
+    /// ran (the workflow column); `tags` add to the usual ones.
+    pub fn event(
+        server: &str,
+        kind: &str,
+        what: &str,
+        ok: bool,
+        summary: &str,
+        tags: &[String],
+        at: jiff::Timestamp,
+    ) -> Self {
+        let result = if ok { "done" } else { "failed" };
+        let mut h = LogHead {
+            server: server.to_string(),
+            kind: kind.to_string(),
+            workflow: what.to_string(),
+            result: result.into(),
+            started: Some(at),
+            ended: Some(at),
+            ..Default::default()
+        };
+        h.tags = [
+            if server.is_empty() {
+                "machine:local".to_string()
+            } else {
+                format!("server:{server}")
+            },
+            format!("kind:{kind}"),
+            format!("workflow:{what}"),
+            format!("result:{result}"),
+        ]
+        .into_iter()
+        .chain(tags.iter().cloned())
+        .collect();
+        let line = summary.lines().map(str::trim).find(|l| !l.is_empty());
+        h.summary = line.unwrap_or(result).chars().take(120).collect::<String>();
+        let body = format!(
+            "# {}
+
+## Summary
+
+{}",
+            title(&h),
+            if summary.trim().is_empty() {
+                "(nothing more)"
+            } else {
+                summary.trim()
+            }
+        );
+        Self { head: h, body }
+    }
+
     /// A change made by hand from a plan (no workflow run): what it was, the plan, the note.
     pub fn by_hand(
         server: &str,
@@ -271,6 +324,25 @@ impl LogEntry {
         Self {
             head: h,
             body: body.trim_end().to_string(),
+        }
+    }
+
+    /// A note added later (Records › Log, `n`): appended, dated.
+    pub fn add_note(&mut self, note: &str) {
+        let day = jiff::Zoned::now().strftime("%Y-%m-%d");
+        self.body = format!(
+            "{}\n\n## Note ({day})\n\n{}",
+            self.body.trim_end(),
+            note.trim()
+        );
+        if self.head.summary.is_empty() {
+            self.head.summary = note
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect();
         }
     }
 
@@ -378,6 +450,15 @@ pub fn write(entry: &LogEntry) -> anyhow::Result<PathBuf> {
     Ok(p)
 }
 
+/// Remove the entries `drop` picks (a check's older runs), then rewrite the index.
+pub fn remove_where(server: &str, drop: impl Fn(&LogEntry) -> bool) -> anyhow::Result<()> {
+    let d = dir(server);
+    for old in list(server).iter().filter(|e| drop(e)) {
+        let _ = std::fs::remove_file(d.join(old.file_name()));
+    }
+    write_index(server)
+}
+
 /// Write `new` in place of `old` (a note added to an entry that has no run to match on).
 pub fn write_replacing(old: &LogEntry, new: &LogEntry) -> anyhow::Result<PathBuf> {
     let _ = std::fs::remove_file(dir(&old.head.server).join(old.file_name()));
@@ -433,7 +514,7 @@ pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
          on it, kernel, driver and engine changes, anything that failed or was done by hand), \
          then read those entries for their steps and notes.\n\n\
          Each entry is a Markdown file in this directory with a `+++` TOML header: `item`, \
-         `kind` (image, packages, app, retire, release, system), `workflow`, `result` (done, \
+         `kind` (image, packages, app, retire, release, system; job, reboot, fix, toolbox for what ran outside a workflow), `workflow`, `result` (done, \
          abandoned), `from`/`to`, `started`/`ended`, the steps that `failed`, were done \
          `by_hand` or `skipped`, the `plan` it applied, a one-line `summary`, and `tags` \
          (`item:`, `kind:`, `workflow:`, `result:`, `risk:`, `to:`, `service:`, \

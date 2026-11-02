@@ -101,6 +101,19 @@ fn store() -> DataStore {
         failed: crate::collectors::units::parse_failed(&fixture("units/failed.txt"), "system"),
         ..Default::default()
     }));
+    // A machine in use: the jobs ran yesterday, so their cadences aren't due.
+    let yesterday = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
+    for job in ["audit", "update-check", "cleanup-ostree"] {
+        d.maint_log.push(crate::maint::log::LogEntry::event(
+            "",
+            "job",
+            job,
+            true,
+            "done",
+            &[],
+            yesterday,
+        ));
+    }
     d
 }
 
@@ -345,33 +358,31 @@ fn jobs_and_cleanup_screens() {
     use crate::exec::Cmd;
     use crate::jobs::JobId;
     use crate::jobs::plan::{Act, Item, Plan};
-    use crate::jobs::state::{Run, Runs};
     let mut d = store();
+    d.maint_log.clear();
     let at =
         |days_ago: i64| jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * days_ago);
-    let mut runs = Runs::new();
+    // The jobs' runs are in the maintenance log, newest first.
     for (name, days, ok) in [
+        ("update-check", 1, false),
         ("audit", 3, true),
         ("cleanup-podman", 41, true),
-        ("update-check", 1, false),
     ] {
-        runs.insert(
-            name.into(),
-            Run {
-                at: at(days),
-                ok,
-                summary: if ok {
-                    "2 item(s) done".into()
-                } else {
-                    "rpm-ostree: timeout".into()
-                },
-            },
-        );
+        let summary = if ok {
+            "2 item(s) done"
+        } else {
+            "rpm-ostree: timeout"
+        };
+        d.maint_log.push(crate::maint::log::LogEntry::event(
+            "",
+            "job",
+            name,
+            ok,
+            summary,
+            &[],
+            at(days),
+        ));
     }
-    d.job_runs.set(Ok(crate::jobs::state::Records {
-        runs,
-        cadence: Default::default(),
-    }));
     let item = |job, key: &str, label: &str, bytes: Option<u64>, run: bool, on: bool| Item {
         job,
         key: key.into(),
@@ -430,17 +441,14 @@ fn jobs_and_cleanup_screens() {
             notes: vec![],
         },
     ]));
-    let mut a = maint_view(d, 'J');
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
-    for want in [
-        "cleanup-podman",
-        "DUE",
-        "failed",
-        "11d over",
-        "Cadence is a reminder",
-    ] {
+    // Due by their cadence: tasks. The failed update check folds into its task's row.
+    for want in ["routine  Clean up", "soon     Check for updates"] {
         assert!(s.contains(want), "{want}: {s}");
     }
+    assert!(!s.contains("update-check failed  "), "one row: {s}");
+    assert!(!s.contains("Audit this machine"), "audited 3 days ago: {s}");
     key(&mut a, KeyCode::Char('7'));
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("cleanup_158x41", body(&s));
@@ -735,7 +743,7 @@ fn chat_pane_and_consent_render() {
 }
 
 #[test]
-fn jobs_enter_on_cleanup_opens_cleanup_focused() {
+fn a_failed_cleanup_job_opens_cleanup_focused() {
     use crate::exec::Cmd;
     use crate::jobs::JobId;
     use crate::jobs::plan::{Act, Item, Plan};
@@ -759,11 +767,22 @@ fn jobs_enter_on_cleanup_opens_cleanup_focused() {
             notes: vec![],
         },
     ]));
-    let mut a = maint_view(d, 'J');
-    // cleanup-podman is the 5th job row.
-    for _ in 0..4 {
-        key(&mut a, KeyCode::Char('j'));
-    }
+    d.maint_log.insert(
+        0,
+        crate::maint::log::LogEntry::event(
+            "",
+            "job",
+            "cleanup-podman",
+            false,
+            "podman: not found",
+            &[],
+            jiff::Timestamp::now(),
+        ),
+    );
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
+    a.apply_for_test(vec![crate::tui::app::Effect::MaintFind(
+        "job:cleanup-podman".into(),
+    )]);
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("from dry-run · cleanup-podman selected"), "{s}");
@@ -820,14 +839,12 @@ fn maintenance_keys_and_views() {
     key(&mut a, KeyCode::Char('y'));
     let after = render_to_string(&mut a, 158, 41);
     assert_ne!(before, after);
-    // The views open and Esc comes back.
-    for (k, title) in [('F', "Audit report"), ('J', "Jobs")] {
-        key(&mut a, KeyCode::Char(k));
-        let s = render_to_string(&mut a, 158, 41);
-        assert!(s.contains(&format!("Maintenance › {title}")), "{k}: {s}");
-        key(&mut a, KeyCode::Esc);
-        assert!(render_to_string(&mut a, 158, 41).contains("Recommended"));
-    }
+    // The report opens as a view and Esc comes back.
+    key(&mut a, KeyCode::Char('F'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Maintenance › Audit report"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert!(render_to_string(&mut a, 158, 41).contains("Recommended"));
     // Cleanup is its own screen: C goes there.
     key(&mut a, KeyCode::Char('C'));
     assert_eq!(a.screen, ScreenId::Clean);
@@ -835,7 +852,7 @@ fn maintenance_keys_and_views() {
 
 #[test]
 fn audit_fix_key() {
-    // Without Claude Code, `f` is sentry's own list of fixes.
+    // Without Claude Code, Enter (or f) is sentry's own list of fixes.
     crate::claude::TEST_AVAILABLE.with(|c| c.set(false));
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
@@ -844,10 +861,10 @@ fn audit_fix_key() {
     // Row 1 is "com.visualstudio.code gained filesystem=host": one fix → confirm box.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Fix    press f: Take the permission away"),
+        s.contains("Fix    press Enter: Take the permission away"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('f'));
+    key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("$ flatpak override --user --nofilesystem=host com.visualstudio.code"),
@@ -1170,11 +1187,11 @@ gate = "confirm"
         "{s}"
     );
     key(&mut a, KeyCode::Char('n'));
-    // `v`: the Log view, Esc closes it.
+    // `v`: Records on its Log, Esc closes it.
     key(&mut a, KeyCode::Char('v'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Maintenance log") && s.contains("Nothing logged yet"),
+        s.contains("Records") && s.contains("Maintenance log   3 run(s)"),
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
@@ -1320,15 +1337,19 @@ fn review_suggestions_become_maintenance_tasks() {
     assert!(s.contains("mark done"), "Enter shows the steps: {s}");
     key(&mut a, KeyCode::Char('n'));
     key(&mut a, KeyCode::Char('d'));
+    // Logged at once (it's off the list); the note is asked after, and Esc only skips it.
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("ups done · for the log"), "{s}");
+    assert!(
+        s.contains("Check the UPS battery: done, logged · how it went"),
+        "{s}"
+    );
+    assert!(s.contains("Recommended · 1 ·"), "done for 90 days: {s}");
     for c in "checked, 100%".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Recommended · 1 ·"), "done for 90 days: {s}");
-    assert!(s.contains("done, in the maintenance log"), "{s}");
+    assert!(s.contains("noted in the maintenance log"), "{s}");
 }
 
 /// Read-only on this machine: Maintenance from the real collectors, its views, and the
@@ -1360,4 +1381,39 @@ fn live_maintenance() {
         println!("{}", render_to_string(&mut a, 158, 41));
         key(&mut a, KeyCode::Esc);
     }
+}
+
+#[test]
+fn records_show_every_task_and_bring_back_what_was_put_off() {
+    let mut d = store();
+    d.snoozes.insert(
+        "updates".into(),
+        jiff::Zoned::now()
+            .date()
+            .checked_add(jiff::Span::new().days(30))
+            .unwrap(),
+    );
+    let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Updates waiting"), "put off: {s}");
+    key(&mut a, KeyCode::Char('v'));
+    // Tasks: the jobs' cadences, done yesterday, with when they're next due.
+    key(&mut a, KeyCode::Char('['));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Records   Tasks 3  Log 3  Plans 0  Reviews 0  Later 1"),
+        "{s}"
+    );
+    assert!(
+        s.contains("Check for updates") && s.contains("job update-check") && s.contains("built in"),
+        "{s}"
+    );
+    // Later: the snooze; u brings the updates back.
+    key(&mut a, KeyCode::Char('['));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("put off") && s.contains("updates"), "{s}");
+    key(&mut a, KeyCode::Char('u'));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Updates waiting"), "back: {s}");
 }

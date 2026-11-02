@@ -2,12 +2,13 @@
 //! reviews, the tasks you took from reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
 //! server's under `~/.config/sentry/servers/<name>/`. Local only, never in git.
 
+pub mod later;
 pub mod local;
 pub mod log;
 pub mod plan;
+pub mod rec;
 pub mod retention;
 pub mod review;
-pub mod snooze;
 pub mod tasks;
 pub mod version;
 
