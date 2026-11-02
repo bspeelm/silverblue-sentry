@@ -130,6 +130,8 @@ pub struct Session {
     turn_from: usize,
     /// The step's command running, and what it printed.
     pub job: Option<(u64, u32)>,
+    /// When the running step started (the window shows how long it's been).
+    pub job_started: Option<std::time::Instant>,
     pub output: Vec<String>,
     root: Option<RootWrite>,
     /// C-c on a step: it ends as stopped, nothing sent.
@@ -159,6 +161,7 @@ impl Session {
             fixes: 0,
             turn_from: 0,
             job: None,
+            job_started: None,
             output: Vec::new(),
             root: None,
             stopping: false,
@@ -552,6 +555,7 @@ impl Session {
     /// The step's command started (`id`, `pid`), printed a line, ended.
     pub fn step_started(&mut self, id: u64, pid: u32) {
         self.job = Some((id, pid));
+        self.job_started = Some(std::time::Instant::now());
     }
 
     pub fn step_line(&mut self, text: String) {

@@ -362,6 +362,21 @@ fn step_lines(
         for x in &s.output[n.saturating_sub(6)..] {
             push(&mut l, &format!("│ {x}"), t.dim());
         }
+        // A step that prints nothing for minutes (a backup, `systemctl start` of a long
+        // job) still shows it's alive.
+        if let Some(at) = s.job_started {
+            let e = at.elapsed().as_secs();
+            push(
+                &mut l,
+                &format!(
+                    "… running {}:{:02}{}",
+                    e / 60,
+                    e % 60,
+                    if n == 0 { ", no output yet" } else { "" }
+                ),
+                t.s(t.cyan),
+            );
+        }
     }
     if waiting {
         for x in wf {

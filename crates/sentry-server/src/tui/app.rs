@@ -447,6 +447,14 @@ impl App {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            self.dirty = true;
+        }
         if self.toast.as_ref().is_some_and(|(_, t)| now >= *t) {
             self.toast = None;
             self.dirty = true;
@@ -496,6 +504,15 @@ impl App {
         }
         if let Some((_, t)) = &self.toast {
             due = due.min(*t);
+        }
+        // A chat or an apply session working in view: its clocks tick.
+        if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            due = due.min(now + Duration::from_secs(1));
         }
         due.max(now)
     }

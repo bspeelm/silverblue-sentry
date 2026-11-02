@@ -632,6 +632,14 @@ impl App {
         {
             at(now + Duration::from_millis(250));
         }
+        // An apply session working in view: its clocks tick.
+        if self
+            .apply
+            .as_ref()
+            .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            at(now + Duration::from_secs(1));
+        }
         due.max(now)
     }
 
@@ -698,7 +706,12 @@ impl App {
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             self.dirty = true;
         }
-        if self.chat.as_ref().is_some_and(|c| c.running()) {
+        if self.chat.as_ref().is_some_and(|c| c.running())
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
             self.dirty = true;
         }
         if let Some(s) = self.wf.as_mut()
