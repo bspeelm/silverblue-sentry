@@ -137,6 +137,28 @@ impl Chat {
         }
     }
 
+    /// What stops the plan, found after Claude's turn. Any: `s` sends them back for a
+    /// corrected plan (the plan says it can't be applied; `a` isn't offered).
+    pub fn set_plan_problems(&mut self, problems: Vec<(usize, String)>) {
+        if !problems.is_empty()
+            && let Some(r) = &self.apply_run
+        {
+            let list: Vec<String> = problems
+                .iter()
+                .map(|(i, why)| {
+                    let title = r.plan.steps.get(*i).map(|s| s.title.as_str()).unwrap_or("");
+                    format!("- step {} ({title}): {why}", i + 1)
+                })
+                .collect();
+            self.offer = Some(format!(
+                "sentry can't apply your plan as it is:\n{}\n\nSend the whole plan again, fixed \
+                 (the same sentry-apply block, the steps that were fine included).",
+                list.join("\n")
+            ));
+        }
+        self.plan_problems = problems;
+    }
+
     /// `a` is offered: a plan is shown, not started, and nothing stops it.
     pub fn can_apply(&self) -> bool {
         self.apply_run
@@ -192,7 +214,7 @@ impl Chat {
         };
         let head = match r.state {
             RunState::Proposed if self.plan_problems.is_empty() => "a applies it",
-            RunState::Proposed => "can't be applied as it is",
+            RunState::Proposed => "can't be applied as it is · s sends Claude why",
             RunState::Running => "applying…",
             RunState::WaitingWorkflow(_) => "waiting for its workflow",
             RunState::Done => "applied",
@@ -815,7 +837,7 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
         k.push(("r", "run a proposed command"));
     }
     if idle && c.offer.is_some() {
-        k.push(("s", "send output"));
+        k.push(("s", "send to Claude"));
     }
     if idle && c.can_retry() {
         k.push((

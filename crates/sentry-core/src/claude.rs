@@ -644,11 +644,23 @@ pub fn grantable(g: &Grant) -> Result<(), &'static str> {
         Access::Run => Ok(()),
         Access::Read if !p.is_file() => Err("not a file"),
         Access::Read => Ok(()),
-        Access::Write if !p.starts_with(&home) || p == home => Err("only files in your home"),
         Access::Write if p.exists() && !p.is_file() => Err("not a file"),
         Access::Write if !p.parent().is_some_and(|d| d.is_dir()) => Err("its folder doesn't exist"),
+        Access::Write if !yours(p, &home) => Err("only files you own"),
         Access::Write => Ok(()),
     }
+}
+
+/// The file (or, for a new one, its folder) belongs to whoever owns the home folder: the
+/// user's own files anywhere (a work tree under /var/mnt too), never root's or another user's.
+fn yours(p: &std::path::Path, home: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(me) = std::fs::metadata(home).map(|m| m.uid()) else {
+        return false;
+    };
+    let of = if p.exists() { Some(p) } else { p.parent() };
+    of.and_then(|q| std::fs::metadata(q).ok())
+        .is_some_and(|m| m.uid() == me)
 }
 
 /// A copy of `path` before Claude may write it: `cache_dir/claude/backups/<when>-<name>`.
@@ -1170,6 +1182,10 @@ mod tests {
         assert!(grantable(&g(Access::Read, home.join(".ssh/id_ed25519"))).is_err());
         assert!(grantable(&g(Access::Write, "/etc/hosts".into())).is_err());
         assert!(grantable(&g(Access::Write, home.join("sentry-grant-test-new.md"))).is_ok());
+        // Yours outside home too (this crate's own source tree, wherever it's checked out).
+        let mine = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        assert!(grantable(&g(Access::Write, mine.into())).is_ok());
+        assert!(grantable(&g(Access::Write, "/".into())).is_err());
         assert!(grantable(&g(Access::Read, home.join("sentry-grant-test-new.md"))).is_err());
         let here = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
         assert!(grantable(&g(Access::Read, here.into())).is_ok());

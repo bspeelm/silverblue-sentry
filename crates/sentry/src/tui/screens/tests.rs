@@ -1015,7 +1015,7 @@ gate = "auto"
     a.step_exit_for_test(0, 1);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("✗ flag failed again (exit 1)"), "{s}");
-    assert!(s.contains("send output"), "{s}");
+    assert!(s.contains("send to Claude"), "{s}");
     a.step_exit_for_test(0, 0);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("✓ flag done"), "{s}");
@@ -1565,9 +1565,9 @@ fn g_shows_the_files_claude_asked_for() {
     key(&mut a, KeyCode::Char('g'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Grant files to Claude"), "{s}");
-    // The real path (in a toolbox /etc/hosts is /run/host/etc/hosts): outside home, refused.
+    // The real path (in a toolbox /etc/hosts is /run/host/etc/hosts): root's, refused.
     assert!(
-        s.contains("etc/hosts") && s.contains("not granted: only files in your home"),
+        s.contains("etc/hosts") && s.contains("not granted: only files you own"),
         "{s}"
     );
     assert!(s.contains("Cargo.toml"), "{s}");
@@ -1608,14 +1608,26 @@ fn claude_plans_once_and_sentry_applies_the_plan() {
     // A plan whose old text isn't in the file: shown, not appliable.
     let mut a = app(ScreenId::Maint);
     let mut c = chat(answer("**Layered:** nope"));
-    c.plan_problems = crate::applyplan::problems(&c.apply_run.as_ref().unwrap().plan, &[]);
+    c.set_plan_problems(crate::applyplan::problems(
+        &c.apply_run.as_ref().unwrap().plan,
+        &[],
+    ));
+    // `s` tells Claude why, for a corrected plan.
+    let offer = c.offer.clone().unwrap_or_default();
+    assert!(
+        offer.contains("step 1 (Line 2): its old text isn't in the file"),
+        "{offer}"
+    );
     a.set_chat(c);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("can't be applied as it is") && s.contains("isn't in the file"),
         "{s}"
     );
-    assert!(!s.contains("apply the plan"), "{s}");
+    assert!(
+        !s.contains("apply the plan") && s.contains("send to Claude"),
+        "{s}"
+    );
     // The real one: shown as one plan, no proposals; `a`, `y`, and sentry does it.
     let mut c = chat(answer("**Layered:** akmods code"));
     c.plan_problems = crate::applyplan::problems(&c.apply_run.as_ref().unwrap().plan, &[]);

@@ -2820,7 +2820,8 @@ impl App {
             && let Some(r) = &c.apply_run
             && r.state == crate::applyplan::RunState::Proposed
         {
-            c.plan_problems = crate::applyplan::problems(&r.plan, &names);
+            let p = crate::applyplan::problems(&r.plan, &names);
+            c.set_plan_problems(p);
         }
     }
 

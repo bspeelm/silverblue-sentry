@@ -3667,7 +3667,8 @@ impl App {
             && let Some(r) = &c.apply_run
             && r.state == sentry_core::applyplan::RunState::Proposed
         {
-            c.plan_problems = sentry_core::applyplan::problems(&r.plan, &names);
+            let p = sentry_core::applyplan::problems(&r.plan, &names);
+            c.set_plan_problems(p);
         }
     }
 
