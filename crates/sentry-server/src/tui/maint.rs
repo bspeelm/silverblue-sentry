@@ -92,11 +92,11 @@ pub fn pick<'a>(v: &View<'a>) -> Option<Sel<'a>> {
     Some(Sel::Item(s, it))
 }
 
-fn item_of<'a>(v: &View<'a>, id: &str) -> Option<&'a MaintItem> {
+pub fn item_of<'a>(v: &View<'a>, id: &str) -> Option<&'a MaintItem> {
     v.cfg.maintenance.items.iter().find(|i| i.id == id)
 }
 
-fn status_of<'a>(v: &View<'a>, id: &str) -> Option<&'a Status> {
+pub fn status_of<'a>(v: &View<'a>, id: &str) -> Option<&'a Status> {
     v.s.maint.value.as_ref()?.iter().find(|s| s.id == id)
 }
 
@@ -152,36 +152,56 @@ fn level_color(v: &View, l: Level) -> Color {
 /// The keys the selected row takes besides Enter (the key bar shows only these).
 pub fn verbs(v: &View) -> Verbs {
     let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
-    let item = |id: &str| Verbs {
+    let item = |id: &str, enter: &'static str| Verbs {
+        enter,
         plan: true,
         planned: planned(id),
         dismiss: v.plans.contains_key(id).then_some(Dismiss::DropPlan),
         ..Default::default()
     };
+    let only = |enter: &'static str| Verbs {
+        enter,
+        ..Default::default()
+    };
     match pick(v) {
         None => Verbs::default(),
-        Some(Sel::Item(s, _)) => item(&s.id),
+        Some(Sel::Item(s, _)) => item(
+            &s.id,
+            if planned(&s.id) {
+                "open plan"
+            } else {
+                "details"
+            },
+        ),
         Some(Sel::Rec(r)) => match &r.action {
             Action::Track(_) => Verbs {
                 track: true,
                 dismiss: Some(Dismiss::Ignore),
-                ..Default::default()
+                ..only("track")
             },
             Action::Remove(_) => Verbs {
                 dismiss: Some(Dismiss::Untrack),
-                ..Default::default()
+                ..only("untrack")
             },
             Action::Fix(_) => Verbs {
                 dismiss: Some(Dismiss::Expected),
-                ..Default::default()
+                ..only("fix")
             },
             Action::Task(_) => Verbs {
                 done: true,
                 every: true,
                 dismiss: Some(Dismiss::Remove),
-                ..Default::default()
+                ..only("do it")
             },
-            _ => r.item.as_deref().map_or_else(Verbs::default, item),
+            Action::Audit => only("audit"),
+            Action::Run(_) => match r.item.as_deref() {
+                Some(id) => item(id, "start"),
+                None => only("start"),
+            },
+            Action::Plan(id) => item(id, "plan"),
+            Action::OpenPlan(id) => item(id, "open plan"),
+            Action::Look(id) if !id.is_empty() => item(id, "go to item"),
+            Action::Look(_) => only("details"),
         },
     }
 }
@@ -192,12 +212,12 @@ fn action_words(a: &Action) -> String {
         Action::Plan(id) => format!("Enter: Claude writes a plan for {id}"),
         Action::OpenPlan(id) => format!("Enter: open the plan for {id}"),
         Action::Run(wf) => format!("Enter: start {wf}"),
-        Action::Track(_) => "Enter or t: track it · x: ignore it".into(),
+        Action::Track(_) => "Enter: track it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
         Action::Look(_) => "Enter: go to the item".into(),
-        Action::Fix(_) => "Enter: ask Claude how to fix it · x: it's expected here".into(),
-        Action::Audit => "Enter (or c): audit the server now".into(),
-        Action::Task(_) => "A task: Enter does it · d: done · e: every · x: remove it".into(),
+        Action::Fix(_) => "Enter: ask Claude how to fix it".into(),
+        Action::Audit => "Enter: audit the server now".into(),
+        Action::Task(_) => "A task: Enter does it".into(),
     }
 }
 
@@ -309,7 +329,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
     draw_recs(f, rec_a, v, &recs);
     let up = v
         .upstream
-        .map_or("upstream not looked up (c)".to_string(), |at| {
+        .map_or("upstream not looked up yet".to_string(), |at| {
             format!("upstream {}", fmt::ago(v.secs_since(at)))
         });
     let b = panel(
@@ -420,7 +440,6 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 Line::styled(x.why.clone(), t.fg()),
                 Line::raw(""),
                 Line::styled(action_words(&x.action), t.s(t.cyan)),
-                Line::styled("z: look again later", t.dim()),
             ];
             if let Some((s, it)) = x
                 .item
@@ -487,14 +506,14 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
     } else {
         match &v.s.review {
             Some(r) => format!(
-                "{} · last review {}: R opens it",
+                "{} · reviewed {}",
                 recs.len(),
                 r.head
                     .updated
                     .or(r.head.created)
                     .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
             ),
-            None => format!("{} · R reviews it all with Claude", recs.len()),
+            None => recs.len().to_string(),
         }
     };
     let empty = if v.s.maint.value.is_none() {
@@ -656,7 +675,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
 }
 
 /// The workflow that changes an item: its own, or its retire workflow.
-fn workflow_of(it: &MaintItem) -> Option<&str> {
+pub fn workflow_of(it: &MaintItem) -> Option<&str> {
     it.retire
         .as_ref()
         .and_then(|r| r.workflow.as_deref())

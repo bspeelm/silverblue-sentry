@@ -325,3 +325,127 @@ fn ask_step(h: &str, r: &Remote, s: &Session) -> Ask {
         question,
     )
 }
+
+/// `A` → "help me apply it" on a Maintenance row: what Claude is told, and what the chat can
+/// do (start the workflow, mark it done). None: the row is only asked about (a finding has its
+/// own fix flow; tracking, untracking and the audit are one key each). `steps` describes a
+/// workflow (the app has the files).
+pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option<Ask> {
+    use super::maint::{self as m, Sel};
+    use crate::maint::recommend::Action;
+    use sentry_core::claude::Apply;
+    let item = |id: &str, key: String| apply_item(v, r, id, key, steps);
+    match m::pick(v)? {
+        Sel::Item(s, _) => item(&s.id, s.id.clone()),
+        Sel::Rec(x) => match &x.action {
+            Action::Plan(id) | Action::OpenPlan(id) => item(id, x.key.clone()),
+            Action::Look(id) if !id.is_empty() => item(id, x.key.clone()),
+            Action::Run(wf) => {
+                let mut ctx = format!(
+                    "{}A maintenance recommendation: [{}] {}\nWhy: {}",
+                    header(v, r),
+                    x.level.word(),
+                    x.title,
+                    x.why
+                );
+                if let Some(u) = ask_updates(v, r) {
+                    ctx.push_str(&format!("\n\n{}", u.context));
+                }
+                ctx.push_str(&format!("\n\n{}", steps(wf)));
+                Some(Ask::apply(
+                    x.title.clone(),
+                    ctx,
+                    Apply {
+                        key: x.key.clone(),
+                        workflow: Some(wf.clone()),
+                        item: x.item.clone(),
+                        ..Default::default()
+                    },
+                ))
+            }
+            Action::Task(id) => {
+                use sentry_core::maint::tasks::Do;
+                let t = m::all_tasks(v).into_iter().find(|t| &t.id == id)?;
+                let (wf, it) = match t.action() {
+                    Do::Run(wf) => (Some(wf), t.item.clone()),
+                    Do::Plan(it) => return item(&it, x.key.clone()),
+                    Do::ByHand => (None, t.item.clone()),
+                    Do::Audit | Do::Job(_) => return None,
+                };
+                let mut ctx = format!(
+                    "{}A task ({}): {}\nWhy: {}\n{}",
+                    header(v, r),
+                    t.when(),
+                    t.title,
+                    t.why,
+                    if t.steps.trim().is_empty() {
+                        "(no steps written)".to_string()
+                    } else {
+                        format!("Its steps:\n{}", t.steps.trim())
+                    }
+                );
+                if let Some(wf) = &wf {
+                    ctx.push_str(&format!("\n\n{}", steps(wf)));
+                }
+                Some(Ask::apply(
+                    t.title.clone(),
+                    ctx,
+                    Apply {
+                        key: x.key.clone(),
+                        workflow: wf,
+                        item: it,
+                        task: Some(t.id.clone()),
+                        ..Default::default()
+                    },
+                ))
+            }
+            Action::Fix(_) | Action::Track(_) | Action::Remove(_) | Action::Audit => None,
+            Action::Look(_) => None,
+        },
+    }
+}
+
+/// Applying a maintenance item (its plan if it has one ready), with Claude: also `A` in the
+/// Plan view.
+pub fn apply_item(
+    v: &View,
+    r: &Remote,
+    id: &str,
+    key: String,
+    steps: &dyn Fn(&str) -> String,
+) -> Option<Ask> {
+    use super::maint as m;
+    use sentry_core::claude::Apply;
+    use sentry_core::maint::plan::PlanStatus;
+    let (s, it) = (m::status_of(v, id)?, m::item_of(v, id)?);
+    let plan = v
+        .plans
+        .get(id)
+        .filter(|p| p.head.status == PlanStatus::Ready);
+    let wf = plan
+        .map(|p| p.head.workflow.clone())
+        .filter(|w| !w.is_empty())
+        .or_else(|| m::workflow_of(it).map(str::to_string));
+    let mut ctx = format!("{}{}", header(v, r), m::context(v, r, s, it));
+    if let Some(wf) = &wf {
+        ctx.push_str(&format!("\n\n{}", steps(wf)));
+    }
+    if let Some(p) = plan {
+        ctx.push_str(&format!(
+            "\n\nClaude's plan for it, written earlier (target {}):\n{}",
+            p.head.to.as_deref().unwrap_or("retire"),
+            p.body
+        ));
+    }
+    Some(Ask::apply(
+        id,
+        ctx,
+        Apply {
+            key,
+            workflow: wf,
+            item: Some(id.to_string()),
+            plan: plan.map(|_| id.to_string()),
+            ..Default::default()
+        },
+    ))
+}

@@ -368,6 +368,33 @@ impl App {
         self.apply(e, Instant::now());
     }
 
+    /// Tests: the question in the consent box, if one is open.
+    #[cfg(test)]
+    pub fn consent_text(&self) -> Option<String> {
+        match self.modal.as_ref()?.yes.as_ref()?.1.first()? {
+            Effect::AskSend(AskTurn::First(ask)) => Some(ask.prompt()),
+            _ => None,
+        }
+    }
+
+    /// Tests: the chat, open or hidden.
+    #[cfg(test)]
+    pub fn chat_for_test(&self) -> Option<&super::chat::Chat> {
+        self.chat.as_ref()
+    }
+
+    /// Tests: a proposal ran in the chat (what `on_run_msg` does when it exits).
+    #[cfg(test)]
+    pub fn chat_done_for_test(&mut self, cmd: &str, code: i32, output: &str) {
+        self.chat_done(cmd.into(), code, output.into(), false);
+    }
+
+    /// Tests: the maintenance log as loaded.
+    #[cfg(test)]
+    pub fn log_for_test(&self) -> &[crate::maint::log::LogEntry] {
+        &self.data.maint_log
+    }
+
     /// Tests: Claude wrote this plan for `wf` (nothing is sent or saved).
     #[cfg(test)]
     pub fn plan_written_for_test(
@@ -1029,9 +1056,14 @@ impl App {
                 .filter(|s| !s.is_empty()),
             wf: self.wf.as_ref(),
         };
-        match self.screens.ask(self.screen, &v) {
-            Err(why) => self.toast(why),
-            Ok(ask) => self.ask_consent(ask),
+        let apply = (self.screen == ScreenId::Maint)
+            .then(|| self.screens.maint.apply_ask(&v))
+            .flatten();
+        match (self.screens.ask(self.screen, &v), apply) {
+            (Ok(ask), Some(apply)) => self.choice = Some(claude_choice(&self.theme, apply, ask)),
+            (Err(_), Some(apply)) => self.ask_consent(apply),
+            (Err(why), None) => self.toast(why),
+            (Ok(ask), None) => self.ask_consent(ask),
         }
     }
 
@@ -1053,12 +1085,8 @@ impl App {
                 && let Some(p) = c.proposals.get(d as usize - '1' as usize).cloned()
             {
                 let reaudit = c.ask.finding().is_some();
-                self.modal = Some(run_proposal_modal(
-                    &self.theme,
-                    p,
-                    self.wf.is_some(),
-                    reaudit,
-                ));
+                let note = workflow_note(self.wf.is_some(), &c.ask);
+                self.modal = Some(run_proposal_modal(&self.theme, p, note, reaudit));
             }
             return;
         }
@@ -1079,12 +1107,8 @@ impl App {
                 } else if c.proposals.len() == 1 {
                     let p = c.proposals[0].clone();
                     let reaudit = c.ask.finding().is_some();
-                    self.modal = Some(run_proposal_modal(
-                        &self.theme,
-                        p,
-                        self.wf.is_some(),
-                        reaudit,
-                    ));
+                    let note = workflow_note(self.wf.is_some(), &c.ask);
+                    self.modal = Some(run_proposal_modal(&self.theme, p, note, reaudit));
                 } else {
                     c.picking = true;
                 }
@@ -1105,6 +1129,23 @@ impl App {
                     &text,
                     AskTurn::Follow(text.clone()),
                 ));
+            }
+            // Applying something: start its workflow (the chat steps aside), or mark it done.
+            KeyCode::Char('w')
+                if idle && c.ask.applying().is_some_and(|a| a.workflow.is_some()) =>
+            {
+                let wf = c.ask.applying().and_then(|a| a.workflow.clone());
+                c.hidden = true;
+                self.toast("A brings Claude back; it hears how the run goes when you send it (s)");
+                if let Some(wf) = wf {
+                    self.apply(vec![Effect::StartWorkflow(wf)], now);
+                }
+            }
+            KeyCode::Char('d') if idle && c.ask.applying().is_some_and(|a| a.can_mark_done()) => {
+                if let Some(id) = c.ask.applying().and_then(|a| a.task.clone()) {
+                    c.hidden = true;
+                    self.task_done(&id);
+                }
             }
             KeyCode::Char('C') if idle && c.session.is_some() => {
                 let session = c.session.clone().unwrap_or_default();
@@ -1265,6 +1306,26 @@ impl App {
 
     /// A chat command finished: audit again if it changed something, else offer the output.
     fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
+        // Applying something: what you ran that changes anything goes in the log. Never a
+        // task's tag: `d` or the workflow's own run says it's done.
+        if let Some(a) = self
+            .chat
+            .as_ref()
+            .and_then(|c| c.ask.applying().cloned())
+            .filter(|_| !cmd.is_empty() && !crate::claude::read_only(&cmd))
+        {
+            let tail: Vec<&str> = output.lines().rev().take(5).collect::<Vec<_>>();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            self.log_event(crate::maint::log::LogEntry::event(
+                crate::maint::LOCAL,
+                "apply",
+                "apply",
+                code == 0,
+                &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
+                &[format!("apply:{}", a.key)],
+                jiff::Timestamp::now(),
+            ));
+        }
         // A command Claude proposed that changes something: the log keeps it.
         if reaudit && !cmd.is_empty() {
             let tags: Vec<String> = self
@@ -1339,8 +1400,62 @@ impl App {
     }
 
     /// A workflow step finished: tell the fix chat about it, if it's that step's chat.
+    /// An apply chat for the workflow that's running: how a step went wrong, ready for `s`.
+    fn apply_step_failed(&mut self, idx: usize, dry: bool, code: i32) {
+        let Some(s) = self.wf.as_ref() else { return };
+        let Some(c) = self.chat.as_mut().filter(|c| {
+            c.ask
+                .applying()
+                .is_some_and(|a| a.workflow.as_deref() == Some(s.wf.name.as_str()))
+        }) else {
+            return;
+        };
+        let step = &s.wf.steps[idx];
+        let log = std::fs::read_to_string(s.run.log_path(&step.id)).unwrap_or_default();
+        let tail: Vec<&str> = log.lines().rev().take(40).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        c.offer = Some(format!(
+            "Step {}/{} of {}, {} ({}){}, failed (exit {code}). Last lines of its log:\n{}\n\nWhat now?",
+            idx + 1,
+            s.wf.steps.len(),
+            s.wf.name,
+            step.title,
+            step.id,
+            if dry { ", its dry run" } else { "" },
+            tail.join("\n")
+        ));
+        self.toast("a step failed · A: Claude is waiting (s sends it the log)");
+    }
+
+    /// An apply chat for the workflow that just ended: what happened, ready for `s`.
+    fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
+        let Some(c) = self.chat.as_mut().filter(|c| {
+            c.ask
+                .applying()
+                .is_some_and(|a| a.workflow.as_deref() == Some(e.head.workflow.as_str()))
+        }) else {
+            return;
+        };
+        let h = &e.head;
+        let list = |what: &str, v: &[String]| {
+            (!v.is_empty()).then(|| format!(" {what}: {}.", v.join(", ")))
+        };
+        c.offer = Some(format!(
+            "The {} run ended: {}.{}{}{} What should I verify now?",
+            h.workflow,
+            h.result,
+            list("Failed", &h.failed).unwrap_or_default(),
+            list("Done by hand", &h.by_hand).unwrap_or_default(),
+            list("Skipped", &h.skipped).unwrap_or_default(),
+        ));
+        self.toast("the run ended · A: Claude is waiting with the next step (s)");
+    }
+
     fn chat_step_exit(&mut self, idx: usize, dry: bool, code: i32) {
         use super::chat::{Kind, StepState};
+        if code != 0 {
+            self.apply_step_failed(idx, dry, code);
+        }
         let Some(c) = self.chat.as_mut().filter(|c| c.ask.step() == Some(idx)) else {
             return;
         };
@@ -1420,11 +1535,17 @@ impl App {
         let mut hints = self.screens.hints(self.screen, &self.view());
         // Maintenance's list: every row key, not only the selected row's.
         if self.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
-            let row = ["j/k", "Enter", "p", "P", "t", "d", "e", "x", "B", "z"];
-            hints = [("j/k", "select")]
-                .into_iter()
-                .chain(super::maintlist::GRAMMAR.iter().copied())
+            let row = ["Enter", "p", "P", "t", "d", "e", "x", "B", "z", "A"];
+            hints = super::maintlist::GRAMMAR
+                .iter()
+                .copied()
                 .chain(hints.into_iter().filter(|(k, _)| !row.contains(k)))
+                // Not on the key bar, to keep it to what the row takes.
+                .chain([
+                    ("F", "the audit report"),
+                    ("C", "Cleanup (7)"),
+                    ("w", "the workflows (0)"),
+                ])
                 .collect();
         }
         self.modal = Some(help_modal(&self.theme, self.screen.name(), &hints));
@@ -2075,6 +2196,7 @@ impl App {
             };
         }
         let entry = self.log_entry(None);
+        self.apply_run_ended(&entry);
         if self.records {
             if let Err(e) = crate::maint::log::write(&entry) {
                 self.toast(format!("couldn't write the maintenance log: {e}"));
@@ -2406,6 +2528,23 @@ impl App {
         let set = |me: &mut Self, s: usize| me.plan_view = Some((wf.clone(), s));
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => self.plan_view = None,
+            // Claude alongside: apply this plan, or ask about it.
+            KeyCode::Char('A') if !writing => {
+                if !crate::claude::available() {
+                    return self.toast("Claude Code not found (expected ~/.local/bin/claude)");
+                }
+                let v = self.view();
+                let Some(apply) = super::screens::maint::plan_apply_ask(&v, &wf) else {
+                    return self.toast("the plan isn't ready to apply");
+                };
+                let ask = crate::claude::Ask::new(
+                    format!("the plan for {wf}"),
+                    apply.context.clone(),
+                    "Is this plan still right for my machine as it is now? What would you check \
+                     or change first?",
+                );
+                self.choice = Some(claude_choice(&self.theme, apply, ask));
+            }
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pid) = self
                     .writer
@@ -3212,6 +3351,7 @@ impl App {
                     } else {
                         vec![
                             ("Enter", "apply (start its workflow)"),
+                            ("A", "claude"),
                             ("r", "revise"),
                             ("x", "drop"),
                             ("j/k", "scroll"),
@@ -3242,9 +3382,16 @@ impl App {
                     let v = self.view();
                     let mut h = self.screens.hints(self.screen, &v);
                     // `A` is global but invisible unless it's in the bar on every tab.
+                    // A screen may name its own (Maintenance: apply or ask); a hidden chat
+                    // waiting takes the key over.
                     match self.chat.as_ref().filter(|c| c.hidden) {
-                        Some(c) => h.push(("A", c.hidden_word())),
-                        None if crate::claude::available() => h.push(("A", "ask Claude")),
+                        Some(c) => {
+                            h.retain(|(k, _)| *k != "A");
+                            h.push(("A", c.hidden_word()));
+                        }
+                        None if crate::claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
+                            h.push(("A", "ask Claude"))
+                        }
                         None => {}
                     }
                     h.extend([("?", "help"), ("q", "quit")]);
@@ -3357,11 +3504,17 @@ fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
         l("/         filter (Esc clears)  n/N   next/prev    C-h/C-l  pane focus"),
         l("r         refresh current      c     check now    C-j/C-k  scroll log/diff"),
         l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
-        l("A         ask Claude about the selected thing (you see what's sent first)"),
         l(":q  :<screen>  :job <name>  :workflow <name>  :refresh"),
-        Line::raw(""),
-        Line::styled(format!("{screen}:"), t.s(t.cyan)),
     ];
+    // The screen names its own `A` when it has one.
+    if !hints.iter().any(|(k, _)| *k == "A") {
+        lines.insert(
+            5,
+            l("A         ask Claude about the selected thing (you see what's sent first)"),
+        );
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(format!("{screen}:"), t.s(t.cyan)));
     let mut row = String::new();
     for (k, d) in hints {
         let cell = format!("{k:<7} {d:<22}");
@@ -3467,10 +3620,44 @@ fn retry_step_modal(t: &Theme, s: &Session, i: usize, dry_ok: bool) -> Modal {
     }
 }
 
+/// What the proposal box says about a command that changes deployments or reboots: a run in
+/// progress can be confused by it, and when a workflow applies this, that's its job.
+fn workflow_note(wf_open: bool, ask: &crate::claude::Ask) -> Option<&'static str> {
+    if wf_open {
+        Some(
+            "A workflow is in progress: changing deployments or rebooting outside it can confuse it.",
+        )
+    } else if ask.applying().is_some_and(|a| a.workflow.is_some()) {
+        Some("The workflow makes this change: press w in the chat instead of running it here.")
+    } else {
+        None
+    }
+}
+
+/// `A` where Claude can help apply something: apply it with Claude, or just ask.
+fn claude_choice(t: &Theme, apply: crate::claude::Ask, ask: crate::claude::Ask) -> Choice {
+    Choice {
+        title: "Claude · pick one (1–2, n cancels)".into(),
+        lines: vec![
+            Line::styled(
+                "1  help me apply it: Claude proposes each step, you run it",
+                t.fg(),
+            ),
+            Line::styled("2  just ask about it", t.fg()),
+            Line::raw(""),
+            Line::styled("Either way you see what's sent first.", t.dim()),
+        ],
+        options: vec![
+            ("help me apply it".into(), vec![Effect::AskConsent(apply)]),
+            ("just ask about it".into(), vec![Effect::AskConsent(ask)]),
+        ],
+    }
+}
+
 fn run_proposal_modal(
     t: &Theme,
     p: crate::claude::Proposed,
-    wf_open: bool,
+    wf_note: Option<&'static str>,
     reaudit: bool,
 ) -> Modal {
     let risky = crate::claude::risky(&p.cmd);
@@ -3500,11 +3687,8 @@ fn run_proposal_modal(
             t.s(t.red),
         ));
     }
-    if wf_open && crate::claude::touches_deployment(&p.cmd) {
-        lines.push(Line::styled(
-            "A workflow is in progress: changing deployments or rebooting outside it can confuse it.",
-            t.s(t.yellow),
-        ));
+    if let Some(n) = wf_note.filter(|_| crate::claude::touches_deployment(&p.cmd)) {
+        lines.push(Line::styled(n, t.s(t.yellow)));
     }
     if p.cmd.contains("sudo") {
         lines.push(Line::styled(

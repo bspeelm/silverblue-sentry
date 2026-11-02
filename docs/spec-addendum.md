@@ -231,3 +231,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `sentry` re-exports the core modules under their old names (`crate::exec`, `crate::maint`, …), and its `maint`, `workflows`, `collectors` and `tui` add their local parts to core's. sentry-server names core as `sentry_core::…` (its own `config`, `maint`, `tui` and `audit` would clash).
 - Tests: core's `testing` feature (scratch dirs per process, Claude Code counted as installed) is turned on only by the other crates' dev-dependencies; release builds never have it.
 
+## A25. Apply with Claude, and a quieter Maintenance (2026-11)
+- `A` on a Maintenance row or in the Plan view: 1 help me apply it, 2 just ask (a finding keeps its fix flow). Applying, Claude answers before / change / verify / roll back; you run each command (`r`, confirm), output goes back with `s`.
+- When a workflow makes the change, Claude never proposes its commands: `w` in the chat starts the workflow (a plan's values when there's one) and the chat steps aside; a failed step or the run's end is offered to Claude (`s`). `d` marks a task or a by-hand plan done. Commands that change something are logged `kind = "apply"`, tagged `apply:<row key>` (never `task:`).
+- The key bar shows the selected row's keys (Enter named by what it does) and `c`, `v`, `R`; the rest is in `?`. Details say what Enter does once, without key hints; the update list is in Details only.
+

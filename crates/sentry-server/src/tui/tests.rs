@@ -1110,9 +1110,24 @@ fn ask_works_on_the_updates_recommendation() {
         vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
         Instant::now(),
     );
+    // A offers: 1 help me apply it (Claude beside apt-maintenance), 2 just ask.
     key(&mut a, KeyCode::Char('A'));
+    assert!(render_to_string(&mut a, 158, 41).contains("help me apply it"));
+    key(&mut a, KeyCode::Char('1'));
     let prompt = a.consent_text().expect("consent");
     assert!(prompt.contains("Updates (simulated)"), "{prompt}");
+    assert!(
+        prompt.contains("workflow `apt-maintenance`") && prompt.contains("press `w`"),
+        "{prompt}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('2'));
+    let prompt = a.consent_text().expect("consent");
+    assert!(
+        prompt.contains("Updates (simulated)") && !prompt.contains("press `w`"),
+        "{prompt}"
+    );
 }
 
 /// Against a disposable sshd whose sudo asks for a password (never the real server): a sudo
@@ -1485,10 +1500,21 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 30 days"));
     key(&mut a, KeyCode::Esc);
+    // A: 2 asks about the item among everything recommended; 1 applies it with Claude, told
+    // its standing and its workflow.
     key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('2'));
     let prompt = a.consent_text().expect("consent");
     assert!(
         prompt.contains("recommends maintaining") && prompt.contains("About \"web\""),
+        "{prompt}"
+    );
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('1'));
+    let prompt = a.consent_text().expect("consent");
+    assert!(
+        prompt.contains("Help me apply this") && prompt.contains("compose-bump"),
         "{prompt}"
     );
 }
@@ -1521,7 +1547,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     key(&mut a, KeyCode::Esc);
     // A tidy one: Track.
     let reached = (0..20).any(|_| {
-        let here = screen(&mut a).contains("Enter or t: track it");
+        let here = screen(&mut a).contains("Enter: track it");
         if !here {
             key(&mut a, KeyCode::Char('j'));
         }
@@ -1931,7 +1957,7 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
     assert!(!s.contains("Reading first"), "{s}");
     key(&mut a, KeyCode::Esc);
     assert!(
-        screen(&mut a).contains("last review"),
+        screen(&mut a).contains("Recommended · 11 · reviewed"),
         "the panel says there's one"
     );
     // R: Records on the reviews (every one kept); Enter opens it.
