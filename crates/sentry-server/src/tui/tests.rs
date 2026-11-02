@@ -733,9 +733,8 @@ fn live_workflow() {
 }
 
 #[test]
-fn ask_claude_about_a_finding_and_run_its_proposal() {
-    use sentry_core::claude::Event as CEvent;
-    use sentry_core::exec::StreamMsg;
+fn fixing_a_finding_on_the_server_is_an_apply_session() {
+    use sentry_core::apply::session::{End, Phase, Turn};
     let mut a = app();
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     a.apply(
@@ -748,56 +747,31 @@ fn ask_claude_about_a_finding_and_run_its_proposal() {
         s.contains("Sent to Claude") && s.contains("Audit finding (high"),
         "{s}"
     );
-    assert!(s.contains("through `sentry-server exec`"), "{s}");
+    assert!(
+        s.contains("brief › investigate") && s.contains("through `sentry-server exec`"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Enter);
-    let c = a.chat_mut().expect("chat open");
-    c.on_event(CEvent::Text(
-        "**Commands**\n```bash\n# why: bring it back\nsudo docker start db\n```\n".into(),
-    ));
-    c.on_exit(0);
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("run a proposed command"), "{s}");
-    key(&mut a, KeyCode::Char('r'));
+    a.apply_answer_for_test(
+        "Start it.\n```sentry-apply\nsummary = \"start db\"\n[[step]]\ntitle = \"Start\"\n\
+         run = \"sudo docker start db\"\n```",
+    );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("$ sudo docker start db") && s.contains("on myserver"),
+        !s.contains("Proposed commands") && s.contains("Enter  apply the plan"),
         "{s}"
     );
-    key(&mut a, KeyCode::Char('y'));
-    let id = a.chat_mut().unwrap().job.as_ref().unwrap().0;
-    a.on_event(
-        Ev::Run(
-            id,
-            StreamMsg::Line {
-                stderr: false,
-                text: "db".into(),
-            },
-        ),
-        Instant::now(),
+    key(&mut a, KeyCode::Enter);
+    // sudo -n works here: no password asked; the step runs on the server.
+    a.apply_exit_for_test(0);
+    a.apply_exit_for_test(0);
+    // No audit to run here (the server's findings): Claude verifies straight away.
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Verify)
     );
-    a.on_event(
-        Ev::Run(
-            id,
-            StreamMsg::Exit {
-                code: 0,
-                elapsed: std::time::Duration::from_secs(1),
-            },
-        ),
-        Instant::now(),
-    );
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("exit 0") && s.contains("s sends the output to Claude"),
-        "{s}"
-    );
-    assert!(
-        a.chat_mut()
-            .unwrap()
-            .offer
-            .as_deref()
-            .unwrap()
-            .contains("$ sudo docker start db")
-    );
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
 }
 
 #[test]
@@ -877,11 +851,8 @@ fn chips_and_badge_match_sentry() {
 #[test]
 fn chat_input_edits() {
     let mut a = app();
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
-    a.apply(
-        vec![super::app::Effect::MaintFind("finding:".into())],
-        Instant::now(),
-    );
+    // A plain question (the Overview): a chat.
+    key(&mut a, KeyCode::Char(Tab::Overview.key()));
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Enter);
     a.chat_mut().unwrap().on_exit(0);

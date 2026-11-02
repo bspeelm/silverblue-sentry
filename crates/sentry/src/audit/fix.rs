@@ -307,7 +307,7 @@ mod tests {
     }
 }
 
-/// Ask Claude about a finding, with sentry's own fixes for it.
+/// Fix a finding with Claude (an apply session), told sentry's own fixes for it.
 pub fn ask(f: &crate::audit::Finding) -> crate::claude::Ask {
     let all = fixes(f);
     let list: Vec<String> = all
@@ -325,23 +325,13 @@ pub fn ask(f: &crate::audit::Finding) -> crate::claude::Ask {
             _ => None,
         })
         .collect();
-    let known = all
-        .iter()
-        .filter_map(|x| match &x.act {
-            Act::Shell { cmd, .. } => Some(crate::claude::KnownFix {
-                cmd: cmd.clone(),
-                undo: x.undo.clone(),
-            }),
-            _ => None,
-        })
-        .collect();
-    crate::claude::Ask::for_finding(f, known, &list)
+    crate::claude::Ask::for_finding(f, &list)
 }
 
 #[cfg(test)]
 mod ask_tests {
     #[test]
-    fn the_question_lists_sentrys_fixes_and_they_are_matched() {
+    fn the_question_lists_sentrys_fixes_for_the_plan() {
         let a = super::ask(&crate::audit::Finding {
             id: "listener:svc:passim (fwupd firmware cache)".into(),
             message: "passim · open to all networks".into(),
@@ -351,16 +341,8 @@ mod ask_tests {
             a.context.contains("1. Stop passim sharing firmware")
                 && a.context.contains("(undo: sudo systemctl unmask")
         );
-        assert!(a.finding().is_some() && a.prompt().contains("# why:"));
-        let known = super::ask(&crate::audit::Finding {
-            id: "unit-failed:system:systemd-remount-fs.service".into(),
-            ..Default::default()
-        })
-        .known;
-        let p = crate::claude::parse_commands(
-            "```\nsudo systemctl reset-failed systemd-remount-fs.service\n```",
-            &known,
-        );
-        assert!(p[0].known && p[0].undo.is_some());
+        // Fixing it is an apply session: one plan, sentry's fixes as Claude's starting point.
+        assert!(a.finding().is_some() && a.prompt().contains("```sentry-apply"));
+        assert!(a.prompt().contains("Use sentry's known fix when it fits"));
     }
 }

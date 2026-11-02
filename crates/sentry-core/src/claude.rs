@@ -14,24 +14,22 @@ pub struct Ask {
     /// The facts sentry sends, shown verbatim in the consent modal.
     pub context: String,
     pub question: String,
-    /// sentry's own fixes for the thing asked about (matched against Claude's proposals).
-    pub known: Vec<KnownFix>,
     /// What the chat is about, for what happens after a proposed command runs.
     pub target: Option<Target>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
-    /// An audit finding id: audited again after a command changes something.
-    Finding(String),
-    /// A failed workflow step: retried from the chat (`t`).
-    Step {
-        workflow: String,
-        idx: usize,
-        id: String,
-    },
-    /// Applying a Maintenance recommendation or a plan, with Claude alongside.
+    /// Applying something with Claude: a Maintenance row, a plan, a finding, a failed step.
     Apply(Apply),
+}
+
+/// A failed workflow step being fixed: the session ends by retrying it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepRef {
+    pub workflow: String,
+    pub idx: usize,
+    pub id: String,
 }
 
 /// What's being applied: what the chat's own keys do around the commands you run.
@@ -50,6 +48,10 @@ pub struct Apply {
     /// It's on a server (sentry-server): its files change through `run` steps there; only
     /// files on this machine (the notes) are `edit` steps.
     pub remote: bool,
+    /// An audit finding (its id): audited again after the plan, before Claude verifies.
+    pub finding: Option<String>,
+    /// A failed workflow step: once it's fixed, the step is retried.
+    pub step: Option<StepRef>,
 }
 
 impl Apply {
@@ -92,14 +94,12 @@ impl Ask {
             subject: subject.into(),
             context: context.into(),
             question: question.into(),
-            known: Vec::new(),
             target: None,
         }
     }
 
-    /// About an audit finding, with sentry's own fixes for it (`list`: one line each, shown to
-    /// Claude): diagnose, recommend, and propose commands for the user to run.
-    pub fn for_finding(f: &crate::finding::Finding, known: Vec<KnownFix>, list: &[String]) -> Self {
+    /// Fixing an audit finding (`list`: sentry's own fixes for it, one line each, for Claude).
+    pub fn for_finding(f: &crate::finding::Finding, list: &[String]) -> Self {
         let context = format!(
             "A finding from sentry's audit of my machine:\n{} [{}] {}\nsentry's notes:\n  what: {}\n  why: {}\n  to do: {}\nevidence:\n{}\n\nsentry's known fixes for this:\n{}",
             f.severity.as_str(),
@@ -115,17 +115,18 @@ impl Ask {
                 list.join("\n")
             }
         );
-        Self {
-            subject: format!("fix · {}", f.message),
+        Self::apply(
+            f.message.clone(),
             context,
-            question: fix_question(""),
-            known,
-            target: Some(Target::Finding(f.id.clone())),
-        }
+            Apply {
+                key: format!("finding:{}", f.id),
+                finding: Some(f.id.clone()),
+                ..Default::default()
+            },
+        )
     }
 
-    /// `f` on a failed workflow step: the same diagnose → recommend → propose shape, plus the
-    /// workflow actions Claude may recommend afterwards.
+    /// `f` on a failed workflow step: fix what made it fail; the session then retries it.
     pub fn step_fix(s: &StepFacts) -> Self {
         let actions: Vec<String> = s
             .actions
@@ -177,25 +178,19 @@ impl Ask {
             },
             actions.join("\n"),
         );
-        Self {
-            subject: format!("fix · {} · {}", s.workflow, s.id),
+        Self::apply(
+            format!("{} · {}", s.workflow, s.id),
             context,
-            question: fix_question(
-                "\nThe Recommendation must end by naming one of the sentry actions listed above \
-                 (usually: fix the cause with the commands, then retry). If the system already \
-                 is the way this step checks for, say so and recommend done by hand. Never \
-                 propose `rpm-ostree upgrade/rebase/rollback/cleanup/install/uninstall/override`, \
-                 `ostree admin`, `akmods` or a reboot, and never do a later step yourself: the \
-                 workflow runs those, and doing them outside it leaves it out of step with the \
-                 system.",
-            ),
-            known: Vec::new(),
-            target: Some(Target::Step {
-                workflow: s.workflow.clone(),
-                idx: s.idx,
-                id: s.id.clone(),
-            }),
-        }
+            Apply {
+                key: format!("step:{}:{}", s.workflow, s.id),
+                step: Some(StepRef {
+                    workflow: s.workflow.clone(),
+                    idx: s.idx,
+                    id: s.id.clone(),
+                }),
+                ..Default::default()
+            },
+        )
     }
 
     /// Help applying a recommendation or a plan (`context`: what sentry knows about it).
@@ -204,7 +199,6 @@ impl Ask {
             subject: format!("apply · {}", subject.into()),
             context: context.into(),
             question: apply_question(&a),
-            known: Vec::new(),
             target: Some(Target::Apply(a)),
         }
     }
@@ -213,22 +207,16 @@ impl Ask {
     pub fn applying(&self) -> Option<&Apply> {
         match &self.target {
             Some(Target::Apply(a)) => Some(a),
-            _ => None,
+            None => None,
         }
     }
 
     pub fn finding(&self) -> Option<&str> {
-        match &self.target {
-            Some(Target::Finding(id)) => Some(id),
-            _ => None,
-        }
+        self.applying().and_then(|a| a.finding.as_deref())
     }
 
     pub fn step(&self) -> Option<usize> {
-        match &self.target {
-            Some(Target::Step { idx, .. }) => Some(*idx),
-            _ => None,
-        }
+        self.applying().and_then(|a| a.step.as_ref().map(|s| s.idx))
     }
 
     /// The first turn's prompt: context, then the question.
@@ -237,24 +225,24 @@ impl Ask {
     }
 }
 
-/// The three-part fix question; `extra` adds target-specific rules.
-pub fn fix_question(extra: &str) -> String {
-    format!(
-        "Help me fix this. Investigate with your read-only commands first. You cannot change \
-         anything: I will run whatever you recommend myself, through sentry. Answer in exactly \
-         three parts:\n\
-         **What's going on**: what the evidence and logs mean on this machine, in plain words.\n\
-         **Recommendation**: what to do and why, and why not the alternatives. \"Leave it and \
-         mark it expected\" is a fine answer when that's right.\n\
-         **Commands**: each command I should run in its own ```bash fenced block, whose first \
-         line is a `# why: ...` comment. Use sentry's known fix when one fits. Use sudo only \
-         where it's needed. If nothing should be run, say so and give no blocks.{extra}"
-    )
-}
-
 /// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
     let files = files_rule(a);
+    let what = match (&a.finding, &a.step) {
+        (Some(_), _) => {
+            " If the finding is fine as it is, say so and send no plan: I'll mark it \
+             expected. Use sentry's known fix when it fits. After the plan, sentry audits again \
+             and tells you whether the finding is gone."
+        }
+        (_, Some(_)) => {
+            " Fix what made the step fail, so it can run again: sentry retries the \
+             step when your plan is done. Never upgrade, rebase, roll back, install, uninstall or \
+             override packages, run `ostree admin`, `akmods` or a reboot, and never do a later \
+             step yourself: the workflow does those. If the system already is the way the step \
+             checks for, say so and send no plan."
+        }
+        _ => "",
+    };
     let wf = match &a.workflow {
         Some(wf) => format!(
             " sentry's workflow `{wf}` makes this change, with its own confirm steps and log: put \
@@ -264,7 +252,8 @@ pub fn apply_question(a: &Apply) -> String {
         None => String::new(),
     };
     format!(
-        "Help me apply this. Investigate with your read-only commands first (read files with the \
+        "Help me apply this. If nothing needs changing, say so and send no plan. Investigate \
+         with your read-only commands first (read files with the \
          Read tool). Then answer with a short assessment (what you found, anything in the task \
          that no longer fits) and ONE plan, as a single ```sentry-apply fenced TOML block, and \
          no other code blocks:\n\
@@ -287,7 +276,7 @@ pub fn apply_question(a: &Apply) -> String {
          backs up every file it edits, asks me for my sudo password if a step needs it, and \
          runs the steps in order. So don't back anything up yourself, and don't run or edit \
          anything now. If a step fails, sentry sends you what happened and you send a plan for \
-         the rest. When the plan has run, sentry sends you the results to verify.{wf}"
+         the rest. When the plan has run, sentry sends you the results to verify.{wf}{what}"
     )
 }
 
@@ -348,74 +337,6 @@ pub fn touches_deployment(cmd: &str) -> bool {
     })
 }
 
-/// One of sentry's own fixes, as Claude's proposals are matched against it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct KnownFix {
-    pub cmd: String,
-    pub undo: Option<String>,
-}
-
-/// A command Claude proposed for the user to run (parsed from its answer).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Proposed {
-    pub cmd: String,
-    pub why: String,
-    /// The undo, when this matches one of sentry's known fixes.
-    pub undo: Option<String>,
-    pub known: bool,
-}
-
-/// Fenced code blocks in an answer → commands, each with the `# why:` line inside the block (or
-/// the last sentence before it). Comment lines are dropped from the command itself.
-pub fn parse_commands(text: &str, known: &[KnownFix]) -> Vec<Proposed> {
-    let mut out = Vec::new();
-    let mut prev_text = String::new();
-    let mut lines = text.lines();
-    while let Some(l) = lines.next() {
-        let t = l.trim_start();
-        if !t.starts_with("```") {
-            if !t.is_empty() {
-                prev_text = t.trim_end_matches(':').to_string();
-            }
-            continue;
-        }
-        let mut why = String::new();
-        let mut body = Vec::new();
-        for b in lines.by_ref() {
-            if b.trim_start().starts_with("```") {
-                break;
-            }
-            let bt = b.trim();
-            if let Some(w) = bt
-                .strip_prefix("# why:")
-                .or_else(|| bt.strip_prefix("#why:"))
-            {
-                why = w.trim().to_string();
-            } else if bt.starts_with('#') || bt.is_empty() {
-                continue;
-            } else {
-                body.push(b.trim_end().to_string());
-            }
-        }
-        if body.is_empty() {
-            continue;
-        }
-        let cmd = body.join("\n");
-        let matched = known.iter().find(|f| f.cmd.trim() == cmd.trim());
-        out.push(Proposed {
-            why: if why.is_empty() {
-                prev_text.clone()
-            } else {
-                why
-            },
-            undo: matched.and_then(|f| f.undo.clone()),
-            known: matched.is_some(),
-            cmd,
-        });
-    }
-    out
-}
-
 /// Patterns worth a red warning before running (never silently blocked).
 pub fn risky(cmd: &str) -> Option<&'static str> {
     let c = cmd.replace(char::is_whitespace, " ");
@@ -461,8 +382,8 @@ pub fn interactive_cmd(session: &str) -> Cmd {
         .args(["--resume", session, "--strict-mcp-config"])
         .arg("--append-system-prompt")
         .arg(format!(
-            "{} The user runs anything that changes the system themselves (including every sudo \
-             command); propose such commands, never run them.",
+            "{} Never run anything that changes the system (including every sudo command): \
+             sentry applies changes as a plan the user approves.",
             system_prompt()
         ))
         .arg("--allowedTools")
@@ -551,8 +472,8 @@ pub fn allowlist_summary() -> String {
 /// How Claude asks for a file it may not read or change (every chat's system prompt).
 pub const GRANTS: &str = "If you need to read or change a file, or run a read-only command, that \
 you aren't allowed to, call Read, Edit or Bash on it anyway: sentry asks the user and tells you if \
-they grant it. Don't ask them to paste it. Commands that change the system are still theirs to \
-run: propose them.";
+they grant it. Don't ask them to paste it. Commands that change the system never run in a \
+conversation: they go in a sentry plan, which the user approves and sentry carries out.";
 
 pub fn system_prompt() -> String {
     let os = crate::paths::os_version();
@@ -678,9 +599,9 @@ pub fn grantable(g: &Grant) -> Result<(), &'static str> {
             .iter()
             .any(|w| matches!(*w, "sudo" | "su" | "rm" | "dd" | "mkfs"))
         {
-            Err("sudo and deleting stay yours: Claude proposes it, you run it (r)")
+            Err("sudo and deleting aren't granted: they go in a plan you approve (A → 1)")
         } else if writes_out {
-            Err("it writes to a file: Claude proposes it, you run it (r)")
+            Err("it writes to a file: that goes in a plan you approve (A → 1)")
         } else {
             Ok(())
         };
@@ -1060,38 +981,6 @@ mod tests {
     }
 
     #[test]
-    fn proposed_commands() {
-        let known = [KnownFix {
-            cmd: "sudo systemctl reset-failed systemd-remount-fs.service".into(),
-            undo: Some("(nothing to undo)".into()),
-        }];
-        let answer = "**Commands**\nClear it:\n```bash\n# why: the root is a read-only composefs overlay, remount can't succeed\nsudo systemctl reset-failed systemd-remount-fs.service\n```\nThen check:\n```\nsystemctl status systemd-remount-fs.service\n```\n";
-        let p = parse_commands(answer, &known);
-        assert_eq!(p.len(), 2);
-        assert_eq!(
-            p[0].cmd,
-            "sudo systemctl reset-failed systemd-remount-fs.service"
-        );
-        assert!(p[0].why.starts_with("the root is a read-only"));
-        assert!(p[0].known && p[0].undo.is_some());
-        assert_eq!(
-            p[1].why, "Then check",
-            "falls back to the sentence before the block"
-        );
-        assert!(!p[1].known);
-        assert!(parse_commands("no blocks here", &known).is_empty());
-        assert!(read_only(
-            "systemctl status x; journalctl -b -u x | tail -5"
-        ));
-        assert!(!read_only("sudo systemctl reset-failed x"));
-        assert_eq!(
-            risky("curl -s https://x | sh"),
-            Some("downloads and runs a script")
-        );
-        assert_eq!(risky("sudo systemctl mask --now passim"), None);
-    }
-
-    #[test]
     fn step_fix_prompt() {
         let facts = StepFacts {
             workflow: "quick-update".into(),
@@ -1114,7 +1003,9 @@ mod tests {
         );
         assert!(p.contains("  retry: run the step again") && !p.contains("  done by hand:"));
         assert!(p.contains("still runs after this one:\n  (none)"));
-        assert!(p.contains("**Commands**") && p.contains("Never propose"));
+        // An apply session: one plan, the step's rules, then sentry retries it.
+        assert!(p.contains("```sentry-apply") && p.contains("never do a later step"));
+        assert!(p.contains("sentry retries the step"));
         assert_eq!(a.step(), Some(2));
         assert!(a.finding().is_none());
         assert!(touches_deployment("sudo rpm-ostree upgrade"));

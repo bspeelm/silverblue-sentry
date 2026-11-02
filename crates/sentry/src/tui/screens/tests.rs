@@ -898,60 +898,68 @@ fn audit_fix_key() {
 }
 
 #[test]
-fn audit_fix_with_claude() {
-    use crate::claude::Event;
-    use crate::tui::chat::Chat;
+fn fixing_a_finding_is_an_apply_session() {
+    use crate::apply::session::{End, Phase, Turn};
     let mut d = store();
     d.reports.set(Ok(audit_reports()));
     d.baseline.listeners = vec!["0.0.0.0:22/sshd".into()];
     let mut a = maint_view(d, 'F');
     render_to_string(&mut a, 158, 41);
-    // `f` opens the chat with what would be sent (finding + sentry's known fixes); nothing
-    // leaves before Enter.
+    // `f`: an apply session (no chat, no proposals), the finding and sentry's fixes in its
+    // brief; nothing leaves before Enter.
     key(&mut a, KeyCode::Char('f'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Sent to Claude") && s.contains("Enter  send"),
+        s.contains("brief › investigate") && s.contains("Enter  start"),
         "{s}"
     );
-    assert!(a.consent_text().unwrap().contains("sentry's known fixes"));
-    key(&mut a, KeyCode::Esc);
-    // An answer with a proposal: `r` opens the confirm box, `n` runs nothing.
-    let f = crate::audit::Finding {
-        id: "listener:svc:passim (fwupd firmware cache)".into(),
-        message: "passim".into(),
-        ..Default::default()
-    };
-    let mut c = Chat::new(crate::audit::fix::ask(&f));
-    c.begin_turn("q", 1, 1);
-    c.on_event(Event::Text(
-        "**Commands**\n```bash\n# why: stop LAN sharing\nsudo systemctl mask --now passim.service\n```\n"
-            .into(),
-    ));
-    c.on_exit(0);
-    a.set_chat(c);
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("run a proposed command"), "{s}");
-    key(&mut a, KeyCode::Char('r'));
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Run Claude's proposal"), "{s}");
+    let p = a.consent_text().unwrap();
     assert!(
-        s.contains("undo: sudo systemctl unmask passim.service"),
-        "{s}"
+        p.contains("sentry's known fixes") && p.contains("```sentry-apply"),
+        "{p}"
     );
-    assert!(s.contains("sentry runs this as you, not Claude"), "{s}");
-    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "Mask it.\n```sentry-apply\nsummary = \"mask passim\"\nrollback = \"unmask it\"\n\
+         [[step]]\ntitle = \"Check\"\ncheck = \"true\"\n```",
+    );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        !s.contains("Run Claude's proposal") && s.contains("Proposed commands"),
+        !s.contains("Proposed commands") && s.contains("Enter  apply the plan"),
         "{s}"
     );
+    key(&mut a, KeyCode::Enter);
+    // A quiet step still shows it's alive.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("… running 0:00, no output yet"), "{s}");
+    a.apply_step_exit_for_test(0);
+    // The plan ran: sentry audits again before Claude verifies.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sentry is auditing again"), "{s}");
+    a.apply_step_exit_for_test(0);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Claude is checking the result"), "{s}");
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Verify)
+    );
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"masked\"\n```");
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+    let e = &a.log_for_test()[0];
+    assert!(
+        e.head.tags.iter().any(|t| t.starts_with("finding:")),
+        "{:?}",
+        e.head.tags
+    );
+    // Enter closes it.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Enter  close"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none());
 }
 
 #[test]
 fn upgrade_failed_step_fix_with_claude() {
-    use crate::claude::{Ask, Event};
-    use crate::tui::chat::Chat;
     use crate::tui::wf::Session;
     use crate::workflows::parse;
     use crate::workflows::runner::{self, Next};
@@ -987,43 +995,33 @@ gate = "auto"
     a.set_wf(sess);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("[f] fix with Claude"), "{s}");
+    // `f`: an apply session for the step; when it's fixed, Enter retries the step.
     key(&mut a, KeyCode::Char('f'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("Sent to Claude") && s.contains("step 1/2: Flag file exists"),
         "{s}"
     );
-    key(&mut a, KeyCode::Esc);
-
-    // Claude proposes a fix; after it, `t` retries the step behind a confirm box.
-    let mut c = Chat::new(Ask::step_fix(&facts));
-    c.begin_turn("q", 1, 1);
-    c.on_event(Event::Text(
-        "**Commands**\n```bash\n# why: create it\ntouch /tmp/flag\n```\nThen retry (r).".into(),
-    ));
-    c.on_exit(0);
-    a.set_chat(c);
-    let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("run a proposed command") && s.contains("retry the step"),
-        "{s}"
+        a.consent_text()
+            .unwrap()
+            .contains("sentry retries the step")
     );
-    key(&mut a, KeyCode::Char('t'));
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("Retry step 1/2 of flag-test") && s.contains("$ test -f /tmp/flag"),
-        "{s}"
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "Create it.\n```sentry-apply\nsummary = \"create the flag\"\n\
+         [[step]]\ntitle = \"Create\"\nrun = \"touch /tmp/flag\"\n```",
     );
-    key(&mut a, KeyCode::Char('n'));
-    // The step fails again (as if retried): the chat says so and offers the log.
-    a.step_exit_for_test(0, 1);
+    key(&mut a, KeyCode::Enter);
+    a.apply_step_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"it's there\"\n```");
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("✗ flag failed again (exit 1)"), "{s}");
-    assert!(s.contains("send to Claude"), "{s}");
-    a.step_exit_for_test(0, 0);
+    assert!(s.contains("Enter  retry the step"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    // The session is done with; the step is retried (here: nothing runs, the run shows).
+    assert!(a.apply_session().is_none());
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("✓ flag done"), "{s}");
-    assert!(!s.contains("retry the step"), "{s}");
+    assert!(s.contains("flag-test"), "{s}");
 }
 
 #[test]

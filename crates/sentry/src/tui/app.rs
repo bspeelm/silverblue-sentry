@@ -52,16 +52,10 @@ pub enum Effect {
     /// Open a conversation with Claude showing what it would send (nothing sent until Enter),
     /// e.g. `f` on an audit finding; applying something opens an apply session.
     AskConsent(crate::claude::Ask),
-    /// Run one of Claude's proposed commands for the open chat (after its confirm modal).
-    ChatRun(crate::claude::Proposed),
-    /// Back from a suspended chat command: `Some((cmd, files))` for a proposal whose output
-    /// was tee'd to `files.0` and exit code to `files.1`, `None` after the Claude Code hand-off.
-    ChatBack(
-        Option<(String, std::path::PathBuf, std::path::PathBuf)>,
-        bool,
-    ),
-    /// `t` in a fix chat about a failed step: retry it (or run it after its dry run).
-    ChatRetryStep,
+    /// Just ask (the first), with what applying it would be (the second: `a` in the chat).
+    AskWith(Box<crate::claude::Ask>, Box<crate::claude::Ask>),
+    /// Back from continuing the chat in Claude Code.
+    ChatBack,
     /// Switch to another tab.
     Goto(ScreenId),
     /// Open Upgrade and start this workflow (its own confirm/var prompts follow).
@@ -98,6 +92,14 @@ pub enum Effect {
     /// Open Cleanup with only this job's items selected.
     CleanupFocus(crate::jobs::JobId),
     Quit,
+}
+
+/// What runs for the apply session besides its steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Aux {
+    Sudo,
+    Password,
+    Audit,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -269,8 +271,9 @@ pub struct App {
     chat: Option<super::chat::Chat>,
     /// Applying something with Claude: the one session, start to finish.
     apply: Option<crate::apply::session::Session>,
-    /// sudo's check for the session running (stream id; true: the password's check).
-    apply_aux: Option<(u64, bool)>,
+    /// What runs for the session besides its steps (stream id): sudo's check, the
+    /// password's, the audit after a finding's plan.
+    apply_aux: Option<(u64, Aux)>,
     choice: Option<Choice>,
     /// Effects to apply once a suspended command returns.
     suspend_then: Vec<Effect>,
@@ -428,8 +431,13 @@ impl App {
     /// Tests: the apply session's running step ended (nothing ran).
     #[cfg(test)]
     pub fn apply_step_exit_for_test(&mut self, code: i32) {
-        let Some(id) = self.apply.as_ref().and_then(|s| s.job.map(|j| j.0)) else {
-            panic!("no step running");
+        let Some(id) = self
+            .apply
+            .as_ref()
+            .and_then(|s| s.job.map(|j| j.0))
+            .or(self.apply_aux.map(|a| a.0))
+        else {
+            panic!("nothing running");
         };
         self.on_run_msg(
             id,
@@ -487,15 +495,6 @@ impl App {
     #[cfg(test)]
     pub fn set_wf(&mut self, s: Session) {
         self.wf = Some(s);
-    }
-
-    /// A workflow step finished (what `on_run_msg` does, minus the process).
-    #[cfg(test)]
-    pub fn step_exit_for_test(&mut self, idx: usize, code: i32) {
-        if let Some(s) = self.wf.as_mut() {
-            s.on_exit(idx, false, code, None);
-        }
-        self.chat_step_exit(idx, false, code);
     }
 
     /// Construct without config/terminal side effects (snapshot tests).
@@ -633,6 +632,14 @@ impl App {
         {
             at(now + Duration::from_millis(250));
         }
+        // An apply session working in view: its clocks tick.
+        if self
+            .apply
+            .as_ref()
+            .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            at(now + Duration::from_secs(1));
+        }
         due.max(now)
     }
 
@@ -699,7 +706,12 @@ impl App {
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             self.dirty = true;
         }
-        if self.chat.as_ref().is_some_and(|c| c.running()) {
+        if self.chat.as_ref().is_some_and(|c| c.running())
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
             self.dirty = true;
         }
         if let Some(s) = self.wf.as_mut()
@@ -810,28 +822,6 @@ impl App {
             self.dirty = true;
             return;
         }
-        if let Some(c) = self.chat.as_mut()
-            && c.job.as_ref().is_some_and(|(jid, _, _)| *jid == id)
-        {
-            match msg {
-                StreamMsg::Line { text, .. } => c.on_job_line(text),
-                StreamMsg::Exit { code, .. } => match c.job.take().map(|j| j.2) {
-                    Some(super::chat::Job::Proposal {
-                        cmd,
-                        output,
-                        changes,
-                    }) => self.chat_done(cmd, code, output, changes),
-                    Some(super::chat::Job::Audit {
-                        cmd,
-                        code: c0,
-                        output,
-                    }) => self.chat_audited(cmd, c0, output, code == 0),
-                    None => {}
-                },
-            }
-            self.dirty = true;
-            return;
-        }
         if let Some(s) = self.wf.as_mut()
             && let Some(live) = s.live.as_ref().filter(|l| l.id == id)
         {
@@ -840,7 +830,6 @@ impl App {
                 StreamMsg::Line { stderr, text } => s.on_line(text, stderr),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, dry, code, None);
-                    self.chat_step_exit(idx, dry, code);
                     self.wf_auto();
                     self.after_wf_change();
                 }
@@ -1156,17 +1145,6 @@ impl App {
         use ratatui::crossterm::event::KeyModifiers;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let Some(c) = self.chat.as_mut() else { return };
-        if c.picking {
-            c.picking = false;
-            if let KeyCode::Char(d @ '1'..='9') = k.code
-                && let Some(p) = c.proposals.get(d as usize - '1' as usize).cloned()
-            {
-                let reaudit = c.ask.finding().is_some();
-                let note = workflow_note(self.wf.is_some(), &c.ask);
-                self.modal = Some(run_proposal_modal(&self.theme, p, note, reaudit));
-            }
-            return;
-        }
         if c.pending {
             match k.code {
                 KeyCode::Esc => self.chat = None,
@@ -1197,34 +1175,14 @@ impl App {
                     let _ = kill(pid);
                     c.push(super::chat::Kind::Info, "stopped");
                 }
-                if let Some((_, pid, _)) = &c.job {
-                    let _ = kill(*pid);
-                }
             }
-            KeyCode::Char('r') if idle && !c.proposals.is_empty() => {
-                if self.wf.as_ref().is_some_and(|s| s.live.is_some()) {
-                    self.toast("a workflow step is running: wait for it to finish");
-                } else if c.proposals.len() == 1 {
-                    let p = c.proposals[0].clone();
-                    let reaudit = c.ask.finding().is_some();
-                    let note = workflow_note(self.wf.is_some(), &c.ask);
-                    self.modal = Some(run_proposal_modal(&self.theme, p, note, reaudit));
-                } else {
-                    c.picking = true;
+            // Apply what the chat is about: a session takes the conversation over.
+            KeyCode::Char('a') if c.can_apply() => {
+                if let Some(c) = self.chat.take()
+                    && let Some(apply) = c.apply_with.clone()
+                {
+                    self.apply = Some(crate::apply::session::Session::from_chat(c, apply));
                 }
-            }
-            KeyCode::Char('t') if idle && c.can_retry() => {
-                let dry_ok = c.step == Some(super::chat::StepState::DryOk);
-                match self.wf.as_ref().zip(c.ask.step()) {
-                    Some((s, i)) if s.next.idx() == Some(i) => {
-                        self.modal = Some(retry_step_modal(&self.theme, s, i, dry_ok));
-                    }
-                    _ => self.toast("that step isn't waiting any more"),
-                }
-            }
-            KeyCode::Char('s') if idle && c.offer.is_some() => {
-                let text = c.offer.take().unwrap_or_default();
-                self.ask_turn(text);
             }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
@@ -1243,7 +1201,6 @@ impl App {
                     super::chat::Kind::Info,
                     "continued in Claude Code (sudo and file edits stay off; it asks before other commands)",
                 );
-                let reaudit = c.ask.finding().is_some();
                 self.suspend = Some(crate::claude::interactive_cmd(&session));
                 self.suspend_banner = Some(
                     "sentry: continuing this conversation in Claude Code. Read-only commands are \
@@ -1252,7 +1209,7 @@ impl App {
                      Quit Claude Code (/exit or Ctrl-D twice) to return to sentry."
                         .into(),
                 );
-                self.suspend_then = vec![Effect::ChatBack(None, reaudit)];
+                self.suspend_then = vec![Effect::ChatBack];
             }
             KeyCode::Char('k') if ctrl => c.scroll_by(1),
             KeyCode::Char('j') if ctrl => c.scroll_by(-1),
@@ -1329,152 +1286,6 @@ impl App {
         .map_err(|e| e.to_string())
     }
 
-    /// `y` on a proposal's modal: sudo hands the terminal over (output tee'd to a file so it
-    /// can go back to Claude); anything else streams into the chat.
-    fn chat_run(&mut self, p: crate::claude::Proposed) {
-        let changes = !crate::claude::read_only(&p.cmd);
-        let reaudit = changes
-            && self
-                .chat
-                .as_ref()
-                .is_some_and(|c| c.ask.finding().is_some());
-        if p.cmd.contains("sudo") {
-            if let Some(why) = crate::workflows::runner::tty_blocker() {
-                self.toast(why);
-                return;
-            }
-            let dir = crate::claude::cwd();
-            let _ = std::fs::create_dir_all(&dir);
-            let (out, code) = (dir.join("last-run.txt"), dir.join("last-run.code"));
-            let _ = std::fs::remove_file(&code);
-            let script = format!(
-                "( {} ) 2>&1 | tee \"$1\"; echo ${{PIPESTATUS[0]}} > \"$2\"",
-                p.cmd
-            );
-            if let Some(c) = self.chat.as_mut() {
-                c.offer = None;
-                c.push(super::chat::Kind::Tool, format!("$ {}", p.cmd));
-            }
-            self.suspend_banner = Some(format!(
-                "sentry: running Claude's proposal (you confirmed it). Type your own password.\n$ {}",
-                p.cmd
-            ));
-            self.suspend = Some(
-                Cmd::host("bash")
-                    .args(["-c", &script, "sentry"])
-                    .arg(out.display().to_string())
-                    .arg(code.display().to_string())
-                    .timeout(None),
-            );
-            self.suspend_then = vec![Effect::ChatBack(Some((p.cmd, out, code)), reaudit)];
-            return;
-        }
-        let cmd = Cmd::host("bash").args(["-c", &p.cmd]).timeout(None);
-        self.chat_job(
-            cmd,
-            super::chat::Job::Proposal {
-                cmd: p.cmd.clone(),
-                output: String::new(),
-                changes: reaudit,
-            },
-            Some(format!("$ {}", p.cmd)),
-        );
-    }
-
-    fn chat_job(&mut self, cmd: Cmd, job: super::chat::Job, note: Option<String>) {
-        self.run_seq += 1;
-        let id = self.run_seq;
-        let tx = self.tx.clone();
-        let r = cmd.stream(move |m| {
-            let _ = tx.send(Event::Run(id, m));
-        });
-        let Some(c) = self.chat.as_mut() else { return };
-        c.offer = None;
-        if let Some(n) = note {
-            c.push(super::chat::Kind::Tool, n);
-        }
-        match r {
-            Ok(pid) => c.job = Some((id, pid, job)),
-            Err(e) => c.push(super::chat::Kind::Err, format!("couldn't start it: {e}")),
-        }
-    }
-
-    /// A chat command finished: audit again if it changed something, else offer the output.
-    fn chat_done(&mut self, cmd: String, code: i32, output: String, reaudit: bool) {
-        // A command Claude proposed that changes something: the log keeps it.
-        if reaudit && !cmd.is_empty() {
-            let tags: Vec<String> = self
-                .chat
-                .as_ref()
-                .and_then(|c| c.ask.finding())
-                .map(|f| vec![format!("finding:{f}")])
-                .unwrap_or_default();
-            let tail: Vec<&str> = output.lines().rev().take(5).collect::<Vec<_>>();
-            let tail: Vec<&str> = tail.into_iter().rev().collect();
-            self.log_event(crate::maint::log::LogEntry::event(
-                crate::maint::LOCAL,
-                "fix",
-                "fix",
-                code == 0,
-                &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
-                &tags,
-                jiff::Timestamp::now(),
-            ));
-        }
-        if reaudit {
-            self.chat_job(
-                crate::tui::screens::sentry_cmd(&["job", "audit"]),
-                super::chat::Job::Audit { cmd, code, output },
-                None,
-            );
-            return;
-        }
-        if let Some(c) = self.chat.as_mut() {
-            c.push(super::chat::Kind::Info, format!("exit {code}"));
-            if !cmd.is_empty() {
-                c.set_offer(&cmd, code, &output, None);
-            }
-            if c.can_retry() {
-                c.push(
-                    super::chat::Kind::Info,
-                    "press t to retry the step, or s to send this output to Claude first",
-                );
-            }
-        }
-    }
-
-    /// `y` on the retry box: retry the failed step (or, after its dry run, run it for real).
-    /// Its confirm gate is the box just answered, so a confirm step is started too.
-    fn chat_retry_step(&mut self, now: Instant) {
-        let dry_ok = self
-            .chat
-            .as_ref()
-            .is_some_and(|c| c.step == Some(super::chat::StepState::DryOk));
-        if !dry_ok {
-            self.wf_cmd(WfCmd::Retry, now);
-        }
-        self.wf_auto();
-        if self.wf.as_ref().is_some_and(|s| {
-            s.live.is_none() && matches!(s.next, crate::workflows::runner::Next::Confirm(_))
-        }) {
-            self.wf_cmd(WfCmd::Go, now);
-        }
-        let started = self.wf.as_ref().is_some_and(|s| s.live.is_some()) || self.suspend.is_some();
-        if let Some(c) = self.chat.as_mut() {
-            c.offer = None;
-            if started {
-                c.step = Some(super::chat::StepState::Running);
-                c.push(super::chat::Kind::Info, "retrying the step…");
-            } else {
-                c.push(
-                    super::chat::Kind::Info,
-                    "the step didn't start (see the toast)",
-                );
-            }
-        }
-    }
-
-    /// A workflow step finished: tell the fix chat about it, if it's that step's chat.
     /// A workflow run ended: the apply session waiting for it carries on (and shows again).
     fn apply_run_ended(&mut self, e: &crate::maint::log::LogEntry) {
         let Some(sess) = self.apply.as_mut() else {
@@ -1489,80 +1300,18 @@ impl App {
         self.apply_fx(fx, Instant::now());
     }
 
-    fn chat_step_exit(&mut self, idx: usize, dry: bool, code: i32) {
-        use super::chat::{Kind, StepState};
-        let Some(c) = self.chat.as_mut().filter(|c| c.ask.step() == Some(idx)) else {
-            return;
-        };
-        let Some(s) = self.wf.as_ref() else { return };
-        let id = s.wf.steps[idx].id.clone();
-        let log = std::fs::read_to_string(s.run.log_path(&id)).unwrap_or_default();
-        let what = if dry { "its dry run" } else { "the step" };
-        if code == 0 {
-            if dry {
-                c.step = Some(StepState::DryOk);
-                c.push(
-                    Kind::Info,
-                    format!("✓ {id}: dry run ok · t runs it for real"),
-                );
-            } else {
-                c.step = Some(StepState::Done);
-                c.push(Kind::Info, format!("✓ {id} done · the workflow carries on"));
-            }
-        } else {
-            c.step = Some(StepState::Failed);
-            c.push(
-                Kind::Info,
-                format!("✗ {id} failed again (exit {code}) · s sends the log to Claude"),
-            );
-        }
-        let tail: Vec<&str> = log.lines().rev().take(60).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        c.offer = Some(format!(
-            "I retried {what} ({id}) in sentry: exit {code}.\nLast lines of steps/{id}.log:\n{}\n\n{}",
-            tail.join("\n"),
-            if code == 0 {
-                "It worked. Anything I should check before carrying on?"
-            } else {
-                "It failed again. What now?"
-            }
-        ));
-    }
-
-    fn chat_audited(&mut self, cmd: String, code: i32, output: String, audit_ok: bool) {
-        self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
-        self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
-        let Some(c) = self.chat.as_mut() else { return };
-        let id = c.ask.finding().unwrap_or_default().to_string();
-        let after = if !audit_ok {
-            "sentry's audit afterwards failed, so I can't tell whether the finding is gone.".into()
-        } else if crate::audit::store::latest()
-            .is_some_and(|r| r.findings.iter().any(|f| f.id == id))
-        {
-            format!("After this, sentry's audit still reports the finding ({id}).")
-        } else {
-            format!("After this, sentry's audit no longer reports the finding ({id}).")
-        };
-        if !cmd.is_empty() {
-            c.push(super::chat::Kind::Info, format!("exit {code}"));
-        }
-        c.push(super::chat::Kind::Info, after.clone());
-        if cmd.is_empty() {
-            c.offer = Some(format!(
-                "Back from the Claude Code session. {after} What, if anything, is left to do?"
-            ));
-        } else {
-            c.set_offer(&cmd, code, &output, Some(&after));
-        }
-    }
-
     /// Kill anything still talking to Claude (sentry is exiting).
     pub fn shutdown(&mut self) {
         if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
             let _ = kill(pid);
         }
-        if let Some((_, pid, _)) = self.chat.as_ref().and_then(|c| c.job.as_ref()) {
-            let _ = kill(*pid);
+        if let Some(s) = self.apply.as_ref() {
+            for pid in [s.chat.live.map(|l| l.1), s.job.map(|j| j.1)]
+                .into_iter()
+                .flatten()
+            {
+                let _ = kill(pid);
+            }
         }
     }
 
@@ -1819,24 +1568,21 @@ impl App {
                         self.toast("Claude Code not found (expected ~/.local/bin/claude)");
                     }
                 }
-                Effect::ChatRun(p) => self.chat_run(p),
-                Effect::ChatRetryStep => self.chat_retry_step(now),
-                Effect::ChatBack(ran, reaudit) => match ran {
-                    Some((cmd, out, code)) => {
-                        let output = std::fs::read_to_string(&out).unwrap_or_default();
-                        let code = std::fs::read_to_string(&code)
-                            .ok()
-                            .and_then(|s| s.trim().parse().ok())
-                            .unwrap_or(-1);
-                        self.chat_done(cmd, code, output, reaudit);
-                    }
-                    None if reaudit => self.chat_done(String::new(), 0, String::new(), true),
-                    None => {
+                Effect::AskWith(ask, apply) => {
+                    if crate::claude::available() {
+                        self.ask_consent(*ask);
                         if let Some(c) = self.chat.as_mut() {
-                            c.push(super::chat::Kind::Info, "back from Claude Code");
+                            c.apply_with = Some(*apply);
                         }
+                    } else {
+                        self.toast("Claude Code not found (expected ~/.local/bin/claude)");
                     }
-                },
+                }
+                Effect::ChatBack => {
+                    if let Some(c) = self.chat.as_mut() {
+                        c.push(super::chat::Kind::Info, "back from Claude Code");
+                    }
+                }
                 Effect::Kill(pid, msg) => match kill(pid) {
                     Ok(()) => {
                         self.toast(msg);
@@ -2878,17 +2624,26 @@ impl App {
             }
             return true;
         }
-        if let Some((aid, password)) = self.apply_aux.filter(|(aid, _)| *aid == id) {
+        if let Some((_, aux)) = self.apply_aux.filter(|(aid, _)| *aid == id) {
             if let StreamMsg::Exit { code, .. } = msg {
                 self.apply_aux = None;
-                let fx = match (password, sess.phase) {
-                    (true, Phase::Password { .. }) => sess.password_checked(*code == 0),
-                    (false, Phase::SudoCheck) => sess.sudo_checked(*code != 0),
+                let fx = match (aux, sess.phase) {
+                    (Aux::Password, Phase::Password { .. }) => sess.password_checked(*code == 0),
+                    (Aux::Sudo, Phase::SudoCheck) => sess.sudo_checked(*code != 0),
+                    (Aux::Audit, _) => {
+                        let id = sess.chat.ask.finding().unwrap_or_default().to_string();
+                        let gone = *code == 0
+                            && !crate::audit::store::latest()
+                                .is_some_and(|r| r.findings.iter().any(|f| f.id == id));
+                        let fx = sess.reaudited(gone);
+                        self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
+                        self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
+                        fx
+                    }
                     _ => Vec::new(),
                 };
                 self.apply_fx(fx, Instant::now());
             }
-            let _ = aid;
             return true;
         }
         false
@@ -2963,6 +2718,54 @@ impl App {
                         }
                     }
                 }
+                Fx::Reaudit => {
+                    self.run_seq += 1;
+                    let id = self.run_seq;
+                    self.apply_aux = Some((id, Aux::Audit));
+                    if self.records {
+                        let tx = self.tx.clone();
+                        if let Err(e) =
+                            crate::tui::screens::sentry_cmd(&["job", "audit"]).stream(move |m| {
+                                let _ = tx.send(Event::Run(id, m));
+                            })
+                        {
+                            self.apply_aux = None;
+                            self.toast(format!("couldn't audit: {e}"));
+                        }
+                    }
+                }
+                Fx::RetryStep => {
+                    self.wf_cmd(WfCmd::Retry, now);
+                    self.wf_auto();
+                    if self.wf.as_ref().is_some_and(|s| {
+                        s.live.is_none()
+                            && matches!(s.next, crate::workflows::runner::Next::Confirm(_))
+                    }) {
+                        self.wf_cmd(WfCmd::Go, now);
+                    }
+                    self.apply(vec![Effect::Goto(ScreenId::Upgrade)], now);
+                }
+                Fx::MarkDone => {
+                    let task = self
+                        .apply
+                        .as_ref()
+                        .and_then(|s| s.task().map(str::to_string));
+                    if let Some(id) = task {
+                        let title = crate::maint::tasks::effective(
+                            &self.data.tasks,
+                            crate::jobs::state::tasks(&self.cfg),
+                        )
+                        .into_iter()
+                        .find(|t| t.id == id)
+                        .map_or(id.clone(), |t| t.title);
+                        self.log_event(crate::maint::log::LogEntry::task(
+                            crate::maint::LOCAL,
+                            &id,
+                            &title,
+                            None,
+                        ));
+                    }
+                }
                 Fx::CheckSudo | Fx::CheckPassword => {
                     let password = f == Fx::CheckPassword;
                     let Some(sess) = self.apply.as_ref() else {
@@ -2978,7 +2781,7 @@ impl App {
                     .timeout(None);
                     self.run_seq += 1;
                     let id = self.run_seq;
-                    self.apply_aux = Some((id, password));
+                    self.apply_aux = Some((id, if password { Aux::Password } else { Aux::Sudo }));
                     if self.records {
                         let tx = self.tx.clone();
                         if let Err(e) = c.stream(move |m| {
@@ -3354,7 +3157,6 @@ impl App {
                         Err(e) => (127, Some(e.to_string())),
                     };
                     s.on_exit(idx, false, code, note);
-                    self.chat_step_exit(idx, false, code);
                 }
                 SuspendFor::Shell(idx) => s.after_shell(idx),
             }
@@ -3907,71 +3709,12 @@ fn first_sentence(ask: &crate::claude::Ask) -> String {
     }
 }
 
-/// Confirm before sentry runs one of Claude's proposals: the exact command and what it does.
-/// `t` in a step's fix chat: the step's own command, since this box is its confirm gate.
-fn retry_step_modal(t: &Theme, s: &Session, i: usize, dry_ok: bool) -> Modal {
-    let step = &s.wf.steps[i];
-    let cmd = crate::workflows::runner::preview(&s.run.state, step.run.as_deref().unwrap_or(""));
-    let dry = !dry_ok
-        && step.dry_run != Some(false)
-        && !s.run.state.steps[i].dry_ok
-        && crate::workflows::dry_run_of(&cmd).is_some();
-    let mut lines = vec![
-        Line::styled(
-            format!(
-                "{} step {}/{} of {}: {}",
-                if dry_ok { "Run" } else { "Retry" },
-                i + 1,
-                s.wf.steps.len(),
-                s.wf.name,
-                s.title(i)
-            ),
-            t.fg(),
-        ),
-        Line::styled(format!("$ {cmd}"), t.fg()),
-    ];
-    if dry {
-        lines.push(Line::styled(
-            "Its dry run goes first; t again runs it for real.",
-            t.dim(),
-        ));
-    }
-    lines.push(Line::styled(
-        "The output goes to the workflow log; the chat says how it went.",
-        t.dim(),
-    ));
-    Modal {
-        title: "Retry the step".into(),
-        color: t.yellow,
-        lines,
-        yes: Some((
-            if dry_ok { "run it" } else { "retry" }.into(),
-            vec![Effect::ChatRetryStep],
-        )),
-    }
-}
-
-/// What the proposal box says about a command that changes deployments or reboots: a run in
-/// progress can be confused by it, and when a workflow applies this, that's its job.
-fn workflow_note(wf_open: bool, ask: &crate::claude::Ask) -> Option<&'static str> {
-    if wf_open {
-        Some(
-            "A workflow is in progress: changing deployments or rebooting outside it can confuse it.",
-        )
-    } else if ask.applying().is_some_and(|a| a.workflow.is_some()) {
-        Some("The workflow makes this change: press w in the chat instead of running it here.")
-    } else {
-        None
-    }
-}
-
-/// `A` where Claude can help apply something: apply it with Claude, or just ask.
 fn claude_choice(t: &Theme, apply: crate::claude::Ask, ask: crate::claude::Ask) -> Choice {
     Choice {
         title: "Claude · pick one (1–2, n cancels)".into(),
         lines: vec![
             Line::styled(
-                "1  help me apply it: Claude proposes each step, you run it",
+                "1  help me apply it: Claude plans, you approve, sentry runs it",
                 t.fg(),
             ),
             Line::styled("2  just ask about it", t.fg()),
@@ -3979,69 +3722,15 @@ fn claude_choice(t: &Theme, apply: crate::claude::Ask, ask: crate::claude::Ask) 
             Line::styled("Either way you see what's sent first.", t.dim()),
         ],
         options: vec![
-            ("help me apply it".into(), vec![Effect::AskConsent(apply)]),
-            ("just ask about it".into(), vec![Effect::AskConsent(ask)]),
+            (
+                "help me apply it".into(),
+                vec![Effect::AskConsent(apply.clone())],
+            ),
+            (
+                "just ask about it".into(),
+                vec![Effect::AskWith(Box::new(ask), Box::new(apply.clone()))],
+            ),
         ],
-    }
-}
-
-fn run_proposal_modal(
-    t: &Theme,
-    p: crate::claude::Proposed,
-    wf_note: Option<&'static str>,
-    reaudit: bool,
-) -> Modal {
-    let risky = crate::claude::risky(&p.cmd);
-    let mut lines = Vec::new();
-    for l in p.cmd.lines() {
-        lines.push(Line::styled(
-            format!("$ {l}"),
-            t.s(if risky.is_some() { t.red } else { t.fg }),
-        ));
-    }
-    lines.push(Line::raw(""));
-    if !p.why.is_empty() {
-        lines.push(Line::styled(format!("why: {}", p.why), t.fg()));
-    }
-    if p.known {
-        lines.push(Line::styled(
-            "This is one of sentry's known fixes.",
-            t.dim(),
-        ));
-    }
-    if let Some(u) = &p.undo {
-        lines.push(Line::styled(format!("undo: {u}"), t.dim()));
-    }
-    if let Some(r) = risky {
-        lines.push(Line::styled(
-            format!("Careful: this {r}. Check it before you say yes."),
-            t.s(t.red),
-        ));
-    }
-    if let Some(n) = wf_note.filter(|_| crate::claude::touches_deployment(&p.cmd)) {
-        lines.push(Line::styled(n, t.s(t.yellow)));
-    }
-    if p.cmd.contains("sudo") {
-        lines.push(Line::styled(
-            "Needs sudo: sentry hands this terminal over so you type your own password.",
-            t.dim(),
-        ));
-    }
-    if reaudit && !crate::claude::read_only(&p.cmd) {
-        lines.push(Line::styled(
-            "It changes something, so sentry audits again afterwards.",
-            t.dim(),
-        ));
-    }
-    lines.push(Line::styled(
-        "sentry runs this as you, not Claude. Its output stays here until you choose to send it.",
-        t.s(t.yellow),
-    ));
-    Modal {
-        title: "Run Claude's proposal".into(),
-        color: if risky.is_some() { t.red } else { t.yellow },
-        lines,
-        yes: Some(("run it".into(), vec![Effect::ChatRun(p)])),
     }
 }
 

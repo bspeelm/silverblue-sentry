@@ -19,10 +19,10 @@ use super::{Ev, Tab};
 use crate::maint::plan::{PlanDoc, PlanStatus};
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Exec, Session};
-use sentry_core::claude::{self, Ask, Proposed};
+use sentry_core::claude::{self, Ask};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
 use sentry_core::maint::tasks::SugState;
-use sentry_core::tui::chat::{self as chatmod, Chat, Job};
+use sentry_core::tui::chat::{self as chatmod, Chat};
 use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::modal;
 use sentry_core::tui::theme::Theme;
@@ -100,8 +100,8 @@ pub enum Effect {
     ChatGrant,
     /// Apply the selected Maintenance row with Claude (an apply session).
     ApplyAsk,
-    /// Run one of Claude's proposals on the server (after its confirm box).
-    ChatRun(Proposed),
+    /// Just ask (the first), with what applying it would be (`a` in the chat).
+    AskWith(Box<Ask>, Box<Ask>),
     /// A review's suggested task: added to `tasks.toml`, or skipped.
     TaskAdd(Box<sentry_core::maint::tasks::Task>),
     TaskSkip(String),
@@ -447,6 +447,14 @@ impl App {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            self.dirty = true;
+        }
         if self.toast.as_ref().is_some_and(|(_, t)| now >= *t) {
             self.toast = None;
             self.dirty = true;
@@ -496,6 +504,15 @@ impl App {
         }
         if let Some((_, t)) = &self.toast {
             due = due.min(*t);
+        }
+        // A chat or an apply session working in view: its clocks tick.
+        if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
+            || self
+                .apply
+                .as_ref()
+                .is_some_and(|s| s.busy() && !s.chat.hidden)
+        {
+            due = due.min(now + Duration::from_secs(1));
         }
         due.max(now)
     }
@@ -593,55 +610,6 @@ impl App {
                     }
                     self.chat_edits();
                     self.offer_reads(ReadsFor::Chat);
-                }
-            }
-            self.dirty = true;
-            return;
-        }
-        if let Some(c) = self.chat.as_mut()
-            && c.job.as_ref().is_some_and(|(jid, _, _)| *jid == id)
-        {
-            match m {
-                StreamMsg::Line { text, .. } => c.on_job_line(text),
-                StreamMsg::Exit { code, .. } => {
-                    if let Some((_, _, Job::Proposal { cmd, output, .. })) = c.job.take() {
-                        c.push(chatmod::Kind::Info, format!("exit {code}"));
-                        c.set_offer(&cmd, code, &output, None);
-                        c.push(chatmod::Kind::Info, "s sends the output to Claude");
-                        // What Claude proposed and you ran on the server: the log keeps it. An
-                        // apply is tagged with what it applies, never a task (`d` or the
-                        // workflow's run says that's done).
-                        let (kind, tags): (&str, Vec<String>) = match c.ask.applying() {
-                            Some(a) => (
-                                "apply",
-                                std::iter::once(format!("apply:{}", a.key))
-                                    .chain(a.item.as_ref().map(|i| format!("item:{i}")))
-                                    .collect(),
-                            ),
-                            None => (
-                                "fix",
-                                c.ask
-                                    .finding()
-                                    .map(|f| vec![format!("finding:{f}")])
-                                    .unwrap_or_default(),
-                            ),
-                        };
-                        let tail: Vec<&str> = output.lines().rev().take(5).collect();
-                        let tail: Vec<&str> = tail.into_iter().rev().collect();
-                        let e = sentry_core::maint::log::LogEntry::event(
-                            &self.remote.name,
-                            kind,
-                            kind,
-                            code == 0,
-                            &format!("$ {cmd} (exit {code})\n\n```\n{}\n```", tail.join("\n")),
-                            &tags,
-                            jiff::Timestamp::now(),
-                        );
-                        self.log_event(e);
-                    }
-                    for k in [Kind::Units, Kind::Docker] {
-                        self.fetch(k);
-                    }
                 }
             }
             self.dirty = true;
@@ -1161,7 +1129,12 @@ impl App {
                     }
                 }
                 Effect::AskConsent(ask) => self.open_ask(*ask),
-                Effect::ChatRun(p) => self.chat_run(p),
+                Effect::AskWith(ask, apply) => {
+                    self.open_ask(*ask);
+                    if let Some(c) = self.chat.as_mut() {
+                        c.apply_with = Some(*apply);
+                    }
+                }
                 Effect::Confirm(m) => self.modal = Some(m),
                 Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
                 Effect::PlanNote(id, plan) => {
@@ -1676,6 +1649,34 @@ impl App {
                             let fx = sess.step_ended(-1);
                             self.apply_fx(fx);
                         }
+                    }
+                }
+                // Findings on a server are verified by Claude's own read-only check.
+                Fx::Reaudit => {}
+                Fx::RetryStep => {
+                    self.wf_cmd(WfCmd::Retry);
+                    self.run_view = true;
+                }
+                Fx::MarkDone => {
+                    let a = self
+                        .apply
+                        .as_ref()
+                        .and_then(|s| s.chat.ask.applying().cloned())
+                        .unwrap_or_default();
+                    match (a.task, a.plan) {
+                        (Some(id), _) => {
+                            let e = sentry_core::maint::log::LogEntry::task(
+                                &self.remote.name,
+                                &id,
+                                &id,
+                                None,
+                            );
+                            self.log_event(e);
+                        }
+                        (None, Some(item)) => {
+                            self.apply(vec![Effect::PlanDoneByHand(item)], Instant::now())
+                        }
+                        _ => {}
                     }
                 }
                 Fx::CheckSudo | Fx::CheckPassword => {
@@ -3673,17 +3674,7 @@ impl App {
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let t = self.theme;
-        let server = self.remote.name.clone();
         let Some(c) = self.chat.as_mut() else { return };
-        if c.picking {
-            c.picking = false;
-            if let KeyCode::Char(d @ '1'..='9') = k.code
-                && let Some(p) = c.proposals.get(d as usize - '1' as usize).cloned()
-            {
-                self.modal = Some(proposal_modal(&t, &server, p));
-            }
-            return;
-        }
         if c.pending {
             match k.code {
                 KeyCode::Esc => self.chat = None,
@@ -3715,21 +3706,16 @@ impl App {
                     let _ = kill(pid);
                     c.push(chatmod::Kind::Info, "stopped");
                 }
-                if let Some((_, pid, _)) = &c.job {
-                    let _ = kill(*pid);
-                }
             }
-            KeyCode::Char('r') if idle && !c.proposals.is_empty() => {
-                if c.proposals.len() == 1 {
-                    let p = c.proposals[0].clone();
-                    self.modal = Some(proposal_modal(&t, &server, p));
-                } else {
-                    c.picking = true;
+            // Apply what the chat is about: a session takes the conversation over.
+            KeyCode::Char('a') if c.can_apply() => {
+                if let Some(c) = self.chat.take()
+                    && let Some(apply) = c.apply_with.clone()
+                {
+                    let mut sess = sentry_core::apply::session::Session::from_chat(c, apply);
+                    sess.chat.privacy = self.privacy();
+                    self.apply = Some(sess);
                 }
-            }
-            KeyCode::Char('s') if idle && c.offer.is_some() => {
-                let text = c.offer.take().unwrap_or_default();
-                self.ask_turn(text);
             }
             // Claude was refused files: grant them (shown first, for this conversation).
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
@@ -3768,57 +3754,6 @@ impl App {
             _ => {}
         }
         self.dirty = true;
-    }
-
-    /// A proposal, confirmed: run it on the server, its output into the chat.
-    fn chat_run(&mut self, p: Proposed) {
-        if self.wf.as_ref().is_some_and(|s| s.live.is_some()) {
-            self.toast("a workflow step is running: wait for it to finish");
-            return;
-        }
-        let password = p.cmd.contains("sudo")
-            && self.store.sudo.value == Some(crate::remote::SudoMode::Password);
-        let cmd = self.remote.sh(&p.cmd).timeout(None);
-        if password {
-            if let Some(c) = self.chat.as_mut() {
-                c.push(
-                    chatmod::Kind::Tool,
-                    format!("$ {}  (terminal handed over for sudo)", p.cmd),
-                );
-            }
-            self.suspend = Some((
-                cmd,
-                format!("sentry-server · {} on {}", p.cmd, self.remote.name),
-                vec![Kind::Units, Kind::Docker],
-            ));
-            return;
-        }
-        self.run_seq += 1;
-        let id = self.run_seq;
-        let r = if self.offline {
-            Ok(0)
-        } else {
-            let tx = self.tx.clone();
-            cmd.stream(move |m| {
-                let _ = tx.send(Ev::Run(id, m));
-            })
-        };
-        let Some(c) = self.chat.as_mut() else { return };
-        c.push(chatmod::Kind::Tool, format!("$ {}", p.cmd));
-        match r {
-            Ok(pid) => {
-                c.job = Some((
-                    id,
-                    pid,
-                    Job::Proposal {
-                        cmd: p.cmd,
-                        output: String::new(),
-                        changes: true,
-                    },
-                ))
-            }
-            Err(e) => c.push(chatmod::Kind::Err, format!("couldn't start it: {e}")),
-        }
     }
 
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
@@ -4662,35 +4597,6 @@ pub fn kill_for_test(pid: u32) {
     let _ = kill(pid);
 }
 
-fn proposal_modal(t: &Theme, server: &str, p: Proposed) -> Modal {
-    let mut lines = vec![
-        Line::styled(format!("why: {}", p.why), t.fg()),
-        Line::raw(""),
-        Line::styled(format!("$ {}", p.cmd), t.fg()),
-        Line::styled(
-            format!("on {server}, as your login (sudo where the command says so)"),
-            t.dim(),
-        ),
-        Line::styled(
-            "The output goes to the chat; s sends it back to Claude.",
-            t.dim(),
-        ),
-    ];
-    if let Some(r) = claude::risky(&p.cmd) {
-        lines.push(Line::styled(format!("Careful: {r}."), t.s(t.red)));
-    }
-    Modal {
-        title: "Run Claude's proposal".into(),
-        color: if claude::risky(&p.cmd).is_some() {
-            t.red
-        } else {
-            t.yellow
-        },
-        lines,
-        yes: Some(("run".into(), vec![Effect::ChatRun(p)])),
-    }
-}
-
 fn draw_pane(f: &mut Frame, area: Rect, t: &Theme, p: &Pane) {
     let (state, color) = match p.done {
         None => (
@@ -4750,12 +4656,12 @@ fn claude_choice(
         "Claude".into(),
         vec![
             (
-                "help me apply it: Claude proposes each step, you run it".into(),
-                vec![Effect::AskConsent(Box::new(apply))],
+                "help me apply it: Claude plans, you approve, sentry-server runs it".into(),
+                vec![Effect::AskConsent(Box::new(apply.clone()))],
             ),
             (
                 "just ask about it".into(),
-                vec![Effect::AskConsent(Box::new(ask))],
+                vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
             ),
         ],
     )

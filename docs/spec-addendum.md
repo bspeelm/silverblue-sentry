@@ -250,11 +250,18 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `apply::Session` (sentry-core) is the whole of it, a state machine both programs drive: Brief → Investigating → Review → (sudo check → inline password) → Applying → Verifying → Settled. Two decisions are the user's: start (Enter on the brief) and approve (Enter on the plan). Everything else follows by itself.
 - No consent box: the brief is shown in the window, with an input to add to it; Enter sends. Follow-ups you type are sent as typed. The same for ask and fix chats (their first turn opens as a brief). Modals take Enter as yes.
 - A plan with problems, or a failed step, goes back to Claude without a key (at most 2 rounds, then the user says what to do). After the last step the results go to Claude to verify; it answers with a ```` ```sentry-verdict ```` block (`done` / `more` + a new plan / `failed`). `done` tags the apply log entry `task:<id>`, which marks the task done.
-- Root edits: an `edit` of a root-owned file under /etc (not sudoers, PAM, passwd/shadow/group) is written with sudo: backup as the user, new text to a 0600 temp file, `sudo sh -c 'cat "$1" > "$2"'` keeps owner, mode and label. A sudo password is typed inline, checked (`sudo -S`), and fed on stdin to a shell where `sudo` reads it (`apply::sudo::wrap`); `Cmd::input` writes stdin, and ssh gets no tty then, so nothing is echoed.
+- Root edits: an `edit` of a root-owned file under /etc (not sudoers, PAM, passwd/shadow/group) is written with sudo: backup as the user, new text to a 0600 temp file, `sudo sh -c 'cat "$1" > "$2"'` keeps owner, mode and label. A sudo password is typed inline, checked (`sudo -S`), and fed on stdin to the step's shell, where a `sudo` stand-in first on PATH (a private temp dir, removed after) hands it to the real sudo, so a `sudo` nested in `sh -c`, `xargs` or a script gets it too (`apply::sudo::wrap`); `Cmd::input` writes stdin, and ssh gets no tty then, so nothing is echoed.
 - In an apply session there are no proposals and no offers. The ask and fix chats keep theirs (`r`, `s`); their sudo proposals still hand the terminal over.
 
 ## A29. Checks for later, and desktop settings Claude may read (2026-11)
 - A verdict may carry a `[follow_up]` (`title`, read-only `steps`, `after`): on `done`, sentry adds it to `tasks.toml` as a one-time by-hand task (`check-<slug>-<date>`), so the check doesn't depend on remembering it.
 - `Task.after`: a sentry workflow (due once it next ends well after the task was added) or a wait (`7d` from when it was added). An `after` sentry doesn't know goes into the steps, and the task is due now.
 - Claude's read-only allowlist includes `gsettings get/list-keys/list-recursively/range/describe` (never `set`/`reset`).
+
+## A30. Every fix is an apply session; chats only explain (2026-11, replaces the proposals of A20–A26 and the last line of A28)
+- `fix_question`, proposals (`r`), offers (`s`), the chat's jobs and the terminal handover for a proposal's sudo are gone. `Ask::for_finding` and `Ask::step_fix` are apply asks (`Apply.finding`, `Apply.step`); so are sentry-server's finding, unit and container fixes and a failed step in its run view (`remote: true`).
+- A finding's session audits again after the last step (`Fx::Reaudit`, local) and tells Claude whether the finding is gone; its log entry is tagged `finding:<id>`. A step's session ends with Enter retrying the step (`Fx::RetryStep`).
+- Settled, Enter on an empty input does the next thing: close (done), retry the step, audit again (a finding not done), mark it done (a task Claude didn't verify). Review without a plan: Enter asks for one.
+- A chat explains; `a` hands it to a session (`Session::from_chat`: the transcript and Claude's session go on) when its screen has an apply ask for the selection (`A` → 2 keeps it as `Chat::apply_with`).
+- A missing or broken verdict is asked for again as a verify turn.
 

@@ -149,15 +149,26 @@ pub fn uses_sudo(cmd: &str) -> bool {
         .any(|w| w == "sudo")
 }
 
-/// The script a sudo command runs in: the first line of stdin is the password, and `sudo`
-/// is a function that hands it to the real sudo (`-S`, no prompt). The command itself runs
-/// with nothing more on stdin.
+/// The script a sudo command runs in (POSIX sh, here or on a server): the first line of
+/// stdin is the password. A `sudo` stand-in goes first on PATH for the step, in a private temp
+/// dir removed when it ends: it hands the password to the real sudo (`-S`, no prompt). Being
+/// on PATH, it's the `sudo` of everything the step starts, however nested (`sh -c '… sudo …'`,
+/// `xargs sudo`, a script): a shell function wouldn't reach those, and the real sudo, with no
+/// terminal, would fail. The password is in the step's environment while it runs, never in a
+/// command line or a file. The command itself runs with nothing more on stdin.
 pub fn wrap(cmd: &str) -> String {
     format!(
         "IFS= read -r SENTRY_P\n\
-         sudo() {{ printf '%s\\n' \"$SENTRY_P\" | command sudo -S -p '' \"$@\"; }}\n\
+         SENTRY_SUDO=$(command -v sudo) || {{ echo 'sudo not found' >&2; exit 127; }}\n\
+         export SENTRY_P SENTRY_SUDO\n\
+         SENTRY_D=$(mktemp -d) || exit 1\n\
+         trap 'rm -rf \"$SENTRY_D\"' EXIT\n\
+         printf '%s\\n' '#!/bin/sh' 'printf \"%s\\\\n\" \"$SENTRY_P\" | \"$SENTRY_SUDO\" -S -p \"\" \"$@\"' > \"$SENTRY_D/sudo\"\n\
+         chmod 700 \"$SENTRY_D/sudo\"\n\
+         PATH=\"$SENTRY_D:$PATH\"\n\
+         export PATH\n\
          exec </dev/null\n\
-         {cmd}"
+         {cmd}\n"
     )
 }
 
@@ -288,18 +299,45 @@ mod tests {
         assert!(uses_sudo("a && sudo systemctl restart x"));
         assert!(uses_sudo("(sudo true)"));
         assert!(!uses_sudo("echo pseudo; grep sudoers /etc/x"));
-        // The wrapped script: `sudo` is a function feeding the first stdin line to `sudo -S`.
-        let out = crate::exec::Cmd::local("bash")
-            .arg("-c")
-            .arg(wrap(
-                "sudo() { echo \"would run: $*\"; read -r x || echo eof; }; sudo ls",
-            ))
+        // The wrapped script, with a fake "real" sudo first on PATH: every sudo the step runs,
+        // nested in `sh -c` too, gets the password on its stdin with -S; the command itself
+        // gets nothing on stdin; the stand-in's dir is gone afterwards.
+        let fake = std::env::temp_dir().join(format!("sentry-fake-sudo-{}", std::process::id()));
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(
+            fake.join("sudo"),
+            "#!/bin/sh\nIFS= read -r pw\necho \"sudo $* (pw=$pw)\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(fake.join("sudo"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let step = "sudo -S -p '' true\nsudo ls\nsh -c 'sudo id -u'\nread -r x || echo stdin-empty\necho \"dir=$SENTRY_D\"";
+        let script = format!("PATH={}:$PATH; export PATH\n{}", fake.display(), wrap(step));
+        // POSIX only: servers run it with dash.
+        let posix = crate::exec::Cmd::local("bash")
+            .args(["--posix", "-c", &script])
             .input("pw\n")
             .output()
             .unwrap();
-        assert_eq!(out, "would run: ls\neof\n");
-        let s = wrap("sudo ls");
-        assert!(s.contains("command sudo -S -p ''") && !s.contains("pw"));
+        assert!(posix.contains("sudo -S -p  id -u (pw=pw)"), "{posix}");
+        let out = crate::exec::Cmd::local("sh")
+            .arg("-c")
+            .arg(script)
+            .input("pw\n")
+            .output()
+            .unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[1], "sudo -S -p  ls (pw=pw)", "{out}");
+        assert_eq!(lines[2], "sudo -S -p  id -u (pw=pw)", "nested: {out}");
+        assert_eq!(lines[3], "stdin-empty", "{out}");
+        let dir = lines[4].trim_start_matches("dir=");
+        assert!(
+            !dir.is_empty() && !std::path::Path::new(dir).exists(),
+            "{out}"
+        );
+        let _ = std::fs::remove_dir_all(&fake);
+        assert!(!wrap("sudo ls").contains("pw"));
         let mut p = Secret::default();
         for c in "hunter2".chars() {
             p.push(c);

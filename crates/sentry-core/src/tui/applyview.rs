@@ -141,6 +141,7 @@ fn input_line(s: &Session, t: &Theme) -> Line<'static> {
         Phase::Review if s.can_approve() => {
             typed("Enter applies the plan · or type to ask for a change")
         }
+        Phase::Review if s.run().is_none() => typed("Enter asks for a plan · or type what to do"),
         Phase::Review => typed("tell Claude what to do"),
         Phase::Settled(_) => typed("type to ask Claude more"),
         Phase::Password { tries, checking } => {
@@ -170,38 +171,23 @@ fn input_line(s: &Session, t: &Theme) -> Line<'static> {
 pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
     let typed = !s.chat.input.is_empty();
     let mut k = Vec::new();
+    let typing = matches!(s.phase, Phase::Brief | Phase::Review | Phase::Settled(_));
+    if typed && typing && s.phase != Phase::Brief {
+        k.push(("Enter", "send"));
+    } else if let Some(w) = s.enter_word() {
+        k.push(("Enter", w));
+    }
     match s.phase {
         Phase::Brief => {
-            k.push(("Enter", "start"));
             k.push(("Tab", "the whole brief"));
             k.push(("Esc", "cancel"));
         }
-        Phase::Review => {
-            if typed {
-                k.push(("Enter", "send"));
-            } else if s.can_approve() {
-                k.push(("Enter", "apply the plan"));
-            }
-            k.push(("Esc", "close"));
-        }
+        Phase::Review | Phase::Settled(_) => k.push(("Esc", "close")),
         Phase::Password {
             checking: false, ..
         } => {
             k.push(("Enter", "unlock"));
             k.push(("Esc", "back"));
-        }
-        Phase::Applying => {
-            if s.waiting_workflow().is_some() {
-                k.push(("Enter", "open the workflow"));
-            }
-            k.push(("C-c", "stop"));
-            k.push(("Esc", "hide"));
-        }
-        Phase::Settled(_) => {
-            if typed {
-                k.push(("Enter", "ask"));
-            }
-            k.push(("Esc", "close"));
         }
         _ => {
             k.push(("C-c", "stop"));
@@ -375,6 +361,21 @@ fn step_lines(
         let n = s.output.len();
         for x in &s.output[n.saturating_sub(6)..] {
             push(&mut l, &format!("│ {x}"), t.dim());
+        }
+        // A step that prints nothing for minutes (a backup, `systemctl start` of a long
+        // job) still shows it's alive.
+        if let Some(at) = s.job_started {
+            let e = at.elapsed().as_secs();
+            push(
+                &mut l,
+                &format!(
+                    "… running {}:{:02}{}",
+                    e / 60,
+                    e % 60,
+                    if n == 0 { ", no output yet" } else { "" }
+                ),
+                t.s(t.cyan),
+            );
         }
     }
     if waiting {

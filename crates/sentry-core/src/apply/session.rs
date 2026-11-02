@@ -97,6 +97,12 @@ pub enum Fx {
         body: String,
         tags: Vec<String>,
     },
+    /// Audit again (a finding's session): then `reaudited`.
+    Reaudit,
+    /// Retry the failed workflow step this session fixed (and show its run).
+    RetryStep,
+    /// Mark the task (or the plan done by hand) done, by hand: Claude didn't say it is.
+    MarkDone,
     /// A check for later, as a one-time task on Maintenance (due after its `after`).
     AddTask(Box<crate::maint::tasks::Task>),
     /// A task done with nothing else logged: logged as such (tagged `task:<id>`). Usually
@@ -124,6 +130,8 @@ pub struct Session {
     turn_from: usize,
     /// The step's command running, and what it printed.
     pub job: Option<(u64, u32)>,
+    /// When the running step started (the window shows how long it's been).
+    pub job_started: Option<std::time::Instant>,
     pub output: Vec<String>,
     root: Option<RootWrite>,
     /// C-c on a step: it ends as stopped, nothing sent.
@@ -137,6 +145,8 @@ pub struct Session {
     logged: usize,
     /// Tab: the brief shown whole.
     pub brief_open: bool,
+    /// The run's report, while the audit runs before the verify turn.
+    audit_for: Option<String>,
 }
 
 impl Session {
@@ -151,6 +161,7 @@ impl Session {
             fixes: 0,
             turn_from: 0,
             job: None,
+            job_started: None,
             output: Vec::new(),
             root: None,
             stopping: false,
@@ -159,6 +170,42 @@ impl Session {
             sudo_free: false,
             logged: 0,
             brief_open: false,
+            audit_for: None,
+        }
+    }
+
+    /// From a chat about the same thing (`a`): the conversation so far, Claude's session
+    /// with it (the first turn resumes it), what was granted; `ask` is the apply ask.
+    pub fn from_chat(mut chat: Chat, ask: Ask) -> Self {
+        chat.ask = ask;
+        chat.pending = false;
+        chat.hidden = false;
+        chat.apply_with = None;
+        chat.input.clear();
+        let mut s = Self::new(chat.ask.clone());
+        s.chat = chat;
+        s
+    }
+
+    /// What Enter does now on an empty input, in a word or two (None: nothing).
+    pub fn enter_word(&self) -> Option<&'static str> {
+        let a = self.chat.ask.applying();
+        match self.phase {
+            Phase::Brief => Some("start"),
+            Phase::Review if self.can_approve() => Some("apply the plan"),
+            Phase::Review if self.run().is_none() || self.run().is_some_and(|r| r.finished()) => {
+                Some("ask for a plan")
+            }
+            Phase::Applying if self.waiting_workflow().is_some() => Some("open the workflow"),
+            Phase::Settled(End::Done) if a.is_some_and(|a| a.step.is_some()) => {
+                Some("retry the step")
+            }
+            Phase::Settled(End::Done) => Some("close"),
+            Phase::Settled(_) if a.is_some_and(|a| a.finding.is_some() && !a.remote) => {
+                Some("audit again")
+            }
+            Phase::Settled(_) if a.is_some_and(|a| a.can_mark_done()) => Some("mark it done"),
+            _ => None,
         }
     }
 
@@ -197,13 +244,14 @@ impl Session {
 
     /// Something runs (a turn, a step, a check): Esc hides instead of closing.
     pub fn busy(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Thinking(_)
-                | Phase::Applying
-                | Phase::SudoCheck
-                | Phase::Password { checking: true, .. }
-        )
+        self.audit_for.is_some()
+            || matches!(
+                self.phase,
+                Phase::Thinking(_)
+                    | Phase::Applying
+                    | Phase::SudoCheck
+                    | Phase::Password { checking: true, .. }
+            )
     }
 
     /// The steps that need sudo (numbered from 1), for the password line.
@@ -235,6 +283,17 @@ impl Session {
         self.fixes += 1;
         self.chat.push(Kind::Info, line);
         Some(self.turn(Turn::Fix, crate::claude::apply_fix(&prompt), None))
+    }
+
+    /// The verdict is missing or wrong: asked again, as a verify turn (its answer is a
+    /// verdict, not a plan), while the rounds last.
+    fn ask_verdict(&mut self, line: String, prompt: String) -> Option<Vec<Fx>> {
+        if self.fixes >= FIX_ROUNDS {
+            return None;
+        }
+        self.fixes += 1;
+        self.chat.push(Kind::Info, line);
+        Some(self.turn(Turn::Verify, prompt, None))
     }
 
     // ── Keys ────────────────────────────────────────────────────────────────────────────
@@ -351,13 +410,29 @@ impl Session {
                 };
                 self.turn(Turn::Investigate, prompt, Some(shown))
             }
-            Phase::Review if text.is_empty() => {
-                if self.can_approve() {
-                    self.approve()
-                } else {
-                    Vec::new()
+            Phase::Review if text.is_empty() => match self.enter_word() {
+                Some("apply the plan") => self.approve(),
+                Some("ask for a plan") => self.turn(
+                    Turn::Investigate,
+                    "Answer with the plan, as one sentry-apply block.".into(),
+                    Some("Send the plan.".into()),
+                ),
+                _ => Vec::new(),
+            },
+            Phase::Settled(_) if text.is_empty() => match self.enter_word() {
+                Some("retry the step") => vec![Fx::RetryStep, Fx::Close],
+                Some("close") => vec![Fx::Close],
+                Some("audit again") => {
+                    self.chat.push(Kind::Info, "auditing again…");
+                    vec![Fx::Reaudit]
                 }
-            }
+                Some("mark it done") => {
+                    self.chat.push(Kind::Info, "marked done by hand · logged");
+                    self.phase = Phase::Settled(End::Done);
+                    vec![Fx::MarkDone]
+                }
+                _ => Vec::new(),
+            },
             _ if text.is_empty() => Vec::new(),
             _ => self.turn(Turn::Investigate, text.clone(), Some(text)),
         }
@@ -480,6 +555,7 @@ impl Session {
     /// The step's command started (`id`, `pid`), printed a line, ended.
     pub fn step_started(&mut self, id: u64, pid: u32) {
         self.job = Some((id, pid));
+        self.job_started = Some(std::time::Instant::now());
     }
 
     pub fn step_line(&mut self, text: String) {
@@ -518,6 +594,32 @@ impl Session {
         };
         let a = r.step_done(ok, note);
         self.drive(a)
+    }
+
+    /// The audit ran again (`gone`: the finding isn't reported any more): after the plan, the
+    /// verify turn says so; after the session ended, it's done if the finding is gone.
+    pub fn reaudited(&mut self, gone: bool) -> Vec<Fx> {
+        let line = if gone {
+            "sentry's audit no longer reports the finding"
+        } else {
+            "sentry's audit still reports the finding"
+        };
+        if let Some(report) = self.audit_for.take() {
+            self.chat.push(
+                if gone { Kind::Good } else { Kind::Err },
+                format!("{line} · Claude is verifying the result"),
+            );
+            let prompt = crate::claude::apply_verify(&format!("{report}\n\nAfter it, {line}."));
+            return self.turn(Turn::Verify, prompt, None);
+        }
+        if matches!(self.phase, Phase::Settled(_)) {
+            self.chat
+                .push(if gone { Kind::Good } else { Kind::Err }, line.to_string());
+            if gone {
+                self.phase = Phase::Settled(End::Done);
+            }
+        }
+        Vec::new()
     }
 
     /// A workflow run ended: the step that waited for it is done (or failed).
@@ -563,6 +665,19 @@ impl Session {
             }
             _ => {
                 let n = r.plan.steps.len();
+                if self
+                    .chat
+                    .ask
+                    .applying()
+                    .is_some_and(|a| a.finding.is_some() && !a.remote)
+                {
+                    self.chat.push(
+                        Kind::Info,
+                        format!("✓ all {n} steps done · sentry is auditing again"),
+                    );
+                    self.audit_for = Some(report);
+                    return vec![Fx::Reaudit];
+                }
                 self.chat.push(
                     Kind::Info,
                     format!("✓ all {n} steps done · Claude is verifying the result"),
@@ -578,9 +693,6 @@ impl Session {
     /// `workflows`: the names sentry knows, for the plan's problems.
     pub fn turn_ended(&mut self, code: i32, workflows: &[String]) -> Vec<Fx> {
         self.chat.on_exit(code);
-        // A session runs plans, not proposals.
-        self.chat.proposals.clear();
-        self.chat.offer = None;
         let Phase::Thinking(why) = self.phase else {
             return Vec::new();
         };
@@ -708,12 +820,12 @@ impl Session {
             Some(Err(why)) => {
                 let line = format!("the verdict didn't parse ({why}) · sentry asked again");
                 return self
-                    .fix(line, format!("sentry couldn't read your sentry-verdict block: {why}. Answer with the verdict block."))
+                    .ask_verdict(line, format!("sentry couldn't read your sentry-verdict block: {why}. Answer with the verdict block."))
                     .unwrap_or_else(|| self.settle(End::Unverified));
             }
             None => {
                 return self
-                    .fix(
+                    .ask_verdict(
                         "no verdict · sentry asked Claude for one".into(),
                         "Your answer has no sentry-verdict block. Answer with it.".into(),
                     )
@@ -869,6 +981,9 @@ impl Session {
             .map(|a| format!("apply:{}", a.key))
             .into_iter()
             .collect();
+        if let Some(f) = self.chat.ask.applying().and_then(|a| a.finding.clone()) {
+            tags.push(format!("finding:{f}"));
+        }
         for r in &started {
             body.push(format!("{}\n\n{}", r.plan.summary, r.report()));
             if !r.plan.rollback.trim().is_empty() {
@@ -1149,6 +1264,93 @@ mod tests {
             &[],
         );
         assert!(t.after.is_none() && t.steps.starts_with("Once next boot:"));
+    }
+
+    #[test]
+    fn a_chat_hands_over_and_a_finding_is_audited_again() {
+        let f = crate::finding::Finding {
+            id: "listener:svc:passim".into(),
+            message: "passim".into(),
+            ..Default::default()
+        };
+        let mut c = Chat::new(Ask::new("passim", "ctx", "What is it?"));
+        c.begin_turn("What is it?", 1, 7);
+        c.on_event(Event::Init {
+            session_id: "sess-1".into(),
+        });
+        c.on_event(Event::Text("A firmware cache.".into()));
+        c.on_exit(0);
+        // `a` in the chat: the conversation goes on, as a session.
+        let mut s = Session::from_chat(c, Ask::for_finding(&f, &[]));
+        assert_eq!(s.chat.session.as_deref(), Some("sess-1"));
+        assert!(s.chat.entries.iter().any(|(_, t)| t == "A firmware cache."));
+        assert_eq!(s.enter_word(), Some("start"));
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, &plan(CHECKS));
+        key(&mut s, KeyCode::Enter);
+        s.step_ended(0);
+        // The last step: the audit first, then Claude, told what it found.
+        assert_eq!(s.step_ended(0), [Fx::Reaudit]);
+        assert!(s.busy());
+        let fx = s.reaudited(true);
+        let Fx::Turn { prompt, .. } = &fx[0] else {
+            panic!("{fx:?}")
+        };
+        assert!(prompt.contains("After it, sentry's audit no longer reports the finding."));
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"failed\"\nsummary = \"still open\"\n```",
+        );
+        assert!(
+            matches!(&fx[0], Fx::Log { tags, .. } if tags.contains(&"finding:listener:svc:passim".to_string()))
+        );
+        // Not done: Enter audits again; gone, it's done.
+        assert_eq!(s.enter_word(), Some("audit again"));
+        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::Reaudit]);
+        s.reaudited(true);
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert_eq!(s.enter_word(), Some("close"));
+    }
+
+    #[test]
+    fn enter_does_the_next_thing() {
+        // A task Claude couldn't verify: Enter marks it done.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "Nothing to plan, it's fine.");
+        assert_eq!(s.enter_word(), Some("ask for a plan"));
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("sentry-apply")));
+        answer(&mut s, &fx, &plan(CHECKS));
+        key(&mut s, KeyCode::Enter);
+        s.step_ended(0);
+        let fx = s.step_ended(0);
+        // No verdict: asked again, as a verify turn; twice, then it's the user's.
+        let fx = answer(&mut s, &fx, "no verdict");
+        assert_eq!(s.phase, Phase::Thinking(Turn::Verify));
+        let fx = answer(&mut s, &fx, "still none");
+        answer(&mut s, &fx, "none again");
+        assert_eq!(s.phase, Phase::Settled(End::Unverified));
+        assert_eq!(s.enter_word(), Some("mark it done"));
+        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::MarkDone]);
+        // A failed step fixed: Enter retries it.
+        let mut s = Session::new(Ask::apply(
+            "flag",
+            "ctx",
+            Apply {
+                key: "step:wf:flag".into(),
+                step: Some(crate::claude::StepRef {
+                    workflow: "wf".into(),
+                    idx: 0,
+                    id: "flag".into(),
+                }),
+                ..Default::default()
+            },
+        ));
+        s.phase = Phase::Settled(End::Done);
+        assert_eq!(s.enter_word(), Some("retry the step"));
+        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::RetryStep, Fx::Close]);
     }
 
     #[test]
