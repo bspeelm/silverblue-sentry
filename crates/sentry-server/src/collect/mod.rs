@@ -245,6 +245,7 @@ pub fn maint_read(
         &read.local,
         lookups.as_ref(),
         &sentry_core::maint::later::load(&r.name),
+        &maint::eval::retired_in(&sentry_core::maint::log::list(&r.name)),
         today,
     );
     let facts = maint::discover::read_facts(r, cfg).ok();

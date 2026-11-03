@@ -1853,8 +1853,14 @@ impl App {
             return;
         }
         // What the run changed shows at once: the updates waiting, the kernel, the services
-        // and containers are read again (not when its last check happened to run).
-        for k in [Kind::Host, Kind::Apt, Kind::Units, Kind::Docker] {
+        // and containers, and each item's standing (a retirement done) are read again.
+        for k in [
+            Kind::Host,
+            Kind::Apt,
+            Kind::Units,
+            Kind::Docker,
+            Kind::Maint,
+        ] {
             let (r, tx) = (self.remote.clone(), self.tx.clone());
             if !self.offline {
                 self.store.fetch(k, &r, &tx);

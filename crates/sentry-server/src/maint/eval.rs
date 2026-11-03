@@ -32,6 +32,8 @@ pub enum Flag {
     Current,
     /// Planned to be removed.
     Retire,
+    /// Its retirement ran and ended well (the maintenance log says so): nothing left to do.
+    Retired,
     /// Its version couldn't be read, or there's nothing to compare it with.
     Unknown,
 }
@@ -48,6 +50,7 @@ impl Flag {
             Flag::Held => "held",
             Flag::Current => "current",
             Flag::Retire => "retire",
+            Flag::Retired => "retired",
             Flag::Unknown => "unknown",
         }
     }
@@ -77,16 +80,36 @@ impl Status {
     }
 }
 
+/// `retired`: the items whose retirement ended well (from the maintenance log, `retired_in`).
 pub fn evaluate(
     items: &[MaintItem],
     local: &BTreeMap<String, Local>,
     lookups: Option<&Lookups>,
     later: &sentry_core::maint::later::Snoozes,
+    retired: &std::collections::BTreeSet<String>,
     today: jiff::civil::Date,
 ) -> Vec<Status> {
     items
         .iter()
-        .map(|it| one(it, local.get(&it.id), lookups, later, today))
+        .map(|it| {
+            one(
+                it,
+                local.get(&it.id),
+                lookups,
+                later,
+                retired.contains(&it.id),
+                today,
+            )
+        })
+        .collect()
+}
+
+/// The items the maintenance log says were retired: a retirement run (kind `retire`) that
+/// ended well. A retirement is done once, not routine.
+pub fn retired_in(log: &[sentry_core::maint::log::LogEntry]) -> std::collections::BTreeSet<String> {
+    log.iter()
+        .filter(|e| e.head.kind == "retire" && e.head.result == "done")
+        .filter_map(|e| e.head.item.clone())
         .collect()
 }
 
@@ -95,6 +118,7 @@ fn one(
     l: Option<&Local>,
     lookups: Option<&Lookups>,
     later: &sentry_core::maint::later::Snoozes,
+    retired: bool,
     today: jiff::civil::Date,
 ) -> Status {
     let l = l.cloned().unwrap_or_default();
@@ -172,7 +196,7 @@ fn one(
         flags.push(Flag::ReviewDue);
     }
     if it.retire.is_some() {
-        flags.push(Flag::Retire);
+        flags.push(if retired { Flag::Retired } else { Flag::Retire });
     }
     if it.hold.is_some() || l.held {
         flags.push(Flag::Held);
@@ -422,6 +446,7 @@ mod tests {
             &local,
             Some(&lk),
             &Default::default(),
+            &Default::default(),
             d("2026-10-27"),
         );
         let web = &st[0];
@@ -439,10 +464,54 @@ mod tests {
     }
 
     #[test]
+    fn a_retirement_that_ran_is_done() {
+        let (items, local, lk) = setup();
+        let id = items[2].id.clone();
+        // The log has a retirement run for it that ended well (and one for another that failed).
+        let entry = |item: &str, result: &str| {
+            let mut e = sentry_core::maint::log::LogEntry::event(
+                "s",
+                "retire",
+                "retire-service",
+                result == "done",
+                "",
+                &[],
+                jiff::Timestamp::now(),
+            );
+            e.head.item = Some(item.to_string());
+            e
+        };
+        let retired = retired_in(&[entry(&id, "done"), entry("web", "failed")]);
+        assert_eq!(retired.iter().collect::<Vec<_>>(), [&id]);
+        let st = evaluate(
+            &items,
+            &local,
+            Some(&lk),
+            &Default::default(),
+            &retired,
+            d("2026-10-27"),
+        );
+        assert!(st[2].has(Flag::Retired) && !st[2].has(Flag::Retire));
+        // No "retire" finding, no "Retire …" recommendation: it's done.
+        assert!(
+            !findings(&st, &items)
+                .iter()
+                .any(|f| f.id.contains("retire"))
+        );
+    }
+
+    #[test]
     fn a_held_item_only_nags_once_its_review_is_due() {
         let (items, local, lk) = setup();
         let ids = |today: &str, later: &sentry_core::maint::later::Snoozes| -> Vec<String> {
-            let st = evaluate(&items, &local, Some(&lk), later, d(today));
+            let st = evaluate(
+                &items,
+                &local,
+                Some(&lk),
+                later,
+                &Default::default(),
+                d(today),
+            );
             findings(&st, &items).into_iter().map(|f| f.id).collect()
         };
         let now = ids("2026-10-27", &Default::default());

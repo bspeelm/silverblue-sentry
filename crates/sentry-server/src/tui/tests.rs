@@ -149,6 +149,7 @@ fn maint_payload() -> Payload {
         &local,
         Some(&lk),
         &Default::default(),
+        &Default::default(),
         jiff::civil::date(2026, 10, 26),
     );
     let found = crate::maint::discover::Found {
