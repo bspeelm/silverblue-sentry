@@ -59,6 +59,8 @@ pub enum Effect {
     ReadsSkipped,
     /// Open an item's plan in the Plan view.
     PlanOpen(String),
+    /// Carry out an item's ready plan (an apply session seeded with it).
+    PlanApply(String),
     /// Open the maintenance log, marking this item's entries.
     LogOpen(Option<String>),
     /// The latest maintenance review (or the box to write one).
@@ -1150,6 +1152,7 @@ impl App {
                     self.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::PlanApply(id) => self.apply_plan(&id, now),
                 Effect::PlanDoneByHand(id) => self.plan_done_by_hand(&id),
                 Effect::LogOpen(item) => {
                     self.open_records(sentry_core::tui::records::Section::Log, item)
@@ -1542,7 +1545,7 @@ impl App {
                 }
                 StreamMsg::Line { stderr: true, text } => sess.chat.on_raw(text.clone()),
                 StreamMsg::Exit { code, .. } => {
-                    let names = self.store.workflows.clone();
+                    let names = self.wf_infos();
                     let Some(sess) = self.apply.as_mut() else {
                         return true;
                     };
@@ -1605,7 +1608,7 @@ impl App {
                         (Err(e), _) => {
                             sess.chat
                                 .push(chatmod::Kind::Err, format!("couldn't start claude: {e}"));
-                            let names = self.store.workflows.clone();
+                            let names = self.wf_infos();
                             if let Some(sess) = self.apply.as_mut() {
                                 let fx = sess.turn_ended(-1, &names);
                                 self.apply_fx(fx);
@@ -1705,17 +1708,37 @@ impl App {
                         }
                     }
                 }
-                Fx::StartWorkflow(wf) => {
-                    let item = self
+                Fx::StartWorkflow(wf, vars) => {
+                    // The item it changes goes in the log with the run (and its plan, if any,
+                    // is closed when the run ends well).
+                    let change = self
                         .apply
                         .as_ref()
                         .and_then(|s| s.chat.ask.applying())
                         .and_then(|a| a.item.clone())
-                        .filter(|i| self.store.plans.contains_key(i));
-                    match item {
-                        Some(i) => self.apply_plan(&i, Instant::now()),
-                        None => self.apply(vec![Effect::StartWorkflow(wf.clone())], Instant::now()),
-                    }
+                        .map(|item| {
+                            let plan = self.store.plans.get(&item);
+                            crate::maint::Change {
+                                at: jiff::Timestamp::now(),
+                                from: plan.and_then(|p| p.head.from.clone()),
+                                to: plan.and_then(|p| p.head.to.clone()),
+                                item,
+                                workflow: wf.clone(),
+                                result: String::new(),
+                            }
+                        });
+                    // The plan's values are the base; the step's own come on top.
+                    let mut given: BTreeMap<String, String> = change
+                        .as_ref()
+                        .and_then(|c| self.store.plans.get(&c.item))
+                        .filter(|p| p.head.workflow == wf)
+                        .map(|p| p.head.vars.clone())
+                        .unwrap_or_default();
+                    given.extend(vars);
+                    self.apply(
+                        vec![Effect::Wf(WfCmd::BeginPrefilled(wf.clone(), given, change))],
+                        Instant::now(),
+                    );
                     let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
                     if !going || self.var_input.is_some() {
                         if let Some(sess) = self.apply.as_mut() {
@@ -1724,6 +1747,16 @@ impl App {
                         self.toast(&format!(
                             "{wf} needs you · the plan carries on when its run ends (A shows it)"
                         ));
+                    }
+                }
+                Fx::PlanDone(item) => {
+                    // Already closed when its workflow's run ended: nothing left to do.
+                    if let Some(doc) = self.store.plans.remove(&item) {
+                        if !self.offline {
+                            let _ = crate::maint::plan::close(&doc, PlanStatus::Done);
+                        }
+                        self.plan_view = None;
+                        self.toast(&format!("the plan for {item} is done (plans/done/)"));
                     }
                 }
                 Fx::OpenRun => {
@@ -3291,8 +3324,10 @@ impl App {
     }
 
     /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
-    fn apply_plan(&mut self, id: &str, now: Instant) {
-        let Some(d) = self.store.plans.get(id).cloned() else {
+    /// Enter on a ready plan (in the Plan view, or its recommendation): carried out in an
+    /// apply session seeded with the plan (its checks, its workflow with the plan's values).
+    fn apply_plan(&mut self, id: &str, _now: Instant) {
+        let Some(d) = self.store.plans.get(id) else {
             return;
         };
         match d.head.status {
@@ -3302,46 +3337,34 @@ impl App {
             }
             s => return self.toast(&format!("this plan is {}: p plans again", s.word())),
         }
-        if d.head.workflow.is_empty() {
-            // Done by hand: the plan is the procedure; afterwards it's marked done and logged.
-            let t = self.theme;
-            self.modal = Some(Modal {
-                title: format!("{id}: done by hand?"),
-                color: t.yellow,
-                lines: vec![
-                    Line::styled(
-                        "No workflow runs this plan: you run its steps yourself, in a terminal \
-                         on the server (the Change section, in order).",
-                        t.fg(),
-                    ),
-                    Line::raw(""),
-                    Line::styled(
-                        "When you've carried it out, say so here: the plan moves to plans/done/ \
-                         and the change goes in the maintenance log, with a note.",
-                        t.dim(),
-                    ),
-                ],
-                yes: Some((
-                    "it's done".into(),
-                    vec![Effect::PlanDoneByHand(id.to_string())],
-                )),
-            });
-            return;
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
         }
-        self.plan_view = None;
-        let effects = vec![Effect::Wf(WfCmd::BeginPrefilled(
-            d.head.workflow.clone(),
-            d.head.vars.clone(),
-            Some(crate::maint::Change {
-                at: jiff::Timestamp::now(),
-                item: id.to_string(),
-                from: d.head.from.clone(),
-                to: d.head.to.clone(),
-                workflow: d.head.workflow.clone(),
-                result: String::new(),
-            }),
-        ))];
-        self.apply(effects, now);
+        let v = self.view();
+        let ask = super::ask::apply_item(&v, &self.remote, id, id.to_string(), &|wf| {
+            self.workflow_text(wf)
+        });
+        match ask {
+            Some(ask) => {
+                self.plan_view = None;
+                self.open_ask(ask);
+            }
+            None => self.toast(&format!("{id} isn't tracked any more")),
+        }
+    }
+
+    /// The workflows sentry-server knows, with their values, for checking a plan's steps.
+    fn wf_infos(&self) -> Vec<sentry_core::apply::plan::WfInfo> {
+        use sentry_core::apply::plan::WfInfo;
+        if self.wf_entries.is_empty() {
+            self.store
+                .workflows
+                .iter()
+                .map(|n| WfInfo::from(n.as_str()))
+                .collect()
+        } else {
+            self.wf_entries.iter().map(WfInfo::of).collect()
+        }
     }
 
     /// `r` in the Plan view: what to change, then Claude rewrites the plan in its session.
@@ -3526,10 +3549,13 @@ impl App {
         grants: &[sentry_core::claude::Grant],
     ) -> Result<(u64, u32), String> {
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
-        let profile = super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
-            .with_notes(&self.remote.cfg.maintenance.notes)
-            .with_log(&sentry_core::maint::log::dir(&self.remote.name))
-            .with_grants(grants);
+        // An apply session may read release notes (as plans do): it may have to decide.
+        let profile = super::ask::with_web(
+            super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+                .with_notes(&self.remote.cfg.maintenance.notes)
+                .with_log(&sentry_core::maint::log::dir(&self.remote.name))
+                .with_grants(grants),
+        );
         self.run_seq += 1;
         let id = self.run_seq;
         if self.offline {

@@ -265,3 +265,9 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A chat explains; `a` hands it to a session (`Session::from_chat`: the transcript and Claude's session go on) when its screen has an apply ask for the selection (`A` → 2 keeps it as `Chat::apply_with`).
 - A missing or broken verdict is asked for again as a verify turn.
 
+## A31. sentry-server: plan to decide, apply session to do (2026-11)
+- Both stay, with one job each. The plan writer (`p`) researches and decides (target or wait, a durable `plans/<item>.md`); the apply session is the only way anything changes on the server.
+- Enter on a ready plan (the "Apply the plan" recommendation, or the Plan view) opens an apply session seeded with the plan (its body and the workflow's values), not the workflow directly and never the "done by hand?" box. Done, the plan closes (`Fx::PlanDone`; or when its workflow's run ends well, as before).
+- A session's `workflow` step takes values (`vars = { … }`, `Kind::Workflow { name, vars }`); the server starts it with the plan's values as the base and the step's on top (`BeginPrefilled`, so they're shown filled in). `problems()` flags a value the workflow doesn't declare (`WfInfo`).
+- Apply sessions on a server get WebFetch/WebSearch, as plans do.
+

@@ -2408,6 +2408,20 @@ impl App {
     }
 
     /// The workflows there are (what a suggested `run` may name).
+    /// The workflows sentry knows, with their values, for checking a plan's steps.
+    fn wf_infos(&self) -> Vec<crate::apply::plan::WfInfo> {
+        use crate::apply::plan::WfInfo;
+        match self.data.workflows.get() {
+            Some(w) => w.iter().map(|i| WfInfo::of(&i.entry)).collect(),
+            None if self.records => crate::workflows::list().iter().map(WfInfo::of).collect(),
+            None => self
+                .workflow_names()
+                .iter()
+                .map(|n| WfInfo::from(n.as_str()))
+                .collect(),
+        }
+    }
+
     fn workflow_names(&self) -> Vec<String> {
         match self.data.workflows.get() {
             Some(w) => w.iter().map(|i| i.entry.name.clone()).collect(),
@@ -2602,7 +2616,7 @@ impl App {
                 }
                 StreamMsg::Line { stderr: true, text } => sess.chat.on_raw(text.clone()),
                 StreamMsg::Exit { code, .. } => {
-                    let names = self.workflow_names();
+                    let names = self.wf_infos();
                     let Some(sess) = self.apply.as_mut() else {
                         return true;
                     };
@@ -2673,7 +2687,7 @@ impl App {
                                 super::chat::Kind::Err,
                                 format!("couldn't start claude: {e}"),
                             );
-                            let names = self.workflow_names();
+                            let names = self.wf_infos();
                             if let Some(sess) = self.apply.as_mut() {
                                 let fx = sess.turn_ended(-1, &names);
                                 self.apply_fx(fx, now);
@@ -2793,8 +2807,18 @@ impl App {
                         }
                     }
                 }
-                Fx::StartWorkflow(wf) => {
-                    self.apply(vec![Effect::StartWorkflow(wf.clone())], now);
+                Fx::StartWorkflow(wf, vars) => {
+                    if vars.is_empty() {
+                        self.apply(vec![Effect::StartWorkflow(wf.clone())], now);
+                    } else {
+                        self.apply(
+                            vec![
+                                Effect::Goto(ScreenId::Upgrade),
+                                Effect::Wf(WfCmd::Begin(wf.clone(), vars.into_iter().collect())),
+                            ],
+                            now,
+                        );
+                    }
                     // A workflow that needs you first (a value, a confirm): its run, in front.
                     let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
                     if !going || !matches!(self.input, Input::None) {
@@ -2804,6 +2828,15 @@ impl App {
                         self.toast(format!(
                             "{wf} needs you · the plan carries on when its run ends (A shows it)"
                         ));
+                    }
+                }
+                Fx::PlanDone(wf) => {
+                    // Usually closed when its workflow's run ended; otherwise now.
+                    if let Some(doc) = self.data.plans.remove(&wf)
+                        && self.records
+                    {
+                        let _ =
+                            crate::maint::plan::close(&doc, crate::maint::plan::PlanStatus::Done);
                     }
                 }
                 Fx::OpenRun => {

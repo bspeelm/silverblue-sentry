@@ -228,6 +228,14 @@ impl Ask {
 /// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
     let files = files_rule(a);
+    let planned = if a.plan.is_some() {
+        " The brief has the plan written earlier for this, with its research: carry it out. \
+         Its Before checks become `check` steps, its Change the workflow step with the plan's \
+         values (or, when no workflow applies it, `run` and `edit` steps), its Verify `check` \
+         steps. Check first that it still fits (versions, what's running), and say if it doesn't."
+    } else {
+        ""
+    };
     let what = match (&a.finding, &a.step) {
         (Some(_), _) => {
             " If the finding is fine as it is, say so and send no plan: I'll mark it \
@@ -246,8 +254,9 @@ pub fn apply_question(a: &Apply) -> String {
     let wf = match &a.workflow {
         Some(wf) => format!(
             " sentry's workflow `{wf}` makes this change, with its own confirm steps and log: put \
-             it in the plan as a `workflow = \"{wf}\"` step and never its commands (upgrades, \
-             rebases, pin or image edits, `compose up`, reboots)."
+             it in the plan as a `workflow = \"{wf}\"` step (its values as \
+             `vars = {{ name = \"value\" }}`) and never its commands (upgrades, rebases, pin or \
+             image edits, `compose up`, reboots)."
         ),
         None => String::new(),
     };
@@ -271,12 +280,13 @@ pub fn apply_question(a: &Apply) -> String {
          ```\n\
          Each step has exactly one of: `edit` (with `old` and `new`), `run` (a command that \
          changes something; sudo where needed), `check` (a command that must exit 0, or the \
-         plan stops) or `workflow` (one of sentry's workflows). {files} Order the steps as they must happen and end with \
+         plan stops) or `workflow` (one of sentry's workflows, with `vars` for its values). \
+         {files} Order the steps as they must happen and end with \
          the checks that show it worked. sentry shows me the plan; once I approve it, sentry \
          backs up every file it edits, asks me for my sudo password if a step needs it, and \
          runs the steps in order. So don't back anything up yourself, and don't run or edit \
          anything now. If a step fails, sentry sends you what happened and you send a plan for \
-         the rest. When the plan has run, sentry sends you the results to verify.{wf}{what}"
+         the rest. When the plan has run, sentry sends you the results to verify.{wf}{planned}{what}"
     )
 }
 

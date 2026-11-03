@@ -387,7 +387,18 @@ fn step_lines(
                 push(&mut l, &format!("{w0} $ {x}"), t.s(col));
             }
         }
-        K::Workflow(name) => push(&mut l, &format!("workflow {name}"), t.s(t.cyan)),
+        K::Workflow { name, vars } => {
+            let given: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            push(
+                &mut l,
+                &if given.is_empty() {
+                    format!("workflow {name}")
+                } else {
+                    format!("workflow {name} ({})", given.join(", "))
+                },
+                t.s(t.cyan),
+            )
+        }
     }
     for (_, why) in s.problems.iter().filter(|(k, _)| *k == i) {
         push(&mut l, &format!("✗ {why}"), t.s(t.red));
