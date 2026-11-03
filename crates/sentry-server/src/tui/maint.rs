@@ -282,6 +282,8 @@ fn state(v: &View, s: &Status) -> (String, Color) {
         ("eol soon".into(), t.yellow)
     } else if s.has(Flag::Retire) {
         ("to retire".into(), t.mag)
+    } else if s.has(Flag::Retired) {
+        ("retired".into(), t.dim)
     } else if s.has(Flag::Behind) && held {
         (format!("held · {n} newer"), t.dim)
     } else if s.has(Flag::Behind) {
