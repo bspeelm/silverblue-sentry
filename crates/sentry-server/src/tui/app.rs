@@ -1819,12 +1819,16 @@ impl App {
         if self.wf_logged.as_ref() == Some(&s.run.dir) {
             return;
         }
-        self.wf_logged = Some(s.run.dir.clone());
         // What the run changed shows at once: the updates waiting, the kernel, the services
         // and containers are read again (not when its last check happened to run).
         for k in [Kind::Host, Kind::Apt, Kind::Units, Kind::Docker] {
-            self.fetch(k);
+            let (r, tx) = (self.remote.clone(), self.tx.clone());
+            if !self.offline {
+                self.store.fetch(k, &r, &tx);
+            }
         }
+        let Some(s) = self.wf.as_ref() else { return };
+        self.wf_logged = Some(s.run.dir.clone());
         use crate::maint::{log, plan};
         use sentry_core::workflows::state::RunStatus;
         let done = s.run.state.status == RunStatus::Done;
