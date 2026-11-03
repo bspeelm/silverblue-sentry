@@ -96,20 +96,51 @@ when = "kernel_changed"
 on_fail = "stop"
 
 [[steps]]
+id = "akmods-key"
+title = "The driver signing key is usable"
+run = "sentry check akmods-key"
+gate = "auto"
+when = "kernel_changed"
+on_fail = "manual"
+manual = """
+The NVIDIA driver gets a security stamp (a signature) when it is built. Secure Boot only
+loads stamped drivers. Right now the driver builder can't reach its stamp, so it would
+build a driver your computer then refuses: a black or low-resolution screen after the restart.
+
+To fix it, run this in a terminal and type your password when asked:
+    sudo chgrp -R akmods /etc/pki/akmods/certs /etc/pki/akmods/private
+Then press r here to check again. If it still fails, press f to fix it with Claude."""
+
+[[steps]]
 id = "akmods"
-title = "Build NVIDIA kmod for the running kernel (if akmods didn't already)"
-run = "ls /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm 2>/dev/null || sudo akmods --force --kernels $(uname -r)"
+title = "Build the NVIDIA driver for the running kernel (skipped if a signed one is built)"
+# An unsigned RPM left by an earlier build is removed and built again (akmods-key fixed it).
+run = "sentry check akmods-built --exactly-one --signed || { sudo rm -f /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm; sudo akmods --force --kernels $(uname -r); }"
 gate = "confirm"
 when = "kernel_changed"
 timeout = "30m"
 
 [[steps]]
 id = "kmod-built"
-title = "Exactly one built kmod RPM for the running kernel"
-run = "sentry check akmods-built --exactly-one"
+title = "Exactly one built driver for the running kernel, and it is signed"
+run = "sentry check akmods-built --exactly-one --signed"
 gate = "auto"
 when = "kernel_changed"
-on_fail = "stop"
+on_fail = "manual"
+manual = """
+The driver build didn't leave exactly one signed driver file. Don't install anything yet:
+an unsigned driver would be refused by Secure Boot after the restart.
+
+- "is NOT signed": run `sentry check akmods-key` in a terminal. If it shows ✗, run
+    sudo chgrp -R akmods /etc/pki/akmods/certs /etc/pki/akmods/private
+  Then build again:
+    sudo rm -f /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm
+    sudo akmods --force --kernels $(uname -r)
+  and press r here.
+- "No akmod packages found" when building: the build tool isn't installed in this version
+  of the system. Press f and Claude will walk you through it.
+- Anything else: press f to fix it with Claude. The build log is in
+  /var/cache/akmods/nvidia/ (the newest *.failed.log)."""
 
 [[steps]]
 id = "layer-kmod"
@@ -129,6 +160,45 @@ id = "verify"
 title = "Driver loaded on the expected kernel"
 run = "sentry check nvidia-loaded && sentry check booted-kernel --expect {{ pending_kernel }}"
 gate = "auto"
+on_fail = "manual"
+manual = """
+Something didn't come up right after the restart. The line with ✗ above says what.
+
+"nvidia module not loaded" usually means the graphics driver was built without its
+security stamp (signature), so Secure Boot refused it. To fix it:
+
+ 1. Check that this is the cause. In a terminal:
+      journalctl -b -k | grep 'unsigned module'
+    If it prints "Loading of unsigned module is rejected", carry on. If it prints nothing,
+    stop here and press f to fix it with Claude.
+
+ 2. Let the driver builder use its stamp again:
+      sentry check akmods-key
+    If it shows ✗, run this and type your password:
+      sudo chgrp -R akmods /etc/pki/akmods/certs /etc/pki/akmods/private
+
+ 3. Go back to the version of the system from just before the driver was added.
+    Installing the driver removed the tool that builds it, and that earlier version still
+    has it. Your files, apps and settings are not affected.
+      rpm-ostree rollback
+      systemctl reboot
+    If rollback says there is nothing to roll back to, run this instead, then restart:
+      rpm-ostree uninstall kmod-nvidia-$(uname -r)
+
+ 4. After the restart, open sentry and come back to this step. Build the driver again:
+      sudo rm -f /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm
+      sudo akmods --force --kernels $(uname -r)
+      sentry check akmods-built --exactly-one --signed
+    The last command must print a line starting with ✓. If it shows ✗, press f here.
+
+ 5. Install the new driver and restart:
+      rpm-ostree install /var/cache/akmods/nvidia/kmod-nvidia-$(uname -r)-*.rpm
+      systemctl reboot
+
+ 6. Open sentry again and press r to retry this step. Once it passes, the rest of the
+    workflow carries on.
+
+Any other ✗ line: press f to fix it with Claude."""
 when = "kernel_changed"
 
 # The "flatpak" step ran before the new driver was loaded, so it couldn't pull the GL

@@ -41,7 +41,7 @@ enum Command {
     Check {
         /// preflight, booted-version, booted-kernel, kernel-changed, nvidia-module,
         /// nvidia-loaded, rpmfusion-version, rpmfusion-pinned, kargs, secureboot-mok,
-        /// kmod-local, akmods-built, flatpak-gl-nvidia, flatpak-idle, master-repo-present
+        /// kmod-local, akmods-built, akmods-key, flatpak-gl-nvidia, flatpak-idle, master-repo-present
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
