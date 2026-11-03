@@ -124,6 +124,28 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
         Phase::Thinking(Turn::Verify) => format!("… Claude is checking the result {clock}"),
         Phase::SudoCheck => "… checking whether sudo needs your password".into(),
         Phase::Password { checking: true, .. } => "… checking the password".into(),
+        // Waiting for the user: said plainly, at the bottom, where the eye ends up.
+        Phase::Review | Phase::Settled(_) => {
+            let word = s.enter_word()?;
+            let why = match (s.phase, s.runs.len().checked_sub(2).map(|i| &s.runs[i])) {
+                (Phase::Review, Some(prev)) if matches!(prev.state, RunState::Failed(_)) => {
+                    let RunState::Failed(k) = prev.state else {
+                        unreachable!()
+                    };
+                    format!(
+                        "the plan stopped at step {} ({}); Claude sent a plan for the rest · ",
+                        k + 1,
+                        prev.plan.steps[k].title
+                    )
+                }
+                (Phase::Review, _) if s.can_approve() => "the plan is ready · ".into(),
+                _ => String::new(),
+            };
+            return Some(Line::styled(
+                format!("     ▶ Your turn: {why}Enter {word}"),
+                t.s(t.yellow).add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
         _ => return None,
     };
     Some(Line::styled(format!("       {text}"), t.dim()))

@@ -1503,6 +1503,17 @@ fn a_long_plan_keeps_its_running_step_in_view() {
     }
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("▶ 20. Check number 20"), "{s}");
+    // Step 20 fails: Claude is asked by itself, and its plan for the rest waits for you,
+    // which the window says plainly.
+    a.apply_step_exit_for_test(1);
+    a.apply_answer_for_test(
+        "Fixed.\n```sentry-apply\nsummary = \"the rest\"\n[[step]]\ntitle = \"Again\"\ncheck = \"true\"\n```",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("▶ Your turn: the plan stopped at step 20 (Check number 20); Claude sent a plan for the rest · Enter apply the plan"),
+        "{s}"
+    );
 }
 
 #[test]
