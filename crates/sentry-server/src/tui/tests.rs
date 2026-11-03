@@ -1435,7 +1435,26 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     );
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("ready to apply"));
-    // Enter in the plan applies it: the workflow asks its vars with the plan's values.
+    // Enter in the plan applies it: an apply session, told the plan and its values.
+    key(&mut a, KeyCode::Enter);
+    let p = a.consent_text().expect("a session");
+    assert!(
+        p.contains("Claude's plan for it, written earlier (target 1.5.1")
+            && p.contains("image = \"example/web:1.5.1\"")
+            && p.contains("carry it out"),
+        "{p}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // Claude's plan: the workflow, with the plan's values, which it asks with them filled in.
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"bump web\"\n[[step]]\ntitle = \"Bump\"\n\
+         workflow = \"compose-bump\"\nvars = { image = \"example/web:1.5.1\" }\n```",
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("workflow compose-bump (image=example/web:1.5.1)"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
@@ -1443,7 +1462,13 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("Service (service): web▏"));
+    let s = screen(&mut a);
+    assert!(s.contains("Service (service): web▏"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // The session waits for the run; close it for now.
+    a.apply_session().unwrap().chat.hidden = false;
+    a.apply_session().unwrap().phase =
+        sentry_core::apply::session::Phase::Settled(sentry_core::apply::session::End::Stopped);
     key(&mut a, KeyCode::Esc);
     // The plan stays until it's applied or dropped.
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
@@ -2026,7 +2051,7 @@ fn workflows_run_in_a_view_on_maintenance() {
 }
 
 #[test]
-fn an_item_without_a_workflow_is_planned_and_done_by_hand() {
+fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
@@ -2051,20 +2076,24 @@ fn an_item_without_a_workflow_is_planned_and_done_by_hand() {
     );
     let s = screen(&mut a);
     assert!(s.contains("ready to apply"), "{s}");
-    // Enter: nothing runs; it asks whether it's been done by hand.
+    // Enter: no workflow applies it, so an apply session carries the plan out (you don't
+    // run its steps yourself); done, the plan is closed.
     key(&mut a, KeyCode::Enter);
-    let s = screen(&mut a);
+    let p = a.consent_text().expect("a session");
     assert!(
-        s.contains("engine: done by hand?") && s.contains("you run its steps yourself"),
-        "{s}"
+        p.contains("Claude's plan for it, written earlier") && p.contains("carry it out"),
+        "{p}"
     );
-    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"engine\"\n[[step]]\ntitle = \"Install\"\n\
+         run = \"sudo apt-get install docker-ce\"\n```",
+    );
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0); // sudo -n works
+    a.apply_exit_for_test(0); // the step
     assert!(a.wf.is_none(), "no workflow started");
-    let s = screen(&mut a);
-    assert!(
-        s.contains("for the maintenance log, what to know next time"),
-        "{s}"
-    );
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"29.9.2\"\n```");
     assert!(!a.store.plans.contains_key("engine"), "the plan is closed");
 }
 

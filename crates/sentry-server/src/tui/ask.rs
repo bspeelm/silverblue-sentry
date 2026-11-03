@@ -10,6 +10,15 @@ use sentry_core::claude::{Apply, Ask, Profile, StepRef};
 use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
+/// The web for release notes and advisories (plans, reviews, apply sessions).
+pub fn with_web(mut p: Profile) -> Profile {
+    p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
+    p.allowed
+        .extend(["WebFetch", "WebSearch"].map(String::from));
+    p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
+    p
+}
+
 /// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
 pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
@@ -21,11 +30,7 @@ pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>
          (release notes: fetch the GitHub release pages given; never curl), and the notes files \
          named in it with the Read tool (not grep or cat). Cite what you read.",
     );
-    p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
-    p.allowed
-        .extend(["WebFetch", "WebSearch"].map(String::from));
-    // Denied for every other ask; this one is about reading upstream's notes.
-    p.denied.retain(|d| d != "WebFetch" && d != "WebSearch");
+    p = with_web(p);
     // The maintenance log: the ledger and every entry in it.
     let ledger = super::maint::ledger_path(&r.name);
     let log_dir = std::path::Path::new(&ledger)
@@ -442,9 +447,20 @@ pub fn apply_item(
         ctx.push_str(&format!("\n\n{}", steps(wf)));
     }
     if let Some(p) = plan {
+        let vars: Vec<String> = p
+            .head
+            .vars
+            .iter()
+            .map(|(k, v)| format!("{k} = \"{v}\""))
+            .collect();
         ctx.push_str(&format!(
-            "\n\nClaude's plan for it, written earlier (target {}):\n{}",
+            "\n\nClaude's plan for it, written earlier (target {}{}):\n{}",
             p.head.to.as_deref().unwrap_or("retire"),
+            if vars.is_empty() {
+                String::new()
+            } else {
+                format!("; the workflow's values: {}", vars.join(", "))
+            },
             p.body
         ));
     }

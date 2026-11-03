@@ -209,7 +209,7 @@ pub fn verbs(v: &View) -> Verbs {
                 None => only("start"),
             },
             Action::Plan(id) => item(id, "plan"),
-            Action::OpenPlan(id) => item(id, "open plan"),
+            Action::OpenPlan(id) => item(id, "apply the plan"),
             Action::Look(id) if !id.is_empty() => item(id, "go to item"),
             Action::Look(_) => only("details"),
         },
@@ -220,7 +220,7 @@ pub fn verbs(v: &View) -> Verbs {
 fn action_words(a: &Action) -> String {
     match a {
         Action::Plan(id) => format!("Enter: Claude writes a plan for {id}"),
-        Action::OpenPlan(id) => format!("Enter: open the plan for {id}"),
+        Action::OpenPlan(id) => format!("Enter: apply the plan for {id} (with Claude; p opens it)"),
         Action::Run(wf) => format!("Enter: start {wf}"),
         Action::Track(_) => "Enter: track it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
@@ -726,7 +726,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Some((s, it)) => item_key('P', v, s, it),
             None => Vec::new(),
         },
-        ('\n', Action::OpenPlan(id)) => vec![Effect::PlanOpen(id.clone())],
+        ('\n', Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
         ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
         ('\n' | 't', Action::Track(n)) => match found.candidates.get(*n) {
             Some(c) => vec![Effect::Track(c.item.clone())],

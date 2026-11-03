@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::chat::{brief_lines, entry_lines, show_scrolled};
+use super::chat::{brief_lines, entry_lines, show_focused};
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
 use crate::apply::plan::{Kind as K, Run, RunState};
@@ -53,7 +53,17 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     if let Some(l) = status(s, t) {
         lines.push(l);
     }
-    show_scrolled(f, log, c, lines);
+    // Applying: the running (or waiting) step stays in view, however long the plan.
+    let focus = matches!(s.phase, Phase::Applying)
+        .then(|| {
+            lines.iter().rposition(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|x| x.content.contains('▶') || x.content.contains('⏸'))
+            })
+        })
+        .flatten();
+    show_focused(f, log, c, lines, focus);
     f.render_widget(
         Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.rule)),
         rule,
@@ -114,6 +124,28 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
         Phase::Thinking(Turn::Verify) => format!("… Claude is checking the result {clock}"),
         Phase::SudoCheck => "… checking whether sudo needs your password".into(),
         Phase::Password { checking: true, .. } => "… checking the password".into(),
+        // Waiting for the user: said plainly, at the bottom, where the eye ends up.
+        Phase::Review | Phase::Settled(_) => {
+            let word = s.enter_word()?;
+            let why = match (s.phase, s.runs.len().checked_sub(2).map(|i| &s.runs[i])) {
+                (Phase::Review, Some(prev)) if matches!(prev.state, RunState::Failed(_)) => {
+                    let RunState::Failed(k) = prev.state else {
+                        unreachable!()
+                    };
+                    format!(
+                        "the plan stopped at step {} ({}); Claude sent a plan for the rest · ",
+                        k + 1,
+                        prev.plan.steps[k].title
+                    )
+                }
+                (Phase::Review, _) if s.can_approve() => "the plan is ready · ".into(),
+                _ => String::new(),
+            };
+            return Some(Line::styled(
+                format!("     ▶ Your turn: {why}Enter {word}"),
+                t.s(t.yellow).add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
         _ => return None,
     };
     Some(Line::styled(format!("       {text}"), t.dim()))
@@ -176,6 +208,9 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
         k.push(("Enter", "send"));
     } else if let Some(w) = s.enter_word() {
         k.push(("Enter", w));
+    }
+    if s.can_grant() {
+        k.push(("g", "grant it"));
     }
     match s.phase {
         Phase::Brief => {
@@ -352,7 +387,18 @@ fn step_lines(
                 push(&mut l, &format!("{w0} $ {x}"), t.s(col));
             }
         }
-        K::Workflow(name) => push(&mut l, &format!("workflow {name}"), t.s(t.cyan)),
+        K::Workflow { name, vars } => {
+            let given: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            push(
+                &mut l,
+                &if given.is_empty() {
+                    format!("workflow {name}")
+                } else {
+                    format!("workflow {name} ({})", given.join(", "))
+                },
+                t.s(t.cyan),
+            )
+        }
     }
     for (_, why) in s.problems.iter().filter(|(k, _)| *k == i) {
         push(&mut l, &format!("✗ {why}"), t.s(t.red));

@@ -33,8 +33,12 @@ pub enum Kind {
     Run(String),
     /// A command that must exit 0, or the plan stops.
     Check(String),
-    /// A sentry workflow: started, and the plan waits for its run to end.
-    Workflow(String),
+    /// A sentry workflow, with values for its `[vars]`: started, and the plan waits for its
+    /// run to end. A var it needs that isn't given is asked when it starts.
+    Workflow {
+        name: String,
+        vars: std::collections::BTreeMap<String, String>,
+    },
 }
 
 impl Kind {
@@ -43,7 +47,7 @@ impl Kind {
             Kind::Edit { .. } => "edit",
             Kind::Run(_) => "run",
             Kind::Check(_) => "check",
-            Kind::Workflow(_) => "workflow",
+            Kind::Workflow { .. } => "workflow",
         }
     }
 
@@ -52,7 +56,7 @@ impl Kind {
         match self {
             Kind::Edit { file, .. } => file,
             Kind::Run(c) | Kind::Check(c) => c,
-            Kind::Workflow(w) => w,
+            Kind::Workflow { name, .. } => name,
         }
     }
 }
@@ -78,6 +82,8 @@ struct RawStep {
     run: Option<String>,
     check: Option<String>,
     workflow: Option<String>,
+    /// A workflow step's values (strings, or numbers and booleans written as they are).
+    vars: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
 
 /// The answer without its plan block, and the plan (Err: the block is there but wrong, and
@@ -121,7 +127,21 @@ fn parse(block: &str) -> Result<Plan, String> {
         } else if let Some(c) = s.check {
             Kind::Check(c)
         } else {
-            Kind::Workflow(s.workflow.unwrap_or_default())
+            Kind::Workflow {
+                name: s.workflow.unwrap_or_default(),
+                vars: s
+                    .vars
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let v = match v {
+                            toml::Value::String(x) => x,
+                            other => other.to_string(),
+                        };
+                        (k, v)
+                    })
+                    .collect(),
+            }
         };
         steps.push(Step {
             title: if s.title.is_empty() {
@@ -140,7 +160,38 @@ fn parse(block: &str) -> Result<Plan, String> {
 }
 
 /// What stops the plan from being approved: (step index, why).
-pub fn problems(p: &Plan, workflows: &[String]) -> Vec<(usize, String)> {
+/// A workflow sentry knows: its name and, when its file reads, its `[vars]` (name, whether
+/// it has a default).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WfInfo {
+    pub name: String,
+    pub vars: Option<Vec<(String, bool)>>,
+}
+
+impl From<&str> for WfInfo {
+    fn from(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            vars: None,
+        }
+    }
+}
+
+impl WfInfo {
+    pub fn of(e: &crate::workflows::Entry) -> Self {
+        Self {
+            name: e.name.clone(),
+            vars: e.wf.as_ref().ok().map(|w| {
+                w.vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.default.is_some()))
+                    .collect()
+            }),
+        }
+    }
+}
+
+pub fn problems(p: &Plan, workflows: &[WfInfo]) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (i, s) in p.steps.iter().enumerate() {
         match &s.kind {
@@ -161,9 +212,21 @@ pub fn problems(p: &Plan, workflows: &[String]) -> Vec<(usize, String)> {
                     },
                 }
             }
-            Kind::Workflow(w) if !workflows.iter().any(|x| x == w) => {
-                out.push((i, format!("no workflow {w}")));
-            }
+            Kind::Workflow { name, vars } => match workflows.iter().find(|x| &x.name == name) {
+                None => out.push((i, format!("no workflow {name}"))),
+                Some(WfInfo {
+                    vars: Some(declared),
+                    ..
+                }) => {
+                    for k in vars
+                        .keys()
+                        .filter(|k| !declared.iter().any(|(d, _)| d == *k))
+                    {
+                        out.push((i, format!("{name} has no var {k}")));
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -214,7 +277,7 @@ pub enum RunState {
 pub enum Action {
     Edit(usize),
     Command { idx: usize, cmd: String },
-    StartWorkflow(usize, String),
+    StartWorkflow(usize, String, std::collections::BTreeMap<String, String>),
     Finished,
 }
 
@@ -252,9 +315,9 @@ impl Run {
                 idx: i,
                 cmd: c.clone(),
             },
-            Kind::Workflow(w) => {
+            Kind::Workflow { name, vars } => {
                 self.state = RunState::WaitingWorkflow(i);
-                Action::StartWorkflow(i, w.clone())
+                Action::StartWorkflow(i, name.clone(), vars.clone())
             }
         }
     }
@@ -353,6 +416,32 @@ Approve it and sentry does it.";
     }
 
     #[test]
+    fn a_workflow_step_carries_values() {
+        let (_, p) = take(
+            "```sentry-apply\n[[step]]\ntitle = \"Bump\"\nworkflow = \"compose-bump\"\n\
+             vars = { image = \"example/web:1.5.1\", wait = 30 }\n```",
+        );
+        let p = p.unwrap().unwrap();
+        let Kind::Workflow { name, vars } = &p.steps[0].kind else {
+            panic!("{:?}", p.steps[0])
+        };
+        assert_eq!(name, "compose-bump");
+        assert_eq!(vars["image"], "example/web:1.5.1");
+        assert_eq!(vars["wait"], "30");
+        let known = |vars: Option<Vec<(String, bool)>>| WfInfo {
+            name: "compose-bump".into(),
+            vars,
+        };
+        // Declared: fine. Not declared: a problem. Unknown (the file didn't read): not checked.
+        let ok = known(Some(vec![("image".into(), false), ("wait".into(), true)]));
+        assert!(problems(&p, &[ok]).is_empty());
+        let short = known(Some(vec![("image".into(), false)]));
+        assert_eq!(problems(&p, &[short])[0].1, "compose-bump has no var wait");
+        assert!(problems(&p, &[known(None)]).is_empty());
+        assert_eq!(problems(&p, &[])[0].1, "no workflow compose-bump");
+    }
+
+    #[test]
     fn what_stops_approval() {
         let dir = crate::paths::home().join(".cache/sentry-applyplan-test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -376,7 +465,10 @@ Approve it and sentry does it.";
                 edit("b"),
                 Step {
                     title: "w".into(),
-                    kind: Kind::Workflow("nope".into()),
+                    kind: Kind::Workflow {
+                        name: "nope".into(),
+                        vars: Default::default(),
+                    },
                 },
                 Step {
                     title: "e".into(),
@@ -415,7 +507,7 @@ Approve it and sentry does it.";
         );
         assert_eq!(
             r.step_done(true, "exit 0".into()),
-            Action::StartWorkflow(2, "quick-update".into())
+            Action::StartWorkflow(2, "quick-update".into(), Default::default())
         );
         assert_eq!(r.state, RunState::WaitingWorkflow(2));
         assert_eq!(r.step_done(true, "done".into()), Action::Finished);

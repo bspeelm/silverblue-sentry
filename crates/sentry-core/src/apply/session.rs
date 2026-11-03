@@ -88,7 +88,8 @@ pub enum Fx {
     CheckSudo,
     /// The typed password, through `sudo::check_script`: then `password_checked`.
     CheckPassword,
-    StartWorkflow(String),
+    /// Start a workflow with these values (the rest are asked when it starts).
+    StartWorkflow(String, std::collections::BTreeMap<String, String>),
     /// The workflow needs the user (a confirm, a manual step): show its run.
     OpenRun,
     /// One maintenance-log entry (`kind = "apply"`).
@@ -101,6 +102,8 @@ pub enum Fx {
     Reaudit,
     /// Retry the failed workflow step this session fixed (and show its run).
     RetryStep,
+    /// The written plan this session carried out is done (it moves to plans/done/).
+    PlanDone(String),
     /// Mark the task (or the plan done by hand) done, by hand: Claude didn't say it is.
     MarkDone,
     /// A check for later, as a one-time task on Maintenance (due after its `after`).
@@ -228,7 +231,7 @@ impl Session {
         let r = self.run()?;
         match r.state {
             RunState::WaitingWorkflow(i) => match &r.plan.steps[i].kind {
-                StepKind::Workflow(w) => Some(w),
+                StepKind::Workflow { name, .. } => Some(name),
                 _ => None,
             },
             _ => None,
@@ -384,6 +387,7 @@ impl Session {
             return Vec::new();
         }
         match code {
+            KeyCode::Char('g') if self.can_grant() => return self.grant(),
             KeyCode::Char(c) if !ctrl => self.chat.input.push(c),
             KeyCode::Backspace => {
                 self.chat.input.pop();
@@ -392,6 +396,29 @@ impl Session {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// `g` is offered: Claude asked to read something it may not, and nothing's typed.
+    pub fn can_grant(&self) -> bool {
+        self.chat.input.is_empty()
+            && matches!(self.phase, Phase::Review | Phase::Settled(_))
+            && self
+                .chat
+                .requests
+                .iter()
+                .any(|g| g.access != crate::claude::Access::Write)
+    }
+
+    /// `g`: what Claude asked to read (or run, read-only) is granted for the session, and it
+    /// carries on. Writes aren't: in a session, changes go in the plan.
+    fn grant(&mut self) -> Vec<Fx> {
+        self.chat
+            .requests
+            .retain(|g| g.access != crate::claude::Access::Write);
+        match self.chat.grant() {
+            Some(text) => self.turn(Turn::Investigate, text.clone(), Some(text)),
+            None => Vec::new(),
+        }
     }
 
     fn enter(&mut self) -> Vec<Fx> {
@@ -543,9 +570,9 @@ impl Session {
                         cmd,
                     }];
                 }
-                Action::StartWorkflow(_, wf) => {
+                Action::StartWorkflow(_, wf, vars) => {
                     self.output.clear();
-                    return vec![Fx::StartWorkflow(wf)];
+                    return vec![Fx::StartWorkflow(wf, vars)];
                 }
                 Action::Finished => return self.finished(),
             }
@@ -691,7 +718,7 @@ impl Session {
 
     /// The turn ended (`code`: claude's exit): what the answer means for the session.
     /// `workflows`: the names sentry knows, for the plan's problems.
-    pub fn turn_ended(&mut self, code: i32, workflows: &[String]) -> Vec<Fx> {
+    pub fn turn_ended(&mut self, code: i32, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         self.chat.on_exit(code);
         let Phase::Thinking(why) = self.phase else {
             return Vec::new();
@@ -716,7 +743,7 @@ impl Session {
     }
 
     /// An answer that should carry a plan.
-    fn answered(&mut self, at: usize, workflows: &[String]) -> Vec<Fx> {
+    fn answered(&mut self, at: usize, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         let (body, plan) = plan::take(&self.chat.entries[at].1);
         self.chat.entries[at].1 = body;
         match plan {
@@ -743,7 +770,7 @@ impl Session {
         }
     }
 
-    fn new_plan(&mut self, at: usize, p: Plan, workflows: &[String]) -> Vec<Fx> {
+    fn new_plan(&mut self, at: usize, p: Plan, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         if let Some(i) = self.runs.len().checked_sub(1) {
             let why = match (self.runs[i].state, self.sent_back.take()) {
                 (RunState::Failed(k), _) => format!("stopped at step {}", k + 1),
@@ -812,7 +839,7 @@ impl Session {
     }
 
     /// The verify turn's answer: a verdict (and, with `more`, a plan).
-    fn verified(&mut self, at: usize, workflows: &[String]) -> Vec<Fx> {
+    fn verified(&mut self, at: usize, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         let (body, v) = verdict::take(&self.chat.entries[at].1);
         self.chat.entries[at].1 = body;
         let v = match v {
@@ -883,7 +910,7 @@ impl Session {
     fn follow_up_task(
         &self,
         f: &verdict::FollowUp,
-        workflows: &[String],
+        workflows: &[plan::WfInfo],
     ) -> crate::maint::tasks::Task {
         let slug: String = f
             .title
@@ -898,7 +925,7 @@ impl Session {
         let slug: String = slug.chars().take(40).collect();
         let now = jiff::Timestamp::now();
         let known = |a: &String| {
-            a.parse::<crate::config::Dur>().is_ok() || workflows.iter().any(|w| w == a)
+            a.parse::<crate::config::Dur>().is_ok() || workflows.iter().any(|w| &w.name == a)
         };
         let mut steps = f.steps.clone();
         let after = match &f.after {
@@ -944,6 +971,11 @@ impl Session {
         self.secret.clear();
         self.secret_ok = false;
         let mut fx = self.log_runs(verdict);
+        if end == End::Done
+            && let Some(p) = self.chat.ask.applying().and_then(|a| a.plan.clone())
+        {
+            fx.push(Fx::PlanDone(p));
+        }
         if end == End::Done
             && let Some(id) = self.task().map(str::to_string)
         {
@@ -1016,7 +1048,7 @@ fn needs_sudo(s: &plan::Step) -> bool {
     match &s.kind {
         StepKind::Run(c) | StepKind::Check(c) => sudo::uses_sudo(c),
         StepKind::Edit { file, .. } => sudo::edit_target(file) == Ok(Owner::Root),
-        StepKind::Workflow(_) => false,
+        StepKind::Workflow { .. } => false,
     }
 }
 
@@ -1354,6 +1386,42 @@ mod tests {
     }
 
     #[test]
+    fn g_grants_reads_but_changes_go_in_the_plan() {
+        use crate::claude::{Access, Grant};
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, &plan(CHECKS));
+        s.chat.requests = vec![
+            Grant {
+                access: Access::Read,
+                path: "/etc/hosts".into(),
+            },
+            Grant {
+                access: Access::Write,
+                path: "/etc/hosts".into(),
+            },
+        ];
+        assert!(s.can_grant());
+        let fx = key(&mut s, KeyCode::Char('g'));
+        let Some(Fx::Turn { prompt, .. }) = fx.first() else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            prompt.contains("read /etc/hosts") && !prompt.contains("edit"),
+            "{prompt}"
+        );
+        assert!(s.chat.grants.iter().all(|g| g.access == Access::Read));
+        // Typing: `g` is a letter.
+        s.chat.requests = vec![Grant {
+            access: Access::Read,
+            path: "/etc/os-release".into(),
+        }];
+        s.phase = Phase::Review;
+        s.chat.input.push('x');
+        assert!(!s.can_grant());
+    }
+
+    #[test]
     fn a_workflow_step_waits_for_its_run() {
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
@@ -1364,7 +1432,7 @@ mod tests {
         );
         assert_eq!(
             key(&mut s, KeyCode::Enter),
-            [Fx::StartWorkflow("quick-update".into())]
+            [Fx::StartWorkflow("quick-update".into(), Default::default())]
         );
         assert_eq!(s.waiting_workflow(), Some("quick-update"));
         assert_eq!(key(&mut s, KeyCode::Enter), [Fx::OpenRun]);

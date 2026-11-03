@@ -525,6 +525,18 @@ pub fn brief_lines(c: &Chat, t: &Theme, w: usize, open: bool) -> Vec<Line<'stati
 /// Draw `lines` into `log`, at the chat's scroll position. Scrolled up while lines arrive:
 /// move by as many, so the view holds still. Never past the top.
 pub fn show_scrolled(f: &mut Frame, log: Rect, c: &Chat, lines: Vec<Line<'static>>) {
+    show_focused(f, log, c, lines, None);
+}
+
+/// `show_scrolled`, but when following (not scrolled up) and `focus` (a line) would be above
+/// the view, the view starts just above it instead: a long plan's running step stays in sight.
+pub fn show_focused(
+    f: &mut Frame,
+    log: Rect,
+    c: &Chat,
+    lines: Vec<Line<'static>>,
+    focus: Option<usize>,
+) {
     let h = log.height as usize;
     let total = lines.len();
     if c.scroll > 0 && c.drawn.get() > 0 {
@@ -533,8 +545,14 @@ pub fn show_scrolled(f: &mut Frame, log: Rect, c: &Chat, lines: Vec<Line<'static
     }
     c.drawn.set(total);
     let scroll = c.offset().min(total.saturating_sub(h));
-    let end = total.saturating_sub(scroll);
-    let start = end.saturating_sub(h);
+    let mut end = total.saturating_sub(scroll);
+    let mut start = end.saturating_sub(h);
+    if let Some(i) = focus.filter(|_| c.offset() == 0)
+        && i < start
+    {
+        start = i.saturating_sub(2);
+        end = (start + h).min(total);
+    }
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), log);
 }
 

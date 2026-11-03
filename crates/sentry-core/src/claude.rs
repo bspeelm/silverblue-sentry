@@ -228,6 +228,14 @@ impl Ask {
 /// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
     let files = files_rule(a);
+    let planned = if a.plan.is_some() {
+        " The brief has the plan written earlier for this, with its research: carry it out. \
+         Its Before checks become `check` steps, its Change the workflow step with the plan's \
+         values (or, when no workflow applies it, `run` and `edit` steps), its Verify `check` \
+         steps. Check first that it still fits (versions, what's running), and say if it doesn't."
+    } else {
+        ""
+    };
     let what = match (&a.finding, &a.step) {
         (Some(_), _) => {
             " If the finding is fine as it is, say so and send no plan: I'll mark it \
@@ -246,8 +254,9 @@ pub fn apply_question(a: &Apply) -> String {
     let wf = match &a.workflow {
         Some(wf) => format!(
             " sentry's workflow `{wf}` makes this change, with its own confirm steps and log: put \
-             it in the plan as a `workflow = \"{wf}\"` step and never its commands (upgrades, \
-             rebases, pin or image edits, `compose up`, reboots)."
+             it in the plan as a `workflow = \"{wf}\"` step (its values as \
+             `vars = {{ name = \"value\" }}`) and never its commands (upgrades, rebases, pin or \
+             image edits, `compose up`, reboots)."
         ),
         None => String::new(),
     };
@@ -271,12 +280,13 @@ pub fn apply_question(a: &Apply) -> String {
          ```\n\
          Each step has exactly one of: `edit` (with `old` and `new`), `run` (a command that \
          changes something; sudo where needed), `check` (a command that must exit 0, or the \
-         plan stops) or `workflow` (one of sentry's workflows). {files} Order the steps as they must happen and end with \
+         plan stops) or `workflow` (one of sentry's workflows, with `vars` for its values). \
+         {files} Order the steps as they must happen and end with \
          the checks that show it worked. sentry shows me the plan; once I approve it, sentry \
          backs up every file it edits, asks me for my sudo password if a step needs it, and \
          runs the steps in order. So don't back anything up yourself, and don't run or edit \
          anything now. If a step fails, sentry sends you what happened and you send a plan for \
-         the rest. When the plan has run, sentry sends you the results to verify.{wf}{what}"
+         the rest. When the plan has run, sentry sends you the results to verify.{wf}{planned}{what}"
     )
 }
 
@@ -709,6 +719,24 @@ impl Profile {
         self
     }
 
+    /// Claude may read sentry's own maintenance log (`dir`: the ledger `LOG.md` and its
+    /// entries), as plans and reviews do: it's what was done before.
+    pub fn with_log(mut self, dir: &std::path::Path) -> Self {
+        let d = crate::maint::real_path(dir);
+        if !self.tools.iter().any(|t| t == "Read") {
+            self.tools.push("Read".into());
+        }
+        let rule = format!("Read(/{d}/**)");
+        if !self.allowed.contains(&rule) {
+            self.allowed.push(rule);
+        }
+        // Claude Code can only add a directory that exists (the log appears with the first run).
+        if dir.is_dir() && !self.dirs.contains(&d) {
+            self.dirs.push(d);
+        }
+        self
+    }
+
     /// Chats may read the configured notes files (as plans and reviews do).
     pub fn with_notes(mut self, notes: &[String]) -> Self {
         let notes = crate::maint::resolve_notes(notes);
@@ -1123,6 +1151,21 @@ mod tests {
             path: "ostree admin status".into(),
         }]);
         assert!(p.allowed.iter().any(|a| a == "Bash(ostree admin status)"));
+    }
+
+    #[test]
+    fn the_maintenance_log_is_readable() {
+        let d = std::env::temp_dir().join(format!("sentry-log-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = Profile::local().with_log(&d);
+        let real = crate::maint::real_path(&d);
+        assert!(
+            p.allowed.contains(&format!("Read(/{real}/**)")),
+            "{:?}",
+            p.allowed
+        );
+        assert!(p.dirs.contains(&real));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
