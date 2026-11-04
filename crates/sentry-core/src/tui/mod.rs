@@ -29,6 +29,8 @@ use crate::exec::{Cmd, ExecError};
 /// What the terminal itself produces, for any TUI built on [`run_ui`].
 pub enum Input {
     Key(KeyEvent),
+    /// Text pasted into the terminal, whole (bracketed paste).
+    Paste(String),
     Resize,
     Signal,
 }
@@ -168,6 +170,7 @@ fn spawn_input<E: From<Input> + Send + 'static>(tx: Sender<E>, ctl: Receiver<Inp
             }
             let ev = match event::read() {
                 Ok(CEvent::Key(k)) if k.kind != KeyEventKind::Release => Input::Key(k),
+                Ok(CEvent::Paste(text)) => Input::Paste(text),
                 Ok(CEvent::Resize(..)) => Input::Resize,
                 Ok(_) => continue,
                 Err(_) => return,
@@ -203,10 +206,20 @@ impl Term {
         let _ = self.input.send(InputCtl::Pause(ack_tx));
         let _ = ack_rx.recv_timeout(Duration::from_millis(500));
         terminal::disable_raw_mode()?;
-        execute!(io::stdout(), terminal::LeaveAlternateScreen, cursor::Show)?;
+        execute!(
+            io::stdout(),
+            event::DisableBracketedPaste,
+            terminal::LeaveAlternateScreen,
+            cursor::Show
+        )?;
         let r = f();
         terminal::enable_raw_mode()?;
-        execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
+        execute!(
+            io::stdout(),
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            event::EnableBracketedPaste
+        )?;
         self.terminal.clear()?;
         let _ = self.input.send(InputCtl::Resume);
         Ok(r)
@@ -220,6 +233,14 @@ pub fn run_ui<U: Ui>(make: impl FnOnce(Sender<U::Ev>) -> U) -> anyhow::Result<()
     let (ctl_tx, ctl_rx) = mpsc::channel();
     // ratatui::try_init installs a panic hook that restores the terminal first.
     let terminal = ratatui::try_init()?;
+    // A paste arrives whole, not as keys (a newline in it would be Enter). Undone on the way
+    // out, a panic's too, or the shell would get the markers around its pastes.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), event::DisableBracketedPaste);
+        hook(info);
+    }));
+    execute!(io::stdout(), event::EnableBracketedPaste)?;
     let mut term = Term {
         terminal,
         input: ctl_tx,
@@ -229,6 +250,7 @@ pub fn run_ui<U: Ui>(make: impl FnOnce(Sender<U::Ev>) -> U) -> anyhow::Result<()
 
     let mut app = make(tx);
     let result = event_loop(&mut term, &mut app, &rx);
+    let _ = execute!(io::stdout(), event::DisableBracketedPaste);
     ratatui::restore();
     result
 }

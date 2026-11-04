@@ -42,6 +42,7 @@ pub const NAMES: &[&str] = &[
     "secureboot-mok",
     "kmod-local",
     "akmods-built",
+    "akmods-key",
     "flatpak-gl-nvidia",
     "flatpak-idle",
     "master-repo-present",
@@ -249,6 +250,13 @@ pub fn run(name: &str, args: &[String]) -> Result<Outcome, String> {
             let dir = paths::host("/var/cache/akmods/nvidia");
             let rpms = built_kmods(&dir, &k);
             match (rpms.as_slice(), has(args, "--exactly-one")) {
+                ([one], _) if has(args, "--signed") => match rpm_module_signed(&dir.join(one))? {
+                    true => pass(format!("/var/cache/akmods/nvidia/{one} · signed")),
+                    false => fail(format!(
+                        "/var/cache/akmods/nvidia/{one} is NOT signed: Secure Boot will refuse it \
+                         (check sentry check akmods-key, then rebuild)"
+                    )),
+                },
                 ([one], _) => pass(format!("/var/cache/akmods/nvidia/{one}")),
                 ([], _) => fail(format!("no kmod-nvidia RPM built for {k} (run akmods)")),
                 (many, true) => fail(format!(
@@ -259,6 +267,7 @@ pub fn run(name: &str, args: &[String]) -> Result<Outcome, String> {
                 (many, false) => pass(format!("{} RPM(s) for {k}", many.len())),
             }
         }
+        "akmods-key" => akmods_key(),
         "flatpak-gl-nvidia" => {
             let Some(g) = gpu::collect().ok().flatten() else {
                 return fail("nvidia-smi failed: driver not loaded?");
@@ -346,6 +355,77 @@ fn rpmfusion_pkgs() -> Result<Vec<String>, String> {
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// Prints the last bytes of the `nvidia.ko*` inside a kmod RPM, decompressed.
+const MODULE_TAIL: &str = r#"set -o pipefail
+f=$(rpm2cpio "$1" | cpio -t --quiet | grep -m1 '/nvidia\.ko') || { echo "no nvidia.ko in $1" >&2; exit 3; }
+case $f in *.xz) d='xz -dc' ;; *.zst) d='zstd -dc' ;; *.gz) d='gzip -dc' ;; *) d=cat ;; esac
+rpm2cpio "$1" | cpio -i --quiet --to-stdout "$f" | $d | tail -c 28"#;
+
+/// A kernel module signature ends the file with this marker.
+pub fn has_signature(tail: &str) -> bool {
+    tail.trim_end().ends_with("~Module signature appended~")
+}
+
+/// Whether the `nvidia.ko` packed in a kmod RPM carries a signature. akmods builds unsigned
+/// (and says nothing) when it can't read its key; Secure Boot then refuses the module.
+fn rpm_module_signed(rpm: &Path) -> Result<bool, String> {
+    let tail = Cmd::host("bash")
+        .args(["-c", MODULE_TAIL, "sentry"])
+        .arg(rpm.as_os_str())
+        .output()
+        .map_err(|e| format!("can't read the module in {}: {e}", rpm.display()))?;
+    Ok(has_signature(&tail))
+}
+
+/// What's wrong with the akmods key folders, given the akmods group id and each folder's
+/// group id (`None`: missing). Empty when akmods can read its key.
+pub fn key_dir_problems(akmods_gid: u32, dirs: &[(&str, Option<u32>)]) -> Vec<String> {
+    dirs.iter()
+        .filter_map(|(d, g)| match g {
+            None => Some(format!("{d} is missing")),
+            Some(g) if *g != akmods_gid => Some(format!("{d} belongs to group {g}, not akmods")),
+            Some(_) => None,
+        })
+        .collect()
+}
+
+/// akmods signs with `/etc/pki/akmods/private/private_key.priv` only when its build user
+/// (group akmods) can get into the key folders. A release rebase can renumber groups and
+/// leave the folders with another group's id; akmods then builds an unsigned module.
+fn akmods_key() -> Result<Outcome, String> {
+    use std::os::unix::fs::MetadataExt;
+    let sb = Cmd::host("mokutil")
+        .arg("--sb-state")
+        .output()
+        .unwrap_or_default();
+    if !sb.contains("SecureBoot enabled") {
+        return pass("Secure Boot disabled: modules don't need signing");
+    }
+    let gid = Cmd::host("getent")
+        .args(["group", "akmods"])
+        .output()
+        .ok()
+        .and_then(|l| l.split(':').nth(2)?.trim().parse::<u32>().ok());
+    let Some(gid) = gid else {
+        return fail("no akmods group: is akmods installed?");
+    };
+    let dirs = ["/etc/pki/akmods/certs", "/etc/pki/akmods/private"];
+    let seen: Vec<(&str, Option<u32>)> = dirs
+        .iter()
+        .map(|d| (*d, std::fs::metadata(paths::host(d)).ok().map(|m| m.gid())))
+        .collect();
+    let bad = key_dir_problems(gid, &seen);
+    if bad.is_empty() {
+        pass("akmods can read its signing key")
+    } else {
+        fail(format!(
+            "{}: modules would be built unsigned (fix: sudo chgrp -R akmods {})",
+            bad.join("; "),
+            dirs.join(" ")
+        ))
+    }
 }
 
 /// `kmod-nvidia-<kver>-*.rpm` in the akmods cache.
@@ -565,6 +645,34 @@ mod tests {
         assert_eq!(
             v,
             vec!["kmod-nvidia-7.2.11-200.fc44.x86_64-615.71.09-3.fc44.x86_64.rpm"]
+        );
+    }
+
+    #[test]
+    fn module_signature_marker() {
+        assert!(has_signature("\0\0\0\x02~Module signature appended~\n"));
+        assert!(!has_signature("\0\0garbage of an unsigned module"));
+        assert!(!has_signature(""));
+    }
+
+    #[test]
+    fn akmods_key_folders() {
+        let ok = [
+            ("/etc/pki/akmods/certs", Some(957)),
+            ("/etc/pki/akmods/private", Some(957)),
+        ];
+        assert!(key_dir_problems(957, &ok).is_empty());
+        // Seen after a release rebase: the folders carried another group's id.
+        let shifted = [
+            ("/etc/pki/akmods/certs", Some(958)),
+            ("/etc/pki/akmods/private", None),
+        ];
+        assert_eq!(
+            key_dir_problems(957, &shifted),
+            vec![
+                "/etc/pki/akmods/certs belongs to group 958, not akmods".to_string(),
+                "/etc/pki/akmods/private is missing".to_string()
+            ]
         );
     }
 

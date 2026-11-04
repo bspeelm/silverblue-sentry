@@ -522,6 +522,7 @@ impl App {
     pub fn on_event(&mut self, ev: Ev, now: Instant) {
         match ev {
             Ev::Key(k) => self.on_key(k, now),
+            Ev::Paste(text) => self.on_paste(&text),
             Ev::Resize => self.dirty = true,
             Ev::Signal => self.quit = true,
             Ev::Data(k, res) => {
@@ -746,6 +747,28 @@ impl App {
 
     fn rows(&self) -> usize {
         tabs::rows(self.tab, &self.view())
+    }
+
+    /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
+    /// letters must never act as keys).
+    fn on_paste(&mut self, text: &str) {
+        self.dirty = true;
+        let line = text.replace(['\r', '\n'], " ");
+        let line = line.trim_end();
+        if let Some(buf) = self.cmdline.as_mut() {
+            buf.push_str(line);
+        } else if let Some(buf) = self.revise_input.as_mut() {
+            buf.push_str(line);
+        } else if let Some((.., buf)) = self.plan_note.as_mut() {
+            buf.push_str(line);
+        } else if self.modal.is_some() || self.chooser.is_some() || self.pane.is_some() {
+        } else if let Some((_, buf)) = self.log_note.as_mut() {
+            buf.push_str(line);
+        } else if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
+            s.paste(text);
+        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden && !c.running()) {
+            c.paste(text);
+        }
     }
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
@@ -3760,7 +3783,9 @@ impl App {
                     self.apply = Some(sess);
                 }
             }
-            // Claude was refused files: grant them (shown first, for this conversation).
+            // What Claude was refused: Enter allows it, for this conversation.
+            KeyCode::Enter if c.can_allow() => self.chat_grant(),
+            // The same, shown first.
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
                 let lines = c.grant_lines(&t);
                 self.modal = Some(Modal {

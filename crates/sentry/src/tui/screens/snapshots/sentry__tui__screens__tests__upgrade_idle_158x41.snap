@@ -1,18 +1,18 @@
 ---
-source: src/tui/screens/tests.rs
+source: crates/sentry/src/tui/screens/tests.rs
 expression: body(&s)
 ---
  1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   7 Cleanup   0 Upgrade ↑
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Workflows · /var/home/user/.config/sentry/workflows ─────┐  ┌ Last result ─────────────────────────────────────────────────────────────────────────────────┐
-│ quick-update  18 steps                                   │  │ No workflow in progress.                                                                     │
+│ quick-update  19 steps                                   │  │ No workflow in progress.                                                                     │
 │ rpm-ostree upgrade + flatpak update; NVIDIA kmod ritual  │  │                                                                                              │
 │ when the kernel changes                                  │  │ quick-update has never run.                                                                  │
 │ never run                                                │  │                                                                                              │
 │ ↑ waiting now: OS 44.20261023.0 · Enter installs         │  │ Updates waiting: OS 44.20261023.0                                                            │
 │                                                          │  │ Maintenance (6) lists these updates too. Enter there does the same as Enter here.            │
-│ release-rebase  24 steps  draft                          │  │                                                                                              │
+│ release-rebase  25 steps  draft                          │  │                                                                                              │
 │ Rebase Silverblue to a new Fedora release with the       │  │                                                                                              │
 │ NVIDIA kmod ritual                                       │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
@@ -35,8 +35,8 @@ expression: body(&s)
 │                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
 │                                                          │  │ │ quick-update.toml                                                                        │ │
 │                                                          │  │ │ preview → flatpak-idle → flatpak → toolboxes → upgrade-routine → reboot-routine →        │ │
-│                                                          │  │ │ kmod-guard → upgrade-ritual → reboot-1 → verify-kernel → akmods → kmod-built →           │ │
-│                                                          │  │ │ layer-kmod → reboot-2 → verify → flatpak-gl-update → flatpak-gl → master-repo-cleanup    │ │
+│                                                          │  │ │ kmod-guard → upgrade-ritual → reboot-1 → verify-kernel → akmods-key → akmods →           │ │
+│                                                          │  │ │ kmod-built → layer-kmod → reboot-2 → verify → flatpak-gl-update → flatpak-gl →           │ │
 │                                                          │  │ │ [Enter] start   [e] edit   lint ✓                                                        │ │
 │                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -733,6 +733,7 @@ impl App {
     pub fn on_event(&mut self, ev: Event, now: Instant) {
         match ev {
             Event::Key(k) => self.on_key(k, now),
+            Event::Paste(text) => self.on_paste(&text),
             Event::Resize => self.dirty = true,
             Event::Data(f, r) => {
                 let r = *r;
@@ -915,6 +916,24 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
+    /// letters must never act as keys).
+    fn on_paste(&mut self, text: &str) {
+        self.dirty = true;
+        if self.run.is_some() || self.choice.is_some() || self.modal.is_some() {
+            return;
+        }
+        if let Input::Filter(s) | Input::Command(s) | Input::Prompt(_, s) = &mut self.input {
+            s.push_str(text.replace(['\r', '\n'], " ").trim_end());
+            return;
+        }
+        if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
+            s.paste(text);
+        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden && !c.running()) {
+            c.paste(text);
+        }
     }
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
@@ -1184,7 +1203,9 @@ impl App {
                     self.apply = Some(crate::apply::session::Session::from_chat(c, apply));
                 }
             }
-            // Claude was refused files: grant them (shown first, for this conversation).
+            // What Claude was refused: Enter allows it, for this conversation.
+            KeyCode::Enter if c.can_allow() => self.chat_grant(),
+            // The same, shown first.
             KeyCode::Char('g') if idle && !c.requests.is_empty() => {
                 let t = self.theme;
                 let lines = c.grant_lines(&t);
