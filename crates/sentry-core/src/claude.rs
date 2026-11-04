@@ -244,10 +244,9 @@ pub fn apply_question(a: &Apply) -> String {
         }
         (_, Some(_)) => {
             " Fix what made the step fail, so it can run again: sentry retries the \
-             step when your plan is done. Never upgrade, rebase, roll back, install, uninstall or \
-             override packages, run `ostree admin`, `akmods` or a reboot, and never do a later \
-             step yourself: the workflow does those. If the system already is the way the step \
-             checks for, say so and send no plan."
+             step when your fix is done. Leave the workflow's later steps to it (they have their \
+             own confirms and log). If the system already is the way the step checks for, say \
+             so and send no plan."
         }
         _ => "",
     };
@@ -260,12 +259,20 @@ pub fn apply_question(a: &Apply) -> String {
         ),
         None => String::new(),
     };
+    let how = if a.remote {
+        "Changes on the server go in a plan, so for any change"
+    } else {
+        "One command, a check or a change, you simply call (sudo where needed): sentry shows me \
+         the exact call when it's refused, and once I allow it sentry carries it out and tells \
+         you what happened; end your turn there, saying in one line what you asked for and why. \
+         For a change of several dependent steps, or one that needs a way back,"
+    };
     format!(
-        "Help me apply this. If nothing needs changing, say so and send no plan. Investigate \
-         with your read-only commands first (read files with the \
-         Read tool). Then answer with a short assessment (what you found, anything in the task \
-         that no longer fits) and ONE plan, as a single ```sentry-apply fenced TOML block, and \
-         no other code blocks:\n\
+        "Do this for me. If nothing needs changing, say so and send no plan. Run every check \
+         yourself first (read files with the Read tool); never ask me to run or paste anything. \
+         {how} answer with a short \
+         assessment (what you found, anything in the task that no longer fits) and ONE plan, \
+         as a single ```sentry-apply fenced TOML block, and no other code blocks:\n\
          ```sentry-apply\n\
          summary = \"what the plan does, in one line\"\n\
          rollback = \"how to undo it, in words\"\n\n\
@@ -284,8 +291,7 @@ pub fn apply_question(a: &Apply) -> String {
          {files} Order the steps as they must happen and end with \
          the checks that show it worked. sentry shows me the plan; once I approve it, sentry \
          backs up every file it edits, asks me for my sudo password if a step needs it, and \
-         runs the steps in order. So don't back anything up yourself, and don't run or edit \
-         anything now. If a step fails, sentry sends you what happened and you send a plan for \
+         runs the steps in order. So don't back anything up yourself. If a step fails, sentry sends you what happened and you send a plan for \
          the rest. When the plan has run, sentry sends you the results to verify.{wf}{planned}{what}"
     )
 }
@@ -311,10 +317,27 @@ pub fn apply_fix(why: &str) -> String {
     )
 }
 
+/// Commands the user allowed ran (`report`: each one's result): carry on, or say it's done.
+pub fn apply_ran(report: &str) -> String {
+    format!(
+        "I allowed it, and sentry ran it for you:\n{report}\n\nCarry on where you stopped. If \
+         the job needs more, call the next command or send a plan. {}",
+        verify_tail("If that finished it, verify the result and")
+    )
+}
+
 /// The plan ran: verify it (`report`: every step's result).
 pub fn apply_verify(report: &str) -> String {
     format!(
-        "{report}\n\nVerify the result with your read-only commands. Then answer in a few \
+        "{report}\n\n{}",
+        verify_tail("Verify the result with your read-only commands. Then")
+    )
+}
+
+/// `lead`, then how to end with a verdict.
+fn verify_tail(lead: &str) -> String {
+    format!(
+        "{lead} answer in a few \
          lines and end with one ```sentry-verdict fenced TOML block, and no other code blocks:\n\
          ```sentry-verdict\n\
          status = \"done\"     # done: it worked · more: something's left · failed: it didn't\n\
@@ -322,7 +345,7 @@ pub fn apply_verify(report: &str) -> String {
          next = \"what I should do later, if anything (e.g. reboot to confirm), in words\"\n\
          ```\n\
          With `more`, also send one ```sentry-apply block for what's left. Never give me \
-         commands to run: sentry runs plans, and `next` is words. When something can only be \
+         commands to run: you call them, and `next` is words. When something can only be \
          confirmed later (after the next update, a reboot, a few days), add to the verdict \
          block a check for later, which sentry puts on my Maintenance list when it's due:\n\
          ```\n\
@@ -392,8 +415,7 @@ pub fn interactive_cmd(session: &str) -> Cmd {
         .args(["--resume", session, "--strict-mcp-config"])
         .arg("--append-system-prompt")
         .arg(format!(
-            "{} Never run anything that changes the system (including every sudo command): \
-             sentry applies changes as a plan the user approves.",
+            "{} sudo commands can't run here: the user runs those in sentry, as a plan.",
             system_prompt()
         ))
         .arg("--allowedTools")
@@ -427,8 +449,16 @@ pub const ALLOWED: &[&str] = &[
     "Bash(firewall-cmd --get-default-zone:*)",
     "Bash(journalctl:*)",
     "Bash(rpm -q:*)",
+    "Bash(rpm -qa:*)",
+    "Bash(rpm -qf:*)",
+    "Bash(rpm -qi:*)",
+    "Bash(rpm -ql:*)",
+    "Bash(rpm -V:*)",
     "Bash(rpm-ostree status:*)",
     "Bash(rpm-ostree db diff:*)",
+    // Refreshes the update metadata and deploys nothing (sentry's own `c` runs --preview).
+    "Bash(rpm-ostree upgrade --check:*)",
+    "Bash(rpm-ostree upgrade --preview:*)",
     "Bash(flatpak info:*)",
     "Bash(flatpak list:*)",
     "Bash(flatpak remotes:*)",
@@ -453,10 +483,14 @@ pub const ALLOWED: &[&str] = &[
     "Bash(cat /proc/:*)",
     "Read(//etc/**)",
     "Read(//proc/**)",
-    "Read(//usr/lib/systemd/**)",
-    "Read(//usr/share/doc/**)",
+    // /usr is the read-only OS image: nothing private, and where the distro's repos live.
+    "Read(//usr/**)",
     "Grep(//etc/**)",
     "Glob(//etc/**)",
+    "Grep(//proc/**)",
+    "Glob(//proc/**)",
+    "Grep(//usr/**)",
+    "Glob(//usr/**)",
 ];
 
 const DENIED: &[&str] = &[
@@ -465,39 +499,37 @@ const DENIED: &[&str] = &[
     "NotebookEdit",
     "WebFetch",
     "WebSearch",
+    // Claude Code can't type a password: refused, so it comes to the user and sentry runs it.
     "Bash(sudo:*)",
-    "Bash(rm:*)",
 ];
 
 /// One line for the consent modal.
 pub fn allowlist_summary() -> String {
-    "Claude may also run read-only commands (ss, ip, systemctl status/list-units/cat/show, \
+    "Claude may run read-only commands (ss, ip, systemctl status/list-units/cat/show, \
      firewall-cmd --list-all, journalctl, \
-     rpm -q, rpm-ostree status/db diff, flatpak info/list, podman ps/inspect, ps, df, nvidia-smi, \
-     modinfo, mokutil, uname, gsettings get/list) and read files under /etc, /proc, /usr/lib/systemd. Nothing that \
-     changes the system is allowed."
+     rpm -q/-V, rpm-ostree status/db diff/upgrade --check, flatpak info/list, podman ps/inspect, \
+     ps, df, nvidia-smi, modinfo, mokutil, uname, gsettings get/list) and read files under /etc, \
+     /proc, /usr. Anything else, and every change, asks you first."
         .into()
 }
 
-/// How Claude asks for a file it may not read or change (every chat's system prompt).
-pub const GRANTS: &str = "If you need to read or change a file, or run a read-only command, that \
-you aren't allowed to, call Read, Edit or Bash on it anyway: sentry asks the user and tells you if \
-they grant it. Don't ask them to paste it. Commands that change the system never run in a \
-conversation: they go in a sentry plan, which the user approves and sentry carries out.";
+/// How Claude gets what it isn't allowed yet (every chat's system prompt).
+pub const GRANTS: &str = "Do the work yourself: never ask the user to run, paste or type a command \
+or its output. If you need a file, or a command, that you aren't allowed yet, call Read, Edit or \
+Bash on it anyway: sentry shows the user the exact call and tells you once they allow it.";
 
 pub fn system_prompt() -> String {
     let os = crate::paths::os_version();
     let kernel = crate::paths::kernel();
     format!(
         "You are answering inside sentry, a maintenance TUI for Fedora Silverblue, about the user's \
-own machine. Facts: Silverblue {os}, kernel {kernel}; the NVIDIA driver kmod is built by akmods \
+own machine, and you do its maintenance for them. Facts: Silverblue {os}, kernel {kernel}; the NVIDIA driver kmod is built by akmods \
 and layered as a local rpm-ostree package (Secure Boot, MOK-signed); toolboxes are podman \
-containers sharing $HOME. You can only run the read-only commands you're allowed; you cannot \
-change anything, so never say you did. Answer in three short parts: what it is, whether it \
-matters on this machine, and what to do (exact commands the user can run, clearly marked as \
-theirs to run). Keep it under about 200 words unless asked for more. If you could not verify \
-something because a command was denied or needs root, say so and give the command for the user. \
-{GRANTS}"
+containers sharing $HOME. Answer in three short parts: what it is, whether it \
+matters on this machine, and what you'd do about it. Upgrades, rebases and reboots go through \
+sentry's workflows, which have their own confirms and log. Never say you did something you didn't. \
+Keep it under about 200 words unless asked for more. In a chat you explain; when the user wants \
+something changed, they press `a` and you do it in an apply session. {GRANTS}"
     )
 }
 
@@ -543,6 +575,147 @@ impl Grant {
             Access::Write => "edit",
             Access::Run => "run",
         }
+    }
+
+    /// It changes something: a write, or a command not known to only read. Only a label and
+    /// a route (sentry runs these itself, and logs them); the user allows them all the same.
+    pub fn changes(&self) -> bool {
+        match self.access {
+            Access::Read => false,
+            Access::Write => true,
+            Access::Run => !only_reads(&self.path),
+        }
+    }
+}
+
+/// Every command in `cmd` only reads. Unknown means no: a false "no" costs a log line, a
+/// false "yes" would hide a change.
+pub fn only_reads(cmd: &str) -> bool {
+    let mut cleaned = cmd.to_string();
+    for safe in [
+        "2>&1",
+        ">&2",
+        "2>/dev/null",
+        "2> /dev/null",
+        ">/dev/null",
+        "> /dev/null",
+    ] {
+        cleaned = cleaned.replace(safe, " ");
+    }
+    let mut parts = vec![String::new()];
+    let mut quote = None;
+    for c in cleaned.chars() {
+        match (quote, c) {
+            (Some(q), _) if q == c => quote = None,
+            // Substitutions run a command of their own, and `>` writes a file.
+            (None | Some('"'), '$' | '`') | (None, '>' | '\n') => return false,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '|' | ';' | '&') => {
+                parts.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(last) = parts.last_mut() {
+            last.push(c);
+        }
+    }
+    parts
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .all(|p| reads(p))
+}
+
+/// One simple command only reads.
+fn reads(cmd: &str) -> bool {
+    let w: Vec<&str> = cmd.split_whitespace().collect();
+    let has = |flags: &[&str]| w.iter().any(|x| flags.contains(x));
+    // The first word after the program that isn't a flag: its subcommand.
+    let sub = w.iter().skip(1).find(|x| !x.starts_with('-')).copied();
+    let Some(prog) = w.first().copied() else {
+        return true;
+    };
+    match prog {
+        "cat" | "ls" | "grep" | "egrep" | "fgrep" | "head" | "tail" | "wc" | "stat" | "file"
+        | "which" | "id" | "whoami" | "hostname" | "date" | "uname" | "echo" | "printf"
+        | "sort" | "uniq" | "cut" | "tr" | "du" | "df" | "free" | "lsblk" | "lspci" | "lsusb"
+        | "lsmod" | "lsof" | "findmnt" | "ss" | "ps" | "pgrep" | "uptime" | "readlink"
+        | "realpath" | "basename" | "dirname" | "test" | "true" | "false" | "diff" | "cmp"
+        | "printenv" | "modinfo" | "nvidia-smi" | "getenforce" | "sestatus" | "getent" => true,
+        "sed" => !w
+            .iter()
+            .any(|x| x.starts_with("-i") || x.starts_with("--in-place")),
+        "find" => !w.iter().any(|x| {
+            x.starts_with("-exec")
+                || x.starts_with("-ok")
+                || x.starts_with("-fprint")
+                || *x == "-delete"
+        }),
+        "journalctl" => !w.iter().any(|x| {
+            x.starts_with("--vacuum") || x.starts_with("--rotate") || x.starts_with("--flush")
+        }),
+        "rpm" => w.get(1).is_some_and(|f| {
+            f.starts_with("-q") || f.starts_with("-V") || *f == "--query" || *f == "--verify"
+        }),
+        "rpm-ostree" => match sub {
+            None | Some("status" | "db") => true,
+            Some("kargs") => w.len() == 2,
+            Some("upgrade" | "update") => has(&["--check", "--preview"]),
+            _ => false,
+        },
+        "ostree" => match (sub, w.get(2).copied()) {
+            (Some("admin"), Some("status")) => true,
+            (Some("log" | "show" | "ls" | "rev-parse"), _) => true,
+            (Some("refs"), _) => !has(&["--delete"]),
+            _ => false,
+        },
+        "flatpak" => matches!(
+            sub,
+            Some("info" | "list" | "remotes" | "remote-ls" | "remote-info" | "history" | "search")
+        ),
+        "systemctl" => match sub {
+            None => true,
+            Some(s) => {
+                s.starts_with("list-")
+                    || s.starts_with("is-")
+                    || matches!(s, "status" | "show" | "cat" | "get-default")
+            }
+        },
+        "podman" => match sub {
+            Some("volume" | "network" | "system") => {
+                w.iter().any(|x| matches!(*x, "ls" | "df" | "inspect"))
+            }
+            Some(s) => matches!(s, "ps" | "inspect" | "images" | "logs" | "version" | "info"),
+            None => false,
+        },
+        "toolbox" => sub == Some("list"),
+        "ip" => !w.iter().any(|x| {
+            matches!(
+                *x,
+                "add" | "del" | "delete" | "change" | "replace" | "set" | "flush"
+            )
+        }),
+        "firewall-cmd" => w[1..].iter().all(|x| {
+            x.starts_with("--list")
+                || x.starts_with("--get")
+                || x.starts_with("--query")
+                || *x == "--state"
+                || x.starts_with("--zone")
+        }),
+        "mokutil" => w[1..].iter().all(|x| {
+            matches!(
+                *x,
+                "--sb-state" | "--list-enrolled" | "--list-new" | "--list-delete"
+            )
+        }),
+        "gsettings" => sub.is_some_and(|s| {
+            s == "get" || s == "range" || s == "describe" || s.starts_with("list-")
+        }),
+        "dnf" => matches!(
+            sub,
+            Some("list" | "info" | "search" | "repoquery" | "check-update")
+        ),
+        _ => false,
     }
 }
 
@@ -592,26 +765,27 @@ pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     })
 }
 
+/// A tool result says Claude Code turned the call down (not that it ran and failed).
+pub fn refused(summary: &str) -> bool {
+    [
+        "requested permissions",
+        "requires approval",
+        "has been denied",
+        "isn't allowed",
+    ]
+    .iter()
+    .any(|k| summary.contains(k))
+}
+
 /// Never granted, read or write: where keys and passwords live.
 const NEVER: &[&str] = &[".ssh", ".gnupg", ".local/share/keyrings", ".password-store"];
 
-/// Whether the user may grant it, and why not.
+/// Whether the user may allow it, and why not: everything can be asked for, except what
+/// would send keys and passwords to Anthropic, and root's files (those are `edit` plan steps).
 pub fn grantable(g: &Grant) -> Result<(), &'static str> {
     if g.access == Access::Run {
-        let words: Vec<&str> = g.path.split_whitespace().collect();
-        let writes_out = g
-            .path
-            .replace("2>&1", "")
-            .replace(">&2", "")
-            .replace("2>/dev/null", "")
-            .contains('>');
-        return if words
-            .iter()
-            .any(|w| matches!(*w, "sudo" | "su" | "rm" | "dd" | "mkfs"))
-        {
-            Err("sudo and deleting aren't granted: they go in a plan you approve (A → 1)")
-        } else if writes_out {
-            Err("it writes to a file: that goes in a plan you approve (A → 1)")
+        return if NEVER.iter().any(|n| g.path.contains(n)) {
+            Err("keys and passwords live there")
         } else {
             Ok(())
         };
@@ -623,11 +797,13 @@ pub fn grantable(g: &Grant) -> Result<(), &'static str> {
     }
     match g.access {
         Access::Run => Ok(()),
-        Access::Read if !p.is_file() => Err("not a file"),
+        Access::Read if !p.exists() => Err("it doesn't exist"),
         Access::Read => Ok(()),
         Access::Write if p.exists() && !p.is_file() => Err("not a file"),
         Access::Write if !p.parent().is_some_and(|d| d.is_dir()) => Err("its folder doesn't exist"),
-        Access::Write if !yours(p, &home) => Err("only files you own"),
+        Access::Write if !yours(p, &home) => {
+            Err("it's root's: Claude sends it as a plan's edit step")
+        }
         Access::Write => Ok(()),
     }
 }
@@ -768,6 +944,12 @@ impl Profile {
                 continue;
             }
             let mut tools = vec!["Read"];
+            let dir = std::path::Path::new(&g.path).is_dir();
+            if dir {
+                self.allowed.push(rule("Read", &format!("{}/**", g.path)));
+                self.dirs.push(g.path.clone());
+                continue;
+            }
             self.allowed.push(rule("Read", &g.path));
             if g.access == Access::Write {
                 tools.extend(["Edit", "Write"]);
@@ -1032,7 +1214,7 @@ mod tests {
         assert!(p.contains("  retry: run the step again") && !p.contains("  done by hand:"));
         assert!(p.contains("still runs after this one:\n  (none)"));
         // An apply session: one plan, the step's rules, then sentry retries it.
-        assert!(p.contains("```sentry-apply") && p.contains("never do a later step"));
+        assert!(p.contains("```sentry-apply") && p.contains("later steps to it"));
         assert!(p.contains("sentry retries the step"));
         assert_eq!(a.step(), Some(2));
         assert!(a.finding().is_none());
@@ -1140,12 +1322,15 @@ mod tests {
             "denied: Bash isn't allowed",
         )
         .unwrap();
-        assert!(grantable(&g).is_err(), "sudo stays the user's");
+        assert!(
+            grantable(&g).is_ok() && g.changes(),
+            "sudo: allowed, marked"
+        );
         let out = Grant {
             access: Access::Run,
             path: "rpm -qa > /tmp/x".into(),
         };
-        assert!(grantable(&out).is_err(), "writes a file");
+        assert!(grantable(&out).is_ok() && out.changes(), "writes a file");
         let p = Profile::local().with_grants(&[Grant {
             access: Access::Run,
             path: "ostree admin status".into(),
@@ -1185,6 +1370,78 @@ mod tests {
         assert!(grantable(&g(Access::Read, home.join("sentry-grant-test-new.md"))).is_err());
         let here = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
         assert!(grantable(&g(Access::Read, here.into())).is_ok());
+        // A folder can be read; keys can't, even through a command.
+        assert!(grantable(&g(Access::Read, env!("CARGO_MANIFEST_DIR").into())).is_ok());
+        let run = |c: &str| Grant {
+            access: Access::Run,
+            path: c.into(),
+        };
+        assert!(grantable(&run("cat ~/.ssh/id_ed25519")).is_err());
+        assert!(grantable(&run("rm -rf /tmp/x")).is_ok());
+    }
+
+    #[test]
+    fn what_a_refusal_looks_like() {
+        // The strings from a real session.
+        assert!(refused("denied: This command requires approval"));
+        assert!(refused(
+            "denied: This Bash command contains multiple operations. The following part \
+             requires approval: rpm -ql a b"
+        ));
+        assert!(refused(
+            "denied: Claude requested permissions to read from /x, but you haven't granted it yet."
+        ));
+        assert!(refused(
+            "denied: Permission to use Bash with command sudo x has been denied."
+        ));
+        // It ran and failed, or Claude rephrases it itself.
+        assert!(!refused("exit 1: cat: /root/x: Permission denied"));
+        assert!(!refused(
+            "denied: A variable in this command can't be checked before it runs"
+        ));
+    }
+
+    #[test]
+    fn commands_that_only_read() {
+        for c in [
+            "rpm-ostree upgrade --check --preview",
+            "rpm -V rpmfusion-free-release",
+            "rpm -ql a b | grep repo",
+            "grep -E 'a|b>c' /etc/hosts 2>/dev/null",
+            "systemctl --user status x; journalctl -b -n 5",
+            "ostree admin status 2>&1",
+            "firewall-cmd --zone=public --list-all",
+        ] {
+            assert!(only_reads(c), "{c}");
+        }
+        for c in [
+            "sudo ss -tlnp",
+            "rpm-ostree upgrade",
+            "rpm-ostree install x",
+            "rm -f x",
+            "echo hi > /tmp/x",
+            "cat a | tee b",
+            "sed -i s/a/b/ f",
+            "find / -name x -delete",
+            "ls $(rm x)",
+            "systemctl restart x",
+            "flatpak uninstall x",
+            "gsettings set a b c",
+            "some-unknown-tool",
+        ] {
+            assert!(!only_reads(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn the_prompts_never_hand_the_work_back() {
+        let a = Apply::default();
+        for text in [system_prompt(), apply_question(&a), GRANTS.to_string()] {
+            assert!(!text.contains("theirs to run"), "{text}");
+            assert!(!text.contains("cannot change"), "{text}");
+        }
+        assert!(GRANTS.contains("never ask the user to run"));
+        assert!(ALLOWED.contains(&"Bash(rpm-ostree upgrade --check:*)"));
     }
 
     #[test]

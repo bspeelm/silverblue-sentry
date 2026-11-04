@@ -47,9 +47,10 @@ pub struct Chat {
     pub apply_with: Option<Ask>,
     /// Esc while Claude answers: out of sight, still running (`A` brings it back).
     pub hidden: bool,
-    /// The last tool Claude called (name, input): a refusal right after names what it wanted.
-    last_tool: Option<(String, String)>,
-    /// Files Claude was refused this turn, for `g` (not yet granted).
+    /// The tools Claude called that haven't answered yet, oldest first (name, input): a
+    /// refusal names what it wanted.
+    tools: std::collections::VecDeque<(String, String)>,
+    /// What Claude was refused this turn, for the user to allow (not yet granted).
     pub requests: Vec<crate::claude::Grant>,
     /// What the user granted in this conversation (every later turn gets it).
     pub grants: Vec<crate::claude::Grant>,
@@ -59,6 +60,9 @@ pub struct Chat {
     pub pending: bool,
     /// What Claude may do with what's sent (shown under the brief).
     pub privacy: String,
+    /// sentry carries out the changing commands the user allows (a session on this machine;
+    /// a chat only explains, and hands them to a session).
+    pub acts: bool,
 }
 
 /// A file's contents, hashed (0: it doesn't exist).
@@ -91,13 +95,41 @@ impl Chat {
             hidden: false,
             apply_with: None,
             ask,
-            last_tool: None,
+            tools: Default::default(),
             requests: Vec::new(),
+            acts: false,
             grants: Vec::new(),
             watched: Vec::new(),
             pending: false,
             privacy: crate::claude::allowlist_summary(),
         }
+    }
+
+    /// Whether the user can allow it here: a chat only explains, so what changes things goes
+    /// to a session (a file Claude may edit is backed up, and stays allowed).
+    pub fn allowed(&self, g: &crate::claude::Grant) -> Result<(), &'static str> {
+        crate::claude::grantable(g)?;
+        if !self.acts && g.access == crate::claude::Access::Run && g.changes() {
+            return Err(if self.ask.applying().is_some() {
+                "it changes things: on a server, that goes in a plan"
+            } else {
+                "it changes things: `a` hands it to an apply session"
+            });
+        }
+        Ok(())
+    }
+
+    /// There's something the user can allow, and nothing in the way: Enter does.
+    pub fn can_allow(&self) -> bool {
+        self.input.is_empty()
+            && !self.busy()
+            && self.requests.iter().any(|g| self.allowed(g).is_ok())
+    }
+
+    /// Pasted text goes in whole: newlines stay, as one message.
+    pub fn paste(&mut self, text: &str) {
+        self.input
+            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     /// The box `g` opens: what Claude asked for, what's granted, what isn't and why.
@@ -107,7 +139,7 @@ impl Chat {
             t.fg(),
         )];
         for g in &self.requests {
-            match crate::claude::grantable(g) {
+            match self.allowed(g) {
                 Ok(()) => l.push(Line::styled(
                     format!(
                         "  {} {}{}",
@@ -115,9 +147,7 @@ impl Chat {
                         g.path,
                         match g.access {
                             crate::claude::Access::Write => "  (backed up first)",
-                            crate::claude::Access::Run => {
-                                "  (that exact command; sentry doesn't know it: read it first)"
-                            }
+                            crate::claude::Access::Run => "  (that exact command)",
                             crate::claude::Access::Read => "",
                         }
                     ),
@@ -131,7 +161,7 @@ impl Chat {
         }
         l.push(Line::raw(""));
         l.push(Line::styled(
-            "What Claude reads or runs is sent to Anthropic. Commands that change things stay yours.",
+            "What Claude reads or runs is sent to Anthropic.",
             t.dim(),
         ));
         l
@@ -142,7 +172,7 @@ impl Chat {
     pub fn grant(&mut self) -> Option<String> {
         let ok: Vec<crate::claude::Grant> = std::mem::take(&mut self.requests)
             .into_iter()
-            .filter(|g| crate::claude::grantable(g).is_ok())
+            .filter(|g| self.allowed(g).is_ok())
             .collect();
         if ok.is_empty() {
             return None;
@@ -251,7 +281,7 @@ impl Chat {
                 _ => self.push(Kind::Claude, t),
             },
             Event::ToolUse { name, input } => {
-                self.last_tool = Some((name.clone(), input.clone()));
+                self.tools.push_back((name.clone(), input.clone()));
                 let shown = if name == "Bash" {
                     format!("$ {input}")
                 } else {
@@ -260,11 +290,11 @@ impl Chat {
                 self.push(Kind::Tool, shown);
             }
             Event::ToolResult { summary, is_error } => {
-                // Refused a file: sentry can ask the user to grant it (`g`).
+                // Refused: sentry asks the user, who can allow it.
+                let tool = self.tools.pop_front();
                 if is_error
-                    && summary.contains("requested permissions")
-                    && let Some(g) = self
-                        .last_tool
+                    && crate::claude::refused(&summary)
+                    && let Some(g) = tool
                         .as_ref()
                         .and_then(|(n, i)| crate::claude::requested(n, i, &summary))
                     && !self.grants.contains(&g)
@@ -314,12 +344,23 @@ impl Chat {
             let what: Vec<String> = self
                 .requests
                 .iter()
+                .filter(|g| self.allowed(g).is_ok())
                 .map(|g| format!("{} {}", g.word(), g.path))
                 .collect();
-            self.push(
-                Kind::Info,
-                format!("Claude asked to {} · g grants it", what.join(", ")),
-            );
+            if !what.is_empty() {
+                self.push(
+                    Kind::Info,
+                    format!("Claude asked to {} · Enter allows it", what.join(", ")),
+                );
+            }
+            for g in self.requests.clone() {
+                if let Err(why) = self.allowed(&g) {
+                    self.push(
+                        Kind::Info,
+                        format!("Claude asked to {} {} · {why}", g.word(), g.path),
+                    );
+                }
+            }
         }
     }
 
@@ -387,7 +428,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     } else {
         Line::from(vec![
             Span::styled("› ", t.s(t.cyan)),
-            Span::styled(c.input.clone(), t.fg()),
+            Span::styled(shown_input(&c.input, input.width as usize), t.fg()),
             Span::styled("▏", t.s(t.cyan)),
         ])
     };
@@ -556,12 +597,30 @@ pub fn show_focused(
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), log);
 }
 
+/// The input line as drawn: newlines (a paste) as ⏎, the end in view when it's too long.
+pub fn shown_input(input: &str, width: usize) -> String {
+    let text = input.replace('\n', " ⏎ ");
+    let room = width.saturating_sub(4).max(1);
+    let n = text.chars().count();
+    if n <= room {
+        return text;
+    }
+    format!("…{}", text.chars().skip(n - room + 1).collect::<String>())
+}
+
 /// The key line: letters act only while the input line is empty (otherwise they're typed).
 pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     if c.pending {
         return vec![("Enter", "send"), ("Esc", "cancel")];
     }
-    let mut k = vec![("Enter", "follow-up")];
+    let mut k = vec![(
+        "Enter",
+        if c.can_allow() {
+            "allow it"
+        } else {
+            "follow-up"
+        },
+    )];
     let idle = c.input.is_empty() && !c.busy();
     if c.can_apply() {
         k.push(("a", "apply it"));
@@ -616,9 +675,12 @@ mod tests {
             ]
         );
         assert_eq!(c.entries[5].1, "Port 27500 is owned by root.");
-        // The refused `sudo ss`: asked for, but never grantable.
+        // The refused `sudo ss`: asked for; it changes things as far as sentry knows, so a
+        // chat hands it to a session (which runs it, with the password).
         assert_eq!(c.requests[0].path, "sudo ss -tlnp");
-        assert!(crate::claude::grantable(&c.requests[0]).is_err());
+        assert!(crate::claude::grantable(&c.requests[0]).is_ok());
+        assert!(c.requests[0].changes() && c.allowed(&c.requests[0]).is_err());
+        assert!(!c.can_allow());
         assert_eq!(
             c.session.as_deref(),
             Some("11111111-2222-3333-4444-555555555555")
@@ -627,6 +689,58 @@ mod tests {
         assert!((c.cost - 0.0312).abs() < 1e-9);
         assert!(!keys(&c).iter().any(|(k, _)| *k == "r" || *k == "a"));
         assert!(keys(&c).iter().any(|(k, _)| *k == "C"));
+    }
+
+    #[test]
+    fn every_refused_command_is_offered() {
+        // As a real session went: Claude ran it, Claude Code said no, nobody was asked.
+        let mut c = Chat::new(Ask::new("s", "ctx", "q"));
+        c.begin_turn("q", 1, 1);
+        for (cmd, refusal) in [
+            ("rpm -V a", "denied: This command requires approval"),
+            (
+                "rpm -ql a | grep repo",
+                "denied: This Bash command contains multiple operations. The following part \
+                 requires approval: rpm -ql a",
+            ),
+            (
+                "echo $X",
+                "denied: A variable in this command can't be checked before it runs",
+            ),
+        ] {
+            c.on_event(Event::ToolUse {
+                name: "Bash".into(),
+                input: cmd.into(),
+            });
+            c.on_event(Event::ToolResult {
+                summary: refusal.into(),
+                is_error: true,
+            });
+        }
+        let got: Vec<&str> = c.requests.iter().map(|g| g.path.as_str()).collect();
+        assert_eq!(got, ["rpm -V a", "rpm -ql a"]);
+        // Parallel calls: each result answers its own call, not the last one made.
+        let mut c = Chat::new(Ask::new("s", "ctx", "q"));
+        for cmd in ["rpm -V a", "ls /x"] {
+            c.on_event(Event::ToolUse {
+                name: "Bash".into(),
+                input: cmd.into(),
+            });
+        }
+        c.on_event(Event::ToolResult {
+            summary: "denied: This command requires approval".into(),
+            is_error: true,
+        });
+        assert_eq!(c.requests[0].path, "rpm -V a");
+    }
+
+    #[test]
+    fn a_paste_is_one_message_shown_on_one_line() {
+        let mut c = Chat::new(Ask::new("s", "ctx", "q"));
+        c.paste("one\r\ntwo\n");
+        assert_eq!(c.input, "one\ntwo\n");
+        assert_eq!(shown_input("a\nb", 80), "a ⏎ b");
+        assert_eq!(shown_input("abcdefghij", 8), "…hij");
     }
 
     #[test]
@@ -671,7 +785,12 @@ mod tests {
         c.on_exit(0);
         assert_eq!(c.requests.len(), 1);
         assert!(keys(&c).iter().any(|(k, _)| *k == "g"));
-        assert!(c.entries.iter().any(|(_, t)| t.ends_with("g grants it")));
+        assert!(
+            c.entries
+                .iter()
+                .any(|(_, t)| t.ends_with("Enter allows it"))
+        );
+        assert!(c.can_allow());
         let text = c.grant().expect("granted");
         assert!(
             text.starts_with("I've granted you: read ") && text.contains(&file),

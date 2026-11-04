@@ -1,5 +1,6 @@
 //! One apply session, start to finish, as a state machine both programs drive. The user makes
-//! two decisions (start it, approve the plan); everything between follows by itself:
+//! the decisions (start it, approve the plan, allow what Claude asks to do); everything between
+//! follows by itself:
 //!
 //! ```text
 //! Brief ─Enter→ Thinking(Investigate) → Review ─Enter→ [SudoCheck → Password] → Applying
@@ -8,6 +9,10 @@
 //!                  │                              all steps done → Thinking(Verify) ←┘
 //!                  └── typed text (Review, Settled)        verdict → Settled / Review (more)
 //! ```
+//!
+//! Claude asking to run a changing or root command (refused, then allowed with Enter) is the
+//! same road with a plan of its own: sentry runs it (`asked`), the password asked if sudo needs
+//! one, and the output goes back to Claude, who carries on.
 //!
 //! The session never runs anything itself except edits of your own files: it returns `Fx`,
 //! and each app carries them out (a Claude turn, a command, sudo's check, a workflow) and
@@ -150,6 +155,9 @@ pub struct Session {
     pub brief_open: bool,
     /// The run's report, while the audit runs before the verify turn.
     audit_for: Option<String>,
+    /// The current run is what Claude asked for and the user allowed: its result goes back
+    /// to Claude to carry on (not to verify). What else was allowed with it, in words.
+    asked: Option<String>,
 }
 
 impl Session {
@@ -174,7 +182,15 @@ impl Session {
             logged: 0,
             brief_open: false,
             audit_for: None,
+            asked: None,
         }
+        .acting()
+    }
+
+    /// On this machine sentry carries out what's allowed; on a server, plans do.
+    fn acting(mut self) -> Self {
+        self.chat.acts = self.chat.ask.applying().is_some_and(|a| !a.remote);
+        self
     }
 
     /// From a chat about the same thing (`a`): the conversation so far, Claude's session
@@ -187,7 +203,7 @@ impl Session {
         chat.input.clear();
         let mut s = Self::new(chat.ask.clone());
         s.chat = chat;
-        s
+        s.acting()
     }
 
     /// What Enter does now on an empty input, in a word or two (None: nothing).
@@ -196,6 +212,7 @@ impl Session {
         match self.phase {
             Phase::Brief => Some("start"),
             Phase::Review if self.can_approve() => Some("apply the plan"),
+            Phase::Review | Phase::Settled(_) if self.can_grant() => Some("allow it"),
             Phase::Review if self.run().is_none() || self.run().is_some_and(|r| r.finished()) => {
                 Some("ask for a plan")
             }
@@ -398,27 +415,106 @@ impl Session {
         Vec::new()
     }
 
-    /// `g` is offered: Claude asked to read something it may not, and nothing's typed.
-    pub fn can_grant(&self) -> bool {
-        self.chat.input.is_empty()
-            && matches!(self.phase, Phase::Review | Phase::Settled(_))
-            && self
-                .chat
-                .requests
-                .iter()
-                .any(|g| g.access != crate::claude::Access::Write)
+    /// Pasted text: all of it into what's being typed (never as keys).
+    pub fn paste(&mut self, text: &str) {
+        match self.phase {
+            Phase::Password {
+                checking: false, ..
+            } => text
+                .trim_end_matches(['\r', '\n'])
+                .chars()
+                .for_each(|c| self.secret.push(c)),
+            Phase::Brief | Phase::Review | Phase::Settled(_) => self.chat.paste(text),
+            _ => {}
+        }
     }
 
-    /// `g`: what Claude asked to read (or run, read-only) is granted for the session, and it
-    /// carries on. Writes aren't: in a session, changes go in the plan.
+    /// Claude asked for something the user can allow, and nothing's typed. (On a server
+    /// changes go in the plan: there, files aren't asked for here either.)
+    pub fn can_grant(&self) -> bool {
+        self.chat.can_allow()
+            && matches!(self.phase, Phase::Review | Phase::Settled(_))
+            && self.chat.requests.iter().any(|g| self.grants_here(g))
+    }
+
+    fn grants_here(&self, g: &crate::claude::Grant) -> bool {
+        self.chat.allowed(g).is_ok() && (self.chat.acts || g.access != crate::claude::Access::Write)
+    }
+
+    /// What Claude asked for is allowed. Reads, read-only commands and your own files become
+    /// grants for the session, and Claude carries on by itself (a file is backed up first).
+    /// Commands that change things or need root, sentry runs and sends Claude the result.
     fn grant(&mut self) -> Vec<Fx> {
-        self.chat
-            .requests
-            .retain(|g| g.access != crate::claude::Access::Write);
-        match self.chat.grant() {
-            Some(text) => self.turn(Turn::Investigate, text.clone(), Some(text)),
-            None => Vec::new(),
+        use crate::claude::Access;
+        let mut not: Vec<String> = Vec::new();
+        let mut run = Vec::new();
+        let mut rest = Vec::new();
+        for g in std::mem::take(&mut self.chat.requests) {
+            if !self.grants_here(&g) {
+                let why = self
+                    .chat
+                    .allowed(&g)
+                    .err()
+                    .unwrap_or("not in a server's session");
+                not.push(format!("{} {}: {why}", g.word(), g.path));
+            } else if g.access == Access::Run && g.changes() {
+                run.push(g.path);
+            } else if g.access == Access::Write {
+                match crate::claude::backup(&g.path) {
+                    Ok(b) => {
+                        self.chat.push(
+                            Kind::Info,
+                            format!("backed up {} → {}", g.path, b.display()),
+                        );
+                        self.chat.watch(&g.path, b);
+                        rest.push(g);
+                    }
+                    Err(e) => {
+                        // No backup, no write.
+                        self.chat.push(
+                            Kind::Err,
+                            format!("couldn't back up {}: {e} (not allowed)", g.path),
+                        );
+                        not.push(format!("{} {}: no backup could be made", g.word(), g.path));
+                    }
+                }
+            } else {
+                rest.push(g);
+            }
         }
+        self.chat.requests = rest;
+        let mut told = self.chat.grant().unwrap_or_default();
+        if !not.is_empty() {
+            told.push_str(&format!("\nNot allowed: {}.", not.join("; ")));
+        }
+        let told = told.trim().to_string();
+        if run.is_empty() {
+            return if told.is_empty() {
+                Vec::new()
+            } else {
+                self.turn(Turn::Investigate, told.clone(), Some(told))
+            };
+        }
+        if let Some(i) = self.runs.len().checked_sub(1) {
+            self.replaced.push((i, "replaced".into()));
+        }
+        self.problems.clear();
+        self.runs.push(Run::new(Plan {
+            summary: "What Claude asked to run, and you allowed".into(),
+            rollback: String::new(),
+            steps: run
+                .into_iter()
+                .map(|cmd| plan::Step {
+                    title: cmd.chars().take(60).collect(),
+                    kind: StepKind::Run(cmd),
+                })
+                .collect(),
+        }));
+        self.chat
+            .push(Kind::Plan, (self.runs.len() - 1).to_string());
+        self.asked = Some(told);
+        self.fixes = 0;
+        self.approve()
     }
 
     fn enter(&mut self) -> Vec<Fx> {
@@ -430,7 +526,7 @@ impl Session {
             Phase::Brief => {
                 let mut prompt = self.chat.ask.prompt();
                 let shown = if text.is_empty() {
-                    "Help me apply this.".to_string()
+                    "Do this for me.".to_string()
                 } else {
                     prompt.push_str(&format!("\n\nFrom me: {text}"));
                     text
@@ -439,6 +535,7 @@ impl Session {
             }
             Phase::Review if text.is_empty() => match self.enter_word() {
                 Some("apply the plan") => self.approve(),
+                Some("allow it") => self.grant(),
                 Some("ask for a plan") => self.turn(
                     Turn::Investigate,
                     "Answer with the plan, as one sentry-apply block.".into(),
@@ -447,6 +544,7 @@ impl Session {
                 _ => Vec::new(),
             },
             Phase::Settled(_) if text.is_empty() => match self.enter_word() {
+                Some("allow it") => self.grant(),
                 Some("retry the step") => vec![Fx::RetryStep, Fx::Close],
                 Some("close") => vec![Fx::Close],
                 Some("audit again") => {
@@ -663,10 +761,21 @@ impl Session {
 
     /// The last step ended, or one failed.
     fn finished(&mut self) -> Vec<Fx> {
+        let Some(report) = self.run().map(Run::report) else {
+            return Vec::new();
+        };
+        if !self.stopping
+            && let Some(told) = self.asked.take()
+        {
+            self.chat
+                .push(Kind::Info, "sentry sent Claude what happened, to carry on");
+            let prompt = format!("{told}\n\n{}", crate::claude::apply_ran(&report));
+            return self.turn(Turn::Investigate, prompt.trim().to_string(), None);
+        }
+        self.asked = None;
         let Some(r) = self.run() else {
             return Vec::new();
         };
-        let report = r.report();
         match r.state {
             RunState::Failed(k) => {
                 let title = r.plan.steps[k].title.clone();
@@ -720,9 +829,42 @@ impl Session {
     /// `workflows`: the names sentry knows, for the plan's problems.
     pub fn turn_ended(&mut self, code: i32, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         self.chat.on_exit(code);
+        let edits = self.edits();
         let Phase::Thinking(why) = self.phase else {
-            return Vec::new();
+            return edits;
         };
+        let mut fx = edits;
+        fx.extend(self.answer(why, workflows));
+        fx
+    }
+
+    /// Files Claude changed this turn (allowed, backed up): in the transcript and the log.
+    fn edits(&mut self) -> Vec<Fx> {
+        let tag = self.chat.ask.applying().map(|a| format!("apply:{}", a.key));
+        self.chat
+            .changed()
+            .into_iter()
+            .map(|(path, backup, before, after)| {
+                let line = format!(
+                    "Claude changed {path} ({before} → {after} lines) · backup {}",
+                    backup.display()
+                );
+                self.chat.push(Kind::Info, line.clone());
+                let tags = tag
+                    .iter()
+                    .cloned()
+                    .chain([format!("file:{path}")])
+                    .collect();
+                Fx::Log {
+                    ok: true,
+                    body: line,
+                    tags,
+                }
+            })
+            .collect()
+    }
+
+    fn answer(&mut self, why: Turn, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         let Some(at) = (self.turn_from..self.chat.entries.len())
             .rev()
             .find(|i| self.chat.entries[*i].0 == Kind::Claude)
@@ -744,6 +886,10 @@ impl Session {
 
     /// An answer that should carry a plan.
     fn answered(&mut self, at: usize, workflows: &[plan::WfInfo]) -> Vec<Fx> {
+        // It did the job with commands the user allowed, and says how it went.
+        if verdict::take(&self.chat.entries[at].1).1.is_some() {
+            return self.verified(at, workflows);
+        }
         let (body, plan) = plan::take(&self.chat.entries[at].1);
         self.chat.entries[at].1 = body;
         match plan {
@@ -771,6 +917,8 @@ impl Session {
     }
 
     fn new_plan(&mut self, at: usize, p: Plan, workflows: &[plan::WfInfo]) -> Vec<Fx> {
+        // Claude's own plan: what it asked to run earlier (and wasn't) is replaced by it.
+        self.asked = None;
         if let Some(i) = self.runs.len().checked_sub(1) {
             let why = match (self.runs[i].state, self.sent_back.take()) {
                 (RunState::Failed(k), _) => format!("stopped at step {}", k + 1),
@@ -1406,8 +1554,9 @@ mod tests {
         let Some(Fx::Turn { prompt, .. }) = fx.first() else {
             panic!("{fx:?}")
         };
+        // Root's file: Claude is told it goes in a plan.
         assert!(
-            prompt.contains("read /etc/hosts") && !prompt.contains("edit"),
+            prompt.contains("read /etc/hosts") && prompt.contains("plan's edit step"),
             "{prompt}"
         );
         assert!(s.chat.grants.iter().all(|g| g.access == Access::Read));
@@ -1419,6 +1568,113 @@ mod tests {
         s.phase = Phase::Review;
         s.chat.input.push('x');
         assert!(!s.can_grant());
+    }
+
+    #[test]
+    fn enter_allows_what_claude_asked_and_sentry_runs_the_changes() {
+        use crate::claude::{Access, Grant};
+        let run = |c: &str| Grant {
+            access: Access::Run,
+            path: c.into(),
+        };
+        // A read-only command: a grant, and Claude runs it.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "It's refused; I asked.");
+        s.chat.requests = vec![run("rpm -V a")];
+        assert_eq!(s.enter_word(), Some("allow it"));
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("run rpm -V a")));
+        assert_eq!(s.chat.grants, vec![run("rpm -V a")]);
+
+        // A root command: sentry asks for the password, runs it, tells Claude, logs it.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "I need root for this.");
+        s.chat.requests = vec![run("sudo systemctl restart x")];
+        let fx = key(&mut s, KeyCode::Enter);
+        assert_eq!(fx, vec![Fx::CheckSudo]);
+        assert_eq!(s.sudo_checked(true), vec![]);
+        type_in(&mut s, "pw");
+        assert_eq!(key(&mut s, KeyCode::Enter), vec![Fx::CheckPassword]);
+        let fx = s.password_checked(true);
+        assert_eq!(
+            fx,
+            vec![Fx::Command {
+                cmd: "sudo systemctl restart x".into(),
+                sudo: true
+            }]
+        );
+        s.step_started(5, 55);
+        s.step_line("restarted".into());
+        let fx = s.step_ended(0);
+        let Some(Fx::Turn { prompt, shown }) = fx.first() else {
+            panic!("{fx:?}")
+        };
+        assert!(prompt.contains("sentry ran it for you") && prompt.contains("restarted"));
+        assert!(prompt.contains("sentry-verdict") && shown.is_none());
+        // It finished the job: its verdict settles the session, and the run is logged.
+        let fx = answer(
+            &mut s,
+            &fx,
+            "Done.\n\n```sentry-verdict\nstatus = \"done\"\nsummary = \"restarted\"\n```\n",
+        );
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert!(
+            fx.iter()
+                .any(|f| matches!(f, Fx::Log { body, .. } if body.contains("restarted")))
+        );
+
+        // A failed command goes back to Claude too; a ready plan keeps Enter.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "Asked.");
+        s.sudo_free = true;
+        s.chat.requests = vec![run("rm /tmp/x")];
+        let fx = key(&mut s, KeyCode::Enter);
+        assert_eq!(fx.len(), 1);
+        let fx = s.step_ended(1);
+        assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("exit 1")));
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, &plan(CHECKS));
+        s.chat.requests = vec![run("rpm -V a")];
+        assert_eq!(s.enter_word(), Some("apply the plan"));
+    }
+
+    #[test]
+    fn your_file_is_backed_up_and_its_change_logged() {
+        use crate::claude::{Access, Grant};
+        let tmp = std::env::temp_dir().join(format!("sentry-sess-{}.md", std::process::id()));
+        std::fs::write(&tmp, "a\n").unwrap();
+        let path = tmp.display().to_string();
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "I asked to edit it.");
+        s.chat.requests = vec![Grant {
+            access: Access::Write,
+            path: path.clone(),
+        }];
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("edit")));
+        std::fs::write(&tmp, "a\nb\n").unwrap();
+        s.chat.begin_quiet(2, 2);
+        let fx = answer(&mut s, &fx, "Edited.");
+        assert!(
+            fx.iter().any(
+                |f| matches!(f, Fx::Log { tags, .. } if tags.contains(&format!("file:{path}")))
+            ),
+            "{fx:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn a_paste_is_typed_never_keys() {
+        let mut s = session();
+        s.paste("g line one\r\nline two\n");
+        assert_eq!(s.phase, Phase::Brief);
+        assert_eq!(s.chat.input, "g line one\nline two\n");
     }
 
     #[test]

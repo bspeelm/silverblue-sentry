@@ -51,8 +51,8 @@ pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Pr
     let name = &r.name;
     let sudo = match sudo {
         Some(SudoMode::Password) => {
-            " sudo on this server asks for a password: commands of yours that need root fail; \
-             the user runs root commands with their password."
+            " sudo on this server asks for a password: sentry-server asks the user for it when a \
+             read or a plan step needs root."
         }
         Some(SudoMode::Absent) => " This login has no sudo on the server.",
         _ => "",
@@ -63,11 +63,11 @@ pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Pr
 user's laptop, about their server `{name}` ({os}, kernel {kernel}), which it reaches over ssh. \
 Run commands on the server ONLY as `sentry-server exec {name} -- <command> <args>`, one command \
 per call, no pipes or shell syntax (filter the output yourself). Allowed: {}. Anything else is \
-refused. You cannot change anything, so never say you did. When something should be changed, \
-give the exact commands for the user: they run them on the server through sentry-server after \
-confirming (plain commands as they'd type them on the server, not wrapped in sentry-server or \
-ssh). Keep it under about 200 words unless asked for more. If a command was refused or needs \
-root, say so and give the command for the user.{sudo} Files on the laptop (the user's notes): {}",
+refused. A read that needs root you call the same way: sentry-server asks the user and sends you \
+the output. Changes aren't made in a conversation, so never say you made one: in a chat, say what \
+should change (the user hands it to an apply session with `a`); in an apply session, send them as \
+a plan, which sentry-server runs on the server once the user approves it. Keep it under about 200 \
+words unless asked for more.{sudo} Files on the laptop (the user's notes): {}",
             crate::gateway::summary(),
             sentry_core::claude::GRANTS
         ),

@@ -68,7 +68,10 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
         Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.rule)),
         rule,
     );
-    f.render_widget(Paragraph::new(input_line(s, t)), input);
+    f.render_widget(
+        Paragraph::new(input_line(s, t, input.width as usize)),
+        input,
+    );
     let mut spans = Vec::new();
     for (k, d) in keys(s) {
         spans.extend(chip(t, k, d, t.dim));
@@ -151,7 +154,7 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
     Some(Line::styled(format!("       {text}"), t.dim()))
 }
 
-fn input_line(s: &Session, t: &Theme) -> Line<'static> {
+fn input_line(s: &Session, t: &Theme, width: usize) -> Line<'static> {
     let c = &s.chat;
     let typed = |hint: &str| {
         if c.input.is_empty() {
@@ -163,7 +166,7 @@ fn input_line(s: &Session, t: &Theme) -> Line<'static> {
         } else {
             Line::from(vec![
                 Span::styled("› ", t.s(t.cyan)),
-                Span::styled(c.input.clone(), t.fg()),
+                Span::styled(crate::tui::chat::shown_input(&c.input, width), t.fg()),
                 Span::styled("▏", t.s(t.cyan)),
             ])
         }
@@ -208,9 +211,6 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
         k.push(("Enter", "send"));
     } else if let Some(w) = s.enter_word() {
         k.push(("Enter", w));
-    }
-    if s.can_grant() {
-        k.push(("g", "grant it"));
     }
     match s.phase {
         Phase::Brief => {

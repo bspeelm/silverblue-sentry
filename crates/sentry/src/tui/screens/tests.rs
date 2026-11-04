@@ -1353,7 +1353,7 @@ fn review_suggestions_become_maintenance_tasks() {
     key(&mut a, KeyCode::Enter);
     let p = a.consent_text().expect("Enter asks Claude");
     assert!(
-        p.contains("Help me apply this") && p.contains("Check the UPS battery"),
+        p.contains("Do this for me") && p.contains("Check the UPS battery"),
         "{p}"
     );
     key(&mut a, KeyCode::Esc);
@@ -1592,7 +1592,7 @@ fn g_shows_the_files_claude_asked_for() {
     assert!(s.contains("Grant files to Claude"), "{s}");
     // The real path (in a toolbox /etc/hosts is /run/host/etc/hosts): root's, refused.
     assert!(
-        s.contains("etc/hosts") && s.contains("not granted: only files you own"),
+        s.contains("etc/hosts") && s.contains("not granted: it's root's"),
         "{s}"
     );
     assert!(s.contains("Cargo.toml"), "{s}");

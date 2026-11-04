@@ -228,7 +228,7 @@ pub fn request_reboot(
     idx: usize,
     env: &dyn Env,
 ) -> Result<(), String> {
-    let missing = freeze_all(wf, st, env);
+    let missing = freeze(wf, st, env, true);
     if !missing.is_empty() {
         return Err(format!(
             "not rebooting: later steps need {}, which can't be saved now. \
@@ -283,6 +283,14 @@ pub fn preview(st: &RunState, text: &str) -> String {
 /// the workflow mentions before the first reboot, so post-reboot steps see the planned values.
 /// Returns `name: why` for each one a step still to run needs but that can't be resolved.
 pub fn freeze_all(wf: &Workflow, st: &mut RunState, env: &dyn Env) -> Vec<String> {
+    freeze(wf, st, env, false)
+}
+
+/// `at_reboot`: a value that can't be resolved now never will be, so a step's `when` that
+/// hasn't been reached yet is settled here: if it rules the step out, the value isn't needed
+/// (a routine update's reboot comes before `kernel_changed` is first asked). Only then: an
+/// earlier call could run before the preview, when the condition has no answer yet.
+fn freeze(wf: &Workflow, st: &mut RunState, env: &dyn Env, at_reboot: bool) -> Vec<String> {
     let mut missing = Vec::new();
     for (i, s) in wf.steps.iter().enumerate() {
         // A step still to run: pending, and not ruled out by an already frozen `when`.
@@ -299,6 +307,10 @@ pub fn freeze_all(wf: &Workflow, st: &mut RunState, env: &dyn Env) -> Vec<String
                     let r = lookup(st, env, &id);
                     if let Err(e) = r
                         && needed
+                        && !(at_reboot
+                            && s.cond().is_some_and(|(neg, name)| {
+                                eval_cond(st, env, name).is_ok_and(|v| v == neg)
+                            }))
                         && !missing
                             .iter()
                             .any(|m: &String| m.starts_with(&format!("{id}:")))
@@ -495,15 +507,25 @@ mod tests {
         assert!(e.starts_with("can't fill in {{ pending_kernel }}"), "{e}");
 
         // The routine path never needs pending_kernel, so its reboot isn't held up.
+        // `kernel_changed` hasn't been asked yet: the ritual's steps come after this reboot.
         let (wf, mut st, env) = quick(false);
         env.staged.set(true);
-        st.conds.insert("kernel_changed".into(), false);
         let reboot = wf
             .steps
             .iter()
             .position(|s| s.id == "reboot-routine")
             .unwrap();
-        assert!(request_reboot(&wf, &mut st, reboot, &env).is_ok());
+        assert!(!st.conds.contains_key("kernel_changed"));
+        request_reboot(&wf, &mut st, reboot, &env).unwrap();
+        assert_eq!(st.conds.get("kernel_changed"), Some(&false));
+        // Only what was in the way is settled: the GL check still waits for its step.
+        assert!(!st.conds.contains_key("flatpak_gl_nvidia"));
+
+        // A step finishing never settles it: the preview may not have run yet.
+        let (wf, mut st, env) = quick(false);
+        env.staged.set(true);
+        complete(&wf, &mut st, 0, 0, None, &env);
+        assert!(!st.conds.contains_key("kernel_changed"));
     }
 
     #[test]

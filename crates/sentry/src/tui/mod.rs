@@ -22,6 +22,7 @@ impl From<Input> for Event {
     fn from(i: Input) -> Self {
         match i {
             Input::Key(k) => Event::Key(k),
+            Input::Paste(t) => Event::Paste(t),
             Input::Resize => Event::Resize,
             Input::Signal => Event::Signal,
         }
@@ -30,6 +31,7 @@ impl From<Input> for Event {
 
 pub enum Event {
     Key(KeyEvent),
+    Paste(String),
     Resize,
     Data(Fetch, Box<Result<Payload, FetchErr>>),
     Run(u64, StreamMsg),

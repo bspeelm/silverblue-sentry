@@ -1515,7 +1515,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Char('1'));
     let prompt = a.consent_text().expect("consent");
     assert!(
-        prompt.contains("Help me apply this") && prompt.contains("compose-bump"),
+        prompt.contains("Do this for me") && prompt.contains("compose-bump"),
         "{prompt}"
     );
 }
@@ -2187,7 +2187,7 @@ fn files_claude_was_refused_can_be_granted_for_the_conversation() {
     a.open_chat(c);
     let s = screen(&mut a);
     assert!(
-        s.contains("g grants it") && s.contains("grant files"),
+        s.contains("Enter allows it") && s.contains("grant files"),
         "{s}"
     );
     key(&mut a, KeyCode::Char('g'));
@@ -2317,7 +2317,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
     key(&mut a, KeyCode::Enter);
     let p = a.consent_text().expect("Enter asks Claude");
     assert!(
-        p.contains("Help me apply this") && p.contains("Check the UPS battery"),
+        p.contains("Do this for me") && p.contains("Check the UPS battery"),
         "{p}"
     );
     key(&mut a, KeyCode::Esc);

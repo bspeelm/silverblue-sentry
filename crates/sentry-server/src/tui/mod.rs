@@ -22,6 +22,7 @@ pub use app::App;
 
 pub enum Ev {
     Key(KeyEvent),
+    Paste(String),
     Resize,
     Signal,
     Data(data::Kind, Box<Result<data::Payload, SrvError>>),
@@ -34,6 +35,7 @@ impl From<Input> for Ev {
     fn from(i: Input) -> Self {
         match i {
             Input::Key(k) => Ev::Key(k),
+            Input::Paste(t) => Ev::Paste(t),
             Input::Resize => Ev::Resize,
             Input::Signal => Ev::Signal,
         }
