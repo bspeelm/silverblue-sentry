@@ -1436,6 +1436,17 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     );
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("ready to apply"));
+    // A draft is for planning, not applying: the reviewed workflow, ready to start.
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: "compose-bump".into(),
+        path: "compose-bump.toml".into(),
+        wf: sentry_core::workflows::parse(
+            "name = \"compose-bump\"\ndescription = \"x\"\n\
+             [vars.service]\nprompt = \"Service\"\n[vars.image]\nprompt = \"Image\"\n\
+             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ service }} {{ image }}\"\n",
+        ),
+        issues: Vec::new(),
+    }]);
     // Enter in the plan applies it: an apply session, told the plan and its values.
     key(&mut a, KeyCode::Enter);
     let p = a.consent_text().expect("a session");
@@ -1465,6 +1476,18 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(s.contains("Service (service): web▏"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // Its values dismissed, it never started: back in the session, Enter starts it again
+    // (not an empty Run view that drops back to Maintenance).
+    a.apply_session().unwrap().chat.hidden = false;
+    let s = screen(&mut a);
+    assert!(s.contains("compose-bump: waiting to start"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("compose-bump 1/2 · Image (image): example/web:1.5.1▏"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Esc);
     // The session waits for the run; close it for now.
     a.apply_session().unwrap().chat.hidden = false;
@@ -2281,6 +2304,57 @@ fn applying_on_a_server_is_one_session() {
     );
     assert!(sess.secret.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_workflow_that_wont_start_goes_back_to_claude() {
+    use sentry_core::claude::{Apply, Ask};
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    let entry = |draft: &str| sentry_core::workflows::Entry {
+        name: "maint-window".into(),
+        path: "maint-window.toml".into(),
+        wf: sentry_core::workflows::parse(&format!(
+            "name = \"maint-window\"\ndescription = \"x\"\n{draft}\
+             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"true\"\n"
+        )),
+        issues: Vec::new(),
+    };
+    a.set_wf_entries(vec![entry("draft = true\n")]);
+    a.apply(
+        vec![super::app::Effect::AskConsent(Box::new(Ask::apply(
+            "web",
+            "ctx",
+            Apply {
+                key: "web".into(),
+                remote: true,
+                ..Default::default()
+            },
+        )))],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Enter);
+    let plan = "```sentry-apply\nsummary = \"Web\"\n[[step]]\ntitle = \"Window\"\n\
+                workflow = \"maint-window\"\n```";
+    // A draft: the plan goes back to Claude before anything is approved.
+    a.apply_answer_for_test(plan);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("can't use step 1 as written") && s.contains("Claude is correcting the plan"),
+        "{s}"
+    );
+    // Not a draft when planned, but refused when it starts (here: still a draft after all):
+    // the step fails with why and Claude hears it, instead of waiting for a run forever.
+    a.set_wf_entries(vec![entry("")]);
+    a.apply_answer_for_test(plan);
+    assert!(screen(&mut a).contains("Enter applies"));
+    a.set_wf_entries(vec![entry("draft = true\n")]);
+    key(&mut a, KeyCode::Enter);
+    let sess = a.apply_session().unwrap();
+    assert_eq!(sess.waiting_workflow(), None);
+    let s = screen(&mut a);
+    assert!(s.contains("not started: maint-window.toml: draft"), "{s}");
+    assert!(!s.contains("waiting to start"), "{s}");
 }
 
 #[test]

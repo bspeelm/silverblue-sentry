@@ -166,6 +166,8 @@ fn parse(block: &str) -> Result<Plan, String> {
 pub struct WfInfo {
     pub name: String,
     pub vars: Option<Vec<(String, bool)>>,
+    /// Why it won't start (a draft, a parse or lint error): the plan can't use it as is.
+    pub blocked: Option<String>,
 }
 
 impl From<&str> for WfInfo {
@@ -173,6 +175,7 @@ impl From<&str> for WfInfo {
         Self {
             name: name.to_string(),
             vars: None,
+            blocked: None,
         }
     }
 }
@@ -187,6 +190,7 @@ impl WfInfo {
                     .map(|(k, v)| (k.clone(), v.default.is_some()))
                     .collect()
             }),
+            blocked: e.blocked(),
         }
     }
 }
@@ -214,6 +218,9 @@ pub fn problems(p: &Plan, workflows: &[WfInfo]) -> Vec<(usize, String)> {
             }
             Kind::Workflow { name, vars } => match workflows.iter().find(|x| &x.name == name) {
                 None => out.push((i, format!("no workflow {name}"))),
+                Some(WfInfo {
+                    blocked: Some(why), ..
+                }) => out.push((i, format!("{name} won't start ({why})"))),
                 Some(WfInfo {
                     vars: Some(declared),
                     ..
@@ -431,6 +438,7 @@ Approve it and sentry does it.";
         let known = |vars: Option<Vec<(String, bool)>>| WfInfo {
             name: "compose-bump".into(),
             vars,
+            blocked: None,
         };
         // Declared: fine. Not declared: a problem. Unknown (the file didn't read): not checked.
         let ok = known(Some(vec![("image".into(), false), ("wait".into(), true)]));
@@ -438,6 +446,15 @@ Approve it and sentry does it.";
         let short = known(Some(vec![("image".into(), false)]));
         assert_eq!(problems(&p, &[short])[0].1, "compose-bump has no var wait");
         assert!(problems(&p, &[known(None)]).is_empty());
+        // A workflow that won't start (a draft): the plan can't use it.
+        let draft = WfInfo {
+            blocked: Some("draft".into()),
+            ..known(None)
+        };
+        assert_eq!(
+            problems(&p, &[draft])[0].1,
+            "compose-bump won't start (draft)"
+        );
         assert_eq!(problems(&p, &[])[0].1, "no workflow compose-bump");
     }
 

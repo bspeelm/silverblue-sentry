@@ -95,8 +95,10 @@ pub enum Fx {
     CheckPassword,
     /// Start a workflow with these values (the rest are asked when it starts).
     StartWorkflow(String, std::collections::BTreeMap<String, String>),
-    /// The workflow needs the user (a confirm, a manual step): show its run.
-    OpenRun,
+    /// The workflow needs the user (a confirm, a manual step): show its run. Its name and
+    /// the step's values: when it has no run (its values were dismissed, it was refused),
+    /// the app starts it again rather than show nothing.
+    OpenRun(String, std::collections::BTreeMap<String, String>),
     /// One maintenance-log entry (`kind = "apply"`).
     Log {
         ok: bool,
@@ -245,10 +247,15 @@ impl Session {
 
     /// The workflow the plan waits for.
     pub fn waiting_workflow(&self) -> Option<&str> {
+        self.waiting_step().map(|(name, _)| name)
+    }
+
+    /// The workflow the plan waits for, with the step's values for it.
+    fn waiting_step(&self) -> Option<(&str, &std::collections::BTreeMap<String, String>)> {
         let r = self.run()?;
         match r.state {
             RunState::WaitingWorkflow(i) => match &r.plan.steps[i].kind {
-                StepKind::Workflow { name, .. } => Some(name),
+                StepKind::Workflow { name, vars } => Some((name, vars)),
                 _ => None,
             },
             _ => None,
@@ -395,8 +402,10 @@ impl Session {
             return Vec::new();
         }
         if self.phase == Phase::Applying {
-            if code == KeyCode::Enter && self.waiting_workflow().is_some() {
-                return vec![Fx::OpenRun];
+            if code == KeyCode::Enter
+                && let Some((name, vars)) = self.waiting_step()
+            {
+                return vec![Fx::OpenRun(name.to_string(), vars.clone())];
             }
             return Vec::new();
         }
@@ -1691,7 +1700,10 @@ mod tests {
             [Fx::StartWorkflow("quick-update".into(), Default::default())]
         );
         assert_eq!(s.waiting_workflow(), Some("quick-update"));
-        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::OpenRun]);
+        assert_eq!(
+            key(&mut s, KeyCode::Enter),
+            [Fx::OpenRun("quick-update".into(), Default::default())]
+        );
         assert!(s.workflow_ended("other", true, String::new()).is_empty());
         let fx = s.workflow_ended("quick-update", true, "done".into());
         assert!(matches!(&fx[0], Fx::Turn { shown: None, .. }));
