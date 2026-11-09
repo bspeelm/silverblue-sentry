@@ -1732,6 +1732,16 @@ impl App {
                     }
                 }
                 Fx::StartWorkflow(wf, vars) => {
+                    // It can't start (a draft, another run open): the step fails with why, and
+                    // Claude hears it, rather than the plan waiting for a run that never comes.
+                    if let Some(why) = self.wf_refusal(&wf) {
+                        if let Some(sess) = self.apply.as_mut() {
+                            sess.chat.hidden = false;
+                            let fx = sess.workflow_ended(&wf, false, format!("not started: {why}"));
+                            self.apply_fx(fx);
+                        }
+                        continue;
+                    }
                     // The item it changes goes in the log with the run (and its plan, if any,
                     // is closed when the run ends well).
                     let change = self
@@ -1782,11 +1792,39 @@ impl App {
                         self.toast(&format!("the plan for {item} is done (plans/done/)"));
                     }
                 }
-                Fx::OpenRun => {
+                Fx::OpenRun(wf, vars) => {
+                    // Its values being asked: they're in front already.
+                    let asking = self.var_input.as_ref().is_some_and(|v| v.workflow == wf);
+                    let running = self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.wf.name == wf && !s.done());
+                    let other = self
+                        .wf
+                        .as_ref()
+                        .filter(|s| s.wf.name != wf && !s.done())
+                        .map(|s| s.wf.name.clone());
+                    if let Some(other) = other {
+                        if let Some(sess) = self.apply.as_mut() {
+                            sess.chat.hidden = true;
+                        }
+                        self.open_run_view();
+                        self.toast(&format!(
+                            "{other} is in progress: finish or abandon it, then A · Enter starts {wf}"
+                        ));
+                        continue;
+                    }
+                    if !asking && !running {
+                        // It never started (its values dismissed, refused): start it again.
+                        self.apply_fx(vec![Fx::StartWorkflow(wf, vars)]);
+                        continue;
+                    }
                     if let Some(sess) = self.apply.as_mut() {
                         sess.chat.hidden = true;
                     }
-                    self.run_view = true;
+                    if running {
+                        self.open_run_view();
+                    }
                     self.toast("the plan carries on when the run ends · A shows it");
                 }
                 Fx::Log { ok, body, tags } => {
@@ -1825,6 +1863,38 @@ impl App {
                 Fx::Close => self.apply = None,
             }
         }
+    }
+
+    /// Why the workflow `name` won't start now, if it won't.
+    fn wf_refusal(&mut self, name: &str) -> Option<String> {
+        if let Some(s) = self.wf.as_ref().filter(|s| !s.done()) {
+            return Some(format!(
+                "{} is in progress: finish or abandon it first",
+                s.wf.name
+            ));
+        }
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
+        }
+        let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
+            return Some(format!(
+                "no workflow {name} in {}",
+                self.wf_dir.trim_end_matches('/')
+            ));
+        };
+        if let Some(why) = e.blocked() {
+            return Some(format!("{}: {why}", e.path.display()));
+        }
+        if self.offline {
+            return None;
+        }
+        sentry_core::workflows::state::in_progress_in(&crate::workflow::root(&self.remote.name))
+            .map(|cur| {
+                format!(
+                    "{} is already in progress: finish or abandon it first",
+                    cur.state.workflow
+                )
+            })
     }
 
     /// How the workflow the apply session waits for is doing, for its step.

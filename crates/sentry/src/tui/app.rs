@@ -2860,7 +2860,16 @@ impl App {
                             crate::maint::plan::close(&doc, crate::maint::plan::PlanStatus::Done);
                     }
                 }
-                Fx::OpenRun => {
+                Fx::OpenRun(wf, vars) => {
+                    let running = self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.wf.name == wf && !s.done());
+                    if !running && matches!(self.input, Input::None) {
+                        // It never started (its values dismissed, refused): start it again.
+                        self.apply_fx(vec![Fx::StartWorkflow(wf, vars)], now);
+                        continue;
+                    }
                     if let Some(sess) = self.apply.as_mut() {
                         sess.chat.hidden = true;
                     }
