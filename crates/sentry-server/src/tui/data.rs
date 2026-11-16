@@ -159,6 +159,10 @@ pub struct Store {
     proc_rates: collect::procs::Rates,
     /// The uid sentry-server logs in as.
     pub login_uid: Option<u32>,
+    /// Each process's start time and parent, from the last sample (what a kill checks).
+    pub proc_ticks: std::collections::HashMap<u32, collect::procs::Tick>,
+    /// The shell that took the last sample: its ancestors are our ssh session.
+    pub proc_self: Option<u32>,
     pub gpu: Slot<Option<gpu::Gpu>>,
     pub temp: Slot<Option<health::CpuTemp>>,
     pub disks: Slot<Vec<disk::Mount>>,
@@ -239,8 +243,10 @@ impl Store {
             // The probe is in the same sample: the Dashboard's series keep going.
             Payload::Procs(raw) => {
                 self.login_uid = raw.login_uid.or(self.login_uid);
+                self.proc_self = raw.self_pid;
                 let procs = self.proc_rates.procs(&raw);
                 self.procs.set(Ok(procs));
+                self.proc_ticks = raw.ticks;
                 self.on_probe(raw.probe);
             }
             Payload::Gpu(v) => self.gpu.set(Ok(v)),

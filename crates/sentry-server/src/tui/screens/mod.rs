@@ -221,7 +221,7 @@ impl Screens {
             ScreenId::Maint => self.maint.handle(a, v, r),
             ScreenId::Upgrade => self.upgrade.handle(a, v, r),
             ScreenId::Net => self.net.handle(a, v),
-            ScreenId::Proc => self.procs.handle(a, v),
+            ScreenId::Proc => self.procs.handle(a, v, r),
             _ => Vec::new(),
         }
     }
@@ -333,14 +333,16 @@ impl Screens {
         )
     }
 
-    /// Keys that change the server as root: sudo is checked again first.
-    pub fn uses_root(id: ScreenId, c: char) -> bool {
-        matches!(
-            (id, c),
+    /// Keys that change the server as root: sudo is checked again first. On Processes that
+    /// depends on whose process is selected.
+    pub fn uses_root(&self, id: ScreenId, c: char, v: &View) -> bool {
+        match (id, c) {
             (ScreenId::Dash, 'a' | 'B')
-                | (ScreenId::Svc, 'R' | 'x')
-                | (ScreenId::Cont, 'R' | 'p' | 'u')
-        )
+            | (ScreenId::Svc, 'R' | 'x')
+            | (ScreenId::Cont, 'R' | 'p' | 'u') => true,
+            (ScreenId::Proc, 'x') => self.procs.needs_root(v),
+            _ => false,
+        }
     }
 
     fn cursor_mut(&mut self, id: ScreenId) -> &mut Cursor {

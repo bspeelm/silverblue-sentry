@@ -79,10 +79,15 @@ pub fn kill_lines(t: &Theme, p: &Proc) -> Vec<Line<'static>> {
             t.fg(),
         ),
         Line::styled(
-            format!(
-                "owner {} · cpu {:.1}% · mem {:.1}%",
-                p.user, p.cpu, p.mem_pct
-            ),
+            // No CPU figure yet (one sample so far): just the rest.
+            if p.cpu.is_nan() {
+                format!("owner {} · mem {:.1}%", p.user, p.mem_pct)
+            } else {
+                format!(
+                    "owner {} · cpu {:.1}% · mem {:.1}%",
+                    p.user, p.cpu, p.mem_pct
+                )
+            },
             t.dim(),
         ),
     ]
@@ -150,6 +155,10 @@ mod tests {
             kill_lines(&t, &rows[0])[0]
                 .to_string()
                 .starts_with("Send SIGTERM to 901 /opt")
+        );
+        assert_eq!(
+            kill_lines(&t, &rows[1])[1].to_string(),
+            "owner app · mem 2.5%"
         );
         let (title, ctx) = ask_text("the server", &rows[0]);
         assert_eq!(title, "process 901 (/opt/app/bin/app)");

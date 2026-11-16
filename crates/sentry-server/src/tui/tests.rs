@@ -902,6 +902,33 @@ fn live_actions() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("hello from"), "{s}");
     println!("✓ actions ran: apt-get update, custom action");
+    // 4. x on Processes ends one of the login's own processes: a sleep started for this.
+    key(&mut a, KeyCode::Esc);
+    let (stx, _srx) = std::sync::mpsc::channel();
+    let sleeper = r
+        .cmd("sleep")
+        .arg("613")
+        .timeout(None)
+        .stream(move |m| {
+            let _ = stx.send(m);
+        })
+        .unwrap();
+    let sleeping = |r: &Remote| r.sh("pgrep -xf 'sleep 613' | wc -l").output().unwrap();
+    key(&mut a, KeyCode::Char('2'));
+    pump(&mut a, 5);
+    assert_eq!(sleeping(&r).trim(), "1", "remote sleep started");
+    for c in "/sleep 613".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("$ kill -TERM"), "{s}");
+    key(&mut a, KeyCode::Char('y'));
+    pump(&mut a, 5);
+    assert_eq!(sleeping(&r).trim(), "0", "ended through the TUI");
+    super::app::kill_for_test(sleeper);
+    println!("✓ x on Processes sent SIGTERM to the sleep");
 }
 
 /// apt-maintenance end to end on the disposable sshd container (never the real server).
@@ -3613,8 +3640,8 @@ fn sort_and_filter_match_sentry() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("reading processes…"), "{s}");
     assert!(
-        s.contains("C/M  sort cpu/mem") && !s.contains("x  kill"),
-        "sentry's keys, nothing that changes the server yet: {s}"
+        s.contains("C/M  sort cpu/mem") && s.contains("x  kill"),
+        "sentry's keys: {s}"
     );
     feed_procs(&mut a);
     let s = render_to_string(&mut a, 158, 41);
@@ -3685,7 +3712,7 @@ fn the_processes_sample_feeds_the_probe() {
         "the Dashboard's series keep going on this screen"
     );
     assert_eq!(a.store.login_uid, Some(1000));
-    assert_eq!(a.store.procs.value.as_ref().map(Vec::len), Some(10));
+    assert_eq!(a.store.procs.value.as_ref().map(Vec::len), Some(12));
     // One exec per sample, every 2 s, only while the screen is shown; the second after 1 s.
     let polls = Screens::polls(ScreenId::Proc, &a.remote.cfg);
     assert_eq!(polls.len(), 1);
@@ -3866,4 +3893,146 @@ fn history_keys() {
             && p.contains("Anything unusual in this period?"),
         "{p}"
     );
+}
+
+/// The Processes screen with the fixture's processes, filtered to those matching `what`.
+fn procs_on(a: &mut App, what: &str) {
+    key(a, KeyCode::Char('2'));
+    feed_procs(a);
+    key(a, KeyCode::Char('/'));
+    for c in what.chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+}
+
+#[test]
+fn kill_asks_first_and_shows_the_command() {
+    let mut a = app();
+    // One of the login user's own processes.
+    procs_on(&mut a, "tail -f");
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Kill process"), "{s}");
+    assert!(
+        s.contains("Send SIGTERM to 52100 tail -f /var/log/app/app.log?")
+            && s.contains("owner admin"),
+        "sentry's box: {s}"
+    );
+    assert!(
+        s.contains("$ kill -TERM 52100") && s.contains("on myserver"),
+        "{s}"
+    );
+    assert!(!s.contains("sudo"), "its own process needs none: {s}");
+    assert!(!s.contains("hard to undo"), "{s}");
+    assert!(
+        s.contains("Enter  confirm") && s.contains("Esc  cancel"),
+        "{s}"
+    );
+    // Esc: nothing ran.
+    key(&mut a, KeyCode::Esc);
+    assert!(!render_to_string(&mut a, 158, 41).contains("Kill process"));
+    // Enter: streamed, and only if the pid is still that process.
+    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Kill process"), "the run pane: {s}");
+    let ran = a.pane_cmd_for_test().expect("it runs in the pane");
+    assert!(
+        ran.contains("/proc/52100/stat")
+            && ran.contains("112333100")
+            && ran.contains("process 52100 is gone")
+            && ran.contains("kill -TERM 52100"),
+        "{ran}"
+    );
+    assert!(!ran.contains("sudo"), "{ran}");
+}
+
+#[test]
+fn kill_of_another_users_process_goes_through_sudo() {
+    use crate::remote::SudoMode;
+    let mut a = app();
+    procs_on(&mut a, "checkpointer");
+    // sudo without a password: streamed, with -n so it can't wait on a prompt.
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Send SIGTERM to 1502") && s.contains("owner postgres"),
+        "{s}"
+    );
+    assert!(s.contains("$ sudo kill -TERM 1502"), "{s}");
+    assert!(!s.contains("handed over"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let ran = a.pane_cmd_for_test().expect("streamed");
+    assert!(
+        ran.contains("sudo -n kill -TERM 1502") && ran.contains("14100"),
+        "{ran}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // sudo asks for a password: the terminal is handed over.
+    let mut a = app();
+    data(&mut a, Kind::Sudo, Payload::Sudo(SudoMode::Password));
+    procs_on(&mut a, "checkpointer");
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("$ sudo kill -TERM 1502") && s.contains("terminal is handed over"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let (cmd, banner) = a.take_suspend().expect("suspends");
+    assert!(
+        cmd.remote_line().contains("sudo kill -TERM 1502")
+            && !cmd.remote_line().contains("sudo -n"),
+        "{}",
+        cmd.remote_line()
+    );
+    assert!(banner.contains("kill 1502 on myserver"), "{banner}");
+    // No sudo at all: said, nothing offered.
+    data(&mut a, Kind::Sudo, Payload::Sudo(SudoMode::Absent));
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("1502 is owned by postgres") && !s.contains("Kill process"),
+        "{s}"
+    );
+}
+
+#[test]
+fn pid_1_is_refused() {
+    let mut a = app();
+    procs_on(&mut a, "/sbin/init");
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("pid 1 is the server's init") && !s.contains("Kill process"),
+        "{s}"
+    );
+    // The ssh session sentry-server itself is on: offered, in the hard-to-undo form.
+    let mut a = app();
+    procs_on(&mut a, "admin@notty");
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Send SIGTERM to 52790")
+            && s.contains("This is the connection sentry-server talks through")
+            && s.contains("This is hard to undo."),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // The ssh server above it too (root's: through sudo).
+    let mut a = app();
+    procs_on(&mut a, "[listener]");
+    key(&mut a, KeyCode::Char('x'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("$ sudo kill -TERM 612") && s.contains("hard to undo"),
+        "{s}"
+    );
+    // A process that went away since the sample: said, nothing offered.
+    let mut a = app();
+    procs_on(&mut a, "tail -f");
+    a.store.proc_ticks.remove(&52100);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(render_to_string(&mut a, 158, 41).contains("process 52100 is gone"));
 }

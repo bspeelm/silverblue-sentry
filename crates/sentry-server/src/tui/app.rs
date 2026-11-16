@@ -1075,12 +1075,12 @@ impl App {
             }
             // The rest is the screen's: moving, Enter, r, c and its own letters.
             a => {
+                let id = self.screen;
                 if let Action::Char(c) = a
-                    && Screens::uses_root(self.screen, c)
+                    && self.with_screens(|s, v, _| s.uses_root(id, c, v))
                 {
                     self.fresh_sudo();
                 }
-                let id = self.screen;
                 let e = self.with_screens(|s, v, r| s.handle(id, a, v, r));
                 self.apply(e, now);
             }
@@ -4668,6 +4668,10 @@ impl App {
         let (keys, warnings) = Keymap::new(&SCREENS, overrides);
         self.keys = keys;
         warnings
+    }
+    /// Tests: the command the run pane shows.
+    pub fn pane_cmd_for_test(&self) -> Option<String> {
+        self.pane.as_ref().map(|p| p.cmd.clone())
     }
     /// Tests: what the screen in view fetches again by itself.
     pub fn polled_for_test(&self) -> Vec<Kind> {

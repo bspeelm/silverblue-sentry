@@ -1,5 +1,6 @@
 //! Processes: the server's, top by CPU or memory, sampled every two seconds while shown.
-//! Drawn and sorted like sentry's.
+//! Drawn and sorted like sentry's. `x` sends SIGTERM after a confirm box, as there; another
+//! user's process goes through sudo, like the server's other actions.
 
 use std::time::Duration;
 
@@ -9,8 +10,9 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use super::{Hints, View};
-use crate::remote::{Remote, SrvError};
-use crate::tui::app::Effect;
+use crate::collect::procs::{kill_script, lineage};
+use crate::remote::{Remote, SrvError, SudoMode};
+use crate::tui::app::{Effect, Modal, RunSpec};
 use crate::tui::data::Kind;
 use sentry_core::claude::Ask;
 use sentry_core::collectors::procs::{Proc, SortBy, sort};
@@ -30,10 +32,7 @@ pub struct Processes {
 }
 
 pub fn hints() -> Hints {
-    let mut h: Hints = proctable::hints()
-        .into_iter()
-        .filter(|(k, _)| *k != "x")
-        .collect();
+    let mut h = proctable::hints();
     h.push(("r", "refresh"));
     h
 }
@@ -74,14 +73,105 @@ impl Processes {
         r.into_iter().nth(i)
     }
 
-    pub fn handle(&mut self, a: Action, _v: &View) -> Vec<Effect> {
+    pub fn handle(&mut self, a: Action, v: &View, r: &Remote) -> Vec<Effect> {
         match a {
             Action::Char('C' | 'P') => self.sort = SortBy::Cpu,
             Action::Char('M') => self.sort = SortBy::Mem,
             Action::Refresh => return vec![Effect::Fetch(Kind::Procs)],
+            Action::Char('x') => return self.kill(v, r),
             _ => {}
         }
         Vec::new()
+    }
+
+    /// The selected process belongs to someone else: ending it takes sudo.
+    pub fn needs_root(&self, v: &View) -> bool {
+        self.selected(v)
+            .is_some_and(|p| p.uid.is_some() && p.uid != v.s.login_uid)
+    }
+
+    /// `x`: the box that asks before SIGTERM, showing the command. Our own process: plain
+    /// `kill`. Another user's: `sudo`, streamed when it needs no password, with the terminal
+    /// handed over when it asks. Either way nothing is signalled unless the pid is still the
+    /// process listed.
+    fn kill(&self, v: &View, r: &Remote) -> Vec<Effect> {
+        let t = v.t;
+        let Some(p) = self.selected(v) else {
+            return Vec::new();
+        };
+        if p.pid == 1 {
+            return vec![Effect::Toast(
+                "pid 1 is the server's init: not ended from here".into(),
+            )];
+        }
+        let Some(tick) = v.s.proc_ticks.get(&p.pid) else {
+            return vec![Effect::Toast(format!("process {} is gone", p.pid))];
+        };
+        // (how it's written in the box, how it runs, whether sudo will ask).
+        let (shown, how, interactive) = if !self.needs_root(v) {
+            ("kill", "kill", false)
+        } else {
+            match v.s.sudo.value {
+                Some(SudoMode::NoPasswd) => ("sudo kill", "sudo -n kill", false),
+                Some(SudoMode::Password) => ("sudo kill", "sudo kill", true),
+                Some(SudoMode::Absent) => {
+                    return vec![Effect::Toast(format!(
+                        "{} is owned by {}, and this login has no sudo on the server",
+                        p.pid, p.user
+                    ))];
+                }
+                None => {
+                    return vec![Effect::Toast(
+                        "still checking how sudo works on the server".into(),
+                    )];
+                }
+            }
+        };
+        let mut lines = proctable::kill_lines(t, &p);
+        lines.extend([
+            Line::raw(""),
+            Line::styled(format!("$ {shown} -TERM {}", p.pid), t.fg()),
+            Line::styled(format!("on {} ({})", r.name, r.host), t.dim()),
+        ]);
+        if interactive {
+            lines.push(Line::styled(
+                "sudo asks for your password: the terminal is handed over while it runs.",
+                t.dim(),
+            ));
+        }
+        // An ancestor of the shell that sampled: the ssh session itself, or the ssh server.
+        let ours =
+            v.s.proc_self
+                .is_some_and(|me| lineage(&v.s.proc_ticks, me).contains(&p.pid));
+        if ours {
+            lines.push(Line::styled(
+                "This is the connection sentry-server talks through: ending it cuts                  sentry-server off from the server.",
+                t.s(t.yellow),
+            ));
+            lines.push(Line::styled("This is hard to undo.", t.s(t.red)));
+        }
+        let cmd = r.sh(&kill_script(p.pid, tick.start, how)).timeout(None);
+        let run = if interactive {
+            Effect::Suspend(
+                cmd,
+                format!("sentry-server · kill {} on {}", p.pid, r.name),
+                vec![Kind::Procs],
+                false,
+            )
+        } else {
+            Effect::Run(RunSpec {
+                title: "Kill process".into(),
+                cmd,
+                then: vec![Kind::Procs],
+                reboot: false,
+            })
+        };
+        vec![Effect::Confirm(Modal {
+            title: "Kill process".into(),
+            color: t.red,
+            lines,
+            yes: Some(("send SIGTERM".into(), vec![run])),
+        })]
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {

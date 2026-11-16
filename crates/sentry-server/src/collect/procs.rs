@@ -31,6 +31,8 @@ pub struct Tick {
     pub ticks: u64,
     /// When it started, in clock ticks since boot: tells a reused pid apart.
     pub start: u64,
+    /// Its parent (0 when this `awk` line didn't say).
+    pub ppid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,20 +40,25 @@ pub struct Raw {
     pub probe: probe::Probe,
     /// The uid sentry-server logs in as.
     pub login_uid: Option<u32>,
+    /// The shell that took this sample: its ancestors are the ssh session sentry-server
+    /// talks through.
+    pub self_pid: Option<u32>,
     pub rows: Vec<PsRow>,
     pub ticks: HashMap<u32, Tick>,
 }
 
-/// The probe's files, then who we are, `ps` (with the user name whole where this `ps` can;
-/// the uid is exact either way) and pid, flags, ticks and start time per process. The `sub`
+/// The probe's files, then who we are (uid, and this shell's pid), `ps` (with the user name
+/// whole where this `ps` can; the uid is exact either way) and pid, flags, ticks, start time
+/// and parent per process. The `sub`
 /// drops everything up to the last `) `, so a command name with spaces or brackets can't
 /// shift the fields; awk fails when a process goes away mid-glob, hence the `true`.
 pub fn script() -> String {
     format!(
-        "command -v ps >/dev/null || echo '@@missing ps'; {}; echo @@uid; id -u; echo @@ps; \
+        "command -v ps >/dev/null || echo '@@missing ps'; {}; echo @@uid; id -u; echo @@self; \
+         echo $$; echo @@ps; \
          ps -ww -eo pid=,uid=,user:32=,rss=,etimes=,args= 2>/dev/null \
          || ps -ww -eo pid=,uid=,user=,rss=,etimes=,args=; echo @@ticks; \
-         awk '{{p=$1; sub(/^.*\\) /,\"\"); print p, $7, $12+$13, $20}}' /proc/[0-9]*/stat \
+         awk '{{p=$1; sub(/^.*\\) /,\"\"); print p, $7, $12+$13, $20, $2}}' /proc/[0-9]*/stat \
          2>/dev/null; true",
         probe::script()
     )
@@ -74,11 +81,14 @@ pub fn parse(text: &str) -> Result<Raw, String> {
         .map_or(lines.len(), |i| ps_at + i);
     let head = lines[..ps_at].join("\n");
     let probe = probe::parse(&head)?;
-    let login_uid = lines[..ps_at]
-        .iter()
-        .position(|l| *l == "@@uid")
-        .and_then(|i| lines.get(i + 1))
-        .and_then(|l| l.trim().parse().ok());
+    let after = |mark: &str| {
+        lines[..ps_at]
+            .iter()
+            .position(|l| *l == mark)
+            .and_then(|i| lines.get(i + 1))
+            .and_then(|l| l.trim().parse::<u32>().ok())
+    };
+    let (login_uid, self_pid) = (after("@@uid"), after("@@self"));
     let rows = lines[ps_at + 1..ticks_at]
         .iter()
         .filter_map(|l| ps_row(l))
@@ -92,8 +102,11 @@ pub fn parse(text: &str) -> Result<Raw, String> {
                 .split_whitespace()
                 .map(|x| x.parse().ok())
                 .collect::<Option<_>>()?;
-            let [pid, flags, ticks, start] = v[..] else {
-                return None;
+            // Four numbers, or five with the parent.
+            let (pid, flags, ticks, start, ppid) = match v[..] {
+                [a, b, c, d] => (a, b, c, d, 0),
+                [a, b, c, d, e] => (a, b, c, d, e),
+                _ => return None,
             };
             Some((
                 u32::try_from(pid).ok()?,
@@ -101,6 +114,7 @@ pub fn parse(text: &str) -> Result<Raw, String> {
                     flags,
                     ticks,
                     start,
+                    ppid: u32::try_from(ppid).ok()?,
                 },
             ))
         })
@@ -108,6 +122,7 @@ pub fn parse(text: &str) -> Result<Raw, String> {
     Ok(Raw {
         probe,
         login_uid,
+        self_pid,
         rows,
         ticks,
     })
@@ -148,6 +163,27 @@ pub fn collect(r: &Remote) -> Result<Raw, SrvError> {
 
 /// Each pid's (ticks, start).
 type Seen = HashMap<u32, (u64, u64)>;
+
+/// `pid` and its ancestors, nearest first, as far as the parents are known (init left out).
+pub fn lineage(ticks: &HashMap<u32, Tick>, pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut at = pid;
+    while at > 1 && !out.contains(&at) {
+        out.push(at);
+        at = ticks.get(&at).map_or(0, |t| t.ppid);
+    }
+    out
+}
+
+/// The command that ends a process, for the server's shell: nothing is signalled unless the
+/// pid still belongs to the process that was listed (its start time in /proc is the one
+/// sampled). `kill` is how: `kill`, `sudo -n kill` or `sudo kill`.
+pub fn kill_script(pid: u32, start: u64, kill: &str) -> String {
+    format!(
+        "[ \"$(awk '{{sub(/^.*\\) /,\"\"); print $20}}' /proc/{pid}/stat 2>/dev/null)\" = \"{start}\" ] \
+         || {{ echo \"process {pid} is gone\"; exit 1; }}; {kill} -TERM {pid}"
+    )
+}
 
 /// CPU% between consecutive samples.
 #[derive(Debug, Default)]
@@ -225,8 +261,9 @@ mod tests {
         let r = parse(&fixture("procs-1.txt")).unwrap();
         assert_eq!(r.login_uid, Some(1000));
         assert_eq!(r.probe.cores, 4, "the probe is in the same sample");
-        assert_eq!(r.rows.len(), 12);
-        assert_eq!(r.ticks.len(), 12);
+        assert_eq!(r.self_pid, Some(52800));
+        assert_eq!(r.rows.len(), 14);
+        assert_eq!(r.ticks.len(), 14);
         let app = r.rows.iter().find(|p| p.pid == 901).unwrap();
         assert_eq!(
             (app.uid, app.user.as_str(), app.rss_kib, app.etimes),
@@ -238,7 +275,8 @@ mod tests {
             Tick {
                 flags: 4_194_304,
                 ticks: 9_000_000,
-                start: 34_573_100
+                start: 34_573_100,
+                ppid: 1
             }
         );
         assert_eq!(parse("@@missing ps\n@@stat\n"), Err("ps".to_string()));
@@ -250,7 +288,7 @@ mod tests {
     fn kernel_threads_are_left_out() {
         let r = parse(&fixture("procs-1.txt")).unwrap();
         let v = Rates::default().procs(&r);
-        assert_eq!(v.len(), 10);
+        assert_eq!(v.len(), 12);
         assert!(v.iter().all(|p| !p.cmd.starts_with("[k")));
         // Memory is its share of the server's.
         assert!((one(&v, 901).mem_pct - 1.2875).abs() < 0.001);
@@ -286,8 +324,8 @@ mod tests {
         rates.procs(&parse(&fixture("procs-1.txt")).unwrap());
         // The same pid, started later, with more ticks than the old one had.
         let two = fixture("procs-2.txt").replace(
-            "901 4194304 9000150 34573100",
-            "901 4194304 9999999 120973000",
+            "901 4194304 9000150 34573100 1",
+            "901 4194304 9999999 120973000 1",
         );
         let v = rates.procs(&parse(&two).unwrap());
         assert_eq!(one(&v, 901).cpu, 0.0);
@@ -323,9 +361,41 @@ mod tests {
             )
             .replace("nginx: worker process", "@@ps @@ticks @@stat");
         let r = parse(&text).unwrap();
-        assert_eq!(r.rows.len(), 13);
+        assert_eq!(r.rows.len(), 15);
         assert_eq!(r.rows.last().unwrap().args, "@@ticks");
-        assert_eq!(r.ticks.len(), 12);
+        // Junk among the ticks is skipped; a line without the parent still counts.
+        assert_eq!(r.ticks.len(), 14);
+        let old = parse(&text.replace(
+            "901 4194304 9000000 34573100 1\n",
+            "901 4194304 9000000 34573100\n",
+        ))
+        .unwrap();
+        assert_eq!(old.ticks[&901].ppid, 0);
+        // The sample's own shell quotes the marker for a missing ps: that isn't the marker.
+        assert!(text.contains("echo '@@missing ps'"));
         assert_eq!(r.probe.cores, 4);
+    }
+
+    #[test]
+    fn the_session_s_processes_are_known_and_a_kill_checks_the_start_time() {
+        let r = parse(&fixture("procs-1.txt")).unwrap();
+        // The shell that sampled, the session's sshd, the ssh server; not init.
+        assert_eq!(lineage(&r.ticks, r.self_pid.unwrap()), [52800, 52790, 612]);
+        assert_eq!(lineage(&r.ticks, 1502), [1502, 1440]);
+        assert!(lineage(&r.ticks, 1).is_empty());
+        // A loop in what was read ends.
+        let mut t = r.ticks.clone();
+        t.get_mut(&612).unwrap().ppid = 52800;
+        assert_eq!(lineage(&t, 52800).len(), 3);
+        let s = kill_script(901, 34_573_100, "sudo -n kill");
+        assert_eq!(
+            s,
+            "[ \"$(awk '{sub(/^.*\\) /,\"\"); print $20}' /proc/901/stat 2>/dev/null)\" = \
+             \"34573100\" ] || { echo \"process 901 is gone\"; exit 1; }; sudo -n kill -TERM 901"
+        );
+        // The script itself: its awk takes the parent too.
+        assert!(
+            script().contains("print p, $7, $12+$13, $20, $2}'") && script().contains("echo $$")
+        );
     }
 }
