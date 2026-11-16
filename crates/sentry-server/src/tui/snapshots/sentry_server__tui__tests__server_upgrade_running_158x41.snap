@@ -1,0 +1,44 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade ●
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ apt-maintenance · running · 0 ───────────────────────────┐  ┌ Log · step 1/8 · steps/preview.log ──────────────────────────────────────────────────────────┐
+│ ▶  1 Preview what would change  auto                     │  │ ▶ started apt-maintenance on myserver                                                        │
+│ ○  2 Refresh package lists  confirm                      │  │ ▶ 1/8 Preview what would change                                                              │
+│ ○  3 Install the updates  confirm                        │  │ $ apt-get -s -o Debug::NoLocking=1 dist-upgrade | grep -E '^(Inst|Remv) |upgraded,|kept bac… │
+│ ○  4 Remove packages nothing needs any more  optional    │  │                                                                                              │
+│ ○  5 Reboot onto the new kernel and libraries  reboot    │  │                                                                                              │
+│ ○  6 Running the newest installed kernel  auto           │  │                                                                                              │
+│ ○  7 Configured services are running  auto               │  │                                                                                              │
+│ ○  8 Containers are running and healthy  auto            │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+│                                                          │  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                          │  │▶ Preview what would change · auto                                                            │
+│                                                          │  │$ apt-get -s -o Debug::NoLocking=1 dist-upgrade | grep -E '^(Inst|Remv) |upgraded,|kept back' │
+│                                                          │  │|| true                                                                                       │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ C-c  terminate step   L  log   A  ask Claude   ?  help   q  quit

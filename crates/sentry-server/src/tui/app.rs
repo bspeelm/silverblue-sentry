@@ -74,8 +74,12 @@ pub enum Effect {
     StartWorkflow(String),
     /// Ask Claude how to fix an audit finding (the consent box first).
     FixFinding(String),
-    /// `w`: pick a workflow to start.
-    ChooseWorkflow,
+    /// The workflows are read again (`r` on screen 0).
+    ReloadWorkflows,
+    /// Open a workflow's file in $EDITOR (read again after).
+    EditWorkflow(std::path::PathBuf),
+    /// The current step's log, in the pane.
+    StepLog,
     /// Select the first Maintenance recommendation whose key starts with this.
     MaintFind(String),
     /// Select an item's row on Maintenance.
@@ -285,8 +289,6 @@ pub struct App {
     writer: Option<planview::Writer>,
     /// The Plan view: the item shown, and lines scrolled from the top.
     plan_view: Option<(String, usize)>,
-    /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
-    run_view: bool,
     /// The Review window (`R` on Maintenance).
     review_view: Option<sentry_core::tui::reviewview::ReviewView>,
     /// The Log view (`v` on Maintenance, `:log`).
@@ -300,6 +302,8 @@ pub struct App {
     /// The workflow run in progress on this server.
     pub wf: Option<Session>,
     wf_entries: Vec<Entry>,
+    /// The same, each with its last run (screen 0's list).
+    wf_list: Vec<sentry_core::tui::wflist::WfInfo>,
     /// Where they come from (shown with the run).
     wf_dir: String,
     /// A step running with the terminal handed over, and where its output is captured.
@@ -359,12 +363,12 @@ impl App {
             plan_view: None,
             rec_view: None,
             review_view: None,
-            run_view: false,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
             wf_entries: Vec::new(),
+            wf_list: Vec::new(),
             wf_dir: "~/.config/sentry/server-workflows/".into(),
             suspend_step: None,
             wf_reboot_id: None,
@@ -398,7 +402,9 @@ impl App {
             );
             self.wf = Session::resume(&self.remote);
             // A run left in progress: show it (its auto steps wait until it's open).
-            self.run_view = self.wf.is_some();
+            if self.wf.is_some() {
+                self.screen = ScreenId::Upgrade;
+            }
             self.inventory_at = crate::inventory::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.upstream_at =
                 crate::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
@@ -434,6 +440,15 @@ impl App {
     /// what it polls.
     pub fn enter(&mut self, id: ScreenId, now: Instant) {
         self.screen = id;
+        if id == ScreenId::Upgrade {
+            if self.wf_entries.is_empty() && !self.offline {
+                self.load_wf_entries();
+            }
+            // Its auto steps may run now that it's in view.
+            if let Some(s) = self.wf.as_mut() {
+                s.armed = true;
+            }
+        }
         self.due.clear();
         for p in Screens::polls(id, &self.remote.cfg) {
             self.fetch(p.kind);
@@ -474,7 +489,7 @@ impl App {
             self.fetch(Kind::Probe);
             self.reboot_probe = Some(now + Duration::from_secs(2));
         }
-        if self.run_view {
+        if self.screen == ScreenId::Upgrade {
             self.wf_auto();
         }
         // Only what the screen in view polls.
@@ -739,6 +754,8 @@ impl App {
                 .filter(|w| w.running())
                 .map(|w| w.item.clone()),
             plans: &self.store.plans,
+            wf: self.wf.as_ref(),
+            wf_list: &self.wf_list,
         }
     }
 
@@ -873,30 +890,21 @@ impl App {
         let Some(a) = self.keys.resolve(&k) else {
             return;
         };
-        if self.run_view {
-            if self.wf.is_none() {
-                self.run_view = false;
-            } else if self.wf_key(a, now) {
-                return;
-            } else if matches!(a, Action::Esc) {
-                self.run_view = false;
-                return;
-            } else if !matches!(
-                a,
-                Action::Quit
-                    | Action::Interrupt
-                    | Action::Command
-                    | Action::Screen(_)
-                    | Action::NextScreen
-                    | Action::PrevScreen
-                    | Action::Help
-                    | Action::Ask
-            ) {
-                // The screen underneath isn't shown: its keys don't act on it.
-                return;
-            }
-        }
         match a {
+            // C-c on a running step stops the step, as in sentry.
+            Action::Interrupt
+                if self.screen == ScreenId::Upgrade
+                    && self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.live.as_ref().is_some_and(|l| l.pid.is_some())) =>
+            {
+                // Its exit ends the step as failed; the run stays.
+                if let Some(pid) = self.wf.as_ref().and_then(|s| s.live.as_ref()?.pid) {
+                    let _ = kill(pid);
+                }
+                self.toast("sent SIGTERM to the step");
+            }
             // As in sentry: q and Ctrl-C ask first, `:q` quits.
             Action::Quit | Action::Interrupt => {
                 self.modal = Some(frame::quit_modal(
@@ -923,26 +931,15 @@ impl App {
                 self.filters.remove(&self.screen);
                 self.keep_maint_selection();
             }
-            Action::Screen(ScreenId::Upgrade) => self.open_run_view(),
-            Action::Screen(id) => {
-                self.run_view = false;
-                self.enter(id, now);
-            }
+            Action::Screen(id) => self.enter(id, now),
             Action::NextScreen | Action::PrevScreen => {
-                // The run has its own key (0); Tab walks the screens.
-                let ids: Vec<ScreenId> = SCREENS
-                    .ids
-                    .iter()
-                    .copied()
-                    .filter(|s| *s != ScreenId::Upgrade)
-                    .collect();
+                let ids = SCREENS.ids;
                 let i = ids.iter().position(|s| *s == self.screen).unwrap_or(0);
                 let step = if a == Action::NextScreen {
                     1
                 } else {
                     ids.len() - 1
                 };
-                self.run_view = false;
                 self.enter(ids[(i + step) % ids.len()], now);
             }
             Action::Help => self.show_help(),
@@ -954,18 +951,16 @@ impl App {
                 } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
-                    if self.screen == ScreenId::Maint
-                        && !self.run_view
-                        && self.wf_entries.is_empty()
-                    {
+                    if self.screen == ScreenId::Maint && self.wf_entries.is_empty() {
                         self.load_wf_entries();
                     }
                     let v = self.view();
-                    let ask = match self.wf.as_ref().filter(|_| self.run_view) {
+                    let on_run = self.screen == ScreenId::Upgrade;
+                    let ask = match self.wf.as_ref().filter(|_| on_run) {
                         Some(s) => Some(super::ask::ask_run(&v, &self.remote, s)),
                         None => self.screens.ask(self.screen, &v, &self.remote).ok(),
                     };
-                    let apply = (self.screen == ScreenId::Maint && !self.run_view)
+                    let apply = (self.screen == ScreenId::Maint)
                         .then(|| {
                             super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf))
                         })
@@ -1121,8 +1116,31 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::StartWorkflow(name) => self.start_box(&name),
-                Effect::ChooseWorkflow => self.workflow_chooser(),
+                Effect::StartWorkflow(name) => self.wf_start(&name, now),
+                Effect::ReloadWorkflows => {
+                    if !self.offline {
+                        self.load_wf_entries();
+                    }
+                    self.toast("workflows read again");
+                }
+                Effect::StepLog => match self.wf.as_ref().and_then(|s| s.step_log()) {
+                    Some((title, text)) => {
+                        self.run_seq += 1;
+                        self.pane = Some(Pane {
+                            id: self.run_seq,
+                            title,
+                            cmd: String::new(),
+                            lines: text.lines().map(str::to_string).collect(),
+                            pid: None,
+                            done: Some(0),
+                            started: Instant::now(),
+                            scroll: 0,
+                            then: Vec::new(),
+                            reboot: false,
+                        });
+                    }
+                    None => self.toast("no log for this step yet"),
+                },
                 Effect::MaintFind(prefix) => {
                     let v = self.view();
                     if let Some(i) = super::screens::maint::recs(&v)
@@ -1171,14 +1189,14 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::EditConfig | Effect::EditTasks => {
+                Effect::EditConfig | Effect::EditTasks | Effect::EditWorkflow(_) => {
                     let editor = std::env::var("VISUAL")
                         .or_else(|_| std::env::var("EDITOR"))
                         .unwrap_or_else(|_| "vi".into());
-                    let path = if matches!(e, Effect::EditTasks) {
-                        sentry_core::maint::tasks::path(&self.remote.name)
-                    } else {
-                        crate::config::path()
+                    let path = match e {
+                        Effect::EditTasks => sentry_core::maint::tasks::path(&self.remote.name),
+                        Effect::EditWorkflow(p) => p,
+                        _ => crate::config::path(),
                     };
                     let mut words = editor.split_whitespace();
                     let cmd = Cmd::local(words.next().unwrap_or("vi"))
@@ -1267,105 +1285,13 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keys in the run view; true when handled.
-    fn wf_key(&mut self, a: Action, _now: Instant) -> bool {
-        let t = self.theme;
-        let Some(s) = self.wf.as_ref() else {
-            return false;
-        };
-        let failed = matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. });
-        let idx = s.next.idx();
-        let title = idx.map(|i| s.title(i)).unwrap_or_default();
-        let ask = |title: &str, line: String, label: &str, cmd: WfCmd, color| Modal {
-            title: title.into(),
-            color,
-            lines: vec![Line::styled(line, t.fg())],
-            yes: Some((label.into(), vec![Effect::Wf(cmd)])),
-        };
-        match a {
-            Action::Enter if s.done() => self.wf_cmd(WfCmd::Close),
-            Action::Enter => match s.next {
-                Next::Reboot {
-                    requested: false, ..
-                } => {
-                    self.modal = Some(Modal {
-                        title: "Reboot the server".into(),
-                        color: t.red,
-                        lines: vec![
-                            Line::styled(title, t.fg()),
-                            Line::styled(
-                                format!("$ sudo systemctl reboot   on {}", self.remote.name),
-                                t.fg(),
-                            ),
-                            Line::styled(
-                                "Everything on it stops until it's back; sentry-server waits here.",
-                                t.s(t.yellow),
-                            ),
-                        ],
-                        yes: Some(("reboot".into(), vec![Effect::Wf(WfCmd::Go)])),
-                    })
-                }
-                _ => self.wf_cmd(WfCmd::Go),
-            },
-            Action::Char('s') => {
-                let optional = idx.is_some_and(|i| s.wf.steps[i].optional);
-                if optional {
-                    self.wf_cmd(WfCmd::Skip(false));
-                } else if idx.is_some() {
-                    self.modal = Some(ask(
-                        "Skip step",
-                        format!("{title}: it isn't optional, later steps may expect it."),
-                        "skip it",
-                        WfCmd::Skip(true),
-                        t.yellow,
-                    ));
-                }
-            }
-            Action::Char('d') if idx.is_some() => {
-                self.modal = Some(ask(
-                    "Done by hand",
-                    format!("{title}: mark it done only if you've made sure of it yourself."),
-                    "mark done",
-                    WfCmd::Done,
-                    t.yellow,
-                ))
-            }
-            Action::Refresh if failed => self.wf_cmd(WfCmd::Retry),
-            Action::Char('a') => {
-                self.modal = Some(ask(
-                    "Abandon workflow",
-                    format!("Abandon {}? The server is left as it is now.", s.wf.name),
-                    "abandon",
-                    WfCmd::Abandon,
-                    t.red,
-                ))
-            }
-            Action::Char('L') => {
-                if let Some((title, text)) = s.step_log() {
-                    self.run_seq += 1;
-                    self.pane = Some(Pane {
-                        id: self.run_seq,
-                        title,
-                        cmd: String::new(),
-                        lines: text.lines().map(str::to_string).collect(),
-                        pid: None,
-                        done: Some(0),
-                        started: Instant::now(),
-                        scroll: 0,
-                        then: Vec::new(),
-                        reboot: false,
-                    });
-                } else {
-                    self.toast("no log for this step yet");
-                }
-            }
-            _ => return false,
-        }
-        true
-    }
-
+    /// The workflows there are (a server's own, else the seeded ones), with their last runs.
     fn load_wf_entries(&mut self) {
         self.wf_entries = workflow::list_for(&self.remote.name);
+        self.wf_list = sentry_core::tui::wflist::load_infos(
+            self.wf_entries.clone(),
+            &workflow::root(&self.remote.name),
+        );
         self.store.workflows = self.wf_entries.iter().map(|e| e.name.clone()).collect();
         let d = workflow::dir_for(&self.remote.name);
         let home = std::env::var("HOME").unwrap_or_default();
@@ -1549,7 +1475,7 @@ impl App {
                 Fx::Reaudit => {}
                 Fx::RetryStep => {
                     self.wf_cmd(WfCmd::Retry);
-                    self.run_view = true;
+                    self.enter(ScreenId::Upgrade, Instant::now());
                 }
                 Fx::MarkDone => {
                     let a = self
@@ -1676,7 +1602,7 @@ impl App {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
-                        self.open_run_view();
+                        self.enter(ScreenId::Upgrade, Instant::now());
                         self.toast(&format!(
                             "{other} is in progress: finish it, then A · Enter starts {wf}"
                         ));
@@ -1691,7 +1617,7 @@ impl App {
                         sess.chat.hidden = true;
                     }
                     if running {
-                        self.open_run_view();
+                        self.enter(ScreenId::Upgrade, Instant::now());
                     }
                     self.toast("the plan carries on when the run ends · A shows it");
                 }
@@ -2224,7 +2150,8 @@ impl App {
                 Some(e) => match Session::begin(e, &self.remote, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
-                        self.run_view = true;
+                        // Its screen: the run is followed there, and its auto steps start.
+                        self.enter(ScreenId::Upgrade, Instant::now());
                         Ok(None)
                     }
                     Err(e) => Err(e.to_string()),
@@ -2233,7 +2160,6 @@ impl App {
             },
             WfCmd::Close => {
                 self.wf = None;
-                self.run_view = false;
                 if !self.offline {
                     self.load_wf_entries();
                 }
@@ -2266,10 +2192,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// Run the next auto step while the Run view is open.
+    /// Run the next auto step while the run is in view (screen 0).
     fn wf_auto(&mut self) {
         self.wf_log_change();
-        if !self.run_view {
+        if self.screen != ScreenId::Upgrade {
             return;
         }
         if !self
@@ -2463,7 +2389,7 @@ impl App {
                 .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
                 // Not on the key bar, to keep it to what the row takes.
                 .chain([
-                    ("w", "start a workflow"),
+                    ("w", "the workflows (0)"),
                     ("e", "edit server_config.yaml (a task: its file)"),
                 ])
                 .collect();
@@ -2478,10 +2404,7 @@ impl App {
             &frame::Help {
                 screen: self.screen.name(),
                 hints: &keys,
-                globals: &[
-                    ("I", "read what needs root, once, with your sudo password"),
-                    ("0", "the workflow run (:wf too)"),
-                ],
+                globals: &[("I", "read what needs root, once, with your sudo password")],
                 app: "sentry-server",
                 commands: ":q  :<screen>  :workflow <name>  :audit now  :log  :refresh",
                 footer: &[
@@ -2591,14 +2514,46 @@ impl App {
     }
 
     /// The start box for a workflow: what it does, then `start`.
-    fn start_box(&mut self, name: &str) {
+    /// Enter on a workflow (screen 0, `:wf <name>`): its values are asked when it takes any,
+    /// otherwise the box that says what starting it does.
+    fn wf_start(&mut self, name: &str, now: Instant) {
+        if self.screen != ScreenId::Upgrade {
+            self.enter(ScreenId::Upgrade, now);
+        }
         if self.wf.as_ref().is_some_and(|s| !s.done()) {
-            self.open_run_view();
             return self.toast("a workflow is in progress: finish or abandon it first");
         }
         if self.wf_entries.is_empty() && !self.offline {
             self.load_wf_entries();
         }
+        let t = self.theme;
+        let Some(i) = self.wf_entries.iter().position(|e| e.name == name) else {
+            return self.toast(&format!("no workflow {name}"));
+        };
+        self.screens.upgrade.cur.sel = i;
+        let e = &self.wf_entries[i];
+        if let Some(why) = e.blocked() {
+            self.modal = Some(Modal {
+                title: format!("{} can't start", e.name),
+                color: t.cyan,
+                lines: vec![
+                    Line::styled(why, t.s(t.yellow)),
+                    Line::styled(
+                        format!("Edit with e: {}", widgets::short_home(&e.path)),
+                        t.dim(),
+                    ),
+                ],
+                yes: None,
+            });
+            return;
+        }
+        if e.wf.as_ref().is_ok_and(|w| !w.vars.is_empty()) {
+            return self.wf_cmd(WfCmd::Begin(name.to_string()));
+        }
+        self.start_box(name);
+    }
+
+    fn start_box(&mut self, name: &str) {
         let t = self.theme;
         let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
             return self.toast(&format!("no workflow {name}"));
@@ -2632,48 +2587,6 @@ impl App {
                 vec![Effect::Wf(WfCmd::Begin(e.name.clone()))],
             )),
         });
-    }
-
-    /// `w` on Maintenance: which workflow to start.
-    fn workflow_chooser(&mut self) {
-        if self.wf_entries.is_empty() && !self.offline {
-            self.load_wf_entries();
-        }
-        let choices: Vec<(String, Vec<Effect>)> = self
-            .wf_entries
-            .iter()
-            .map(|e| {
-                (
-                    format!(
-                        "{}{}",
-                        e.name,
-                        e.wf.as_ref()
-                            .map_or(String::new(), |w| format!("  · {}", w.description))
-                    ),
-                    vec![Effect::StartWorkflow(e.name.clone())],
-                )
-            })
-            .collect();
-        if choices.is_empty() {
-            return self.toast(&format!("no workflows in {}", self.wf_dir));
-        }
-        self.choice = Some(Choice::numbered(
-            &self.theme,
-            &format!("Start a workflow ({})", self.wf_dir),
-            choices,
-        ));
-    }
-
-    /// The Run view: the workflow in progress; its auto steps run while it's open.
-    fn open_run_view(&mut self) {
-        match self.wf.as_mut() {
-            Some(s) => {
-                s.armed = true;
-                self.run_view = true;
-                self.wf_auto();
-            }
-            None => self.toast("no workflow in progress · w on Maintenance starts one"),
-        }
     }
 
     fn writing_review(&self) -> bool {
@@ -3570,18 +3483,14 @@ impl App {
             (Some("later"), _) => {
                 self.open_records(sentry_core::tui::records::Section::Later, None)
             }
+            // As in sentry: screen 0, and Enter on the workflow named.
             (Some("workflow" | "wf"), name) => match name {
-                Some(n) => self.start_box(n),
-                None if self.wf.as_ref().is_some_and(|s| !s.done()) => self.open_run_view(),
-                None => self.workflow_chooser(),
+                Some(n) => self.wf_start(n, now),
+                None => self.enter(ScreenId::Upgrade, now),
             },
             // A screen, by sentry's names (and the ones the tabs had).
             (Some(name), None) => match SCREENS.from_name(name) {
-                Some(ScreenId::Upgrade) => self.open_run_view(),
-                Some(id) => {
-                    self.run_view = false;
-                    self.enter(id, now)
-                }
+                Some(id) => self.enter(id, now),
                 None => self.toast(&format!("unknown command :{c}")),
             },
             _ if c.is_empty() => {}
@@ -4038,6 +3947,7 @@ impl App {
         }
         if std::mem::take(&mut self.suspend_edit) {
             self.reload_config();
+            self.load_wf_entries();
             self.store.tasks = sentry_core::maint::tasks::load(&self.remote.name);
             return;
         }
@@ -4093,7 +4003,10 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let t = self.theme;
         // A run in progress, on every screen but its own.
-        let banner = self.wf.as_ref().filter(|s| !s.done() && !self.run_view);
+        let banner = self
+            .wf
+            .as_ref()
+            .filter(|_| self.screen != ScreenId::Upgrade);
         let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
             return;
         };
@@ -4113,16 +4026,8 @@ impl App {
                 },
             );
         }
-        match (&self.wf, self.run_view) {
-            (Some(s), true) => {
-                f.render_widget(ratatui::widgets::Clear, body);
-                super::screens::upgrade::draw_session(f, body, &t, s)
-            }
-            _ => {
-                let id = self.screen;
-                self.with_screens(|s, v, _| s.render(id, f, body, v));
-            }
-        }
+        let id = self.screen;
+        self.with_screens(|s, v, _| s.render(id, f, body, v));
         if let Some(rv) = &self.review_view {
             let w = self.writer.as_ref().filter(|w| w.review.is_some());
             let path = self.store.review.as_ref().map_or(String::new(), |d| {
@@ -4234,15 +4139,13 @@ impl App {
         }
     }
 
-    /// The strip: sentry's, with this program's screens. The run (0) is on it while there
-    /// is one.
+    /// The strip: sentry's, with this program's screens.
     fn draw_tabs(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let v = self.view();
         let tabs: Vec<sentry_core::tui::frame::Tab> = SCREENS
             .ids
             .iter()
             .copied()
-            .filter(|id| *id != ScreenId::Upgrade || self.wf.is_some())
             .map(|id| sentry_core::tui::frame::Tab {
                 id,
                 badge: match id {
@@ -4260,12 +4163,7 @@ impl App {
                     .cloned(),
             })
             .collect();
-        let active = if self.run_view && self.wf.is_some() {
-            ScreenId::Upgrade
-        } else {
-            self.screen
-        };
-        sentry_core::tui::frame::draw_tabs(f, area, &self.theme, &tabs, active);
+        sentry_core::tui::frame::draw_tabs(f, area, &self.theme, &tabs, self.screen);
     }
 
     /// The key bar: what's being typed, or the keys of whatever is in front.
@@ -4290,18 +4188,6 @@ impl App {
             _ if self.open().docs => self.doc_hints(),
             _ => {
                 let mut h = self.screens.hints(self.screen, &self.view());
-                if self.run_view {
-                    h = match &self.wf {
-                        Some(s) if s.done() => vec![("Enter", "close")],
-                        _ => vec![
-                            ("Enter", "run"),
-                            ("s", "skip"),
-                            ("a", "abandon"),
-                            ("L", "log"),
-                            ("Esc", "back (it carries on)"),
-                        ],
-                    };
-                }
                 h.extend(super::actions::hints(self.screen));
                 // sudo asks for a password: say where the root-only data comes from.
                 if self.store.sudo.value == Some(SudoMode::Password) {
@@ -4438,6 +4324,11 @@ fn kill(pid: u32) -> std::io::Result<()> {
 impl App {
     pub fn set_wf_entries(&mut self, e: Vec<Entry>) {
         self.store.workflows = e.iter().map(|x| x.name.clone()).collect();
+        self.wf_list = e
+            .iter()
+            .cloned()
+            .map(|entry| sentry_core::tui::wflist::WfInfo { entry, last: None })
+            .collect();
         self.wf_entries = e;
         self.keep_maint_selection();
     }

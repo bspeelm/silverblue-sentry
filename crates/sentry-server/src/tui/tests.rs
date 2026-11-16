@@ -9,7 +9,7 @@ use super::app::{App, render_to_string};
 use super::data::{Kind, Payload};
 use sentry_core::tui::ScreenId;
 
-/// The screens with something to show (the run, `0`, only while there is one).
+/// The screens the server's data fills (`0`, the workflows, has tests of its own).
 const SHOWN: [ScreenId; 4] = [
     ScreenId::Dash,
     ScreenId::Cont,
@@ -402,11 +402,15 @@ fn screens_and_badges() {
         !tabs.contains("Updates"),
         "updates live on Maintenance: {tabs}"
     );
+    assert!(
+        tabs.trim_end().ends_with("0 Upgrade"),
+        "always there: {tabs}"
+    );
     key(&mut a, KeyCode::Char('l'));
     assert_eq!(a.screen, ScreenId::Cont);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
-    assert_eq!(a.screen, ScreenId::Maint, "wraps around");
+    assert_eq!(a.screen, ScreenId::Upgrade, "wraps around");
 }
 
 /// Type a `:` command.
@@ -435,15 +439,15 @@ fn screen_keys_follow_sentry() {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.screen, ScreenId::Dash, "{c}");
     }
-    // 0 is the run: nothing to show without one, and it's not on the strip.
+    // 0 is a screen, as in sentry: the workflows, with or without a run.
     key(&mut a, KeyCode::Char('0'));
-    assert_eq!(a.screen, ScreenId::Dash);
+    assert_eq!(a.screen, ScreenId::Upgrade);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("no workflow in progress"), "{s}");
-    assert!(!s.lines().nth(1).unwrap().contains("Upgrade"), "{s}");
+    assert!(s.contains("No workflow in progress."), "{s}");
+    assert!(s.lines().nth(1).unwrap().contains("0 Upgrade"), "{s}");
     // Tab walks them in strip order and wraps; the help names them as screens.
     key(&mut a, KeyCode::Tab);
-    assert_eq!(a.screen, ScreenId::Cont);
+    assert_eq!(a.screen, ScreenId::Dash);
     key(&mut a, KeyCode::BackTab);
     key(&mut a, KeyCode::BackTab);
     assert_eq!(a.screen, ScreenId::Maint);
@@ -1519,15 +1523,14 @@ fn workflow_vars_are_asked_before_it_starts() {
     assert!(screen(&mut a).contains("not started"));
 }
 
-#[test]
-fn the_run_view_keeps_the_tab_keys_to_itself() {
-    let mut a = app();
-    // Starting a run copies the workflow file: give it a real one (scratch config dir).
+/// A workflow a test can start: `apt-maintenance` from a real file (starting a run copies
+/// it), in the scratch config dir.
+fn startable(a: &mut App, file: &str) {
     let (name, text) = crate::workflow::SEEDS
         .iter()
         .find(|(n, _)| *n == "apt-maintenance")
         .unwrap();
-    let path = sentry_core::paths::config_dir().join("run-view-test-apt-maintenance.toml");
+    let path = sentry_core::paths::config_dir().join(file);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, text).unwrap();
     a.set_wf_entries(vec![sentry_core::workflows::Entry {
@@ -1536,6 +1539,12 @@ fn the_run_view_keeps_the_tab_keys_to_itself() {
         wf: sentry_core::workflows::parse(text),
         issues: Vec::new(),
     }]);
+}
+
+#[test]
+fn auto_steps_run_only_on_screen_0() {
+    let mut a = app();
+    startable(&mut a, "auto-steps-test-apt-maintenance.toml");
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
@@ -1544,18 +1553,138 @@ fn the_run_view_keeps_the_tab_keys_to_itself() {
         ))],
         Instant::now(),
     );
-    key(&mut a, KeyCode::Enter);
+    // Started: its screen, where its steps run.
     assert!(a.wf.is_some(), "{}", screen(&mut a));
-    // z (later) and x belong to the Maintenance rows, which aren't on screen.
+    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert!(a.wf.as_ref().unwrap().armed);
+    let s = screen(&mut a);
+    assert!(s.lines().nth(1).unwrap().contains("0 Upgrade ●"), "{s}");
+    // The Maintenance rows aren't on screen: z (later) and x aren't theirs here.
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('x'));
     let s = screen(&mut a);
     assert!(!s.contains("look again in 7 days"), "{s}");
     assert!(!s.contains("Mark it expected"), "{s}");
-    // Esc leaves the run going and gives the tab its keys back.
-    key(&mut a, KeyCode::Esc);
+    // Another screen: the run stays as it is, and the banner says where it is.
+    let at = a.wf.as_ref().unwrap().next.idx();
+    key(&mut a, KeyCode::Char('6'));
+    a.tick(Instant::now());
+    assert_eq!(a.wf.as_ref().unwrap().next.idx(), at, "nothing ran");
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 7 days"));
+}
+
+#[test]
+fn a_run_shows_a_banner_off_screen_0() {
+    let mut a = app();
+    startable(&mut a, "banner-test-apt-maintenance.toml");
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
+            "apt-maintenance".into(),
+        ))],
+        Instant::now(),
+    );
+    // On its own screen: no banner, the run itself.
+    let s = screen(&mut a);
+    assert!(!s.contains("press 0 to continue"), "{s}");
+    insta::assert_snapshot!("server_upgrade_running_158x41", body(&s));
+    // Anywhere else: a row of its own under the strip, as in sentry.
+    key(&mut a, KeyCode::Char('1'));
+    let s = screen(&mut a);
+    let banner = s.lines().nth(3).unwrap();
+    assert!(
+        banner.contains("↻ workflow apt-maintenance · step 1/")
+            && banner.contains("press 0 to continue"),
+        "{s}"
+    );
+    assert!(
+        s.lines().nth(5).unwrap().contains("CPU"),
+        "the body below: {s}"
+    );
+    key(&mut a, KeyCode::Char('0'));
+    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert!(!screen(&mut a).contains("press 0 to continue"));
+    // a abandons (after its box); the list is back.
+    key(&mut a, KeyCode::Char('a'));
+    assert!(screen(&mut a).contains("Abandon apt-maintenance?"));
+    key(&mut a, KeyCode::Enter);
+    // It's logged: the note is asked for (Esc: none), then Enter closes the run.
+    assert!(screen(&mut a).contains("for the maintenance log"));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        a.wf.is_none() && s.contains("No workflow in progress."),
+        "{s}"
+    );
+}
+
+#[test]
+fn enter_on_a_workflow_asks_its_vars_or_shows_the_start_box() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char('0'));
+    let s = screen(&mut a);
+    insta::assert_snapshot!("server_upgrade_idle_158x41", body(&s));
+    assert!(
+        s.contains("Workflows") && s.contains("apt-maintenance") && s.contains("never run"),
+        "{s}"
+    );
+    assert!(s.contains("[Enter] start   [e] edit   lint ✓"), "{s}");
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Enter  start") && bar.contains("e  edit toml") && bar.contains("r  reload"),
+        "{bar}"
+    );
+    // No values to ask: the box that says what starting does. Esc: nothing started.
+    let names: Vec<String> = crate::workflow::SEEDS
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .collect();
+    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
+    for _ in 0..at("apt-maintenance") {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("Start apt-maintenance on myserver"), "{s}");
+    assert!(s.contains("Auto steps run right away"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.wf.is_none());
+    // One that takes values: they're asked first, in the key bar, with no box before.
+    let mut a = app();
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: "bump".into(),
+        path: "bump.toml".into(),
+        wf: sentry_core::workflows::parse(
+            "name = \"bump\"\ndescription = \"x\"\n[vars.image]\nprompt = \"New image\"\n\
+             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ image }}\"\n",
+        ),
+        issues: Vec::new(),
+    }]);
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(!s.contains("Start bump"), "{s}");
+    assert!(s.contains("bump 1/1 · New image (image): ▏"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert!(screen(&mut a).contains("not started"));
+    // One that can't start says why instead.
+    let mut a = app();
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: "broken".into(),
+        path: "broken.toml".into(),
+        wf: sentry_core::workflows::parse("name = "),
+        issues: Vec::new(),
+    }]);
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("broken can't start") && s.contains("parse error"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -2583,28 +2712,32 @@ fn audit_findings_are_recommendations() {
 }
 
 #[test]
-fn workflows_run_in_a_view_on_maintenance() {
+fn w_goes_to_screen_0() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    // No run yet: 0 says how to start one; w lists them.
-    key(&mut a, KeyCode::Char('0'));
-    assert!(screen(&mut a).contains("w on Maintenance starts one"));
+    // w on Maintenance: the workflows are a screen, not a chooser.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('w'));
+    assert_eq!(a.screen, ScreenId::Upgrade);
     let s = screen(&mut a);
     assert!(
-        s.contains("Start a workflow") && s.contains("apt-maintenance"),
+        s.contains("Workflows") && s.contains("apt-maintenance") && !s.contains("pick one"),
         "{s}"
     );
+    // :wf <name> goes there, selects it and does what Enter does.
     key(&mut a, KeyCode::Char('1'));
+    colon(&mut a, "wf apt-maintenance");
+    assert_eq!(a.screen, ScreenId::Upgrade);
     assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
     key(&mut a, KeyCode::Esc);
-    // The tabs are four now.
-    let tabs = screen(&mut a).lines().nth(1).unwrap().to_string();
-    assert!(
-        !tabs.contains("Workflows") && !tabs.contains("Updates"),
-        "{tabs}"
-    );
+    // :wf alone, and the old names for the run, open the screen.
+    for cmd in ["wf", "run", "workflows", "upgrade"] {
+        key(&mut a, KeyCode::Char('1'));
+        colon(&mut a, cmd);
+        assert_eq!(a.screen, ScreenId::Upgrade, ":{cmd}");
+    }
+    colon(&mut a, "wf nope");
+    assert!(screen(&mut a).contains("no workflow nope"));
 }
 
 #[test]

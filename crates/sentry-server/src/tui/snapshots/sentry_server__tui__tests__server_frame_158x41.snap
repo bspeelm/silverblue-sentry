@@ -3,7 +3,7 @@ source: crates/sentry-server/src/tui/tests.rs
 expression: "render_to_string(&mut a, 158, 41)"
 ---
  sentry-server   myserver  Debian GNU/Linux 12 (bookworm)  kernel 6.1.0-9-amd64  up 14d 00:02                                  ● connected   Mon 26 Oct 12:00
- 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8
+ 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · 20% · load 0.31 0.27 0.22 · 4 cores ──────────────────────────────────┐┌ Memory · 36% of 30.5 GiB · swap 6% ─────────────────────────────────────────┐

@@ -282,3 +282,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - One order for keys, pastes and the key bar's hints (`frame::layer`): run pane, choice, box, apply session, chat, the line being typed, Records/plan/review, the screen. While a chat or an apply window is in front the key bar shows no hints (the window has its own key line).
 - One input line (`Input<Prompt>`): `/`, `:`, a workflow's values, a plan's note, a plan's revision, a log note. Backspace on nothing closes a filter or a command, never a prompt; a value left empty with no default is asked again, with why.
 - `?` is sentry's help layout, with the server's own keys (`I`, `0`) under `sentry-server:`.
+
+## A34. sentry-server: screen `0` is Upgrade, as in sentry (2026-11)
+- `0` is a real screen and always on the strip (` ●` while a run is in progress). With nothing running it lists the workflows as sentry's Upgrade does (core `tui/wflist.rs`, used by both): steps, draft, lint, last run, and the selected one's chain and start card. `Enter` starts the one selected: its values are asked first when it takes any (the key bar's prompt), otherwise the box that says what starting does. `e` edits its file, `r` reads them again, `v` opens Records.
+- A run is followed on the same screen (steps, log, the step's card; Enter, `s`, `d`, `r`, `a`, `L`; `C-c` stops a running step). Its auto steps run only while `0` is in view; on any other screen the banner row says where it stands. A finished run stays until Enter closes it.
+- `w` on Maintenance goes to `0` (the chooser is gone); `:wf` opens it and `:wf <name>` does what Enter on that workflow does. Tab and `h`/`l` walk all the screens, `0` included.

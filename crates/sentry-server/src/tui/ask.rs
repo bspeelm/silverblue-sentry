@@ -254,7 +254,7 @@ pub fn ask_for(tab: ScreenId, v: &View, r: &Remote) -> Option<Ask> {
     }
 }
 
-/// `A` in the Run view: the workflow's current step, whatever state it's in.
+/// `A` on screen 0 with a run: the workflow's current step, whatever state it's in.
 pub fn ask_run(v: &View, r: &Remote, s: &Session) -> Ask {
     ask_step(&header(v, r), r, s)
 }

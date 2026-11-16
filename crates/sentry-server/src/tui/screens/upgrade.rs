@@ -1,25 +1,168 @@
-//! The Run view: a workflow in progress (its steps, its log and the current step's card).
+//! Upgrade (`0`), as in sentry: the workflows while nothing runs (the list is core's
+//! `wflist`), and a workflow in progress (its steps, its log and the current step's card).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
+use super::{Hints, View};
+use crate::remote::Remote;
+use crate::tui::app::{Effect, Modal, WfCmd};
 use crate::workflow::{LogKind, Session};
+use sentry_core::tui::keys::Action;
 use sentry_core::tui::theme::Theme;
+use sentry_core::tui::wflist;
 use sentry_core::tui::widgets::{inner, panel, trunc};
 use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
-/// Screen `0`: the workflow run. For now only its view while a run exists.
+/// Screen `0`: the workflows, and the run in progress.
 #[derive(Default)]
 pub struct Upgrade {
     pub cur: sentry_core::tui::Cursor,
 }
 
-pub fn draw_session(f: &mut Frame, area: Rect, t: &Theme, s: &Session) {
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(area);
+fn failed(s: &Session) -> bool {
+    matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. })
+}
+
+pub fn hints(v: &View) -> Hints {
+    match v.wf {
+        None => vec![
+            ("j/k", "select"),
+            ("Enter", "start"),
+            ("e", "edit toml"),
+            ("r", "reload"),
+            ("v", "records"),
+        ],
+        Some(s) if s.done() => vec![("Enter", "close"), ("L", "step log"), ("v", "records")],
+        Some(s) if s.live.is_some() => vec![("C-c", "terminate step"), ("L", "log")],
+        Some(s) if failed(s) => vec![
+            ("r", "retry"),
+            ("d", "done by hand"),
+            ("s", "skip"),
+            ("a", "abandon"),
+            ("L", "log"),
+        ],
+        Some(_) => vec![
+            ("Enter", "run"),
+            ("s", "skip"),
+            ("a", "abandon"),
+            ("L", "log"),
+        ],
+    }
+}
+
+impl Upgrade {
+    pub fn handle(&mut self, a: Action, v: &View, r: &Remote) -> Vec<Effect> {
+        match v.wf {
+            Some(s) => running(a, v, r, s),
+            None => self.idle(a, v),
+        }
+    }
+
+    /// Nothing runs: the list. Enter starts the workflow selected (its values first).
+    fn idle(&mut self, a: Action, v: &View) -> Vec<Effect> {
+        let info = v.wf_list.get(self.cur.clamp(v.wf_list.len()));
+        match (a, info) {
+            (Action::Refresh, _) => vec![Effect::ReloadWorkflows],
+            (Action::Char('v'), _) => vec![Effect::LogOpen(None)],
+            (Action::Char('e'), Some(i)) => vec![Effect::EditWorkflow(i.entry.path.clone())],
+            (Action::Enter, Some(i)) => vec![Effect::StartWorkflow(i.entry.name.clone())],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A run in progress: its step's keys.
+fn running(a: Action, v: &View, r: &Remote, s: &Session) -> Vec<Effect> {
+    let t = v.t;
+    if s.done() {
+        return match a {
+            Action::Enter | Action::Esc => vec![Effect::Wf(WfCmd::Close)],
+            Action::Char('L') => vec![Effect::StepLog],
+            Action::Char('v') => vec![Effect::LogOpen(None)],
+            _ => Vec::new(),
+        };
+    }
+    let idx = s.next.idx();
+    let title = idx.map(|i| s.title(i)).unwrap_or_default();
+    let ask = |title: &str, line: String, label: &str, cmd: WfCmd, color| {
+        vec![Effect::Confirm(Modal {
+            title: title.into(),
+            color,
+            lines: vec![Line::styled(line, t.fg())],
+            yes: Some((label.into(), vec![Effect::Wf(cmd)])),
+        })]
+    };
+    match a {
+        Action::Enter => match s.next {
+            Next::Reboot {
+                requested: false, ..
+            } => vec![Effect::Confirm(Modal {
+                title: "Reboot the server".into(),
+                color: t.red,
+                lines: vec![
+                    Line::styled(title, t.fg()),
+                    Line::styled(format!("$ sudo systemctl reboot   on {}", r.name), t.fg()),
+                    Line::styled(
+                        "Everything on it stops until it's back; sentry-server waits here.",
+                        t.s(t.yellow),
+                    ),
+                ],
+                yes: Some(("reboot".into(), vec![Effect::Wf(WfCmd::Go)])),
+            })],
+            _ => vec![Effect::Wf(WfCmd::Go)],
+        },
+        Action::Char('s') => match idx {
+            Some(i) if s.wf.steps[i].optional => vec![Effect::Wf(WfCmd::Skip(false))],
+            Some(_) => ask(
+                "Skip step",
+                format!("{title}: it isn't optional, later steps may expect it."),
+                "skip it",
+                WfCmd::Skip(true),
+                t.yellow,
+            ),
+            None => Vec::new(),
+        },
+        Action::Char('d') if idx.is_some() => ask(
+            "Done by hand",
+            format!("{title}: mark it done only if you've made sure of it yourself."),
+            "mark done",
+            WfCmd::Done,
+            t.yellow,
+        ),
+        Action::Refresh if failed(s) => vec![Effect::Wf(WfCmd::Retry)],
+        Action::Char('a') => ask(
+            "Abandon workflow",
+            format!("Abandon {}? The server is left as it is now.", s.wf.name),
+            "abandon",
+            WfCmd::Abandon,
+            t.red,
+        ),
+        Action::Char('L') => vec![Effect::StepLog],
+        _ => Vec::new(),
+    }
+}
+
+pub fn draw(f: &mut Frame, area: Rect, v: &View) {
+    let cols = wflist::split(area);
+    match v.wf {
+        Some(s) => draw_session(f, cols, v.t, s),
+        None => wflist::draw_idle(
+            f,
+            cols,
+            v.t,
+            v.wf_list,
+            v.cur.min(v.wf_list.len().saturating_sub(1)),
+            "No workflows: a server's own go in ~/.config/sentry/servers/<name>/workflows/.",
+            &|_, _| wflist::Notes::default(),
+        ),
+    }
+}
+
+fn draw_session(f: &mut Frame, (left, right): (Rect, Rect), t: &Theme, s: &Session) {
     let n = s.wf.steps.len();
     let b = panel(
         t,

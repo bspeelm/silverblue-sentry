@@ -16,6 +16,7 @@ pub mod modal;
 pub mod records;
 pub mod reviewview;
 pub mod theme;
+pub mod wflist;
 pub mod widgets;
 // The screens both programs show the same way.
 pub mod histview;

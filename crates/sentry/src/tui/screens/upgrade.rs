@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 use super::{Cursor, Hints, View};
 use crate::tui::app::{Effect, Modal, Prompt, WfCmd};
@@ -17,37 +17,18 @@ use crate::tui::widgets::{inner, panel, short_home, trunc, wrap};
 use crate::workflows::Kind;
 use crate::workflows::cli::{RealEnv, initial_vars};
 use crate::workflows::runner::{Next, preview};
-use crate::workflows::state::{RunStatus, StepStatus};
+use crate::workflows::state::StepStatus;
 
 #[derive(Default)]
 pub struct Upgrade {
     pub cur: Cursor,
 }
 
-/// A workflow file plus its most recent run (for the idle list).
-#[derive(Debug, Clone)]
-pub struct WfInfo {
-    pub entry: crate::workflows::Entry,
-    pub last: Option<(RunStatus, jiff::Timestamp, usize, usize)>,
-}
+pub use crate::tui::wflist::WfInfo;
+use crate::tui::wflist::{self, gate_card, key_rows, when};
 
 pub fn load_infos() -> Vec<WfInfo> {
-    crate::workflows::list()
-        .into_iter()
-        .map(|entry| {
-            let last = crate::workflows::state::runs_of(&entry.name)
-                .last()
-                .map(|r| {
-                    (
-                        r.state.status,
-                        r.state.started,
-                        r.state.done_count(),
-                        r.state.steps.len(),
-                    )
-                });
-            WfInfo { entry, last }
-        })
-        .collect()
+    wflist::load_infos(crate::workflows::list(), &crate::workflows::state::root())
 }
 
 /// What's waiting to be installed, as Maintenance says it (None: nothing).
@@ -227,12 +208,6 @@ pub fn step_facts(s: &Session) -> Option<crate::claude::StepFacts> {
         manual: step.manual.as_deref().map(|m| preview(&s.run.state, m)),
         actions,
     })
-}
-
-fn when(ts: jiff::Timestamp) -> String {
-    ts.to_zoned(jiff::tz::TimeZone::system())
-        .strftime("%Y-%m-%d %H:%M")
-        .to_string()
 }
 
 impl Upgrade {
@@ -448,195 +423,46 @@ impl Upgrade {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
-        let [left, right] = Layout::horizontal([
-            Constraint::Length(60.min(area.width / 2)),
-            Constraint::Fill(1),
-        ])
-        .spacing(2)
-        .areas(area);
+        let (left, right) = wflist::split(area);
         match v.wf {
             Some(s) => self.render_running(f, left, right, v, s),
-            None => self.render_idle(f, left, right, v),
+            None => self.render_idle(f, (left, right), v),
         }
     }
 
-    fn render_idle(&mut self, f: &mut Frame, left: Rect, right: Rect, v: &View) {
+    fn render_idle(&mut self, f: &mut Frame, cols: (Rect, Rect), v: &View) {
         let t = v.t;
         let infos = self.infos(v);
-        let dir = infos
-            .first()
-            .and_then(|i| i.entry.path.parent().map(short_home))
-            .unwrap_or_default();
-        let block = panel(t, "Workflows", dir);
-        let r = inner(&block, left);
-        f.render_widget(block, left);
         let sel = self.cur.clamp(infos.len());
-        let mut y = r.y;
-        for (i, info) in infos.iter().enumerate() {
-            let e = &info.entry;
-            let steps = e.wf.as_ref().map_or(0, |w| w.steps.len());
-            let desc =
-                e.wf.as_ref()
-                    .map_or(String::new(), |w| w.description.clone());
-            let mut head = vec![
-                Span::styled(e.name.clone(), t.fg()),
-                Span::styled(format!("  {steps} steps"), t.dim()),
-            ];
-            if e.wf.as_ref().is_ok_and(|w| w.draft) {
-                head.push(Span::styled("  draft", t.s(t.yellow)));
+        let empty = v.d.workflows.status(v.d.loading(Fetch::Workflows));
+        // quick-update is what Maintenance's updates recommendation starts: say what waits.
+        let notes = |info: &WfInfo, width: usize| {
+            if info.entry.name != crate::maint::local::UPDATE_WORKFLOW {
+                return wflist::Notes::default();
             }
-            if e.errors().next().is_some() || e.wf.is_err() {
-                head.push(Span::styled("  lint ✗", t.s(t.red)));
-            }
-            let (last, lc) = match info.last {
-                Some((RunStatus::Done, ts, d, n)) => {
-                    (format!("✓ {} · {d}/{n} · completed", when(ts)), t.green)
-                }
-                Some((RunStatus::Abandoned, ts, d, n)) => {
-                    (format!("■ {} · {d}/{n} · abandoned", when(ts)), t.dim)
-                }
-                Some((RunStatus::InProgress, ts, d, n)) => {
-                    (format!("● {} · {d}/{n} · in progress", when(ts)), t.yellow)
-                }
-                None => ("never run".into(), t.dim),
-            };
-            // New updates since the last run: that run being done doesn't mean nothing's left.
-            let waiting = (e.name == crate::maint::local::UPDATE_WORKFLOW)
-                .then(|| updates_waiting(v))
-                .flatten();
-            let lc = if waiting.is_some() && lc == t.green {
-                t.dim
-            } else {
-                lc
-            };
-            let mut lines = vec![Line::from(head)];
-            lines.extend(
-                wrap(&desc, r.width as usize)
-                    .into_iter()
-                    .map(|l| Line::styled(l, t.dim())),
+            let waiting = updates_waiting(v);
+            let mut right = vec![Line::raw("")];
+            right.extend(
+                waiting
+                    .clone()
+                    .map(|title| Line::styled(title, t.s(t.yellow))),
             );
-            if waiting.is_some() && info.last.is_some() {
-                lines.push(Line::styled(format!("last time: {last}"), t.s(lc)));
-            } else {
-                lines.push(Line::styled(last, t.s(lc)));
-            }
-            if let Some(w) = waiting {
-                let w = w.strip_prefix("Updates waiting: ").unwrap_or(&w);
-                lines.push(Line::styled(
-                    format!("↑ waiting now: {w} · Enter installs"),
-                    t.s(t.yellow),
-                ));
-            }
-            let h = lines.len() as u16;
-            let rect = Rect {
-                y,
-                height: h.min(r.bottom().saturating_sub(y)),
-                ..r
-            };
-            let style = if i == sel {
-                Style::new().bg(t.sel_bg)
-            } else {
-                Style::new()
-            };
-            f.render_widget(Paragraph::new(lines).style(style), rect);
-            y += h + 1;
-            if y >= r.bottom() {
-                break;
-            }
-        }
-        if infos.is_empty() {
-            f.render_widget(
-                Paragraph::new(v.d.workflows.status(v.d.loading(Fetch::Workflows))).style(t.dim()),
-                r,
-            );
-        }
-
-        // Right: last result + card for the selected workflow.
-        let block = panel(t, "Last result", "");
-        let r = inner(&block, right);
-        f.render_widget(block, right);
-        let Some(info) = infos.get(sel) else { return };
-        let chain = info
-            .entry
-            .wf
-            .as_ref()
-            .map(|w| {
-                w.steps
-                    .iter()
-                    .filter(|s| !s.rollback)
-                    .map(|s| s.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" → ")
-            })
-            .unwrap_or_default();
-        let file = info
-            .entry
-            .path
-            .file_name()
-            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-        let blocked = info.entry.blocked();
-        let mut body = vec![Line::styled(chain, t.fg())];
-        if let Some(why) = &blocked {
-            body.push(Line::styled(why.clone(), t.s(t.yellow)));
-        }
-        let cw = r.width.saturating_sub(4).max(1) as usize;
-        let rows: usize = body.iter().map(|l| l.width().max(1).div_ceil(cw)).sum();
-        let card_h = (rows as u16 + 4).min(r.height.saturating_sub(4));
-        let [log, card] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(card_h)]).areas(r);
-        let mut lines = vec![
-            Line::styled("No workflow in progress.", t.dim()),
-            Line::raw(""),
-        ];
-        match info.last {
-            Some((st, ts, d, n)) => {
-                lines.push(Line::styled(
-                    format!("last run  {}  {}", info.entry.name, when(ts)),
-                    t.fg(),
-                ));
-                lines.push(Line::styled(
-                    format!("          {d}/{n} steps · {st:?}").to_lowercase(),
-                    t.dim(),
-                ));
-            }
-            None => lines.push(Line::styled(
-                format!("{} has never run.", info.entry.name),
-                t.dim(),
-            )),
-        }
-        // The same workflow Maintenance's updates recommendation starts: say so.
-        if info.entry.name == crate::maint::local::UPDATE_WORKFLOW {
-            lines.push(Line::raw(""));
-            if let Some(r) = super::maint::recs(v)
-                .into_iter()
-                .find(|r| r.key == "updates")
-            {
-                lines.push(Line::styled(r.title, t.s(t.yellow)));
-            }
             for l in wrap(
                 "Maintenance (6) lists these updates too. Enter there does the same as Enter \
                  here.",
-                r.width as usize,
+                width,
             ) {
-                lines.push(Line::styled(l, t.dim()));
+                right.push(Line::styled(l, t.dim()));
             }
-        }
-        f.render_widget(Paragraph::new(lines), log);
-        let lint = match blocked {
-            None => Span::styled("lint ✓", t.s(t.green)),
-            Some(_) => Span::styled("can't start", t.s(t.yellow)),
+            wflist::Notes {
+                waiting: waiting.map(|w| {
+                    let w = w.strip_prefix("Updates waiting: ").unwrap_or(&w);
+                    format!("↑ waiting now: {w} · Enter installs")
+                }),
+                right,
+            }
         };
-        gate_card(
-            f,
-            card,
-            t.dim,
-            Line::styled(file, t.dim()),
-            body,
-            Line::from(vec![
-                Span::styled("[Enter] start   [e] edit   ", t.dim()),
-                lint,
-            ]),
-        );
+        wflist::draw_idle(f, cols, t, infos, sel, &empty, &notes);
     }
 
     fn render_running(&mut self, f: &mut Frame, left: Rect, right: Rect, v: &View, s: &Session) {
@@ -950,52 +776,6 @@ fn card_for(v: &View, s: &Session) -> (Color, Line<'static>, Vec<Line<'static>>,
         }
         Next::Done => (t.dim, Line::raw(""), vec![], Line::raw("")),
     }
-}
-
-fn gate_card(f: &mut Frame, area: Rect, color: Color, head: Line, body: Vec<Line>, sub: Line) {
-    if area.height < 3 {
-        return;
-    }
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(color));
-    let r = block.inner(area);
-    let r = Rect {
-        x: r.x + 1,
-        width: r.width.saturating_sub(2),
-        ..r
-    };
-    f.render_widget(block, area);
-    let mut lines = vec![head];
-    lines.extend(body);
-    let sub = key_rows(&sub, r.width.max(1) as usize);
-    let [b, s] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(sub.len() as u16)]).areas(r);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), b);
-    f.render_widget(Paragraph::new(sub), s);
-}
-
-/// The card's key line, broken between keys (`[r] retry   [d] …`) so none is cut off.
-fn key_rows(sub: &Line, width: usize) -> Vec<Line<'static>> {
-    let style = sub
-        .spans
-        .first()
-        .map_or(sub.style, |s| sub.style.patch(s.style));
-    let text: String = sub.spans.iter().map(|s| s.content.as_ref()).collect();
-    let mut rows: Vec<String> = Vec::new();
-    for part in text.split("   ").filter(|p| !p.is_empty()) {
-        match rows.last_mut() {
-            Some(row) if row.chars().count() + 3 + part.chars().count() <= width => {
-                row.push_str("   ");
-                row.push_str(part);
-            }
-            _ => rows.push(part.to_string()),
-        }
-    }
-    if rows.is_empty() {
-        rows.push(String::new());
-    }
-    rows.into_iter().map(|r| Line::styled(r, style)).collect()
 }
 
 impl Upgrade {

@@ -50,6 +50,10 @@ pub struct View<'a> {
     pub planning: Option<String>,
     /// Open plans, by item.
     pub plans: &'a std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
+    /// The workflow run in progress (or just ended).
+    pub wf: Option<&'a crate::workflow::Session>,
+    /// The workflows there are, each with its last run.
+    pub wf_list: &'a [sentry_core::tui::wflist::WfInfo],
 }
 
 impl View<'_> {
@@ -170,6 +174,8 @@ impl Screens {
             ScreenId::Svc => services::unit_rows(v).len(),
             ScreenId::Cont => containers::container_list(v).len(),
             ScreenId::Maint => maint::count(v),
+            // The list, while nothing runs.
+            ScreenId::Upgrade if v.wf.is_none() => v.wf_list.len(),
             _ => 0,
         }
     }
@@ -185,6 +191,7 @@ impl Screens {
             ScreenId::Svc => self.svc.handle(a, v, r),
             ScreenId::Cont => self.cont.handle(a, v, r),
             ScreenId::Maint => self.maint.handle(a, v, r),
+            ScreenId::Upgrade => self.upgrade.handle(a, v, r),
             _ => Vec::new(),
         }
     }
@@ -197,6 +204,7 @@ impl Screens {
             ScreenId::Svc => services::services(f, area, v),
             ScreenId::Cont => containers::containers(f, area, v),
             ScreenId::Maint => maint::draw(f, area, v),
+            ScreenId::Upgrade => upgrade::draw(f, area, v),
             _ => {}
         }
     }
@@ -222,6 +230,7 @@ impl Screens {
                 h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
                 h
             }
+            ScreenId::Upgrade => upgrade::hints(v),
             _ => Vec::new(),
         }
     }
@@ -252,6 +261,11 @@ impl Screens {
                 (n > 0).then(|| (format!(" {n}"), t.red))
             }
             ScreenId::Maint => maint::badge(v),
+            // A run in progress.
+            ScreenId::Upgrade => {
+                v.wf.filter(|s| !s.done())
+                    .map(|_| (" ●".to_string(), t.yellow))
+            }
             _ => None,
         }
     }

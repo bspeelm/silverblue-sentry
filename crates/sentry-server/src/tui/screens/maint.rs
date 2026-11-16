@@ -109,7 +109,7 @@ impl Maint {
                 e => e,
             },
             A::Char('R') => vec![Effect::ReviewOpen],
-            A::Char('w') => vec![Effect::ChooseWorkflow],
+            A::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
             A::Char('v') => vec![Effect::LogOpen(selected(v).map(|(s, _)| s.id.clone()))],
             _ => Vec::new(),
         }
