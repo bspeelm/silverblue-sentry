@@ -5,7 +5,7 @@
 
 use crate::remote::{Remote, SudoMode};
 use sentry_core::claude::Profile;
-pub use sentry_core::tui::docview::{Writer, draw, draw_review};
+pub use sentry_core::tui::docview::{Writer, draw};
 
 /// Claude's instructions for a maintenance review.
 pub fn review_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
@@ -32,8 +32,8 @@ server yourself.",
     p
 }
 
-/// What a review is asked.
-pub fn review_request(context: &str, tasks: &str) -> String {
+/// What a review is asked: the standing of everything, then how the list should change.
+pub fn review_request(context: &str, changes: &str) -> String {
     format!(
         "{context}\n\nReview the maintenance of this server. Sections:\n\
          ## Summary: two or three lines on where things stand.\n\
@@ -41,10 +41,8 @@ pub fn review_request(context: &str, tasks: &str) -> String {
          version, run which workflow), and why it can't wait.\n\
          ## Soon: the same, for the next weeks.\n\
          ## Routine: regular maintenance due, and what can simply wait (say why).\n\
-         ## The list: what to start or stop tracking, sources to add, risk levels, holds and \
-         review dates to revisit.\n\
          ## Watch: ends of life, upstream changes or anything else to look at again, with dates.\n\n\
-         {tasks}"
+         {changes}"
     )
 }
 
@@ -127,7 +125,13 @@ pub fn revise(what: &str) -> String {
 }
 
 /// The user skipped the reads: write it with what there is.
-pub fn reads_skipped() -> String {
+pub fn reads_skipped(review: bool) -> String {
+    if review {
+        return "The user didn't run the reads that need root. Write the review now with what \
+                you have, and say in it what couldn't be checked. Answer with the complete \
+                review document in the format asked for (its changes block last)."
+            .into();
+    }
     "The user didn't run the reads that need root. Write the plan now with what you have, and \
      say in it what couldn't be checked and how to check it by hand. Answer with the complete \
      plan document (the TARGET line first)."
@@ -142,7 +146,13 @@ pub fn waits_for_reads(answer: &str) -> bool {
         .starts_with("READS PENDING")
 }
 
-pub fn reads_back(outputs: &str) -> String {
+pub fn reads_back(outputs: &str, review: bool) -> String {
+    if review {
+        return format!(
+            "{outputs}\nTake these into account, then answer with the complete review document \
+             in the format asked for (its changes block last)."
+        );
+    }
     format!(
         "{outputs}\nTake these into account, then answer with the complete plan document in \
          the same format (the TARGET line first)."

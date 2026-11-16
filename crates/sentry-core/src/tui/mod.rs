@@ -12,6 +12,7 @@ pub mod keys;
 pub mod maintlist;
 pub mod modal;
 pub mod records;
+pub mod reviewview;
 pub mod theme;
 pub mod widgets;
 

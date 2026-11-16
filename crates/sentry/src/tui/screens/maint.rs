@@ -239,8 +239,16 @@ pub fn plan_apply_ask(v: &View, wf: &str) -> Option<crate::claude::Ask> {
     ))
 }
 
-/// The recommendations, from what's loaded.
+/// The recommendations shown: those the `/` filter keeps.
 pub fn recs(v: &View) -> Vec<Rec> {
+    recs_all(v)
+        .into_iter()
+        .filter(|r| v.matches(&[&r.title, &r.why, r.level.word()]))
+        .collect()
+}
+
+/// The recommendations, from what's loaded.
+pub fn recs_all(v: &View) -> Vec<Rec> {
     let run = v.wf.map(|s| {
         let i = s.next.idx();
         RunInfo {
@@ -283,9 +291,6 @@ pub fn recs(v: &View) -> Vec<Rec> {
         tasks: &all_tasks(v),
         log: &v.d.maint_log,
     })
-    .into_iter()
-    .filter(|r| v.matches(&[&r.title, &r.why, r.level.word()]))
-    .collect()
 }
 
 /// Every task that applies: `tasks.toml`'s and the jobs' cadences.
@@ -889,7 +894,7 @@ pub fn context(v: &View) -> String {
 
 /// The recommendations, one line each, for a review.
 pub fn recs_text(v: &View) -> String {
-    let r: Vec<String> = recs(v)
+    let r: Vec<String> = recs_all(v)
         .iter()
         .map(|r| format!("- [{}] {}: {}", r.level.word(), r.title, r.why))
         .collect();

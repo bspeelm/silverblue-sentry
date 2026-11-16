@@ -21,7 +21,6 @@ use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Exec, Session};
 use sentry_core::claude::{self, Ask};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
-use sentry_core::maint::tasks::SugState;
 use sentry_core::tui::chat::{self as chatmod, Chat};
 use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::modal;
@@ -65,8 +64,6 @@ pub enum Effect {
     LogOpen(Option<String>),
     /// The latest maintenance review (or the box to write one).
     ReviewOpen,
-    /// Claude writes a maintenance review (after the confirm box), with this request.
-    ReviewWrite(String),
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(crate::config::MaintItem),
     /// Don't suggest it again: (discovery key, its id).
@@ -104,9 +101,6 @@ pub enum Effect {
     ApplyAsk,
     /// Just ask (the first), with what applying it would be (`a` in the chat).
     AskWith(Box<Ask>, Box<Ask>),
-    /// A review's suggested task: added to `tasks.toml`, or skipped.
-    TaskAdd(Box<sentry_core::maint::tasks::Task>),
-    TaskSkip(String),
     /// Take a task off `tasks.toml`.
     TaskRemove(String),
     /// A task done by hand: logged (tagged `task:<id>`), then the note box.
@@ -255,8 +249,8 @@ pub struct App {
     maint_sel: Option<String>,
     /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
     run_view: bool,
-    /// The Review view (`R` on Maintenance), scrolled this far.
-    review_view: Option<usize>,
+    /// The Review window (`R` on Maintenance).
+    review_view: Option<sentry_core::tui::reviewview::ReviewView>,
     /// The Log view (`v` on Maintenance, `:log`).
     /// Records (`v`, `R`, `:log`): tasks, log, plans, reviews, what's put off.
     pub rec_view: Option<sentry_core::tui::records::Records>,
@@ -1180,18 +1174,7 @@ impl App {
                 Effect::LogOpen(item) => {
                     self.open_records(sentry_core::tui::records::Section::Log, item)
                 }
-                // Being written: watch it. Written: every review is in Records. None: write one.
-                Effect::ReviewOpen => {
-                    if self.writing_review() {
-                        self.review_view = Some(0);
-                    } else if self.store.review.is_some() {
-                        self.open_records(sentry_core::tui::records::Section::Reviews, None);
-                    } else {
-                        self.review_box();
-                    }
-                }
-                Effect::TaskAdd(task) => self.task_add(*task),
-                Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
+                Effect::ReviewOpen => self.review_open(),
                 Effect::TaskRemove(id) => {
                     let all = super::maint::all_tasks(&self.view());
                     let Some(t) = all.into_iter().find(|t| t.id == id) else {
@@ -1216,10 +1199,6 @@ impl App {
                     self.store.tasks = sentry_core::maint::tasks::load(&self.remote.name);
                 }
                 Effect::TaskDone(id) => self.task_done(&id),
-                Effect::ReviewWrite(prompt) => {
-                    let doc = crate::maint::review::ReviewDoc::new(&self.remote.name);
-                    self.start_writer(planview::Writer::review(doc), prompt, None);
-                }
                 Effect::Track(item) => {
                     let id = item.id.clone();
                     match crate::maint::tracked::track(&self.remote.name, item) {
@@ -1284,7 +1263,10 @@ impl App {
                         self.maint_sel = Some(format!("item:{id}"));
                     }
                 }
-                Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
+                Effect::ReadsSkipped => {
+                    let review = self.writer.as_ref().is_some_and(|w| w.review.is_some());
+                    self.writer_follow(planview::reads_skipped(review))
+                }
                 Effect::PlanWrite(id, doc, prompt) => {
                     if !self.offline {
                         let _ = sentry_core::maint::plan::retire(&self.remote.name, &id);
@@ -2759,7 +2741,9 @@ impl App {
         }
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         let profile = if w.review.is_some() {
-            self.review_view = Some(0);
+            self.review_view
+                .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
+                .brief = false;
             planview::review_profile(&self.remote, &os, &kernel, self.store.sudo.value)
         } else {
             self.plan_view = Some((w.item.clone(), 0));
@@ -2800,73 +2784,267 @@ impl App {
         }
     }
 
-    /// `R` with no review yet, or `R` in the Review view: what Claude will do, then yes.
-    fn review_box(&mut self) {
-        if !claude::available() {
-            return self.toast("reviews are written by Claude Code, which isn't installed");
-        }
-        let v = self.view();
-        let tasks = sentry_core::maint::tasks::request_section(
-            &self.store.workflows,
-            &self.item_ids(),
-            &super::maint::all_tasks(&v),
-        );
-        let prompt =
-            planview::review_request(&super::maint::review_context(&v, &self.remote), &tasks);
+    /// `R` on Maintenance: the review window. A review with changes still to apply shows
+    /// them; otherwise the brief, and Enter starts a new one.
+    fn review_open(&mut self) {
+        use sentry_core::tui::reviewview::ReviewView;
+        self.rec_view = None;
+        self.plan_view = None;
+        self.review_view = Some(if self.writing_review() {
+            ReviewView::show()
+        } else {
+            ReviewView::open(self.store.review.as_ref())
+        });
+    }
+
+    /// What a review reads and does, shown before one is started.
+    fn review_brief(&self) -> Vec<Line<'static>> {
         let t = self.theme;
+        if !claude::available() {
+            return vec![Line::styled(
+                "  Reviews are written by Claude Code, which isn't installed.",
+                t.s(t.yellow),
+            )];
+        }
+        let name = &self.remote.name;
         let notes = &self.remote.cfg.maintenance.notes;
-        let lines = vec![
+        vec![
+            Line::raw(""),
             Line::styled(
                 format!(
-                    "Claude reviews the maintenance of {}: every tracked item, what isn't \
-                     tracked, updates and reboots waiting, the maintenance log, and upstream's \
-                     release notes, then writes what to do now, soon and routinely, and why. It \
-                     ends with tasks you can add to Maintenance (a in the review).",
-                    self.remote.name
+                    "  Claude reviews the maintenance of {name}: every tracked item, what isn't tracked,"
                 ),
+                t.fg(),
+            ),
+            Line::styled(
+                "  tasks and what's put off, updates and reboots waiting, the maintenance log and upstream's",
+                t.fg(),
+            ),
+            Line::styled(
+                "  release notes, then writes what to do now, soon and routinely, and why.",
                 t.fg(),
             ),
             Line::raw(""),
             Line::styled(
+                "  It ends with how the list should change: tasks to add, remove or change, items to track",
+                t.fg(),
+            ),
+            Line::styled(
+                "  or stop tracking, and what can wait. You see those as one list, ticked; Enter applies them",
+                t.fg(),
+            ),
+            Line::styled("  together.", t.fg()),
+            Line::raw(""),
+            Line::styled(
                 format!(
-                    "It reads the web, your notes ({}), and {} read-only through the gateway; \
-                     reads that need root are asked for first. Saved in {}.",
+                    "  It reads the web, your notes ({}), and {name} read-only through the gateway; reads",
                     if notes.is_empty() {
                         "none".to_string()
                     } else {
                         notes.join(", ")
-                    },
-                    self.remote.name,
-                    crate::maint::review::dir(&self.remote.name).display()
+                    }
                 ),
                 t.dim(),
             ),
-            Line::raw(""),
             Line::styled(
-                "Sent to Claude through your Claude Code login (Anthropic). Nothing on the \
-                 server changes.",
+                format!(
+                    "  that need root are asked for first. Saved in {}.",
+                    sentry_core::tui::widgets::short_home(&crate::maint::review::dir(name))
+                ),
+                t.dim(),
+            ),
+            Line::styled(
+                "  Sent to Claude through your Claude Code login (Anthropic). Nothing on the server changes.",
                 t.s(t.yellow),
             ),
-        ];
-        self.modal = Some(Modal {
-            title: "Review maintenance with Claude".into(),
-            color: t.mag,
-            lines,
-            yes: Some(("review".into(), vec![Effect::ReviewWrite(prompt)])),
-        });
+            Line::raw(""),
+            Line::styled("  Enter starts the review.", t.s(t.cyan)),
+        ]
     }
 
-    /// Keys in the Review view: scroll, R writes a new one, C-c stops it, Esc goes back.
-    fn review_view_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        let Some(scroll) = self.review_view else {
+    /// The view with no `/` filter: a review is about everything on the list.
+    fn view_all(&self) -> View<'_> {
+        View {
+            filter: None,
+            ..self.view()
+        }
+    }
+
+    /// Everything on Maintenance a review's changes may name, and `f` with it.
+    fn with_known<R>(&self, f: impl FnOnce(&sentry_core::maint::changes::Known) -> R) -> R {
+        let v = self.view_all();
+        let tasks = super::maint::all_tasks(&v);
+        let rows: Vec<(String, String)> = super::maint::recs(&v)
+            .into_iter()
+            .map(|r| (r.key, r.title))
+            .collect();
+        let own: Vec<String> = crate::maint::tracked::load(&self.remote.name)
+            .items
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let items: Vec<(String, String)> = self
+            .remote
+            .cfg
+            .maintenance
+            .items
+            .iter()
+            .map(|i| {
+                (
+                    i.id.clone(),
+                    format!(
+                        "{} risk; defined in {}",
+                        i.risk.as_str(),
+                        if own.contains(&i.id) {
+                            "items.toml"
+                        } else {
+                            "server_config.yaml"
+                        }
+                    ),
+                )
+            })
+            .collect();
+        let found: Vec<(String, String)> = self
+            .store
+            .maint_found
+            .candidates
+            .iter()
+            .map(|c| (c.key.clone(), c.what.clone()))
+            .collect();
+        f(&sentry_core::maint::changes::Known {
+            workflows: &self.store.workflows,
+            tasks: &tasks,
+            rows: &rows,
+            later: Some(&self.store.later),
+            items: &items,
+            found: &found,
+        })
+    }
+
+    /// What a review is sent.
+    fn review_prompt(&self) -> String {
+        let changes = self.with_known(|k| sentry_core::maint::changes::request_section(k, true));
+        planview::review_request(
+            &super::maint::review_context(&self.view_all(), &self.remote),
+            &changes,
+        )
+    }
+
+    /// Enter on the brief: Claude writes the review.
+    fn review_start(&mut self) {
+        if !claude::available() {
+            return self.toast("reviews are written by Claude Code, which isn't installed");
+        }
+        let prompt = self.review_prompt();
+        let doc = crate::maint::review::ReviewDoc::new(&self.remote.name);
+        self.start_writer(planview::Writer::review(doc), prompt, None);
+    }
+
+    /// Enter on a review's changes: those ticked are applied together, the rest skipped,
+    /// and the log says what was done.
+    fn review_apply(&mut self) {
+        use crate::maint::tracked;
+        use sentry_core::maint::{changes, later, log, tasks as tk};
+        let Some(mut rd) = self.store.review.clone() else {
             return;
         };
+        let name = self.remote.name.clone();
+        let derived = crate::maint::cadence_tasks(&self.remote.cfg, &self.store.workflows);
+        let mut tasks = self.store.tasks.clone();
+        let mut snoozes = self.store.later.clone();
+        let mut items = tracked::load(&name);
+        let before = items.clone();
+        // The ids server_config.yaml defines: never rewritten, changed through items.toml.
+        let yaml: Vec<String> = match crate::config::load() {
+            Ok((f, _)) if !self.offline => f.servers.get(&name).map_or(Vec::new(), |s| {
+                s.maintenance.items.iter().map(|i| i.id.clone()).collect()
+            }),
+            _ => self
+                .item_ids()
+                .into_iter()
+                .filter(|id| !items.items.iter().any(|i| &i.id == id))
+                .collect(),
+        };
+        let found = self.store.maint_found.candidates.clone();
+        let now = jiff::Timestamp::now();
+        let (done, skipped, failed) = changes::settle(&mut rd.head.changes, |c| {
+            changes::apply(c, &mut tasks, &mut snoozes, &derived, now)
+                .or_else(|| tracked::apply(&mut items, c, &yaml, &found))
+                .unwrap_or_else(|| Err("not something sentry-server can change".into()))
+        });
+        if !self.offline {
+            let saved = tk::save(&name, &tasks)
+                .and_then(|_| later::replace(&name, &snoozes))
+                .and_then(|_| {
+                    if items == before {
+                        Ok(())
+                    } else {
+                        tracked::save(&name, &items)
+                    }
+                })
+                .and_then(|_| crate::maint::review::save(&rd).map(|_| ()));
+            if let Err(e) = saved {
+                return self.toast(&format!("couldn't apply the changes: {e}"));
+            }
+        }
+        self.store.tasks = tasks;
+        self.store.later = snoozes;
+        if done + failed > 0 {
+            let entry = log::LogEntry::event(
+                &name,
+                "review",
+                "review",
+                failed == 0,
+                &changes::summary(&rd.head.changes),
+                &[format!("review:{}", rd.file_name())],
+                now,
+            );
+            if self.offline {
+                self.store.log.insert(0, entry);
+            } else if let Err(e) = log::write(&entry) {
+                self.toast(&format!("couldn't write the maintenance log: {e}"));
+            } else {
+                self.store.log = log::list(&name);
+            }
+        }
+        self.store.review = Some(rd);
+        if items != before {
+            // What was tracked or ignored isn't "found" any more.
+            self.store.maint_found.candidates.retain(|c| {
+                !items.ignore.contains(&c.key) && !items.items.iter().any(|i| i.id == c.item.id)
+            });
+            if self.offline {
+                self.remote.cfg = tracked::merged(&self.remote.cfg, &items).into();
+                if let Some(st) = self.store.maint.value.as_mut() {
+                    st.retain(|s| !items.untracked.contains(&s.id));
+                }
+            } else {
+                self.reload_config();
+            }
+        } else if !self.offline {
+            self.fetch(Kind::Maint);
+        }
+        self.keep_maint_selection();
+        self.toast(&format!(
+            "review: {}",
+            sentry_core::tui::reviewview::outcome(done, skipped, failed)
+        ));
+    }
+
+    /// Keys in the Review window: its own, and what they ask for.
+    fn review_view_key(&mut self, k: KeyEvent) {
+        use sentry_core::tui::reviewview::Fx;
         self.dirty = true;
         let writing = self.writing_review();
-        match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.review_view = None,
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+        let Some(v) = self.review_view.as_mut() else {
+            return;
+        };
+        match v.key(k, self.store.review.as_mut(), writing) {
+            Fx::None => {}
+            Fx::Close => self.review_view = None,
+            Fx::Start => self.review_start(),
+            Fx::Apply => self.review_apply(),
+            Fx::Stop => {
                 if let Some(pid) = self
                     .writer
                     .as_ref()
@@ -2877,18 +3055,6 @@ impl App {
                     self.toast("stopped");
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.review_view = Some(scroll + 1),
-            KeyCode::Up | KeyCode::Char('k') => self.review_view = Some(scroll.saturating_sub(1)),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.review_view = Some(scroll + 20),
-            KeyCode::PageUp => self.review_view = Some(scroll.saturating_sub(20)),
-            KeyCode::Home | KeyCode::Char('g') => self.review_view = Some(0),
-            KeyCode::End | KeyCode::Char('G') => self.review_view = Some(usize::MAX / 2),
-            KeyCode::Char('R') if !writing => {
-                self.review_view = None;
-                self.review_box();
-            }
-            KeyCode::Char(c @ ('a' | 'x')) if !writing => self.suggestion_pick(c == 'a'),
-            _ => {}
         }
     }
 
@@ -2902,56 +3068,7 @@ impl App {
             .collect()
     }
 
-    /// `a`/`x` in the review view: pick an open suggestion to add (preview, confirm) or skip.
-    fn suggestion_pick(&mut self, add: bool) {
-        let t = self.theme;
-        let open: Vec<sentry_core::maint::tasks::Task> = self
-            .store
-            .review
-            .as_ref()
-            .map(|d| d.open().into_iter().map(|s| s.task.clone()).collect())
-            .unwrap_or_default();
-        if open.is_empty() {
-            return self.toast("no suggested tasks left in this review");
-        }
-        let file = sentry_core::tui::widgets::short_home(&sentry_core::maint::tasks::path(
-            &self.remote.name,
-        ));
-        let effects = |task: &sentry_core::maint::tasks::Task| {
-            if add {
-                vec![Effect::Confirm(Modal {
-                    title: "Add this task to Maintenance".into(),
-                    color: t.mag,
-                    lines: sentry_core::tui::docview::task_lines(&t, task, &file),
-                    yes: Some(("add".into(), vec![Effect::TaskAdd(Box::new(task.clone()))])),
-                })]
-            } else {
-                vec![Effect::TaskSkip(task.id.clone())]
-            }
-        };
-        let e = if open.len() == 1 {
-            effects(&open[0])
-        } else {
-            vec![Effect::Choose(
-                format!(
-                    "{} which task? (1–{})",
-                    if add { "Add" } else { "Skip" },
-                    open.len().min(9)
-                ),
-                open.iter()
-                    .take(9)
-                    .map(|s| {
-                        (
-                            format!("[{}] {} · {}", s.level.word(), s.title, s.when()),
-                            effects(s),
-                        )
-                    })
-                    .collect(),
-            )]
-        };
-        self.apply(e, Instant::now());
-    }
-
+    /// A task from an apply session's follow-up: into `tasks.toml`.
     fn task_add(&mut self, task: sentry_core::maint::tasks::Task) {
         let mut task = task;
         task.added = Some(jiff::Timestamp::now());
@@ -2963,24 +3080,7 @@ impl App {
         let (id, title) = (task.id.clone(), task.title.clone());
         self.store.tasks.retain(|t| t.id != id);
         self.store.tasks.push(task);
-        self.suggestion_mark(&id, SugState::Added);
         self.toast(&format!("added to Maintenance (4): {title}"));
-    }
-
-    /// Record what was done with a suggestion in the review itself.
-    fn suggestion_mark(&mut self, id: &str, state: SugState) {
-        let Some(rd) = self.store.review.as_mut() else {
-            return;
-        };
-        rd.mark(id, state);
-        if !self.offline
-            && let Err(e) = sentry_core::maint::review::save(rd)
-        {
-            return self.toast(&format!("couldn't update the review: {e}"));
-        }
-        if state == SugState::Skipped {
-            self.toast(&format!("skipped {id}"));
-        }
     }
 
     /// A task done by hand: logged now (tagged `task:<id>`, which takes it off the list),
@@ -3005,27 +3105,35 @@ impl App {
 
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
     fn writer_turn_ended(&mut self) {
-        let workflows = self.store.workflows.clone();
-        let items = self.item_ids();
-        let Some(w) = self.writer.as_mut() else {
-            return;
-        };
-        if let Some(mut rd) = w.review.clone() {
-            rd.head.session = w.session.clone().or(rd.head.session);
-            let msg = match (&w.answer, &w.err) {
+        if let Some(mut rd) = self.writer.as_ref().and_then(|w| w.review.clone()) {
+            let (answer, err, session) = self
+                .writer
+                .as_ref()
+                .map(|w| (w.answer.clone(), w.err.clone(), w.session.clone()))
+                .unwrap_or_default();
+            rd.head.session = session.or(rd.head.session);
+            // Waiting for reads that need root: no review yet; ask for them.
+            if answer.as_deref().is_some_and(planview::waits_for_reads) {
+                if let Some(w) = self.writer.as_mut() {
+                    w.review = Some(rd);
+                    w.doing = "waiting for reads that need root".into();
+                }
+                if !self.offline {
+                    let reads = crate::gateway::take_reads(&self.remote.name);
+                    if reads.is_empty() {
+                        return self.writer_follow(planview::reads_skipped(true));
+                    }
+                    self.reads_box(reads, ReadsFor::Plan);
+                }
+                return;
+            }
+            let msg = match (&answer, &err) {
                 (Some(a), _) if !a.trim().is_empty() => {
-                    rd.take_answer(
-                        a,
-                        &sentry_core::maint::tasks::Known {
-                            workflows: &workflows,
-                            items: &items,
-                        },
-                    );
+                    let today = jiff::Zoned::now().date();
+                    self.with_known(|k| rd.take_answer(a, k, today));
                     match rd.open().len() {
-                        0 => "the maintenance review is saved".to_string(),
-                        n => format!(
-                            "the maintenance review is saved: {n} suggested tasks (a adds one)"
-                        ),
+                        0 => "the review is saved: no changes to the list".to_string(),
+                        n => format!("the review is saved: {n} changes to apply (Enter)"),
                     }
                 }
                 (_, err) => format!(
@@ -3034,7 +3142,9 @@ impl App {
                         .unwrap_or_else(|| "Claude gave no answer".into())
                 ),
             };
-            w.review = Some(rd.clone());
+            if let Some(w) = self.writer.as_mut() {
+                w.review = Some(rd.clone());
+            }
             if rd.head.status == PlanStatus::Ready {
                 if !self.offline
                     && let Err(e) = crate::maint::review::save(&rd)
@@ -3042,10 +3152,16 @@ impl App {
                     return self.toast(&format!("couldn't save the review: {e}"));
                 }
                 self.store.review = Some(rd);
+                if let Some(v) = self.review_view.as_mut() {
+                    *v = sentry_core::tui::reviewview::ReviewView::show();
+                }
             }
             self.toast(&msg);
             return self.offer_reads(ReadsFor::Plan);
         }
+        let Some(w) = self.writer.as_mut() else {
+            return;
+        };
         let mut doc = w.doc.clone();
         doc.head.session = w.session.clone().or(doc.head.session);
         // Waiting for reads that need root: no plan yet; ask for them.
@@ -3056,7 +3172,7 @@ impl App {
                 let reads = crate::gateway::take_reads(&self.remote.name);
                 if reads.is_empty() {
                     // Nothing queued after all: have it write the plan.
-                    return self.writer_follow(planview::reads_skipped());
+                    return self.writer_follow(planview::reads_skipped(false));
                 }
                 self.reads_box(reads, ReadsFor::Plan);
             }
@@ -3132,10 +3248,12 @@ impl App {
                         file: "baseline.toml",
                     }),
             );
+            let tracked = crate::maint::tracked::load(name);
             later.extend(
-                crate::maint::tracked::load(name)
+                tracked
                     .ignore
                     .into_iter()
+                    .chain(tracked.untracked.iter().map(|id| format!("item:{id}")))
                     .map(|k| LaterRow {
                         kind: LaterKind::Ignored,
                         key: k,
@@ -3259,13 +3377,16 @@ impl App {
                 Some(d) => {
                     self.store.review = Some(d);
                     self.rec_view = None;
-                    self.review_view = Some(0);
+                    self.review_view = Some(sentry_core::tui::reviewview::ReviewView::show());
                 }
                 None => self.toast("couldn't read that review"),
             },
             Fx::NewReview => {
                 self.rec_view = None;
-                self.review_box();
+                self.review_view = Some(sentry_core::tui::reviewview::ReviewView {
+                    brief: true,
+                    ..Default::default()
+                });
             }
             Fx::Undo(row) => {
                 let name = self.remote.name.clone();
@@ -3281,6 +3402,14 @@ impl App {
                     }
                     LaterKind::Expected => {
                         self.apply(vec![Effect::Expected(row.key.clone(), false)], now)
+                    }
+                    // A YAML item a review untracked: tracked again.
+                    LaterKind::Ignored if row.key.starts_with("item:") => {
+                        let id = row.key.trim_start_matches("item:");
+                        if let Err(e) = crate::maint::tracked::retrack(&name, id) {
+                            return self.toast(&format!("items.toml: {e}"));
+                        }
+                        self.reload_config();
                     }
                     LaterKind::Ignored => {
                         if let Err(e) = crate::maint::tracked::unignore(&name, &row.key) {
@@ -3800,7 +3929,10 @@ impl App {
         }
         text.push_str("\nContinue from here.");
         match to {
-            ReadsFor::Plan => self.writer_follow(planview::reads_back(&text)),
+            ReadsFor::Plan => {
+                let review = self.writer.as_ref().is_some_and(|w| w.review.is_some());
+                self.writer_follow(planview::reads_back(&text, review))
+            }
             _ if self.chat.is_some() => self.ask_turn(text),
             _ => self.toast("the conversation is closed: the output wasn't sent"),
         }
@@ -4168,9 +4300,25 @@ impl App {
             }
             _ => tabs::draw(f, body, self.tab, &self.view()),
         }
-        if let Some(scroll) = self.review_view {
+        if let Some(rv) = &self.review_view {
             let w = self.writer.as_ref().filter(|w| w.review.is_some());
-            super::planview::draw_review(f, body, &t, self.store.review.as_ref(), w, scroll);
+            let path = self.store.review.as_ref().map_or(String::new(), |d| {
+                sentry_core::tui::widgets::short_home(
+                    &crate::maint::review::dir(&self.remote.name).join(d.file_name()),
+                )
+            });
+            sentry_core::tui::reviewview::draw(
+                f,
+                body,
+                &t,
+                rv,
+                &sentry_core::tui::reviewview::Shown {
+                    doc: self.store.review.as_ref(),
+                    writer: w,
+                    brief: &self.review_brief(),
+                    path: &path,
+                },
+            );
         } else if let Some(r) = &self.rec_view {
             sentry_core::tui::records::draw(f, body, &t, r);
         } else if let Some((id, scroll)) = &self.plan_view {
@@ -4408,20 +4556,8 @@ impl App {
             .filter(|c| !c.hidden && self.modal.is_none())
         {
             chatmod::keys(c)
-        } else if self.review_view.is_some() && self.modal.is_none() {
-            if self.writing_review() {
-                vec![
-                    ("j/k", "scroll"),
-                    ("C-c", "stop"),
-                    ("Esc", "back (it carries on)"),
-                ]
-            } else {
-                vec![
-                    ("j/k PgUp/Dn", "scroll"),
-                    ("R", "review again"),
-                    ("Esc", "back"),
-                ]
-            }
+        } else if let Some(rv) = self.review_view.as_ref().filter(|_| self.modal.is_none()) {
+            rv.hints(self.store.review.as_ref(), self.writing_review())
         } else if let Some(r) = self.rec_view.as_ref().filter(|_| self.modal.is_none()) {
             r.hints()
         } else if let Some((id, _)) = self
@@ -4605,12 +4741,12 @@ impl App {
         self.wf_entries = e;
         self.keep_maint_selection();
     }
-    /// Tests: the request waiting in a box (a review's), or the brief of a conversation
-    /// just opened.
+    /// Tests: the request waiting in a box (a plan's), what the review window on its brief
+    /// would send, or the brief of a conversation just opened.
     pub fn consent_text_any(&self) -> Option<String> {
         match self.modal.as_ref().and_then(|m| m.yes.as_ref()?.1.first()) {
-            Some(Effect::ReviewWrite(p)) => Some(p.clone()),
             Some(Effect::PlanWrite(_, _, p)) => Some(p.clone()),
+            _ if self.review_view.as_ref().is_some_and(|v| v.brief) => Some(self.review_prompt()),
             _ => self.consent_text(),
         }
     }
@@ -4708,6 +4844,14 @@ impl App {
     /// Tests: the conversation, if one is open.
     pub fn chat_for_test(&self) -> Option<&Chat> {
         self.chat.as_ref()
+    }
+    /// Tests: a task lands in `tasks.toml` (as an apply session's follow-up does).
+    pub fn add_task_for_test(&mut self, task: sentry_core::maint::tasks::Task) {
+        self.task_add(task);
+    }
+    /// Tests: what a review left in the tracked items' file, were it written.
+    pub fn review_for_test(&self) -> Option<&sentry_core::maint::review::ReviewDoc> {
+        self.store.review.as_ref()
     }
     /// Tests: a chat turn ended (online: reads Claude asked for are offered).
     pub fn turn_ended_online_for_reads(&mut self) {

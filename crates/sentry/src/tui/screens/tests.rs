@@ -1259,10 +1259,17 @@ fn claude_plans_a_workflow_and_reviews_maintenance() {
     assert!(render_to_string(&mut a, 158, 41).contains("Drop the plan for release-rebase"));
     key(&mut a, KeyCode::Char('n'));
     key(&mut a, KeyCode::Esc);
-    // R with no review yet: what Claude will do.
+    // R with no review yet: the review window on its brief; nothing is sent before Enter.
     key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Review maintenance with Claude"), "{s}");
+    assert!(
+        s.contains("Maintenance review") && s.contains("Enter starts the review"),
+        "{s}"
+    );
+    assert!(s.contains("Enter  start the review"), "the key bar: {s}");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("C-c  stop Claude"), "Claude is writing: {s}");
 }
 
 #[test]
@@ -1298,47 +1305,79 @@ fn a_ready_plan_goes_with_its_workflow_however_it_starts() {
     );
 }
 
-const REVIEW_WITH_TASKS: &str = "Reading the ledger.\n# Maintenance review\n\n## Now\n- update\n\n\
-```sentry-tasks\n\
-[[task]]\nid = \"ups\"\ntitle = \"Check the UPS battery\"\nwhy = \"It is three years old.\"\n\
+const REVIEW_WITH_CHANGES: &str = "Reading the ledger.\n# Maintenance review\n\n## Now\n- update\n\n\
+```sentry-changes\n\
+[[add]]\nid = \"ups\"\ntitle = \"Check the UPS battery\"\nwhy = \"It is three years old.\"\n\
 level = \"soon\"\nevery = \"90d\"\ndo = \"by-hand\"\nsteps = \"Run `upsc ups` and read the charge.\"\n\n\
-[[task]]\nid = \"update\"\ntitle = \"Install the waiting updates\"\nlevel = \"routine\"\n\
-do = \"run quick-update\"\n```\n";
+[[add]]\nid = \"update\"\ntitle = \"Install the waiting updates\"\nlevel = \"routine\"\n\
+do = \"run quick-update\"\n\n\
+[[change]]\ntask = \"job-audit\"\nevery = \"14d\"\nwhy = \"Findings come often.\"\n\n\
+[[remove]]\ntask = \"nope\"\nwhy = \"Not there.\"\n```\n";
+
+const REVIEW_LATER: &str = "# Maintenance review\n\n## Soon\n- nothing\n\n```sentry-changes\n\
+[[later]]\nkey = \"updates\"\nuntil = 2099-01-01\nwhy = \"Nothing urgent in them.\"\n\n\
+[[remove]]\ntask = \"ups\"\nwhy = \"The UPS is gone.\"\n\n\
+[[remove]]\ntask = \"job-cleanup\"\nwhy = \"The disk is never tight.\"\n```\n";
 
 #[test]
-fn review_suggestions_become_maintenance_tasks() {
+fn a_review_s_changes_apply_with_one_enter() {
     let mut a = app(ScreenId::Maint);
-    a.review_written_for_test(REVIEW_WITH_TASKS);
+    a.review_written_for_test(REVIEW_WITH_CHANGES);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("2 suggested tasks · a adds one"), "{s}");
+    // Where it's kept is under the test's scratch dir.
+    let shown = body(&s);
+    let shown: Vec<&str> = shown.lines().filter(|l| !l.contains("/reviews/")).collect();
+    insta::assert_snapshot!("review_158x41", shown.join("\n"));
+    assert!(s.contains("3 changes · Enter applies the 3 ticked"), "{s}");
     assert!(
-        s.contains("Suggested tasks") && s.contains("Check the UPS battery"),
+        s.contains("Check the UPS battery · every 90d") && s.contains("every 30d → every 14d"),
         "{s}"
     );
+    assert!(s.contains("not used: remove nope: no such task"), "{s}");
     assert!(
-        !s.contains("sentry-tasks"),
+        !s.contains("sentry-changes"),
         "the block isn't shown as text: {s}"
     );
-    // a: pick one, see what's written, confirm.
-    key(&mut a, KeyCode::Char('a'));
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Add which task?"), "{s}");
-    key(&mut a, KeyCode::Char('1'));
+    // Space unticks the second; Enter applies the rest together, with no box.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Add this task to Maintenance") && s.contains("[[task]]"),
+        s.contains("Enter applies the 2 ticked") && s.contains("[ ]"),
         "{s}"
     );
-    assert!(
-        s.contains("tasks.toml") && s.contains("every = \"90d\""),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Char('y'));
-    // x: the one left is skipped.
-    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("added") && s.contains("skipped"), "{s}");
-    assert!(!s.contains("suggested task"), "none open: {s}");
+    assert!(s.contains("2 applied · 1 skipped"), "{s}");
+    assert!(
+        s.contains("review: 2 applied · 1 skipped"),
+        "the toast: {s}"
+    );
+    assert!(!s.contains("[x]") && s.contains("✓"), "{s}");
+    // Enter again changes nothing.
+    key(&mut a, KeyCode::Enter);
+    assert!(render_to_string(&mut a, 158, 41).contains("2 applied · 1 skipped"));
+    // The log says what was applied.
+    let log = a.log_for_test();
+    assert_eq!(log[0].head.kind, "review");
+    assert!(
+        log[0].body.contains("applied: add task ups")
+            && log[0].body.contains("skipped: add task update")
+            && log[0].body.contains("applied: change task job-audit"),
+        "{}",
+        log[0].body
+    );
+    key(&mut a, KeyCode::Esc);
+    // Records › Tasks: the built-in audit cadence is now tasks.toml's, every 14d.
+    for c in ":tasks".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("every 14d") && !s.contains("Install the waiting updates"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Esc);
     // On Maintenance: the task, its steps, d to mark it done.
     a.apply_for_test(vec![crate::tui::app::Effect::MaintFind("task:".into())]);
@@ -1375,6 +1414,41 @@ fn review_suggestions_become_maintenance_tasks() {
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("noted in the maintenance log"), "{s}");
+
+    // R: nothing left to apply, so the brief. A new review removes and puts off.
+    key(&mut a, KeyCode::Char('R'));
+    assert!(render_to_string(&mut a, 158, 41).contains("Enter starts the review"));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Updates waiting"), "{s}");
+    a.review_written_for_test(REVIEW_LATER);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Remove") && s.contains("Put off") && s.contains("until 2099-01-01"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Updates waiting"), "put off: {s}");
+    for c in ":tasks".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Check the UPS battery"), "removed: {s}");
+    // A built-in one is turned off, not removed.
+    let off = s
+        .lines()
+        .find(|l| l.contains("lean up"))
+        .unwrap_or_default();
+    assert!(off.contains("off"), "{s}");
+    // R on Maintenance with the review applied: R again offers a new one.
+    for c in ":later".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(render_to_string(&mut a, 158, 41).contains("2099-01-01"));
 }
 
 /// Read-only on this machine: Maintenance from the real collectors, its views, and the

@@ -1947,10 +1947,11 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    // R: the review window on its brief; nothing is sent before Enter.
     key(&mut a, KeyCode::Char('R'));
     let s = screen(&mut a);
     assert!(
-        s.contains("Review maintenance with Claude") && s.contains("reviews"),
+        s.contains("Maintenance review") && s.contains("Enter starts the review"),
         "{s}"
     );
     let prompt = a.consent_text_any().expect("the request");
@@ -1966,7 +1967,30 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
         prompt.contains("## Now:") && prompt.contains("Maintenance ledger"),
         "{prompt}"
     );
-    key(&mut a, KeyCode::Char('y'));
+    // What its changes may name: every task, row, item and what discovery found.
+    for has in [
+        "sentry-changes",
+        "- web: medium risk; defined in server_config.yaml",
+        "- image:cache: compose service cache",
+        "`plan web`",
+        "[[untrack]]",
+    ] {
+        assert!(prompt.contains(has), "{has} not in: {prompt}");
+    }
+    assert!(!prompt.contains("sentry-tasks") && !prompt.contains("## The list"));
+    // A filter narrows the screen, not what Claude is told.
+    key(&mut a, KeyCode::Esc);
+    for c in "/engine".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('R'));
+    assert!(
+        a.consent_text_any()
+            .unwrap()
+            .contains("- web (medium risk): pinned 1.4.2")
+    );
+    key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
         s.contains("Maintenance review") && s.contains("appears here"),
@@ -1979,17 +2003,44 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
         "{s}"
     );
     assert!(!s.contains("Reading first"), "{s}");
+    assert!(s.contains("no changes to the list"), "the toast: {s}");
     key(&mut a, KeyCode::Esc);
-    assert!(
-        screen(&mut a).contains("Recommended · 11 · reviewed"),
-        "the panel says there's one"
-    );
-    // R: Records on the reviews (every one kept); Enter opens it.
-    key(&mut a, KeyCode::Char('R'));
+    // Every review is kept: Records › Reviews, Enter opens it.
+    for c in ":reviews".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(s.contains("Records") && s.contains("Reviews 1"), "{s}");
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("web: plan 1.5.2"), "Enter opens it");
+    // R there: the brief for a new one.
+    key(&mut a, KeyCode::Char('R'));
+    assert!(screen(&mut a).contains("Enter starts the review"));
+}
+
+#[test]
+fn a_review_that_needs_root_reads_is_not_saved_until_they_are_back() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Enter);
+    a.writer_answered("READS PENDING\nwaiting for smartctl");
+    assert!(a.review_for_test().is_none(), "that isn't a review");
+    let s = screen(&mut a);
+    assert!(!s.contains("READS PENDING"), "{s}");
+    // The reads come back (or are skipped): the same session writes the review.
+    a.apply(vec![super::app::Effect::ReadsSkipped], Instant::now());
+    assert!(a.writing());
+    a.writer_answered("# Maintenance review · myserver\n\n## Now\n- web");
+    assert!(a.review_for_test().is_some());
+    assert!(screen(&mut a).contains("- web"));
+    // Asked again for a review, not a plan.
+    let back = super::planview::reads_back("$ sudo smartctl", true);
+    assert!(back.contains("review document") && !back.contains("TARGET"));
+    assert!(super::planview::reads_skipped(true).contains("review document"));
+    assert!(super::planview::reads_back("x", false).contains("TARGET"));
 }
 
 /// Read-only against the real server: every recommendation and what discovery found.
@@ -2122,46 +2173,87 @@ fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
 }
 
 #[test]
-fn review_suggestions_become_maintenance_tasks() {
+fn a_review_changes_tasks_and_items_with_one_enter() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    let s = screen(&mut a);
+    assert!(s.contains("Track cache") && s.contains("legacy"), "{s}");
     key(&mut a, KeyCode::Char('R'));
-    let prompt = a.consent_text_any().expect("the request");
-    assert!(
-        prompt.contains("sentry-tasks") && prompt.contains("`plan web`"),
-        "it asks for tasks, naming what they may do: {prompt}"
-    );
-    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
     a.writer_answered(
-        "# Maintenance review · myserver\n\n## Now\n- web\n\n```sentry-tasks\n\
-         [[task]]\nid = \"web-next\"\ntitle = \"Plan web to 1.5.2\"\nwhy = \"Security fix.\"\n\
+        "# Maintenance review · myserver\n\n## Now\n- web\n\n```sentry-changes\n\
+         [[add]]\nid = \"web-next\"\ntitle = \"Plan web to 1.5.2\"\nwhy = \"Security fix.\"\n\
          level = \"now\"\ndo = \"plan web\"\nitem = \"web\"\n\n\
-         [[task]]\nid = \"restore-test\"\ntitle = \"Test a backup restore\"\nwhy = \"Never tried.\"\n\
-         level = \"soon\"\nevery = \"180d\"\ndo = \"by-hand\"\nsteps = \"Restore last night's dump to a scratch dir.\"\n```",
+         [[add]]\nid = \"restore-test\"\ntitle = \"Test a backup restore\"\nwhy = \"Never tried.\"\n\
+         level = \"soon\"\nevery = \"180d\"\ndo = \"by-hand\"\nsteps = \"Restore last night's dump to a scratch dir.\"\n\n\
+         [[add]]\nid = \"extra\"\ntitle = \"Something else\"\nlevel = \"tidy\"\ndo = \"by-hand\"\n\n\
+         [[track]]\nkey = \"image:cache\"\nrisk = \"low\"\nwhy = \"Unpinned and unwatched.\"\n\n\
+         [[untrack]]\nitem = \"legacy\"\nwhy = \"Its replacement has run for months.\"\n\n\
+         [[item]]\nid = \"web\"\nrisk = \"high\"\nwhy = \"1.5 can't be undone.\"\n\n\
+         [[later]]\nkey = \"os\"\nuntil = 2099-01-01\nwhy = \"Nothing to do before the next release.\"\n\n\
+         [[ignore]]\nkey = \"image:nope\"\nwhy = \"Not there.\"\n```",
     );
     let s = screen(&mut a);
-    assert!(s.contains("2 suggested tasks · a adds one"), "{s}");
-    // Add both: pick, see the TOML, confirm.
-    for _ in 0..2 {
-        key(&mut a, KeyCode::Char('a'));
-        key(&mut a, KeyCode::Char('1'));
-        let s = screen(&mut a);
-        assert!(
-            s.contains("Add this task to Maintenance") && s.contains("[[task]]"),
-            "{s}"
-        );
-        key(&mut a, KeyCode::Char('y'));
+    let shown: Vec<&str> = s
+        .lines()
+        .skip(1)
+        .filter(|l| !l.contains("/reviews/") && !l.contains("Maintenance review   "))
+        .collect();
+    insta::assert_snapshot!("server_review_158x41", shown.join("\n"));
+    assert!(s.contains("7 changes · Enter applies the 7 ticked"), "{s}");
+    for has in [
+        "Remove",
+        "stop tracking",
+        "Add",
+        "Test a backup restore · every 180d",
+        "compose service cache",
+        "Change",
+        "risk high",
+        "Put off",
+        "until 2099-01-01",
+        "not used: ignore image:nope: discovery found no such thing",
+    ] {
+        assert!(s.contains(has), "{has} not in: {s}");
     }
+    // Untick the task nobody wants (the fourth row), then one Enter for the rest.
+    for _ in 0..3 {
+        key(&mut a, KeyCode::Char('j'));
+    }
+    key(&mut a, KeyCode::Char(' '));
+    assert!(screen(&mut a).contains("Enter applies the 6 ticked"));
+    key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
-    assert!(!s.contains("suggested task"), "none open: {s}");
+    assert!(s.contains("6 applied · 1 skipped"), "{s}");
+    let log = &a.store.log[0];
+    assert_eq!(log.head.kind, "review");
+    assert!(
+        log.body.contains("applied: add track image:cache")
+            && log.body.contains("applied: remove item legacy")
+            && log.body.contains("skipped: add task extra"),
+        "{}",
+        log.body
+    );
     key(&mut a, KeyCode::Esc);
-    // Both on Maintenance; the plan task is about web.
+    // Maintenance: both tasks, cache tracked, legacy gone, web high risk, os put off.
     let s = screen(&mut a);
     assert!(
         s.contains("Plan web to 1.5.2") && s.contains("Test a backup restore"),
         "{s}"
     );
+    assert!(!s.contains("Something else"), "skipped: {s}");
+    assert!(!s.contains("Track cache"), "tracked now: {s}");
+    assert!(!s.contains("legacy"), "untracked: {s}");
+    assert!(!s.contains("os: end of life soon"), "put off: {s}");
+    let cfg = &a.remote.cfg.maintenance.items;
+    let ids: Vec<&str> = cfg.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, ["web", "engine", "os", "cache"]);
+    assert_eq!(cfg[0].risk, crate::config::Risk::High);
+    assert_eq!(cfg[3].risk, crate::config::Risk::Low);
+    // R again: nothing left to apply, so the brief for a new review.
+    key(&mut a, KeyCode::Char('R'));
+    assert!(screen(&mut a).contains("Enter starts the review"));
+    key(&mut a, KeyCode::Esc);
     a.apply(
         vec![super::app::Effect::MaintFind("task:restore".into())],
         Instant::now(),
@@ -2361,26 +2453,21 @@ fn a_workflow_that_wont_start_goes_back_to_claude() {
 fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    a.apply(
-        vec![super::app::Effect::TaskAdd(Box::new(
-            sentry_core::maint::tasks::Task {
-                id: "ups".into(),
-                title: "Check the UPS battery".into(),
-                why: "It is old.".into(),
-                level: sentry_core::maint::Level::Soon,
-                every: None,
-                act: "by-hand".into(),
-                item: None,
-                steps: "Run `upsc ups`.".into(),
-                added: None,
-                off: false,
-                source: Default::default(),
-                review: None,
-                after: None,
-            },
-        ))],
-        Instant::now(),
-    );
+    a.add_task_for_test(sentry_core::maint::tasks::Task {
+        id: "ups".into(),
+        title: "Check the UPS battery".into(),
+        why: "It is old.".into(),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: "by-hand".into(),
+        item: None,
+        steps: "Run `upsc ups`.".into(),
+        added: None,
+        off: false,
+        source: Default::default(),
+        review: None,
+        after: None,
+    });
     key(&mut a, KeyCode::Char(Tab::Maint.key()));
     a.apply(
         vec![super::app::Effect::MaintFind("task:ups".into())],

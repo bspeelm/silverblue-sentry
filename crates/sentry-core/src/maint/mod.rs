@@ -2,6 +2,7 @@
 //! reviews, the tasks you took from reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
 //! server's under `~/.config/sentry/servers/<name>/`. Local only, never in git.
 
+pub mod changes;
 pub mod later;
 pub mod log;
 pub mod plan;
@@ -85,7 +86,7 @@ pub fn read_rules(notes: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// A fenced block whose opening line starts with `fence` (```` ```sentry-tasks ````) taken out
+/// A fenced block whose opening line starts with `fence` (```` ```sentry-changes ````) taken out
 /// of an answer: (the answer without it, the block's text). The closing fence is the first
 /// one outside a TOML multi-line string, since a string may hold Markdown with fences of its
 /// own.

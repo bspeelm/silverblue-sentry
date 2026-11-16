@@ -1,7 +1,6 @@
 //! Tasks you took from a review: one-time ("plan web to 1.5.2", "check the UPS battery") or
-//! recurring (`every = "90d"`). Claude suggests them at the end of a review in a
-//! ```` ```sentry-tasks ```` TOML block; you accept each one in the review view and it lands in
-//! `tasks.toml` under [`super::root`]. Maintenance shows those that are due. Whether a task is
+//! recurring (`every = "90d"`). A review proposes them among its changes
+//! ([`super::changes`]); applied, they land in `tasks.toml` under [`super::root`]. Maintenance shows those that are due. Whether a task is
 //! done comes from the log (the workflow it runs ended well, or `d` logged it by hand), never
 //! from this file. Edit it freely.
 //!
@@ -136,79 +135,11 @@ impl Task {
     }
 }
 
-/// A review's suggestion and what you did with it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SugState {
-    #[default]
-    Open,
-    Added,
-    Skipped,
-}
-
-impl SugState {
-    pub fn word(self) -> &'static str {
-        match self {
-            SugState::Open => "open",
-            SugState::Added => "added",
-            SugState::Skipped => "skipped",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Suggestion {
-    #[serde(default)]
-    pub state: SugState,
-    pub task: Task,
-}
-
-/// What a suggestion may point at: the workflows there are, and (sentry-server) the items.
-pub struct Known<'a> {
-    pub workflows: &'a [String],
-    pub items: &'a [String],
-}
-
-const FENCE: &str = "```sentry-tasks";
-
-/// Claude's review answer → the review without its tasks block, and the tasks in it. Entries
-/// that don't parse are dropped; a `run`/`plan` of something unknown becomes by hand.
-pub fn take_suggestions(answer: &str, known: &Known) -> (String, Vec<Task>) {
-    match super::fenced_block(answer, FENCE) {
-        Some((body, block)) => (body, parse_block(&block, known)),
-        None => (answer.to_string(), Vec::new()),
-    }
-}
-
-fn parse_block(block: &str, known: &Known) -> Vec<Task> {
-    #[derive(Deserialize)]
-    struct Block {
-        #[serde(default)]
-        task: Vec<toml::Value>,
-    }
-    let Ok(b) = toml::from_str::<Block>(block) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Task> = Vec::new();
-    for v in b.task {
-        let Ok(mut t) = v.try_into::<Task>() else {
-            continue;
-        };
-        t.id = slug(&t.id);
-        if t.id.is_empty() || t.title.trim().is_empty() || out.iter().any(|o| o.id == t.id) {
-            continue;
-        }
-        validate(&mut t, known);
-        out.push(t);
-    }
-    out
-}
-
 /// `run`/`plan` must name a workflow or item there is; anything else is done by hand.
-fn validate(t: &mut Task, known: &Known) {
+pub(crate) fn validate(t: &mut Task, workflows: &[String], items: &[String]) {
     let missing = match Do::parse(&t.act) {
-        Some(Do::Run(wf)) if !known.workflows.contains(&wf) => Some(format!("workflow {wf}")),
-        Some(Do::Plan(it)) if !known.items.contains(&it) => Some(format!("item {it}")),
+        Some(Do::Run(wf)) if !workflows.contains(&wf) => Some(format!("workflow {wf}")),
+        Some(Do::Plan(it)) if !items.contains(&it) => Some(format!("item {it}")),
         None => Some(format!("action {:?}", t.act)),
         _ => None,
     };
@@ -220,7 +151,7 @@ fn validate(t: &mut Task, known: &Known) {
     }
 }
 
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let s: String = s
         .trim()
         .to_lowercase()
@@ -234,36 +165,6 @@ fn slug(s: &str) -> String {
         .chars()
         .take(40)
         .collect()
-}
-
-/// The end of a review request: how to suggest tasks, and the tasks already taken.
-pub fn request_section(workflows: &[String], items: &[String], current: &[Task]) -> String {
-    let mut dos = vec!["`audit`".to_string(), "`by-hand`".to_string()];
-    dos.extend(workflows.iter().map(|w| format!("`run {w}`")));
-    dos.extend(items.iter().map(|i| format!("`plan {i}`")));
-    let taken = if current.is_empty() {
-        "(none yet)".to_string()
-    } else {
-        current
-            .iter()
-            .map(|t| format!("- {}: {} ({}; {})", t.id, t.title, t.when(), t.act))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    format!(
-        "Last, after the Watch section and with no heading of its own, suggest the tasks the user \
-         should add to sentry's Maintenance list: things from Now, Soon and Routine that the \
-         recommendations above don't already cover, as one fenced block whose info string is \
-         `sentry-tasks`, TOML, one `[[task]]` table each:\n\
-         ```sentry-tasks\n[[task]]\nid = \"short-slug\"\ntitle = \"What to do, in a few words\"\n\
-         why = \"One or two sentences: why, and why now\"\nlevel = \"now\" # now, soon, routine or tidy\n\
-         do = \"by-hand\"\n# every = \"90d\" only for work that recurs; leave it out for once\n\
-         # item = \"<item id>\" when it's about one\n\
-         steps = \"\"\"\nFor by-hand tasks: the exact steps and commands, in Markdown.\n\"\"\"\n```\n\
-         `do` is one of: {}. The user accepts each task or not; suggest none if nothing is missing.\n\
-         Tasks already taken (don't suggest them again):\n{taken}",
-        dos.join(", ")
-    )
 }
 
 /// When it was last done: a log entry tagged with it, the workflow it runs ending well, the
@@ -493,7 +394,7 @@ pub fn save(server: &str, tasks: &[Task]) -> anyhow::Result<()> {
         std::fs::create_dir_all(d)?;
     }
     let text = format!(
-        "# Maintenance tasks: taken from a review (a on the review view), and built-in cadences\n\
+        "# Maintenance tasks: taken from a review (R on Maintenance), and built-in cadences\n\
          # changed with e (or off = true). Done is read from the maintenance log;\n\
          # do = run <workflow> | plan <item> | audit | job <name> | by-hand. Edit freely.\n\n{}",
         toml::to_string(&File {
@@ -527,84 +428,25 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn known() -> (Vec<String>, Vec<String>) {
-        (vec!["quick-update".into()], vec!["web".into()])
-    }
-
-    const ANSWER: &str = "# Maintenance review\n\n## Now\n- web\n\n```sentry-tasks\n\
-        [[task]]\nid = \"Plan Web\"\ntitle = \"Plan web to 1.5.2\"\nwhy = \"security fix\"\n\
-        level = \"now\"\ndo = \"plan web\"\nitem = \"web\"\n\n\
-        [[task]]\nid = \"ups\"\ntitle = \"Check the UPS battery\"\nlevel = \"routine\"\n\
-        every = \"90d\"\ndo = \"by-hand\"\nsteps = \"Run the self-test.\"\n\n\
-        [[task]]\nid = \"ghost\"\ntitle = \"Run ghost\"\nlevel = \"soon\"\ndo = \"run ghost\"\n\n\
-        [[task]]\nid = \"ups\"\ntitle = \"again\"\nlevel = \"soon\"\ndo = \"audit\"\n\n\
-        [[task]]\nid = \"bad\"\ntitle = \"bad level\"\nlevel = \"whenever\"\ndo = \"audit\"\n\
-        ```\n";
-
-    #[test]
-    fn the_block_leaves_the_body_and_bad_entries_go() {
-        let (wf, it) = known();
-        let k = Known {
-            workflows: &wf,
-            items: &it,
-        };
-        let (body, tasks) = take_suggestions(ANSWER, &k);
-        assert_eq!(body, "# Maintenance review\n\n## Now\n- web");
-        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["plan-web", "ups", "ghost"]);
-        assert_eq!(tasks[0].action(), Do::Plan("web".into()));
-        assert_eq!(tasks[1].every, Some(Dur::secs(90 * 86400)));
-        // An unknown workflow: done by hand, and it says why.
-        assert_eq!(tasks[2].action(), Do::ByHand);
-        assert!(tasks[2].why.contains("workflow ghost not found"));
-        // Fences inside `steps` don't end the block.
-        let fenced = "# Review\n\n```sentry-tasks\n[[task]]\nid = \"fw\"\ntitle = \"Firmware\"\n\
-            level = \"routine\"\ndo = \"by-hand\"\nsteps = \"\"\"\n```bash\nfwupdmgr get-updates\n```\n\
-            Then reboot.\n\"\"\"\n\n[[task]]\nid = \"two\"\ntitle = \"Two\"\nlevel = \"tidy\"\n\
-            do = \"by-hand\"\nsteps = \"\"\"\n```\nls\n```\n\"\"\"\n```\n\n## After";
-        let (body, tasks) = take_suggestions(fenced, &k);
-        assert_eq!(body, "# Review\n\n\n## After");
-        assert_eq!(tasks.len(), 2);
-        assert!(
-            tasks[0]
-                .steps
-                .contains("```bash\nfwupdmgr get-updates\n```")
-        );
-        // No block: nothing taken.
-        let (b, t) = take_suggestions("# Review\n", &k);
-        assert_eq!((b.as_str(), t.len()), ("# Review\n", 0));
-    }
-
     #[test]
     fn a_task_round_trips_through_the_file_format() {
-        let (wf, it) = known();
-        let k = Known {
-            workflows: &wf,
-            items: &it,
-        };
-        let (_, tasks) = take_suggestions(ANSWER, &k);
+        let mut t = task(
+            "run quick-update",
+            Some(Dur::secs(90 * 86400)),
+            "2026-10-20T00:00:00Z",
+        );
+        t.steps = "```bash\nls\n```".into();
         let text = toml::to_string(&File {
-            task: tasks.clone(),
+            task: vec![t.clone()],
         })
         .unwrap();
-        assert_eq!(toml::from_str::<File>(&text).unwrap().task, tasks);
-        assert!(tasks[1].to_toml().starts_with("[[task]]"));
-    }
-
-    #[test]
-    fn the_request_lists_what_do_may_name_and_the_tasks_taken() {
-        let (wf, it) = known();
-        let s = request_section(&wf, &it, &[task("audit", None, "2026-10-20T00:00:00Z")]);
-        assert!(s.contains("`run quick-update`") && s.contains("`plan web`"));
-        assert!(s.contains("- t: T (once; audit)"));
-        // The example in it parses as a block.
-        let k = Known {
-            workflows: &wf,
-            items: &it,
-        };
-        let (_, tasks) = take_suggestions(&s, &k);
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "short-slug");
+        assert_eq!(toml::from_str::<File>(&text).unwrap().task, vec![t.clone()]);
+        assert!(t.to_toml().starts_with("[[task]]"));
+        // `run`/`plan` of something that isn't there is done by hand, and says why.
+        validate(&mut t, &[], &[]);
+        assert_eq!(t.action(), Do::ByHand);
+        assert!(t.why.contains("workflow quick-update not found"));
+        assert_eq!(slug(" Plan  Web! "), "plan-web");
     }
 
     fn entry(

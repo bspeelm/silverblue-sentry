@@ -24,7 +24,6 @@ use super::{Event, ScreenId};
 use crate::config::Config;
 use crate::exec::{Cmd, ExecError, StreamMsg};
 use crate::fmt;
-use crate::maint::tasks::SugState;
 
 /// Something a screen wants done. Screens never touch threads or the terminal themselves.
 #[derive(Clone)]
@@ -77,11 +76,6 @@ pub enum Effect {
     PlanDrop(String),
     /// `R`: the latest review, or what writing one means.
     ReviewOpen,
-    ReviewWrite,
-    /// A review's suggested task: added to `tasks.toml`, or skipped.
-    TaskAdd(Box<crate::maint::tasks::Task>),
-    TaskSkip(String),
-    /// Take a task off `tasks.toml`.
     TaskRemove(String),
     /// A task done by hand: logged now, then a note for it is asked.
     TaskDone(String),
@@ -289,9 +283,9 @@ pub struct App {
     rec_view: Option<super::records::Records>,
     /// Claude writing a plan or a review in the background.
     writer: Option<super::docview::Writer>,
-    /// The Plan view (workflow, scroll) and the Review view (scroll), over the screen.
+    /// The Plan view (workflow, scroll) and the Review window, over the screen.
     plan_view: Option<(String, usize)>,
-    review_view: Option<usize>,
+    review_view: Option<super::reviewview::ReviewView>,
     review: Option<crate::maint::review::ReviewDoc>,
     wf_plan: Option<String>,
     wf_plan_path: Option<std::path::PathBuf>,
@@ -1748,18 +1742,7 @@ impl App {
                     self.toast(format!("the plan for {wf} is dropped (plans/done/)"));
                 }
                 // Being written: watch it. Written: every review is in Records. None: write one.
-                Effect::ReviewOpen => {
-                    if self.writing_review() {
-                        self.review_view = Some(0);
-                    } else if self.review.is_some() {
-                        self.open_records(super::records::Section::Reviews);
-                    } else {
-                        self.review_box();
-                    }
-                }
-                Effect::ReviewWrite => self.review_write(),
-                Effect::TaskAdd(task) => self.task_add(*task),
-                Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
+                Effect::ReviewOpen => self.review_open(),
                 Effect::TaskRemove(id) => {
                     let all = crate::maint::tasks::effective(
                         &self.data.tasks,
@@ -2147,57 +2130,140 @@ impl App {
         self.start_writer(super::docview::Writer::new(wf, doc), prompt, None);
     }
 
-    /// `R` with no review yet, or `R` in the Review view: what Claude will do, then yes.
-    fn review_box(&mut self) {
-        if !crate::claude::available() {
-            return self.toast("reviews are written by Claude Code, which isn't installed");
-        }
-        let t = self.theme;
-        self.modal = Some(Modal {
-            title: "Review maintenance with Claude".into(),
-            color: t.mag,
-            lines: vec![
-                Line::styled(
-                    "Claude reviews what Maintenance recommends, the deployments and updates \
-                     waiting, the maintenance log and release notes, then writes what to do \
-                     now, soon and routinely, and why. It ends with tasks you can add to \
-                     Maintenance (a in the review).",
-                    t.fg(),
-                ),
-                Line::raw(""),
-                Line::styled(
-                    format!(
-                        "It reads the web, your notes and this machine (read-only). Saved in {}.",
-                        widgets::short_home(&crate::maint::review::dir(crate::maint::LOCAL))
-                    ),
-                    t.dim(),
-                ),
-                Line::raw(""),
-                Line::styled(
-                    "Sent to Claude through your Claude Code login (Anthropic). Nothing on this \
-                     machine changes.",
-                    t.s(t.yellow),
-                ),
-            ],
-            yes: Some(("review".into(), vec![Effect::ReviewWrite])),
+    /// `R` on Maintenance: the review window. A review with changes still to apply shows
+    /// them; otherwise the brief, and Enter starts a new one.
+    fn review_open(&mut self) {
+        use super::reviewview::ReviewView;
+        self.close_docs();
+        self.review_view = Some(if self.writing_review() {
+            ReviewView::show()
+        } else {
+            ReviewView::open(self.review.as_ref())
         });
     }
 
-    fn review_write(&mut self) {
+    /// What a review reads and does, shown before one is started.
+    fn review_brief(&self) -> Vec<Line<'static>> {
+        let t = self.theme;
+        if !crate::claude::available() {
+            return vec![Line::styled(
+                "  Reviews are written by Claude Code, which isn't installed.",
+                t.s(t.yellow),
+            )];
+        }
+        vec![
+            Line::raw(""),
+            Line::styled(
+                "  Claude reviews what Maintenance lists (recommendations, tasks, what's put off), the",
+                t.fg(),
+            ),
+            Line::styled(
+                "  deployments and updates waiting, the maintenance log and release notes, then writes",
+                t.fg(),
+            ),
+            Line::styled("  what to do now, soon and routinely, and why.", t.fg()),
+            Line::raw(""),
+            Line::styled(
+                "  It ends with how the list should change: tasks to add, remove or change, and what",
+                t.fg(),
+            ),
+            Line::styled(
+                "  can wait. You see those as one list, ticked; Enter applies them together.",
+                t.fg(),
+            ),
+            Line::raw(""),
+            Line::styled(
+                format!(
+                    "  It reads the web, your notes and this machine (read-only). Saved in {}.",
+                    widgets::short_home(&crate::maint::review::dir(crate::maint::LOCAL))
+                ),
+                t.dim(),
+            ),
+            Line::styled(
+                "  Sent to Claude through your Claude Code login (Anthropic). Nothing on this machine changes.",
+                t.s(t.yellow),
+            ),
+            Line::raw(""),
+            Line::styled("  Enter starts the review.", t.s(t.cyan)),
+        ]
+    }
+
+    /// Everything on Maintenance a review's changes may name, and `f` with it.
+    fn with_known<R>(&self, f: impl FnOnce(&crate::maint::changes::Known) -> R) -> R {
         let v = self.view();
-        let tasks = crate::maint::tasks::request_section(
-            &self.workflow_names(),
-            &[],
-            &super::screens::maint::all_tasks(&self.view()),
-        );
+        let workflows = self.workflow_names();
+        let tasks = super::screens::maint::all_tasks(&v);
+        let rows: Vec<(String, String)> = super::screens::maint::recs_all(&v)
+            .into_iter()
+            .map(|r| (r.key, r.title))
+            .collect();
+        f(&crate::maint::changes::Known {
+            workflows: &workflows,
+            tasks: &tasks,
+            rows: &rows,
+            later: Some(&self.data.snoozes),
+            items: &[],
+            found: &[],
+        })
+    }
+
+    /// Enter on the brief: Claude writes the review.
+    fn review_start(&mut self) {
+        if !crate::claude::available() {
+            return self.toast("reviews are written by Claude Code, which isn't installed");
+        }
+        let v = self.view();
+        let changes = self.with_known(|k| crate::maint::changes::request_section(k, false));
         let prompt = super::plans::review_request(
             &self.cfg,
             &super::screens::maint::recs_text(&v),
             &super::screens::maint::context(&v),
-            &tasks,
+            &changes,
         );
         let doc = crate::maint::review::ReviewDoc::new(crate::maint::LOCAL);
         self.start_writer(super::docview::Writer::review(doc), prompt, None);
+    }
+
+    /// Enter on a review's changes: those ticked are applied together, the rest skipped,
+    /// and the log says what was done.
+    fn review_apply(&mut self) {
+        let Some(mut rd) = self.review.clone() else {
+            return;
+        };
+        let derived = crate::jobs::state::tasks(&self.cfg);
+        let mut tasks = self.data.tasks.clone();
+        let mut later = self.data.snoozes.clone();
+        let now = jiff::Timestamp::now();
+        let (done, skipped, failed) = crate::maint::changes::settle(&mut rd.head.changes, |c| {
+            crate::maint::changes::apply(c, &mut tasks, &mut later, &derived, now)
+                .unwrap_or_else(|| Err("only on a server".into()))
+        });
+        if self.records {
+            let saved = crate::maint::tasks::save(crate::maint::LOCAL, &tasks)
+                .and_then(|_| crate::maint::later::replace(crate::maint::LOCAL, &later))
+                .and_then(|_| crate::maint::review::save(&rd).map(|_| ()));
+            if let Err(e) = saved {
+                return self.toast(format!("couldn't apply the changes: {e}"));
+            }
+        }
+        self.data.tasks = tasks;
+        self.data.snoozes = later;
+        if done + failed > 0 {
+            self.log_event(crate::maint::log::LogEntry::event(
+                crate::maint::LOCAL,
+                "review",
+                "review",
+                failed == 0,
+                &crate::maint::changes::summary(&rd.head.changes),
+                &[format!("review:{}", rd.file_name())],
+                now,
+            ));
+        }
+        self.review = Some(rd);
+        self.toast(format!(
+            "review: {}",
+            super::reviewview::outcome(done, skipped, failed)
+        ));
     }
 
     /// Claude writes (a plan or a review) in the background; its view opens.
@@ -2212,7 +2278,9 @@ impl App {
         }
         w.place = "machine";
         let profile = if w.review.is_some() {
-            self.review_view = Some(0);
+            self.review_view
+                .get_or_insert_with(super::reviewview::ReviewView::show)
+                .brief = false;
             super::plans::review_profile(&self.cfg)
         } else {
             self.plan_view = Some((w.item.clone(), 0));
@@ -2242,26 +2310,20 @@ impl App {
     /// The writer's turn ended: its answer becomes the plan (or the review), saved.
     fn writer_turn_ended(&mut self) {
         use crate::maint::plan::PlanStatus;
-        let workflows = self.workflow_names();
-        let Some(w) = self.writer.as_mut() else {
-            return;
-        };
-        if let Some(mut rd) = w.review.clone() {
-            rd.head.session = w.session.clone().or(rd.head.session);
-            let msg = match (&w.answer, &w.err) {
+        if let Some(mut rd) = self.writer.as_ref().and_then(|w| w.review.clone()) {
+            let (answer, err, session) = self
+                .writer
+                .as_ref()
+                .map(|w| (w.answer.clone(), w.err.clone(), w.session.clone()))
+                .unwrap_or_default();
+            rd.head.session = session.or(rd.head.session);
+            let msg = match (&answer, &err) {
                 (Some(a), _) if !a.trim().is_empty() => {
-                    rd.take_answer(
-                        a,
-                        &crate::maint::tasks::Known {
-                            workflows: &workflows,
-                            items: &[],
-                        },
-                    );
+                    let today = jiff::Zoned::now().date();
+                    self.with_known(|k| rd.take_answer(a, k, today));
                     match rd.open().len() {
-                        0 => "the maintenance review is saved".to_string(),
-                        n => format!(
-                            "the maintenance review is saved: {n} suggested tasks (a adds one)"
-                        ),
+                        0 => "the review is saved: no changes to the list".to_string(),
+                        n => format!("the review is saved: {n} changes to apply (Enter)"),
                     }
                 }
                 (_, err) => format!(
@@ -2270,7 +2332,9 @@ impl App {
                         .unwrap_or_else(|| "Claude gave no answer".into())
                 ),
             };
-            w.review = Some(rd.clone());
+            if let Some(w) = self.writer.as_mut() {
+                w.review = Some(rd.clone());
+            }
             if rd.head.status == PlanStatus::Ready {
                 if self.records
                     && let Err(e) = crate::maint::review::save(&rd)
@@ -2278,9 +2342,15 @@ impl App {
                     return self.toast(format!("couldn't save the review: {e}"));
                 }
                 self.review = Some(rd);
+                if let Some(v) = self.review_view.as_mut() {
+                    *v = super::reviewview::ReviewView::show();
+                }
             }
             return self.toast(msg);
         }
+        let Some(w) = self.writer.as_mut() else {
+            return;
+        };
         let mut doc = w.doc.clone();
         doc.head.session = w.session.clone().or(doc.head.session);
         match (&w.answer, &w.err) {
@@ -2393,16 +2463,19 @@ impl App {
         }
     }
 
-    /// Keys in the Review view: scroll, R writes a new one, C-c stops it, Esc goes back.
+    /// Keys in the Review window: its own, and what they ask for.
     fn review_view_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyModifiers;
-        let Some(scroll) = self.review_view else {
+        use super::reviewview::Fx;
+        let writing = self.writing_review();
+        let Some(v) = self.review_view.as_mut() else {
             return;
         };
-        let writing = self.writing_review();
-        match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.review_view = None,
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+        match v.key(k, self.review.as_mut(), writing) {
+            Fx::None => {}
+            Fx::Close => self.review_view = None,
+            Fx::Start => self.review_start(),
+            Fx::Apply => self.review_apply(),
+            Fx::Stop => {
                 if let Some(pid) = self
                     .writer
                     .as_ref()
@@ -2413,22 +2486,9 @@ impl App {
                     self.toast("stopped");
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.review_view = Some(scroll + 1),
-            KeyCode::Up | KeyCode::Char('k') => self.review_view = Some(scroll.saturating_sub(1)),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.review_view = Some(scroll + 20),
-            KeyCode::PageUp => self.review_view = Some(scroll.saturating_sub(20)),
-            KeyCode::Home | KeyCode::Char('g') => self.review_view = Some(0),
-            KeyCode::End | KeyCode::Char('G') => self.review_view = Some(usize::MAX / 2),
-            KeyCode::Char('R') if !writing => {
-                self.review_view = None;
-                self.review_box();
-            }
-            KeyCode::Char(c @ ('a' | 'x')) if !writing => self.suggestion_pick(c == 'a'),
-            _ => {}
         }
     }
 
-    /// The workflows there are (what a suggested `run` may name).
     /// The workflows sentry knows, with their values, for checking a plan's steps.
     fn wf_infos(&self) -> Vec<crate::apply::plan::WfInfo> {
         use crate::apply::plan::WfInfo;
@@ -2458,60 +2518,7 @@ impl App {
         }
     }
 
-    /// `a`/`x` in the review view: pick an open suggestion to add (preview, confirm) or skip.
-    fn suggestion_pick(&mut self, add: bool) {
-        let t = self.theme;
-        let open: Vec<crate::maint::tasks::Task> = self
-            .review
-            .as_ref()
-            .map(|d| d.open().into_iter().map(|s| s.task.clone()).collect())
-            .unwrap_or_default();
-        if open.is_empty() {
-            return self.toast("no suggested tasks left in this review");
-        }
-        let file = widgets::short_home(&crate::maint::tasks::path(crate::maint::LOCAL));
-        let effects = |task: &crate::maint::tasks::Task| {
-            if add {
-                vec![Effect::Confirm(Modal {
-                    title: "Add this task to Maintenance".into(),
-                    color: t.mag,
-                    lines: super::docview::task_lines(&t, task, &file),
-                    yes: Some(("add".into(), vec![Effect::TaskAdd(Box::new(task.clone()))])),
-                })]
-            } else {
-                vec![Effect::TaskSkip(task.id.clone())]
-            }
-        };
-        if open.len() == 1 {
-            let e = effects(&open[0]);
-            return self.apply(e, Instant::now());
-        }
-        let lines = open
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                Line::styled(
-                    format!("{}  [{}] {} · {}", i + 1, s.level.word(), s.title, s.when()),
-                    t.fg(),
-                )
-            })
-            .collect();
-        self.choice = Some(Choice {
-            title: format!(
-                "{} which task? (1–{}, n cancels)",
-                if add { "Add" } else { "Skip" },
-                open.len().min(9)
-            ),
-            lines,
-            options: open
-                .iter()
-                .take(9)
-                .map(|s| (s.title.clone(), effects(s)))
-                .collect(),
-        });
-        self.dirty = true;
-    }
-
+    /// A task from an apply session's follow-up: into `tasks.toml`.
     fn task_add(&mut self, task: crate::maint::tasks::Task) {
         let mut task = task;
         task.added = Some(jiff::Timestamp::now());
@@ -2523,24 +2530,7 @@ impl App {
         let (id, title) = (task.id.clone(), task.title.clone());
         self.data.tasks.retain(|t| t.id != id);
         self.data.tasks.push(task);
-        self.suggestion_mark(&id, SugState::Added);
         self.toast(format!("added to Maintenance (6): {title}"));
-    }
-
-    /// Record what was done with a suggestion in the review itself.
-    fn suggestion_mark(&mut self, id: &str, state: SugState) {
-        let Some(rd) = self.review.as_mut() else {
-            return;
-        };
-        rd.mark(id, state);
-        if self.records
-            && let Err(e) = crate::maint::review::save(rd)
-        {
-            return self.toast(format!("couldn't update the review: {e}"));
-        }
-        if state == SugState::Skipped {
-            self.toast(format!("skipped {id}"));
-        }
     }
 
     /// `y` on the grant box: back up what Claude may write, grant it, and tell Claude.
@@ -3111,13 +3101,16 @@ impl App {
                 Some(d) => {
                     self.review = Some(d);
                     self.rec_view = None;
-                    self.review_view = Some(0);
+                    self.review_view = Some(super::reviewview::ReviewView::show());
                 }
                 None => self.toast("couldn't read that review"),
             },
             Fx::NewReview => {
                 self.rec_view = None;
-                self.review_box();
+                self.review_view = Some(super::reviewview::ReviewView {
+                    brief: true,
+                    ..Default::default()
+                });
             }
             Fx::Undo(row) => {
                 match row.kind {
@@ -3359,9 +3352,25 @@ impl App {
                 .filter(|w| w.review.is_none() && &w.item == wf);
             let path = widgets::short_home(&crate::maint::plan::path(crate::maint::LOCAL, wf));
             super::docview::draw(f, body, &t, self.data.plans.get(wf), w, *scroll, &path);
-        } else if let Some(scroll) = self.review_view {
+        } else if let Some(rv) = &self.review_view {
             let w = self.writer.as_ref().filter(|w| w.review.is_some());
-            super::docview::draw_review(f, body, &t, self.review.as_ref(), w, scroll);
+            let path = self.review.as_ref().map_or(String::new(), |d| {
+                widgets::short_home(
+                    &crate::maint::review::dir(crate::maint::LOCAL).join(d.file_name()),
+                )
+            });
+            super::reviewview::draw(
+                f,
+                body,
+                &t,
+                rv,
+                &super::reviewview::Shown {
+                    doc: self.review.as_ref(),
+                    writer: w,
+                    brief: &self.review_brief(),
+                    path: &path,
+                },
+            );
         }
         f.render_widget(
             Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)),
@@ -3562,16 +3571,8 @@ impl App {
                             ("Esc", "back"),
                         ]
                     }
-                } else if self.review_view.is_some() {
-                    if self.writing_review() {
-                        vec![
-                            ("j/k", "scroll"),
-                            ("C-c", "stop"),
-                            ("Esc", "back (it carries on)"),
-                        ]
-                    } else {
-                        vec![("R", "review again"), ("j/k", "scroll"), ("Esc", "back")]
-                    }
+                } else if let Some(rv) = &self.review_view {
+                    rv.hints(self.review.as_ref(), self.writing_review())
                 } else if let Some(r) = &self.rec_view {
                     r.hints()
                 } else if self.run.is_some() {
