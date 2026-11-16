@@ -9,6 +9,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
 pub mod containers;
 pub mod dashboard;
+pub mod history;
 pub mod maint;
 pub mod network;
 pub mod processes;
@@ -118,6 +119,7 @@ pub struct Screens {
     pub upgrade: upgrade::Upgrade,
     pub net: network::Network,
     pub procs: processes::Processes,
+    pub hist: history::History,
 }
 
 impl Screens {
@@ -152,6 +154,8 @@ impl Screens {
                 at(Kind::Listeners, None),
                 at(Kind::Docker, None),
             ],
+            // Read from this machine's disk, when the screen is entered (and on r).
+            ScreenId::Hist => vec![at(Kind::History, None)],
             ScreenId::Maint => vec![
                 at(Kind::Maint, None),
                 at(Kind::Docker, None),
@@ -202,6 +206,10 @@ impl Screens {
         if id == ScreenId::Maint && self.maint.view.is_some() {
             return self.maint.handle(a, v, r);
         }
+        // No list there: the arrows scrub.
+        if id == ScreenId::Hist {
+            return self.hist.handle(a, v);
+        }
         let n = Self::rows(id, v);
         if self.cursor_mut(id).nav(a, n) {
             return Vec::new();
@@ -229,6 +237,7 @@ impl Screens {
             ScreenId::Upgrade => upgrade::draw(f, area, v),
             ScreenId::Net => self.net.render(f, area, v),
             ScreenId::Proc => self.procs.render(f, area, v),
+            ScreenId::Hist => self.hist.render(f, area, v),
             _ => {}
         }
     }
@@ -258,6 +267,7 @@ impl Screens {
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Net => network::hints(),
             ScreenId::Proc => processes::hints(),
+            ScreenId::Hist => history::hints(),
             _ => Vec::new(),
         }
     }
@@ -273,6 +283,9 @@ impl Screens {
         // The process selected, in the order the screen lists them.
         if id == ScreenId::Proc {
             return self.procs.ask(v, r);
+        }
+        if id == ScreenId::Hist {
+            return self.hist.ask(v, r);
         }
         crate::tui::ask::ask_for(id, v, r)
             .ok_or_else(|| crate::tui::ask::nothing_here(id, v).to_string())

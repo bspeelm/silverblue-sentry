@@ -14,6 +14,24 @@ fn load(name: Option<&str>) -> Result<(String, Server), String> {
     Ok((n.to_string(), s.clone()))
 }
 
+/// `sentry-server record [name]`: sample the server into its metrics ring until Ctrl-C.
+pub fn record(name: Option<&str>) -> u8 {
+    let (n, s) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    match super::recorder::record(&Remote::new(&n, &s)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("sentry-server record: {e:#}");
+            1
+        }
+    }
+}
+
 /// `sentry-server [name]`: the TUI.
 pub fn tui(name: Option<&str>) -> u8 {
     let (n, s) = match load(name) {

@@ -1596,6 +1596,7 @@ dependencies = [
  "serde-saphyr",
  "serde_ignored",
  "serde_json",
+ "signal-hook 0.4.5",
  "thiserror 2.0.21",
  "toml",
  "tracing",

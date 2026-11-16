@@ -24,6 +24,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rustix.workspace = true
+signal-hook.workspace = true
 serde-saphyr.workspace = true
 
 [dev-dependencies]

@@ -265,6 +265,12 @@ pub struct App {
     /// The screen in view.
     pub screen: ScreenId,
     screens: Screens,
+    /// The samples taken become the server's metrics ring (History).
+    recorder: crate::recorder::Recorder,
+    /// There's a ring for this server: History is in the strip.
+    has_ring: bool,
+    /// The ring couldn't be written (said once).
+    ring_failed: bool,
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
@@ -352,6 +358,9 @@ impl App {
             store: Store::default(),
             screen: ScreenId::Dash,
             screens: Screens::default(),
+            recorder: Default::default(),
+            has_ring: false,
+            ring_failed: false,
             modal: None,
             modal_no: None,
             toast: None,
@@ -422,6 +431,7 @@ impl App {
             // Before the old plans move: their file also held the review dates.
             self.store.later = sentry_core::maint::later::load(&self.remote.name);
             self.store.baseline = sentry_core::baseline::BaselineFile::load(&self.remote.name);
+            self.has_ring = sentry_core::recorder::ring::path(&self.remote.name).exists();
             crate::maint::migrate_plans(&self.remote.name);
             self.store.plans = crate::maint::plan::list(&self.remote.name);
             self.store.review = crate::maint::review::latest(&self.remote.name);
@@ -570,6 +580,11 @@ impl App {
                 if k == Kind::Probe {
                     self.check_back();
                 }
+                self.record_sample();
+                if k == Kind::History {
+                    let recorded = |h: &sentry_core::tui::histview::HistData| h.header.is_some();
+                    self.has_ring |= self.store.history.value.as_ref().is_some_and(recorded);
+                }
                 self.keep_maint_selection();
                 self.dirty = true;
             }
@@ -712,6 +727,61 @@ impl App {
     }
 
     /// While rebooting: a probe with a new boot id means it's back.
+    /// A sample just arrived (the Dashboard's probe, or Processes'): it goes towards the
+    /// server's ring, one record every ten seconds. Nothing is read for this.
+    fn record_sample(&mut self) {
+        use crate::recorder::{fresh, root_pct, write};
+        let Some(s) = self.store.sampled.take() else {
+            return;
+        };
+        let st = &self.store;
+        let Some(p) = &st.probe.value else {
+            return;
+        };
+        let now = Instant::now();
+        let temp = fresh(
+            st.temp.value.as_ref().and_then(|t| t.as_ref()),
+            st.temp.at,
+            now,
+        );
+        let gpu = fresh(
+            st.gpu.value.as_ref().and_then(|g| g.as_ref()),
+            st.gpu.at,
+            now,
+        );
+        let Some(rec) = self.recorder.feed(
+            jiff::Timestamp::now().as_second(),
+            s.cpu,
+            s.rx,
+            s.tx,
+            p,
+            temp.map(|t| t.c),
+            gpu.map(|g| (g.util, g.temp)),
+            st.disks.value.as_deref().and_then(root_pct),
+        ) else {
+            return;
+        };
+        match write(&self.remote.name, self.offline, &rec) {
+            Ok(wrote) => self.has_ring |= wrote,
+            Err(e) if !self.ring_failed => {
+                self.ring_failed = true;
+                self.toast(&format!("history isn't being recorded: {e}"));
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// The screens in the strip: History only once something was recorded (`H` still opens
+    /// it), as in sentry.
+    fn visible(&self) -> Vec<ScreenId> {
+        SCREENS
+            .ids
+            .iter()
+            .copied()
+            .filter(|s| *s != ScreenId::Hist || self.has_ring || self.screen == ScreenId::Hist)
+            .collect()
+    }
+
     fn check_back(&mut self) {
         let Some((since, old)) = &self.reboot_wait else {
             return;
@@ -954,7 +1024,7 @@ impl App {
             }
             Action::Screen(id) => self.enter(id, now),
             Action::NextScreen | Action::PrevScreen => {
-                let ids = SCREENS.ids;
+                let ids = self.visible();
                 let i = ids.iter().position(|s| *s == self.screen).unwrap_or(0);
                 let step = if a == Action::NextScreen {
                     1
@@ -4297,10 +4367,9 @@ impl App {
     /// The strip: sentry's, with this program's screens.
     fn draw_tabs(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let v = self.view();
-        let tabs: Vec<sentry_core::tui::frame::Tab> = SCREENS
-            .ids
-            .iter()
-            .copied()
+        let tabs: Vec<sentry_core::tui::frame::Tab> = self
+            .visible()
+            .into_iter()
             .map(|id| sentry_core::tui::frame::Tab {
                 id,
                 badge: match id {

@@ -44,6 +44,8 @@ pub enum Kind {
     Maint,
     /// Look upstream versions up again (from this machine, network).
     Upstream,
+    /// The server's metrics ring, read from this machine's disk (no ssh).
+    History,
 }
 
 pub enum Payload {
@@ -72,6 +74,7 @@ pub enum Payload {
         maint::discover::Found,
     ),
     Upstream(jiff::Timestamp),
+    History(Box<sentry_core::tui::histview::HistData>),
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -102,6 +105,15 @@ impl<T> Slot<T> {
             Err(e) => self.err = Some(e),
         }
     }
+}
+
+/// What one probe added: CPU % and bytes per second since the one before (none on the
+/// first, or across a reboot).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampled {
+    pub cpu: Option<f32>,
+    pub rx: Option<f64>,
+    pub tx: Option<f64>,
 }
 
 const HIST: usize = 240;
@@ -136,6 +148,10 @@ pub struct Store {
     pub rx: Ring,
     pub tx: Ring,
     last_net: Option<(u64, u64, Instant)>,
+    /// The sample that just arrived, until the recorder takes it.
+    pub sampled: Option<Sampled>,
+    /// What was recorded for this server (the History screen).
+    pub history: Slot<sentry_core::tui::histview::HistData>,
     /// The boot id seen first; a different one means the server rebooted.
     pub boot_id: Option<String>,
     /// The processes, with their share of a core since the sample before.
@@ -255,6 +271,7 @@ impl Store {
                 self.maint_found = found;
             }
             Payload::Upstream(at) => self.upstream_at = Some(at),
+            Payload::History(h) => self.history.set(Ok(*h)),
         }
     }
 
@@ -278,11 +295,17 @@ impl Store {
             Kind::Journal => self.journal.err = Some(e),
             Kind::Report | Kind::ReportAt(_) | Kind::Audit => self.report.err = Some(e),
             Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
+            Kind::History => self.history.err = Some(e),
         }
     }
 
     fn on_probe(&mut self, p: probe::Probe) {
-        if let Some(c) = self.cpu_delta.pct(p.cpu) {
+        let mut sampled = Sampled {
+            cpu: self.cpu_delta.pct(p.cpu),
+            rx: None,
+            tx: None,
+        };
+        if let Some(c) = sampled.cpu {
             self.cpu.push(c as f64);
         }
         self.mem.push(p.mem_used_pct() as f64);
@@ -290,10 +313,13 @@ impl Store {
         if let Some((rx, tx, at)) = self.last_net {
             let dt = now.duration_since(at).as_secs_f64();
             if dt > 0.0 && p.rx_bytes >= rx && p.tx_bytes >= tx {
+                sampled.rx = Some((p.rx_bytes - rx) as f64 / dt);
+                sampled.tx = Some((p.tx_bytes - tx) as f64 / dt);
                 self.rx.push((p.rx_bytes - rx) as f64 / dt);
                 self.tx.push((p.tx_bytes - tx) as f64 / dt);
             }
         }
+        self.sampled = Some(sampled);
         self.last_net = Some((p.rx_bytes, p.tx_bytes, now));
         if self.boot_id.is_none() {
             self.boot_id = Some(p.boot_id.clone());
@@ -350,5 +376,6 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
             maint::upstream::refresh(&r.name, &r.cfg);
             Payload::Upstream(jiff::Timestamp::now())
         }
+        Kind::History => Payload::History(Box::new(sentry_core::tui::histview::load(&r.name))),
     })
 }

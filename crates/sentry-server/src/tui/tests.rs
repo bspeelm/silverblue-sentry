@@ -472,10 +472,8 @@ fn screen_keys_follow_sentry() {
         assert_eq!(a.screen, id, "{c}");
     }
     // Screens this program doesn't have (yet): their keys do nothing.
-    for c in ['7', 'H'] {
-        key(&mut a, KeyCode::Char(c));
-        assert_eq!(a.screen, ScreenId::Dash, "{c}");
-    }
+    key(&mut a, KeyCode::Char('7'));
+    assert_eq!(a.screen, ScreenId::Dash, "no Cleanup here");
     // 0 is a screen, as in sentry: the workflows, with or without a run.
     key(&mut a, KeyCode::Char('0'));
     assert_eq!(a.screen, ScreenId::Upgrade);
@@ -3701,4 +3699,171 @@ fn the_processes_sample_feeds_the_probe() {
     assert_eq!(a.next_due(now), now + std::time::Duration::from_secs(1));
     a.enter(ScreenId::Cont, now);
     assert!(a.polled_for_test().is_empty());
+}
+
+/// A day and a half of records, every ten minutes, ending at the tests' clock.
+fn history() -> sentry_core::tui::histview::HistData {
+    use sentry_core::recorder::ring::{Header, Rec};
+    let end = "2026-10-26T12:00:00Z"
+        .parse::<jiff::Timestamp>()
+        .unwrap()
+        .as_second();
+    let recs: Vec<Rec> = (0..216i64)
+        .map(|i| {
+            let x = i as f32;
+            Rec {
+                ts: end - (215 - i) * 600,
+                cpu: 20.0 + 15.0 * (x / 9.0).sin(),
+                mem_gib: 11.0 + (x / 40.0).cos(),
+                swap_gib: 0.25,
+                rx: 400_000.0 + 300_000.0 * (x / 5.0).sin(),
+                tx: 90_000.0,
+                load1: 0.4,
+                cpu_temp: 48.0 + 4.0 * (x / 9.0).sin(),
+                gpu: f32::NAN,
+                gpu_temp: f32::NAN,
+                disk_pct: 41.0,
+                top: Vec::new(),
+            }
+        })
+        // Nobody sampled for four hours.
+        .filter(|r| !(end - 10 * 3600..end - 6 * 3600).contains(&r.ts))
+        .collect();
+    sentry_core::tui::histview::HistData {
+        header: Some(Header {
+            capacity: crate::recorder::capacity(),
+            written: recs.len() as u64,
+            interval_s: crate::recorder::INTERVAL_S,
+        }),
+        recs,
+        live: None,
+        alerts: Vec::new(),
+        bytes: 3_317_824,
+    }
+}
+
+#[test]
+fn the_screen_appears_with_the_ring() {
+    let mut a = app();
+    let strip = |a: &mut App| {
+        render_to_string(a, 158, 41)
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string()
+    };
+    assert!(!strip(&mut a).contains("History"), "nothing recorded yet");
+    // Tab doesn't stop at a screen that isn't in the strip.
+    key(&mut a, KeyCode::BackTab);
+    assert_eq!(a.screen, ScreenId::Upgrade);
+    // H opens it all the same, and says how to get data.
+    key(&mut a, KeyCode::Char('H'));
+    assert_eq!(a.screen, ScreenId::Hist);
+    assert!(strip(&mut a).trim_end().ends_with("H History"));
+    key(&mut a, KeyCode::Char('1'));
+    assert!(!strip(&mut a).contains("History"));
+    // Something was recorded: it's in the strip from then on, last as in sentry.
+    data(&mut a, Kind::History, Payload::History(Box::new(history())));
+    assert!(strip(&mut a).trim_end().ends_with("0 Upgrade   H History"));
+    key(&mut a, KeyCode::BackTab);
+    assert_eq!(a.screen, ScreenId::Hist);
+    colon(&mut a, "dash");
+    colon(&mut a, "hist");
+    assert_eq!(a.screen, ScreenId::Hist);
+    // Entering it reads the ring (from this machine's disk) and nothing else; nothing polls.
+    use super::screens::Screens;
+    let polls = Screens::polls(ScreenId::Hist, &a.remote.cfg);
+    assert_eq!(polls.len(), 1);
+    assert_eq!((polls[0].kind, polls[0].every), (Kind::History, None));
+    // The tests sampled the server (three probes), and wrote no ring for it.
+    assert!(!sentry_core::recorder::ring::path("myserver").exists());
+}
+
+#[test]
+fn history_says_how_to_get_data_when_empty() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('H'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("No recorder data."), "{s}");
+    assert!(
+        s.contains("Open the Dashboard for a few seconds, or run `sentry-server record myserver`"),
+        "{s}"
+    );
+    assert!(s.contains("It exits on Ctrl-C."), "{s}");
+    assert!(
+        s.contains("[ ]  window") && s.contains("←→  scrub") && s.contains("r  reload"),
+        "sentry's keys: {s}"
+    );
+    key(&mut a, KeyCode::Char('A'));
+    assert!(
+        render_to_string(&mut a, 158, 41).contains("no recorder data"),
+        "nothing to ask about"
+    );
+    // A ring with nothing in it yet reads the same.
+    let mut empty = history();
+    empty.recs.clear();
+    data(&mut a, Kind::History, Payload::History(Box::new(empty)));
+    assert!(render_to_string(&mut a, 158, 41).contains("No recorder data."));
+}
+
+#[test]
+fn history_keys() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('H'));
+    data(&mut a, Kind::History, Payload::History(Box::new(history())));
+    for (w, h) in [(158, 41), (80, 24)] {
+        let s = render_to_string(&mut a, w, h);
+        assert!(s.contains("History") && !s.contains("too small"), "{s}");
+        if w == 158 {
+            insta::assert_snapshot!("server_history_158x41", body(&s));
+        }
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("last 24h · every 10s"), "{s}");
+    assert!(
+        s.contains("cpu %") && s.contains("mem GiB") && s.contains("disk /"),
+        "{s}"
+    );
+    assert!(!s.contains("gpu %"), "no GPU was ever read: {s}");
+    assert!(
+        s.contains("○ recorded while the Dashboard or Processes is open")
+            && s.contains("sentry-server record myserver to keep going"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("alerts"),
+        "a server has no recorder alerts: {s}"
+    );
+    // [ ] change the window, ← → scrub, as in sentry.
+    key(&mut a, KeyCode::Char('['));
+    assert!(render_to_string(&mut a, 158, 41).contains("last 6h"));
+    key(&mut a, KeyCode::Left);
+    assert!(render_to_string(&mut a, 158, 41).contains("last 6h until"));
+    key(&mut a, KeyCode::Right);
+    key(&mut a, KeyCode::Char(']'));
+    key(&mut a, KeyCode::Char(']'));
+    assert!(render_to_string(&mut a, 158, 41).contains("last 72h"));
+    assert_eq!(
+        a.screen,
+        ScreenId::Hist,
+        "the arrows aren't screen keys here"
+    );
+    // A recorder running for this server is named.
+    let mut h = history();
+    h.live = Some(sentry_core::recorder::Live {
+        pid: 4242,
+        interval_s: 10,
+        started: 0,
+    });
+    data(&mut a, Kind::History, Payload::History(Box::new(h)));
+    assert!(render_to_string(&mut a, 158, 41).contains("● recorder running (pid 4242, 10s)"));
+    // A: the window's figures, and that gaps are times nobody sampled.
+    key(&mut a, KeyCode::Char('A'));
+    let p = a.consent_text().expect("A asks about the window");
+    assert!(
+        p.contains("Server `myserver`")
+            && p.contains("only while it was open or recording")
+            && p.contains("Anything unusual in this period?"),
+        "{p}"
+    );
 }

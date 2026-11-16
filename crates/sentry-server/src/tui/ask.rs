@@ -94,6 +94,8 @@ pub fn nothing_here(tab: ScreenId, v: &View) -> &'static str {
         ScreenId::Svc if v.s.units.value.is_none() => "the services are still loading",
         ScreenId::Maint => "the maintenance is still loading",
         ScreenId::Net if v.s.sockets.value.is_none() => "the sockets are still loading",
+        ScreenId::Proc if v.s.procs.value.is_none() => "the processes are still loading",
+        ScreenId::Hist => "no recorder data to ask about yet",
         _ => "nothing selected to ask about here",
     }
 }
