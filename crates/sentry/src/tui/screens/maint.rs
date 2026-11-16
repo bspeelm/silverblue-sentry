@@ -14,11 +14,11 @@ use crate::audit::Finding;
 use crate::maint::Level;
 use crate::maint::local::{self, Action as Do, Inputs, Rec, RunInfo};
 use crate::maint::tasks::{Do as TaskDo, Task};
-use crate::tui::app::{Choice, Effect, Modal, RunSpec};
+use crate::tui::app::{Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::maintlist::{self, Dismiss, Verbs};
-use crate::tui::widgets::{inner, panel, wrap};
+use crate::tui::widgets::{inner, panel};
 
 /// A view opened inside Maintenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,40 +476,18 @@ impl Maint {
                         )),
                     })]
                 }),
-                _ => vec![Effect::Toast(
-                    "only findings can be marked expected: z puts this off".into(),
-                )],
+                _ => vec![Effect::Toast(maintlist::NOTHING_TO_DISMISS.into())],
             },
             Action::Char('B') => match &r.action {
                 Do::Fix(id) => finding(v, id).map_or(Vec::new(), |f| audit::pattern_effects(v, f)),
                 _ => Vec::new(),
             },
-            Action::Char('z') => {
-                let days = [7, 30, 90];
-                let mut lines: Vec<Line<'static>> = days
-                    .iter()
-                    .enumerate()
-                    .map(|(i, d)| Line::styled(format!("{}  in {d} days", i + 1), t.fg()))
-                    .collect();
-                lines.push(Line::raw(""));
-                lines.push(Line::styled(
-                    format!("{}: it leaves the list until then (maint.toml).", r.title),
-                    t.dim(),
-                ));
-                vec![Effect::Choose(Choice {
-                    title: "Look again later · pick one (1–3, n cancels)".into(),
-                    lines,
-                    options: days
-                        .into_iter()
-                        .map(|d| {
-                            (
-                                format!("in {d} days"),
-                                vec![Effect::Snooze(r.key.clone(), d)],
-                            )
-                        })
-                        .collect(),
-                })]
-            }
+            Action::Char('z') => vec![Effect::Choose(maintlist::later_choice(
+                t,
+                &r.title,
+                jiff::Zoned::now().date(),
+                |d, _| vec![Effect::Snooze(r.key.clone(), d)],
+            ))],
             _ => Vec::new(),
         }
     }
@@ -604,16 +582,7 @@ impl Maint {
         }
         let recs = recs(v);
         self.sync(&recs);
-        let [left, right] =
-            Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)])
-                .spacing(1)
-                .areas(area);
-        let want = recs.len().max(1) as u16 + 4;
-        let [top, bottom] = Layout::vertical([
-            Constraint::Length(want.min(left.height / 2).max(6)),
-            Constraint::Fill(1),
-        ])
-        .areas(left);
+        let (top, bottom, right) = maintlist::split(area, recs.len());
         self.draw_recs(f, top, v, &recs);
         updates::draw_deployments(f, bottom, v);
         draw_details(f, right, v, recs.get(self.cur.sel));
@@ -635,11 +604,11 @@ impl Maint {
                 })
                 .unwrap_or_else(|| "no audit yet".into());
         let empty = if v.filter.is_some() {
-            "nothing matches the filter"
+            maintlist::NO_MATCH
         } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Log) {
             "reading…"
         } else {
-            "✓ nothing to maintain right now · c checks everything again"
+            maintlist::EMPTY
         };
         self.cur.page = maintlist::draw(
             f,
@@ -706,18 +675,7 @@ fn draw_details(f: &mut Frame, area: Rect, v: &View, r: Option<&Rec>) {
         return;
     };
     let w = inner_r.width as usize;
-    let mut l = vec![Line::from(vec![
-        Span::styled(
-            format!("{}  ", r.level.word()),
-            t.s(level_color(t, r.level)),
-        ),
-        Span::styled(r.title.clone(), t.fg()),
-    ])];
-    l.push(Line::raw(""));
-    for x in wrap(&r.why, w) {
-        l.push(Line::styled(x, t.fg()));
-    }
-    l.push(Line::raw(""));
+    let mut l = maintlist::detail_head(t, r, w);
     l.push(Line::styled(action_words(&r.action), t.s(t.cyan)));
     match &r.action {
         Do::Fix(id) => {

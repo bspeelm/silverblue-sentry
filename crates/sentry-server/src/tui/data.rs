@@ -32,6 +32,8 @@ pub enum Kind {
     Journal,
     /// The newest stored report (local disk, instant).
     Report,
+    /// The stored report at this index, oldest first (the report view's `[` `]`).
+    ReportAt(u16),
     /// A new audit: snapshot over ssh, findings, stored.
     Audit,
     /// Maintenance items: the server's side now, upstream from the cache.
@@ -56,6 +58,8 @@ pub enum Payload {
     Listeners(Vec<net::Listener>),
     Journal(Vec<JournalUnit>),
     Report(Option<Box<Report>>),
+    /// A report with the one before it, and where it is among those kept.
+    Reports(Box<audit::Shown>),
     Maint(
         Vec<maint::eval::Status>,
         BTreeMap<String, maint::local::Local>,
@@ -140,6 +144,8 @@ pub struct Store {
     pub listeners: Slot<Vec<net::Listener>>,
     pub journal: Slot<Vec<JournalUnit>>,
     pub report: Slot<Option<Box<Report>>>,
+    /// What the audit report view shows (`F` on Maintenance): a report and the one before.
+    pub shown: Option<audit::Shown>,
     pub maint: Slot<Vec<maint::eval::Status>>,
     /// The server's side of each item (the pinned image's repository, for planning).
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
@@ -209,7 +215,16 @@ impl Store {
             Payload::Jails(v) => self.jails.set(Ok(v)),
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
-            Payload::Report(v) => self.report.set(Ok(v)),
+            Payload::Report(v) => {
+                self.report.set(Ok(v));
+                self.shown = None;
+            }
+            Payload::Reports(s) => {
+                if s.latest() {
+                    self.report.set(Ok(s.cur.clone()));
+                }
+                self.shown = Some(*s);
+            }
             Payload::Maint(st, local, found) => {
                 self.maint.set(Ok(st));
                 self.maint_local = Some(local);
@@ -235,7 +250,7 @@ impl Store {
             Kind::Jails => self.jails.err = Some(e),
             Kind::Listeners => self.listeners.err = Some(e),
             Kind::Journal => self.journal.err = Some(e),
-            Kind::Report | Kind::Audit => self.report.err = Some(e),
+            Kind::Report | Kind::ReportAt(_) | Kind::Audit => self.report.err = Some(e),
             Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
         }
     }
@@ -293,8 +308,12 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Jails => Payload::Jails(health::fail2ban(r)?),
         Kind::Listeners => Payload::Listeners(collect::listeners(r)?),
         Kind::Journal => Payload::Journal(collect::journal(r)?),
-        Kind::Report => Payload::Report(audit::latest(&r.name).map(Box::new)),
-        Kind::Audit => Payload::Report(Some(Box::new(audit::run(r)?.0))),
+        Kind::Report => Payload::Reports(Box::new(audit::shown(&r.name, None))),
+        Kind::ReportAt(i) => Payload::Reports(Box::new(audit::shown(&r.name, Some(i as usize)))),
+        Kind::Audit => {
+            audit::run(r)?;
+            Payload::Reports(Box::new(audit::shown(&r.name, None)))
+        }
         Kind::Maint => {
             let (st, local, found) = collect::maint_read(r);
             Payload::Maint(st, local, found)

@@ -548,6 +548,68 @@ pub fn set_expected(server: &str, id: &str, expected: bool) -> anyhow::Result<bo
     Ok(changed)
 }
 
+/// Every stored report's name (its file's, without `.json`), oldest first.
+pub fn names(server: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(reports_dir(server))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| Some(p.file_stem()?.to_string_lossy().to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// One stored report, by name.
+pub fn load(server: &str, name: &str) -> Option<Report> {
+    let text = std::fs::read_to_string(reports_dir(server).join(format!("{name}.json"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// A report as the report view shows it: with the one before it, and where it is among
+/// those kept.
+#[derive(Debug, Clone, Default)]
+pub struct Shown {
+    pub names: Vec<String>,
+    pub idx: usize,
+    pub cur: Option<Box<Report>>,
+    pub prev: Option<Box<Report>>,
+}
+
+impl Shown {
+    pub fn latest(&self) -> bool {
+        self.idx + 1 >= self.names.len()
+    }
+}
+
+/// The report at `idx` (None: the newest), read from disk.
+pub fn shown(server: &str, idx: Option<usize>) -> Shown {
+    let names = names(server);
+    let Some(last) = names.len().checked_sub(1) else {
+        return Shown::default();
+    };
+    let idx = idx.unwrap_or(last).min(last);
+    let at = |i: usize| load(server, &names[i]).map(Box::new);
+    Shown {
+        cur: at(idx),
+        prev: idx.checked_sub(1).and_then(at),
+        idx,
+        names,
+    }
+}
+
+/// `B`: the pattern for every finding like this one (`srv:<kind>:*`), and what that is in
+/// words. None for a finding that is the only one of its kind.
+pub fn pattern_for(id: &str) -> Option<(String, String)> {
+    let rest = id.strip_prefix("srv:")?;
+    let (kind, what) = rest.split_once(':')?;
+    if what.is_empty() {
+        return None;
+    }
+    Some((format!("srv:{kind}:*"), format!("every {kind} finding")))
+}
+
 /// The newest stored report.
 pub fn latest(server: &str) -> Option<Report> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(reports_dir(server))
@@ -597,6 +659,50 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_pattern_covers_everything_of_a_kind() {
+        let (p, what) = pattern_for("srv:container:db:exited").unwrap();
+        assert_eq!(
+            (p.as_str(), what.as_str()),
+            ("srv:container:*", "every container finding")
+        );
+        assert!(glob(&p, "srv:container:web:unhealthy"));
+        assert!(!glob(&p, "srv:unit:backup.service"));
+        // The only one of its kind, or not the server's: no pattern.
+        assert_eq!(pattern_for("srv:reboot-required"), None);
+        assert_eq!(pattern_for("listener:x"), None);
+    }
+
+    #[test]
+    fn stored_reports_are_listed_and_read_with_the_one_before() {
+        let server = "shown-test";
+        let dir = reports_dir(server);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rep = |id: &str| Report {
+            snapshot: Default::default(),
+            findings: vec![f(id.into(), Sev::Low, "logs", id.into())],
+        };
+        for (name, id) in [
+            ("2026-10-01-000000", "srv:a:1"),
+            ("2026-10-02-000000", "srv:a:2"),
+        ] {
+            std::fs::write(
+                dir.join(format!("{name}.json")),
+                serde_json::to_vec(&rep(id)).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(names(server), ["2026-10-01-000000", "2026-10-02-000000"]);
+        let s = shown(server, None);
+        assert!(s.latest() && s.idx == 1);
+        assert_eq!(s.cur.unwrap().findings[0].id, "srv:a:2");
+        assert_eq!(s.prev.unwrap().findings[0].id, "srv:a:1");
+        let s = shown(server, Some(0));
+        assert!(!s.latest() && s.prev.is_none());
+        assert_eq!(s.cur.unwrap().findings[0].id, "srv:a:1");
+        assert!(shown("nothing-kept", None).cur.is_none());
     }
 
     fn snap() -> Snapshot {

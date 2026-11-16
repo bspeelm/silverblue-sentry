@@ -20,6 +20,7 @@ use crate::remote::Remote;
 use crate::tui::app::{Choice, Effect, Modal};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
+use sentry_core::tui::reportview::ReportView;
 use sentry_core::tui::widgets::{self, TableSpec, inner, panel};
 
 /// Items in table order (the config's), filtered.
@@ -76,12 +77,32 @@ pub fn finding<'a>(v: &View<'a>, id: &str) -> Option<&'a sentry_core::finding::F
     report(v)?.findings.iter().find(|f| f.id == id)
 }
 
-/// Maintenance's own state: the cursor, and the row it's on (kept when the list changes).
+/// A view over the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sub {
+    /// The audit report (`F`).
+    Report,
+}
+
+impl Sub {
+    pub fn title(self) -> &'static str {
+        match self {
+            Sub::Report => "Audit report",
+        }
+    }
+}
+
+/// Maintenance's own state: the cursor, the row it's on (kept when the list changes), and
+/// the view over it, as sentry's has.
 #[derive(Default)]
 pub struct Maint {
     pub cur: sentry_core::tui::Cursor,
     /// The row selected ([`row_key`]).
     pub sel: Option<String>,
+    /// A recommendation to select once it's there (its key starts with this).
+    pub find: Option<String>,
+    pub view: Option<Sub>,
+    pub report: ReportView,
 }
 
 impl Maint {
@@ -93,8 +114,17 @@ impl Maint {
     ) -> Vec<Effect> {
         use crate::tui::data::Kind;
         use sentry_core::tui::keys::Action as A;
+        if self.view.is_some() {
+            if a == A::Esc {
+                self.view = None;
+                return Vec::new();
+            }
+            return super::report::handle(&mut self.report, a, v);
+        }
+        // A key on the list: whatever was to be found has been, or isn't wanted any more.
+        self.find = None;
         match a {
-            A::Refresh => vec![Effect::Fetch(Kind::Maint)],
+            A::Refresh => vec![Effect::Fetch(Kind::Maint), Effect::Fetch(Kind::Report)],
             // Check everything: audit the server and look upstream up again.
             A::Check => vec![
                 Effect::Fetch(Kind::Audit),
@@ -102,12 +132,13 @@ impl Maint {
                 Effect::Toast("auditing the server and looking up newer versions…".into()),
             ],
             A::Enter => key('\n', v),
-            A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm')) => key(c, v),
-            // A task: where it's written; anything else: the config.
+            A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm' | 'B')) => key(c, v),
+            // A task: how often it recurs; anything else: the config, where items are.
             A::Char('e') => match key('e', v) {
                 e if e.is_empty() => vec![Effect::EditConfig],
                 e => e,
             },
+            A::Char('F') => self.open_report(),
             A::Char('R') => vec![Effect::ReviewOpen],
             A::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
             A::Char('v') => vec![Effect::LogOpen(selected(v).map(|(s, _)| s.id.clone()))],
@@ -115,8 +146,40 @@ impl Maint {
         }
     }
 
+    /// `F`, `:audit`: the audit report over the list; its reports are read from disk.
+    pub fn open_report(&mut self) -> Vec<Effect> {
+        self.view = Some(Sub::Report);
+        self.report = ReportView::default();
+        vec![Effect::Fetch(crate::tui::data::Kind::Report)]
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
+        let Some(s) = self.view else {
+            return draw(f, area, v);
+        };
+        let t = v.t;
+        let [head, body] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!(" Maintenance › {} ", s.title()), t.s(t.cyan)),
+                Span::styled(" Esc back", t.dim()),
+            ])),
+            head,
+        );
+        match s {
+            Sub::Report => super::report::draw(&mut self.report, f, body, v),
+        }
+    }
+
     /// The list changed under the cursor: put it back on the row it was on.
     pub fn keep(&mut self, v: &View) {
+        if let Some(prefix) = &self.find
+            && let Some(i) = recs(v).iter().position(|r| r.key.starts_with(prefix))
+        {
+            self.find = None;
+            return self.select(i, row_key_at(v, i));
+        }
         if let Some(key) = &self.sel
             && let Some(i) = row_with(v, key)
         {
@@ -200,10 +263,6 @@ pub fn row_of(v: &View, id: &str) -> Option<usize> {
     Some(recs(v).len() + rows(v).iter().position(|s| s.id == id)?)
 }
 
-fn level_color(v: &View, l: Level) -> Color {
-    maintlist::level_color(v.t, l)
-}
-
 /// The keys the selected row takes besides Enter (the key bar shows only these).
 pub fn verbs(v: &View) -> Verbs {
     let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
@@ -220,14 +279,7 @@ pub fn verbs(v: &View) -> Verbs {
     };
     match pick(v) {
         None => Verbs::default(),
-        Some(Sel::Item(s, _)) => item(
-            &s.id,
-            if planned(&s.id) {
-                "open plan"
-            } else {
-                "details"
-            },
-        ),
+        Some(Sel::Item(s, it)) => item(&s.id, item_enter(v, s, it).word()),
         Some(Sel::Rec(r)) => match &r.action {
             Action::Track(_) => Verbs {
                 track: true,
@@ -240,6 +292,7 @@ pub fn verbs(v: &View) -> Verbs {
             },
             Action::Fix(_) => Verbs {
                 dismiss: Some(Dismiss::Expected),
+                like: true,
                 ..only("fix")
             },
             Action::Task(id) => {
@@ -268,6 +321,37 @@ pub fn verbs(v: &View) -> Verbs {
             Action::Look(id) if !id.is_empty() => item(id, "go to item"),
             Action::Look(_) => only("details"),
         },
+    }
+}
+
+/// What Enter does on an item's own row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemEnter {
+    /// It has a plan, or one is being written: open it.
+    OpenPlan,
+    /// There are newer versions, or it's to retire: Claude plans it (what `p` does).
+    Plan,
+    /// Nothing to plan: what was done to it.
+    Log,
+}
+
+impl ItemEnter {
+    fn word(self) -> &'static str {
+        match self {
+            ItemEnter::OpenPlan => "open plan",
+            ItemEnter::Plan => "plan",
+            ItemEnter::Log => "its log",
+        }
+    }
+}
+
+fn item_enter(v: &View, s: &Status, it: &MaintItem) -> ItemEnter {
+    if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) {
+        ItemEnter::OpenPlan
+    } else if !s.newer.is_empty() || it.retire.is_some() {
+        ItemEnter::Plan
+    } else {
+        ItemEnter::Log
     }
 }
 
@@ -382,18 +466,15 @@ pub fn badge(v: &View) -> Option<(String, Color)> {
 
 pub fn draw(f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
-    let [list_a, detail_a] =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(area);
-    // What to maintain next, on top; everything tracked below.
+    // What to maintain next, on top; everything tracked below. The panels are sentry's.
     let recs = if v.s.maint.value.is_some() {
         recs(v)
     } else {
         Vec::new()
     };
-    let rec_h = (recs.len().clamp(1, 10) + 3) as u16;
-    let [rec_a, list_a] =
-        Layout::vertical([Constraint::Length(rec_h), Constraint::Fill(1)]).areas(list_a);
+    let (rec_a, list_a, detail_a) = maintlist::split(area, recs.len());
     draw_recs(f, rec_a, v, &recs);
+    draw_details(f, detail_a, v);
     let up = v
         .upstream
         .map_or("upstream not looked up yet".to_string(), |at| {
@@ -401,12 +482,8 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
         });
     let b = panel(
         t,
-        "Maintenance",
-        format!(
-            "{} items · {up}{}",
-            v.cfg.maintenance.items.len(),
-            v.inv_note()
-        ),
+        "Items",
+        format!("{} · {up}{}", v.cfg.maintenance.items.len(), v.inv_note()),
     );
     let r = inner(&b, list_a);
     f.render_widget(b, list_a);
@@ -442,6 +519,24 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
             s.to_string()
         }
     };
+    // Narrow: what matters most, as many columns as fit.
+    let cols: &[usize] = match r.width {
+        w if w >= 72 => &[0, 1, 2, 3, 4, 5, 6],
+        w if w >= 50 => &[0, 1, 2, 5],
+        _ => &[0, 5],
+    };
+    let headers = [
+        "Item", "Risk", "Pinned", "Running", "Latest", "State", "Review",
+    ];
+    let widths = [
+        Constraint::Fill(2),
+        Constraint::Length(6),
+        Constraint::Fill(2),
+        Constraint::Length(14),
+        Constraint::Fill(2),
+        Constraint::Length(19),
+        Constraint::Length(10),
+    ];
     let rows_: Vec<Row> = list
         .iter()
         .map(|s| {
@@ -450,7 +545,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 (Some(r), Some(p)) if r == p => "=".to_string(),
                 (r, _) => cut(r.as_deref(), 14),
             };
-            Row::new(vec![
+            let cells = [
                 Cell::from(s.id.clone()).style(t.fg()),
                 // The risk in colour only where it matters now: something to act on.
                 Cell::from(s.risk.as_str()).style(if needs_attention(v, s) {
@@ -463,7 +558,8 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 Cell::from(cut(s.latest.as_deref(), 16)).style(t.dim()),
                 Cell::from(word).style(t.s(c)),
                 Cell::from(s.review_by.map_or(String::new(), |d| d.to_string())).style(t.dim()),
-            ])
+            ];
+            Row::new(cols.iter().map(|i| cells[*i].clone()).collect::<Vec<_>>())
         })
         .collect();
     widgets::table(
@@ -471,43 +567,25 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
         r,
         t,
         TableSpec {
-            header: vec![
-                "Item", "Risk", "Pinned", "Running", "Latest", "State", "Review",
-            ],
-            widths: vec![
-                Constraint::Fill(2),
-                Constraint::Length(6),
-                Constraint::Fill(2),
-                Constraint::Length(14),
-                Constraint::Fill(2),
-                Constraint::Length(19),
-                Constraint::Length(10),
-            ],
+            header: cols.iter().map(|i| headers[*i]).collect(),
+            widths: cols.iter().map(|i| widths[*i]).collect(),
             rows: rows_,
             selected: v.cur.checked_sub(recs.len()),
         },
     );
+}
+
+/// The Details panel: the selected recommendation or item.
+fn draw_details(f: &mut Frame, detail_a: Rect, v: &View) {
+    let t = v.t;
     let b = panel(t, "Details", "");
     let r = inner(&b, detail_a);
     f.render_widget(b, detail_a);
     let lines = match pick(v) {
         Some(Sel::Item(s, it)) => detail(v, s, it),
         Some(Sel::Rec(x)) => {
-            let mut l = vec![
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", x.level.word()),
-                        ratatui::style::Style::new()
-                            .fg(t.ink)
-                            .bg(level_color(v, x.level)),
-                    ),
-                    Span::styled(format!(" {}", x.title), t.fg()),
-                ]),
-                Line::raw(""),
-                Line::styled(x.why.clone(), t.fg()),
-                Line::raw(""),
-                Line::styled(action_words(&x.action), t.s(t.cyan)),
-            ];
+            let mut l = maintlist::detail_head(t, &x, r.width as usize);
+            l.push(Line::styled(action_words(&x.action), t.s(t.cyan)));
             if let Some((s, it)) = x
                 .item
                 .as_deref()
@@ -546,7 +624,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 && let Some(f) = finding(v, id)
             {
                 l.push(Line::raw(""));
-                l.extend(super::finding_lines(t, f));
+                l.extend(super::report::finding_lines(t, f, r.width as usize));
             }
             // What the last audit couldn't check, beside its findings.
             if (matches!(x.action, Action::Fix(_)) || x.key == "audit")
@@ -571,23 +649,23 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
     let note = if v.s.maint.value.is_none() {
         String::new()
     } else {
-        match &v.s.review {
-            Some(r) => format!(
-                "{} · reviewed {}",
-                recs.len(),
-                r.head
-                    .updated
-                    .or(r.head.created)
-                    .map_or("?".into(), |u| fmt::ago(v.secs_since(u)))
-            ),
-            None => recs.len().to_string(),
-        }
+        format!(
+            "{} · {}",
+            recs.len(),
+            match report(v).and_then(|r| r.snapshot.taken_at) {
+                Some(at) => format!("audited {}", fmt::ago(v.secs_since(at))),
+                None => "no audit yet".into(),
+            }
+        )
     };
     let empty = if v.s.maint.value.is_none() {
-        ("reading…", t.dim())
+        "reading…"
+    } else if v.filter.is_some() {
+        maintlist::NO_MATCH
     } else {
-        ("✓ nothing to maintain right now", t.s(t.green))
+        maintlist::EMPTY
     };
+    let empty = (empty, t.dim());
     maintlist::draw(
         f,
         area,
@@ -729,13 +807,12 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     }
     l.push(Line::raw(""));
     let mut keys = Vec::new();
-    keys.push(
-        match (v.plans.contains_key(&s.id), workflow_of(it).is_some()) {
-            (true, _) => "Enter opens the plan · P plans again",
-            (false, true) => "p: Claude plans it",
-            (false, false) => "p: Claude plans it (no workflow: you run its steps)",
-        },
-    );
+    keys.push(match (item_enter(v, s, it), workflow_of(it).is_some()) {
+        (ItemEnter::OpenPlan, _) => "Enter opens the plan · P plans again",
+        (ItemEnter::Plan, true) => "Enter: Claude plans it",
+        (ItemEnter::Plan, false) => "Enter: Claude plans it (no workflow: you run its steps)",
+        (ItemEnter::Log, _) => "Enter opens its log · p: Claude plans it",
+    });
     keys.extend(["z review later", "v its log", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
     l
@@ -759,24 +836,13 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
     }
 }
 
+/// `z`: look again in 7, 30 or 90 days, on every row (an item's date is its review date).
 fn later(v: &View, key: &str, what: &str) -> Vec<Effect> {
-    let today = jiff::Zoned::now().date();
-    let choices = [7, 30, 90]
-        .into_iter()
-        .map(|d| {
-            let until = today
-                .checked_add(jiff::Span::new().days(d))
-                .unwrap_or(today);
-            (
-                format!("look again in {d} days ({until})"),
-                vec![Effect::Snooze(key.to_string(), until)],
-            )
-        })
-        .collect();
-    vec![Effect::Choose(Choice::numbered(
+    vec![Effect::Choose(maintlist::later_choice(
         v.t,
-        &format!("{what}: later"),
-        choices,
+        what,
+        jiff::Zoned::now().date(),
+        |_, until| vec![Effect::Snooze(key.to_string(), until)],
     ))]
 }
 
@@ -826,14 +892,12 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
         ('m', Action::Task(id)) => task_manual(v, id),
-        // Where it's written: the config (a cadence) or tasks.toml.
-        ('e', Action::Task(id)) => match all_tasks(v).iter().find(|t| &t.id == id) {
-            Some(t) if t.source == sentry_core::maint::tasks::Source::Config => {
-                vec![Effect::EditConfig]
-            }
-            Some(_) => vec![Effect::EditTasks],
-            None => Vec::new(),
-        },
+        // How often it recurs: asked for, and written to tasks.toml (a cadence from the
+        // config too: the file's takes its place).
+        ('e', Action::Task(id)) => vec![Effect::TaskEvery(id.clone())],
+        ('B', Action::Fix(id)) => {
+            finding(v, id).map_or(Vec::new(), |f| super::report::pattern_effects(v, f))
+        }
         ('x', Action::Task(id)) => vec![Effect::Confirm(Modal {
             title: "Remove this task".into(),
             color: v.t.yellow,
@@ -854,6 +918,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             .and_then(|id| Some((status_of(v, id)?, item_of(v, id)?)))
         {
             Some((s, it)) => item_key(c, v, s, it),
+            None if c == 'x' => vec![Effect::Toast(maintlist::NOTHING_TO_DISMISS.into())],
             None => Vec::new(),
         },
         _ => Vec::new(),
@@ -932,26 +997,7 @@ pub fn task_manual(v: &View, id: &str) -> Vec<Effect> {
 
 fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
     match c {
-        'z' => {
-            let today = jiff::Zoned::now().date();
-            let choices = [30, 90, 180]
-                .into_iter()
-                .map(|d| {
-                    let until = today
-                        .checked_add(jiff::Span::new().days(d))
-                        .unwrap_or(today);
-                    (
-                        format!("look again in {d} days ({until})"),
-                        vec![Effect::Snooze(s.id.clone(), until)],
-                    )
-                })
-                .collect();
-            vec![Effect::Choose(Choice::numbered(
-                v.t,
-                &format!("Review {} later", s.id),
-                choices,
-            ))]
-        }
+        'z' => later(v, &s.id, &format!("Review {} later", s.id)),
         // A plan already there: say so, rather than quietly replacing it.
         'p' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
             let what = match v.plans.get(&s.id) {
@@ -1028,11 +1074,13 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
                 choices,
             ))]
         }
-        // Enter opens the item's plan (or the one being written).
-        '\n' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
-            vec![Effect::PlanOpen(s.id.clone())]
-        }
-        '\n' => vec![Effect::Toast(format!("no plan for {}: p makes one", s.id))],
+        // Enter: the item's plan (or the one being written), a new plan when there's
+        // something to plan, else what was done to it.
+        '\n' => match item_enter(v, s, it) {
+            ItemEnter::OpenPlan => vec![Effect::PlanOpen(s.id.clone())],
+            ItemEnter::Plan => item_key('p', v, s, it),
+            ItemEnter::Log => vec![Effect::LogOpen(Some(s.id.clone()))],
+        },
         'x' => match v.plans.get(&s.id) {
             Some(p) => vec![Effect::Confirm(crate::tui::app::Modal {
                 title: "Drop the plan".into(),
@@ -1047,7 +1095,7 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
                 )],
                 yes: Some(("drop".into(), vec![Effect::PlanDrop(s.id.clone())])),
             })],
-            None => vec![Effect::Toast(format!("no plan for {}", s.id))],
+            None => vec![Effect::Toast(maintlist::NOTHING_TO_DISMISS.into())],
         },
         _ => Vec::new(),
     }
@@ -1104,14 +1152,18 @@ pub fn review_context(v: &View, r: &Remote) -> String {
             ))
         ));
     }
-    if !v.cfg.maintenance.cadence.is_empty() {
-        let c: Vec<String> = v
-            .cfg
-            .maintenance
-            .cadence
-            .iter()
-            .map(|(k, d)| format!("{k} every {} day(s)", d.0.as_secs() / 86_400))
-            .collect();
+    // Routine runs as they apply now: the config's cadences, or what tasks.toml made of them.
+    let c: Vec<String> = all_tasks(v)
+        .iter()
+        .filter(|t| !t.off)
+        .filter_map(|t| match (t.action(), t.every) {
+            (sentry_core::maint::tasks::Do::Run(wf), Some(d)) => {
+                Some(format!("{wf} every {} day(s)", d.0.as_secs() / 86_400))
+            }
+            _ => None,
+        })
+        .collect();
+    if !c.is_empty() {
         s.push_str(&format!("Routine workflows: {}.\n", c.join(", ")));
     }
     let ledger = if maint::log::dir(&r.name).join("LOG.md").exists() {

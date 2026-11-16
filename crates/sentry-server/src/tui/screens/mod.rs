@@ -10,6 +10,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 pub mod containers;
 pub mod dashboard;
 pub mod maint;
+pub mod report;
 pub mod services;
 pub mod upgrade;
 
@@ -182,6 +183,10 @@ impl Screens {
 
     /// A key on the screen: moving is the cursor's, the rest is the screen's.
     pub fn handle(&mut self, id: ScreenId, a: Action, v: &View, r: &Remote) -> Vec<Effect> {
+        // A view over Maintenance has its own list.
+        if id == ScreenId::Maint && self.maint.view.is_some() {
+            return self.maint.handle(a, v, r);
+        }
         let n = Self::rows(id, v);
         if self.cursor_mut(id).nav(a, n) {
             return Vec::new();
@@ -203,7 +208,7 @@ impl Screens {
             ScreenId::Dash => dashboard::overview(f, area, v),
             ScreenId::Svc => services::services(f, area, v),
             ScreenId::Cont => containers::containers(f, area, v),
-            ScreenId::Maint => maint::draw(f, area, v),
+            ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Upgrade => upgrade::draw(f, area, v),
             _ => {}
         }
@@ -224,6 +229,7 @@ impl Screens {
                 ("r", "refresh"),
             ],
             // The selected row's keys, then the screen's.
+            ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => {
                 let mut h = sentry_core::tui::maintlist::hints(&maint::verbs(v));
                 // The screen's own few; w, e and the rest are in `?`.
@@ -237,6 +243,12 @@ impl Screens {
 
     /// What Claude is asked about the screen (its selected row), or why there's nothing.
     pub fn ask(&self, id: ScreenId, v: &View, r: &Remote) -> Result<Ask, String> {
+        // In the audit report: the finding selected there.
+        if id == ScreenId::Maint && self.maint.view.is_some() {
+            return report::selected(&self.maint.report, v)
+                .map(|f| crate::tui::ask::ask_finding(v, r, f))
+                .ok_or_else(|| "no finding selected (c audits the server)".to_string());
+        }
         crate::tui::ask::ask_for(id, v, r)
             .ok_or_else(|| crate::tui::ask::nothing_here(id, v).to_string())
     }
@@ -451,46 +463,6 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
         }
     }
     info
-}
-
-// ---------- findings ----------
-
-pub fn finding_lines(t: &Theme, x: &Finding) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled(
-        x.message.clone(),
-        t.s(if x.expected {
-            t.dim
-        } else {
-            sev_color(t, x.severity)
-        }),
-    )];
-    for (label, text) in [("What", &x.what), ("Why", &x.why), ("Fix", &x.fix)] {
-        if !text.is_empty() {
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled(format!("{label}  "), t.dim()),
-                Span::styled(text.clone(), t.fg()),
-            ]));
-        }
-    }
-    if !x.evidence.is_empty() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(x.evidence.clone(), t.dim()));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        format!(
-            "{}{}",
-            x.id,
-            if x.expected {
-                " · expected (x to undo)"
-            } else {
-                ""
-            }
-        ),
-        t.dim(),
-    ));
-    lines
 }
 
 fn smart_word(h: &SmartHealth) -> &'static str {

@@ -2,36 +2,24 @@
 //! the report before it. `Enter` fixes the finding (as on Maintenance), `c` audits now (read-only), `x`/`B` baseline, `[`/`]` browse.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row};
 
-use super::{Cursor, Hints, View, sentry_cmd};
+use super::{Hints, View, sentry_cmd};
+use crate::audit::Finding;
 use crate::audit::diff::{self, Kind};
 use crate::audit::findings::is_expected;
 use crate::audit::store::Stored;
-use crate::audit::{Finding, Sev};
 use crate::exec::Cmd;
 use crate::tui::app::{BaselineEdit, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
-use crate::tui::widgets::{TableSpec, inner, panel, placeholder, table, trunc, wrap};
+use crate::tui::reportview::{self, Mark, Page, ReportView, Row};
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Focus {
-    #[default]
-    Findings,
-    Diff,
-}
-
+/// The report view's state (drawn and moved around in by `tui::reportview`).
 #[derive(Default)]
 pub struct Audit {
-    pub cur: Cursor,
-    /// Index into the report list; `None` follows the latest.
-    report: Option<usize>,
-    focus: Focus,
-    diff_scroll: usize,
-    diff_h: usize,
+    view: ReportView,
 }
 
 pub fn hints(v: &View) -> Hints {
@@ -116,46 +104,20 @@ pub fn finding_lines(
     width: usize,
     fix_key: &str,
 ) -> Vec<Line<'static>> {
-    let tw = width.saturating_sub(7).max(10);
-    let mut d = Vec::new();
-    // Label in a 7-column gutter; wrapped text stays aligned under the first line.
-    let mut sec = |label: &str, text: &str| {
-        for (k, l) in wrap(text, tw).into_iter().enumerate() {
-            d.push(Line::from(vec![
-                Span::styled(
-                    format!("{:<7}", if k == 0 { label } else { "" }),
-                    t.s(t.cyan),
-                ),
-                Span::styled(l, t.fg()),
-            ]));
-        }
-    };
-    // Reports from before what/why/fix existed: message + evidence only.
-    sec(
-        "What",
-        if fd.what.is_empty() {
-            &fd.message
-        } else {
-            &fd.what
-        },
-    );
-    sec("Why", &fd.why);
-    sec("To do", &fd.fix);
     let fixes = crate::audit::fix::fixes(fd);
     let labels: Vec<&str> = fixes.iter().map(|x| x.label.as_str()).collect();
-    if crate::claude::available() {
+    let fix = if crate::claude::available() {
         let mut l = format!("press {fix_key}: Claude looks into it and tells you what to run");
         if !labels.is_empty() {
             l.push_str(&format!(" (known fixes: {})", labels.join(" · ")));
         }
-        sec("Fix", &l);
+        Some(l)
     } else if !labels.is_empty() {
-        sec("Fix", &format!("press {fix_key}: {}", labels.join(" · ")));
-    }
-    for l in fd.evidence.lines().take(8) {
-        d.push(Line::styled(format!("       {l}"), t.dim()));
-    }
-    d
+        Some(format!("press {fix_key}: {}", labels.join(" · ")))
+    } else {
+        None
+    };
+    reportview::finding_lines(t, fd, width, fix.as_deref())
 }
 
 /// `f`: the finding's fixes as a confirm box (one) or a numbered choice (several).
@@ -339,10 +301,7 @@ impl Audit {
     }
 
     fn idx(&self, n: usize) -> Option<usize> {
-        if n == 0 {
-            return None;
-        }
-        Some(self.report.unwrap_or(n - 1).min(n - 1))
+        self.view.idx(n)
     }
 
     fn rows<'a>(&self, v: &View<'a>) -> Vec<&'a Finding> {
@@ -365,295 +324,113 @@ impl Audit {
     pub fn handle(&mut self, a: Action, v: &View) -> Vec<Effect> {
         let n = self.reports(v).len();
         match a {
-            Action::FocusLeft => self.focus = Focus::Findings,
-            Action::FocusRight => self.focus = Focus::Diff,
-            Action::LogDown => self.diff_scroll += 1,
-            Action::LogUp => self.diff_scroll = self.diff_scroll.saturating_sub(1),
-            Action::Char('[') if n > 0 => {
-                let i = self.idx(n).unwrap_or(0);
-                self.report = Some(i.saturating_sub(1));
-                self.cur.sel = 0;
-                self.diff_scroll = 0;
-            }
-            Action::Char(']') if n > 0 => {
-                let i = self.idx(n).unwrap_or(0);
-                self.report = if i + 1 >= n - 1 { None } else { Some(i + 1) };
-                self.cur.sel = 0;
-                self.diff_scroll = 0;
-            }
             // No report yet: Enter runs the first audit; c always does.
             Action::Enter if n == 0 => return vec![audit_run()],
             Action::Check => return vec![audit_run()],
             Action::Refresh => return vec![Effect::Fetch(Fetch::Reports)],
-            _ if self.focus == Focus::Diff => {
-                let page = self.diff_h.max(2);
-                match a {
-                    Action::Down => self.diff_scroll += 1,
-                    Action::Up => self.diff_scroll = self.diff_scroll.saturating_sub(1),
-                    Action::PageDown => self.diff_scroll += page / 2,
-                    Action::PageUp => self.diff_scroll = self.diff_scroll.saturating_sub(page / 2),
-                    Action::Top => self.diff_scroll = 0,
-                    Action::Bottom => self.diff_scroll = usize::MAX / 2,
-                    _ => {}
-                }
-            }
-            _ => {
-                let rows = self.rows(v);
-                if self.cur.nav(a, rows.len()) {
-                    return Vec::new();
-                }
-                let Some(f) = rows.get(self.cur.clamp(rows.len())) else {
-                    return Vec::new();
-                };
-                match a {
-                    // Claude reads the logs and says what to run; without it, sentry's own list.
-                    Action::Enter | Action::Char('f') if crate::claude::available() => {
-                        return vec![Effect::AskConsent(crate::audit::fix::ask(f))];
-                    }
-                    Action::Enter | Action::Char('f') => return fix_effects(v, f),
-                    // `x` toggles: marks the finding expected, or un-marks it if it already is.
-                    Action::Char('x' | 'b') => return vec![expected_toggle(v, f)],
-                    Action::Char('B') => return pattern_effects(v, f),
-                    _ => {}
-                }
-            }
+            _ => {}
         }
-        Vec::new()
+        let rows = self.rows(v);
+        if self.view.key(a, n, rows.len()) {
+            return Vec::new();
+        }
+        let Some(f) = rows.get(self.view.selected(rows.len())) else {
+            return Vec::new();
+        };
+        match a {
+            // Claude reads the logs and says what to run; without it, sentry's own list.
+            Action::Enter | Action::Char('f') if crate::claude::available() => {
+                vec![Effect::AskConsent(crate::audit::fix::ask(f))]
+            }
+            Action::Enter | Action::Char('f') => fix_effects(v, f),
+            // `x` toggles: marks the finding expected, or un-marks it if it already is.
+            Action::Char('x' | 'b') => vec![expected_toggle(v, f)],
+            Action::Char('B') => pattern_effects(v, f),
+            _ => Vec::new(),
+        }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
         let t = v.t;
         let all = self.reports(v);
         let Some(i) = self.idx(all.len()) else {
-            let loading = v.d.loading(Fetch::Reports);
-            placeholder(
+            reportview::draw_placeholder(
                 f,
                 area,
                 t,
-                &[
-                    (
-                        if loading {
-                            "loading reports…"
-                        } else {
-                            "No audit yet."
-                        },
-                        t.fg(),
-                    ),
-                    ("", t.dim()),
-                    (
-                        "Press Enter to run one. It's read-only and takes about a second.",
-                        t.dim(),
-                    ),
-                    (
-                        "Reports are kept in ~/.local/share/sentry/reports/ (json + md).",
-                        t.dim(),
-                    ),
-                ],
+                v.d.loading(Fetch::Reports),
+                "Press Enter to run one. It's read-only and takes about a second.",
+                "Reports are kept in ~/.local/share/sentry/reports/ (json + md).",
             );
             return;
         };
         let cur = &all[i];
         let prev = i.checked_sub(1).map(|j| &all[j]);
-        // Narrow terminals show one pane at a time; C-h/C-l switch.
-        let (left, right) = if area.width < 110 {
-            match self.focus {
-                Focus::Findings => (area, Rect { width: 0, ..area }),
-                Focus::Diff => (Rect { width: 0, ..area }, area),
-            }
-        } else {
-            let [l, r] =
-                Layout::horizontal([Constraint::Ratio(52, 100), Constraint::Ratio(48, 100)])
-                    .spacing(2)
-                    .areas(area);
-            (l, r)
-        };
-
-        // ---- findings + evidence
         let b = &v.d.baseline;
         let c = cur.report.counts(b);
-        let pos = if all.len() > 1 {
-            format!(" ({}/{})", i + 1, all.len())
-        } else {
-            String::new()
-        };
-        let block = panel(t, "Findings", format!("{}{pos}", cur.name()));
-        let r = inner(&block, left);
-        f.render_widget(block, left);
         let rows = self.rows(v);
-        let sel = self.cur.clamp(rows.len());
-        let first = i == 0;
-        let header = if first {
-            "First audit: nothing is marked expected yet, so everything shows up once."
-        } else {
-            "Worth a look on this machine."
-        };
-        let keys = "Enter = fix it (Claude helps) · x = expected on/off · A = ask Claude · c = audit again";
-        // Detail box for the selected finding: what / why / to do, then the raw evidence.
-        let detail: Vec<Line> = rows.get(sel).map_or(Vec::new(), |fd| {
-            finding_lines(t, fd, r.width as usize, "Enter")
-        });
-        let detail_rows = detail.len();
-        let ev_h = (detail_rows as u16 + 1).clamp(4, r.height / 2);
-        let [head, list, summary, evidence] = Layout::vertical([
-            Constraint::Length(2),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(ev_h),
-        ])
-        .areas(r);
-        f.render_widget(
-            Paragraph::new(vec![
-                Line::styled(header, t.fg()),
-                Line::styled(trunc(keys, head.width as usize), t.dim()),
-            ]),
-            head,
-        );
-        self.cur.page = list.height as usize;
-        if rows.is_empty() {
-            f.render_widget(
-                Paragraph::new(if cur.report.findings.is_empty() {
-                    "Nothing to report."
-                } else {
-                    "No findings match the filter."
-                })
-                .style(t.dim()),
-                list,
-            );
-        } else {
-            let body: Vec<Row> = rows
-                .iter()
-                .map(|fd| {
-                    let exp = is_expected(fd, b);
-                    // check = look at this now, review = worth a look, info = probably your choice
-                    let (sev, sc) = match (exp, fd.severity) {
-                        (true, _) => ("ok", t.dim),
-                        (_, Sev::High) => ("check", t.red),
-                        (_, Sev::Medium) => ("review", t.yellow),
-                        (_, Sev::Low) => ("info", t.dim),
-                    };
-                    let msg = if exp {
-                        format!("{}  (expected)", fd.message)
-                    } else {
-                        fd.message.clone()
-                    };
-                    Row::new(vec![
-                        Cell::from(sev).style(t.s(sc)),
-                        Cell::from(fd.category.clone()).style(t.dim()),
-                        Cell::from(msg).style(if exp { t.dim() } else { t.fg() }),
-                    ])
-                })
-                .collect();
-            table(
-                f,
-                list,
-                t,
-                TableSpec {
-                    header: vec!["", "AREA", "FINDING"],
-                    widths: vec![
-                        Constraint::Length(6),
-                        Constraint::Length(9),
-                        Constraint::Fill(1),
-                    ],
-                    rows: body,
-                    selected: (self.focus == Focus::Findings).then_some(sel),
-                },
-            );
-        }
-        let mut sum = vec![
-            Span::styled(
-                format!("{} to check", c.high),
-                t.s(if c.high > 0 { t.red } else { t.dim }),
-            ),
-            Span::styled(" · ", t.dim()),
-            Span::styled(
-                format!("{} to review", c.medium),
-                t.s(if c.medium > 0 { t.yellow } else { t.dim }),
-            ),
-            Span::styled(format!(" · {} info", c.low), t.dim()),
-        ];
-        if !cur.report.errors.is_empty() {
-            sum.push(Span::styled(
-                format!("   not collected: {}", cur.report.errors.join(", ")),
-                t.s(t.yellow),
-            ));
-        }
-        f.render_widget(Paragraph::new(Line::from(sum)), summary);
-        let mut ev = vec![Line::styled(
-            "─".repeat(evidence.width as usize),
-            t.s(t.rule),
-        )];
-        ev.extend(detail);
-        f.render_widget(Paragraph::new(ev), evidence);
-
-        // ---- diff pane
-        let title = match prev {
-            Some(p) => format!("{} → {}", strip_json(&p.name()), strip_json(&cur.name())),
-            None => "first report".into(),
-        };
-        let block = panel(t, "Diff", title);
-        let r = inner(&block, right);
-        f.render_widget(block, right);
-        let lines: Vec<diff::Line> = match crate::audit::store::baseline_for(all, i) {
+        let changes: Vec<(Mark, String)> = match crate::audit::store::baseline_for(all, i) {
             Some((base, notes)) => {
                 let d = diff::diff(&base, &cur.report);
                 let head = match diff::summary(&d).as_str() {
                     "no changes" => "Nothing changed since the previous audit.".to_string(),
                     s => format!("Changed: {s}"),
                 };
-                std::iter::once(diff::Line {
-                    kind: Kind::Section,
-                    text: head,
-                })
-                .chain(notes.into_iter().map(|n| diff::Line {
-                    kind: Kind::Same,
-                    text: n,
-                }))
-                .chain(std::iter::once(diff::Line {
-                    kind: Kind::Same,
-                    text: String::new(),
-                }))
-                .chain(d)
-                .collect()
+                std::iter::once((Mark::Section, head))
+                    .chain(notes.into_iter().map(|n| (Mark::Same, n)))
+                    .chain(std::iter::once((Mark::Same, String::new())))
+                    .chain(d.into_iter().map(|l| {
+                        (
+                            match l.kind {
+                                Kind::Section => Mark::Section,
+                                Kind::Add => Mark::Add,
+                                Kind::Remove => Mark::Remove,
+                                Kind::Change => Mark::Change,
+                                Kind::Same => Mark::Same,
+                            },
+                            l.text,
+                        )
+                    }))
+                    .collect()
             }
-            None => vec![diff::Line {
-                kind: Kind::Same,
-                text: "Nothing to compare against yet. The next audit diffs against this one."
-                    .into(),
-            }],
+            None => vec![(
+                Mark::Same,
+                "Nothing to compare against yet. The next audit diffs against this one."
+                    .to_string(),
+            )],
         };
-        let h = r.height as usize;
-        self.diff_h = h;
-        let max = lines.len().saturating_sub(h);
-        self.diff_scroll = self.diff_scroll.min(max);
-        let shown: Vec<Line> = lines
-            .iter()
-            .skip(self.diff_scroll)
-            .take(h)
-            .map(|l| {
-                let c = match l.kind {
-                    Kind::Section => t.cyan,
-                    Kind::Add => t.green,
-                    Kind::Remove => t.red,
-                    Kind::Change => t.yellow,
-                    Kind::Same => t.dim,
-                };
-                Line::styled(trunc(&l.text, r.width as usize), t.s(c))
-            })
-            .collect();
-        f.render_widget(Paragraph::new(shown), r);
-        if self.focus == Focus::Diff && max > 0 {
-            let pct = self.diff_scroll * 100 / max;
-            let s = format!(" {pct}% ");
-            f.render_widget(
-                Paragraph::new(Span::styled(s.clone(), t.dim())),
-                Rect {
-                    x: right.right().saturating_sub(s.len() as u16 + 2),
-                    y: right.bottom().saturating_sub(1),
-                    width: s.len() as u16,
-                    height: 1,
-                },
-            );
-        }
+        let page = Page {
+            name: cur.name(),
+            pos: (all.len() > 1).then_some((i + 1, all.len())),
+            header: if i == 0 {
+                "First audit: nothing is marked expected yet, so everything shows up once."
+            } else {
+                "Worth a look on this machine."
+            },
+            keys: "Enter = fix it (Claude helps) · x = expected on/off · A = ask Claude · c = audit again",
+            rows: rows
+                .iter()
+                .map(|fd| Row {
+                    finding: fd,
+                    expected: is_expected(fd, b),
+                })
+                .collect(),
+            empty: if cur.report.findings.is_empty() {
+                "Nothing to report."
+            } else {
+                "No findings match the filter."
+            },
+            counts: (c.high, c.medium, c.low),
+            not_collected: cur.report.errors.clone(),
+            detail: &|fd, w| finding_lines(t, fd, w, "Enter"),
+            changes_name: "Diff",
+            changes_title: match prev {
+                Some(p) => format!("{} → {}", strip_json(&p.name()), strip_json(&cur.name())),
+                None => "first report".into(),
+            },
+            changes,
+        };
+        self.view.draw(f, area, t, &page);
     }
 }
 
@@ -665,7 +442,7 @@ impl Audit {
     pub fn ask(&self, v: &View) -> Result<crate::claude::Ask, String> {
         let rows = self.rows(v);
         let f = rows
-            .get(self.cur.sel.min(rows.len().saturating_sub(1)))
+            .get(self.view.cur.sel.min(rows.len().saturating_sub(1)))
             .ok_or("no finding selected (run an audit with Enter)")?;
         Ok(crate::claude::Ask::new(
             format!("audit · {}", f.message),

@@ -376,6 +376,14 @@ pub fn set_every(server: &str, t: &Task, every: Option<Dur>) -> anyhow::Result<(
     )
 }
 
+/// What was typed for a cadence: `off` (None) or a duration (`30d`).
+pub fn parse_every(text: &str) -> Result<Option<Dur>, String> {
+    match text.trim() {
+        "off" => Ok(None),
+        d => d.parse::<Dur>().map(Some),
+    }
+}
+
 pub fn path(server: &str) -> PathBuf {
     super::root(server).join("tasks.toml")
 }
@@ -485,6 +493,32 @@ mod tests {
             off: false,
             source: Default::default(),
         }
+    }
+
+    #[test]
+    fn an_override_in_tasks_toml_replaces_a_config_cadence() {
+        // A cadence from the config (a server's `maintenance.cadence`, a job's).
+        let mut cadence = task(
+            "run apt-maintenance",
+            Some(Dur::secs(30 * 86400)),
+            "2026-10-20T00:00:00Z",
+        );
+        cadence.id = "cadence-apt-maintenance".into();
+        cadence.source = Source::Config;
+        assert_eq!(parse_every(" 45d "), Ok(Some(Dur::secs(45 * 86400))));
+        assert_eq!(parse_every("off"), Ok(None));
+        assert!(parse_every("soon").is_err());
+        let server = "every-test";
+        set_every(server, &cadence, parse_every("45d").unwrap()).unwrap();
+        let all = effective(&load(server), vec![cadence.clone()]);
+        assert_eq!(all.len(), 1, "the file's takes the config's place");
+        assert_eq!(all[0].every, Some(Dur::secs(45 * 86400)));
+        assert!(!all[0].off);
+        // Off: still one task, never due; its cadence is kept for turning it on again.
+        set_every(server, &all[0], None).unwrap();
+        let all = effective(&load(server), vec![cadence]);
+        assert!(all[0].off && all[0].every == Some(Dur::secs(45 * 86400)));
+        assert!(!due(&all[0], &[], None, ts("2027-10-20T00:00:00Z")));
     }
 
     #[test]

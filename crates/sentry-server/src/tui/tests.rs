@@ -332,6 +332,10 @@ fn every_screen_renders() {
                     body(&s)
                 );
             }
+            // Maintenance when narrow: the same panels, the items in fewer columns.
+            if w == 80 && tab == ScreenId::Maint {
+                insta::assert_snapshot!("server_maintenance_80x24", body(&s));
+            }
         }
     }
 }
@@ -1301,7 +1305,7 @@ fn help_is_laid_out_like_sentrys() {
         " Keys ",
         "1–9 0 H   switch screen",
         "j/k ↑↓    move selection",
-        ":q  :<screen>  :workflow <name>  :audit now  :log  :refresh",
+        ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
         "Dashboard:",
         "sentry-server:",
         "read what needs root, once, with your sudo password",
@@ -1563,7 +1567,7 @@ fn auto_steps_run_only_on_screen_0() {
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('x'));
     let s = screen(&mut a);
-    assert!(!s.contains("look again in 7 days"), "{s}");
+    assert!(!s.contains("in 7 days ("), "{s}");
     assert!(!s.contains("Mark it expected"), "{s}");
     // Another screen: the run stays as it is, and the banner says where it is.
     let at = a.wf.as_ref().unwrap().next.idx();
@@ -1571,7 +1575,7 @@ fn auto_steps_run_only_on_screen_0() {
     a.tick(Instant::now());
     assert_eq!(a.wf.as_ref().unwrap().next.idx(), at, "nothing ran");
     key(&mut a, KeyCode::Char('z'));
-    assert!(screen(&mut a).contains("look again in 7 days"));
+    assert!(screen(&mut a).contains("in 7 days ("));
 }
 
 #[test]
@@ -2133,7 +2137,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     // z offers later dates; A asks about the item among everything recommended.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
-    assert!(screen(&mut a).contains("look again in 30 days"));
+    assert!(screen(&mut a).contains("in 30 days ("));
     key(&mut a, KeyCode::Esc);
     // A: 2 asks about the item among everything recommended; 1 applies it with Claude, told
     // its standing and its workflow.
@@ -2164,10 +2168,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     assert!(s.contains("soon     os: end of life soon"), "{s}");
     assert!(s.contains("tidy     Track cache"), "{s}");
     // Security updates are 'now', first; Enter starts the workflow that applies them.
-    assert!(
-        s.contains("now      4 package update(s) waiting, 1 fo"),
-        "{s}"
-    );
+    assert!(s.contains("now      4 package update(s) waiting, 1"), "{s}");
     assert!(
         s.contains("Enter: start apt-maintenance"),
         "the first row is selected: {s}"
@@ -2178,7 +2179,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     // z puts one off.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
-    assert!(screen(&mut a).contains("look again in 7 days"));
+    assert!(screen(&mut a).contains("in 7 days ("));
     key(&mut a, KeyCode::Esc);
     // A tidy one: Track.
     let reached = (0..20).any(|_| {
@@ -2189,6 +2190,319 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
         here
     });
     assert!(reached, "reached the Track row");
+}
+
+/// The app with apt-maintenance due every 30 days (`maintenance.cadence` in the config).
+fn app_with_cadence() -> App {
+    let mut a = app();
+    std::sync::Arc::make_mut(&mut a.remote.cfg)
+        .maintenance
+        .cadence
+        .insert("apt-maintenance".into(), "30d".parse().unwrap());
+    a
+}
+
+fn type_over(a: &mut App, text: &str) {
+    for _ in 0..8 {
+        key(a, KeyCode::Backspace);
+    }
+    for c in text.chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+}
+
+#[test]
+fn e_on_a_cadence_asks_how_often() {
+    let mut a = app_with_cadence();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind(
+            "task:cadence-apt-maintenance".into(),
+        )],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("e  every"), "the row takes e: {s}");
+    assert!(s.contains("every 30d · from config"), "{s}");
+    // e: asked in the key bar, as in sentry (not an editor), with what it is now.
+    key(&mut a, KeyCode::Char('e'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("cadence-apt-maintenance · every (e.g. 30d, 90d, off): 30d"),
+        "{s}"
+    );
+    type_over(&mut a, "soon");
+    assert!(screen(&mut a).contains("bad number"), "not a cadence");
+    key(&mut a, KeyCode::Char('e'));
+    type_over(&mut a, "45d");
+    let s = screen(&mut a);
+    assert!(s.contains("every 45d (tasks.toml)"), "the toast: {s}");
+    assert!(
+        s.contains("every 45d · from tasks.toml"),
+        "tasks.toml's takes the config's place: {s}"
+    );
+    // A review is told the cadence that applies.
+    key(&mut a, KeyCode::Char('R'));
+    let p = a.consent_text_any().expect("the request");
+    assert!(p.contains("apt-maintenance every 45 day(s)"), "{p}");
+    key(&mut a, KeyCode::Esc);
+    // From Records › Tasks too; off takes it off the list.
+    colon(&mut a, "tasks");
+    key(&mut a, KeyCode::Char('e'));
+    let s = screen(&mut a);
+    assert!(s.contains("every (e.g. 30d, 90d, off): 45d"), "{s}");
+    type_over(&mut a, "off");
+    let s = screen(&mut a);
+    assert!(s.contains("is off (tasks.toml)"), "{s}");
+    assert!(!s.contains("every 45d · from"), "off the list: {s}");
+}
+
+#[test]
+fn a_review_can_change_a_cadence() {
+    let mut a = app_with_cadence();
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    key(&mut a, KeyCode::Char('R'));
+    let p = a.consent_text_any().expect("the request");
+    assert!(p.contains("- cadence-apt-maintenance:"), "{p}");
+    key(&mut a, KeyCode::Enter);
+    a.writer_answered(
+        "# Maintenance review · myserver\n\n## Routine\n- updates\n\n```sentry-changes\n\
+         [[change]]\ntask = \"cadence-apt-maintenance\"\nevery = \"14d\"\n\
+         why = \"Security updates pile up.\"\n```",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("every 30d → every 14d"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let t = a
+        .store
+        .tasks
+        .iter()
+        .find(|t| t.id == "cadence-apt-maintenance")
+        .expect("written to tasks.toml");
+    assert_eq!(t.every, Some("14d".parse().unwrap()));
+}
+
+#[test]
+fn later_is_7_30_90_on_every_row() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    let same = |s: &str| {
+        for has in [
+            "Look again later",
+            "1  in 7 days (",
+            "2  in 30 days (",
+            "3  in 90 days (",
+            "it leaves the list until then",
+        ] {
+            assert!(s.contains(has), "{has} not in: {s}");
+        }
+        assert!(!s.contains("180"), "{s}");
+    };
+    // On a recommendation, and on an item (its date is its review date).
+    key(&mut a, KeyCode::Char('z'));
+    same(&screen(&mut a));
+    key(&mut a, KeyCode::Esc);
+    goto_item(&mut a, "engine");
+    key(&mut a, KeyCode::Char('z'));
+    let s = screen(&mut a);
+    same(&s);
+    assert!(s.contains("Review engine later"), "{s}");
+}
+
+#[test]
+fn capital_b_expects_everything_like_it() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind(
+            "finding:srv:container-down".into(),
+        )],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("container db is exited"), "{s}");
+    assert!(s.contains("B  all like it"), "a finding takes B: {s}");
+    key(&mut a, KeyCode::Char('B'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Baseline pattern")
+            && s.contains("Treat every container-down finding as expected?"),
+        "{s}"
+    );
+    assert!(
+        s.contains("myserver.baseline.toml ← srv:container-down:*"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("marked expected"), "{s}");
+    assert!(
+        !s.contains("now      container db is exited"),
+        "every container-down finding left the list: {s}"
+    );
+    assert!(
+        s.contains("backup.service is failed"),
+        "the others stay: {s}"
+    );
+    // The key is in ? with the other row keys.
+    key(&mut a, KeyCode::Char('?'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("the audit report") && s.contains("the workflows (0)"),
+        "{s}"
+    );
+    assert!(s.contains("edit server_config.yaml (on an item)"), "{s}");
+}
+
+#[test]
+fn enter_on_an_item_plans_it_or_opens_its_log() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    // Nothing newer, no plan: Enter opens what was done to it.
+    goto_item(&mut a, "os");
+    let s = screen(&mut a);
+    assert!(s.contains("Enter  its log"), "{s}");
+    assert!(
+        s.contains("Enter opens its log · p: Claude plans it"),
+        "{s}"
+    );
+    // x has nothing to dismiss here, and says so as sentry does.
+    key(&mut a, KeyCode::Char('x'));
+    assert!(screen(&mut a).contains("only findings can be marked expected"));
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Records") && s.contains("Maintenance log"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // Newer versions: Enter plans it (what p does).
+    goto_item(&mut a, "web");
+    let s = screen(&mut a);
+    assert!(s.contains("Enter  plan"), "{s}");
+    assert!(s.contains("Enter: Claude plans it"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("Plan: move web from 1.4.2 to"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // To retire: planned too.
+    goto_item(&mut a, "legacy");
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("plan legacy → retire · a note"));
+}
+
+/// The report on screen with one before it: a finding since gone, and one that's new.
+fn two_reports(a: &mut App) {
+    let cur = a.store.report.value.clone().flatten().expect("a report");
+    let mut prev = cur.clone();
+    let new = prev.findings.remove(0);
+    prev.findings.push(sentry_core::finding::Finding {
+        id: "srv:unit:old.service".into(),
+        severity: sentry_core::finding::Sev::Medium,
+        category: "units".into(),
+        message: "old.service is failed".into(),
+        ..Default::default()
+    });
+    assert!(!new.message.is_empty());
+    data(
+        a,
+        Kind::Report,
+        Payload::Reports(Box::new(crate::audit::Shown {
+            names: vec!["2026-10-25-120000".into(), "2026-10-26-110000".into()],
+            idx: 1,
+            cur: Some(cur),
+            prev: Some(prev),
+        })),
+    );
+}
+
+#[test]
+fn f_opens_the_audit_report_and_esc_comes_back() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    two_reports(&mut a);
+    key(&mut a, KeyCode::Char('F'));
+    let s = screen(&mut a);
+    insta::assert_snapshot!("server_audit_report_158x41", body(&s));
+    for has in [
+        "Maintenance › Audit report",
+        "Findings · 2026-10-26-110000 (2/2)",
+        "Worth a look on this server.",
+        "Changes · since the audit before",
+        "Changed: 1 new, 1 gone",
+        "old.service is failed",
+        "Esc  back",
+    ] {
+        assert!(s.contains(has), "{has} not in: {s}");
+    }
+    // x on the first (the container that's down): expected, and the list follows at once.
+    assert!(s.contains("check  container container db is exited"), "{s}");
+    key(&mut a, KeyCode::Char('x'));
+    let s = screen(&mut a);
+    assert!(s.contains("ok     container container db is exited"), "{s}");
+    assert!(s.contains("marked expected"), "{s}");
+    assert!(s.contains("3 to check"), "one fewer: {s}");
+    // Taken back (x on it does the same).
+    let id = a
+        .store
+        .shown
+        .as_ref()
+        .and_then(|sh| sh.cur.as_ref())
+        .and_then(|r| {
+            r.findings
+                .iter()
+                .find(|f| f.message.starts_with("container db"))
+        })
+        .map(|f| f.id.clone())
+        .unwrap();
+    a.apply(
+        vec![super::app::Effect::Expected(id, false)],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("check  container container db is exited"), "{s}");
+    // B asks about everything like the one selected.
+    key(&mut a, KeyCode::Char('B'));
+    assert!(screen(&mut a).contains("Baseline pattern"));
+    key(&mut a, KeyCode::Esc);
+    // Narrow: one pane at a time.
+    let s = render_to_string(&mut a, 100, 30);
+    assert!(s.contains("Findings ·") && !s.contains("Changes ·"), "{s}");
+    // Esc: the list again; `:audit` opens the report from anywhere.
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Recommended ·") && !s.contains("Audit report"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    colon(&mut a, "audit");
+    assert_eq!(a.screen, ScreenId::Maint);
+    assert!(screen(&mut a).contains("Maintenance › Audit report"));
+}
+
+#[test]
+fn leaving_maintenance_closes_the_report() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    key(&mut a, KeyCode::Char('F'));
+    assert!(screen(&mut a).contains("Audit report"));
+    // With no stored list of reports, the latest is shown on its own.
+    assert!(screen(&mut a).contains("first report"));
+    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Recommended ·") && !s.contains("Audit report"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -2747,7 +3061,7 @@ fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     goto_item(&mut a, "engine");
     assert!(
-        screen(&mut a).contains("p: Claude plans it (no workflow: you run its steps)"),
+        screen(&mut a).contains("Enter: Claude plans it (no workflow: you run its steps)"),
         "{}",
         screen(&mut a)
     );

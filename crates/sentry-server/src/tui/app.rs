@@ -109,8 +109,8 @@ pub enum Effect {
     TaskRemove(String),
     /// A task done by hand: logged (tagged `task:<id>`), then the note box.
     TaskDone(String),
-    /// Open this server's tasks.toml in $EDITOR (read again after).
-    EditTasks,
+    /// Ask how often a task recurs (`e`): written to this server's tasks.toml.
+    TaskEvery(String),
 }
 
 /// Where the answer to read requests goes back to.
@@ -144,6 +144,8 @@ pub enum Prompt {
     PlanNote(String, Box<PlanDoc>),
     /// What to change in an item's plan.
     PlanRevise(String),
+    /// A task's cadence (its id): `30d`, `off`.
+    TaskEvery(String),
 }
 
 impl PromptLine for Prompt {
@@ -168,6 +170,7 @@ impl PromptLine for Prompt {
                 plan.head.to.as_deref().unwrap_or("retire")
             ),
             Prompt::PlanRevise(_) => "revise the plan: ".into(),
+            Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
         }
     }
 
@@ -439,6 +442,10 @@ impl App {
     /// Switch screens; what the screen shows is fetched right away, and from then on only
     /// what it polls.
     pub fn enter(&mut self, id: ScreenId, now: Instant) {
+        // Arriving at Maintenance from elsewhere: its list, not a view left open.
+        if id == ScreenId::Maint && self.screen != ScreenId::Maint {
+            self.screens.maint.view = None;
+        }
         self.screen = id;
         if id == ScreenId::Upgrade {
             if self.wf_entries.is_empty() && !self.offline {
@@ -1143,12 +1150,16 @@ impl App {
                 },
                 Effect::MaintFind(prefix) => {
                     let v = self.view();
-                    if let Some(i) = super::screens::maint::recs(&v)
+                    match super::screens::maint::recs(&v)
                         .iter()
                         .position(|r| r.key.starts_with(&prefix))
                     {
-                        let key = super::screens::maint::row_key_at(&v, i);
-                        self.screens.maint.select(i, key);
+                        Some(i) => {
+                            let key = super::screens::maint::row_key_at(&v, i);
+                            self.screens.maint.select(i, key);
+                        }
+                        // Not read yet: selected when it's there.
+                        None => self.screens.maint.find = Some(prefix),
                     }
                 }
                 Effect::FixFinding(id) => {
@@ -1189,12 +1200,19 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::EditConfig | Effect::EditTasks | Effect::EditWorkflow(_) => {
+                Effect::TaskEvery(id) => {
+                    let cur = super::screens::maint::all_tasks(&self.view())
+                        .iter()
+                        .find(|t| t.id == id)
+                        .and_then(|t| t.every)
+                        .map_or(String::new(), |d| d.to_string());
+                    self.input = Input::Prompt(Prompt::TaskEvery(id), cur);
+                }
+                Effect::EditConfig | Effect::EditWorkflow(_) => {
                     let editor = std::env::var("VISUAL")
                         .or_else(|_| std::env::var("EDITOR"))
                         .unwrap_or_else(|_| "vi".into());
                     let path = match e {
-                        Effect::EditTasks => sentry_core::maint::tasks::path(&self.remote.name),
                         Effect::EditWorkflow(p) => p,
                         _ => crate::config::path(),
                     };
@@ -1263,14 +1281,26 @@ impl App {
                         });
                     }
                 }
+                // `id` may be a pattern (`B`: `srv:container:*`).
                 Effect::Expected(id, on) => {
                     match crate::audit::set_expected(&self.remote.name, &id, on) {
+                        // Still expected by something else: a pattern, or the config.
+                        Ok(false) if !on => self
+                            .toast("expected by a pattern or server_config.yaml: change it there"),
                         Ok(_) => {
-                            if let Some(Some(r)) = self.store.report.value.as_mut() {
-                                for f in r.findings.iter_mut().filter(|f| f.id == id) {
+                            let hit = |f: &sentry_core::finding::Finding| {
+                                sentry_core::baseline::glob(&id, &f.id)
+                            };
+                            let reports = [
+                                self.store.report.value.as_mut().and_then(|r| r.as_mut()),
+                                self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
+                            ];
+                            for r in reports.into_iter().flatten() {
+                                for f in r.findings.iter_mut().filter(|f| hit(f)) {
                                     f.expected = on;
                                 }
                             }
+                            self.keep_maint_selection();
                             self.toast(if on {
                                 "marked expected"
                             } else {
@@ -2342,6 +2372,39 @@ impl App {
                 let session = doc.head.session.clone();
                 self.write_plan(id, doc, planview::revise(text), session);
             }
+            // A task's cadence: tasks.toml's task takes the place of one from the config.
+            Prompt::TaskEvery(id) => {
+                use sentry_core::maint::tasks;
+                let every = match tasks::parse_every(text) {
+                    Ok(e) => e,
+                    Err(e) => return self.toast(&e),
+                };
+                let Some(t) = super::screens::maint::all_tasks(&self.view())
+                    .into_iter()
+                    .find(|t| t.id == id)
+                else {
+                    return;
+                };
+                if self.offline {
+                    self.store.tasks.retain(|x| x.id != id);
+                    self.store.tasks.push(tasks::Task {
+                        every: every.or(t.every),
+                        off: every.is_none(),
+                        source: tasks::Source::File,
+                        ..t.clone()
+                    });
+                } else {
+                    if let Err(e) = tasks::set_every(&self.remote.name, &t, every) {
+                        return self.toast(&format!("tasks.toml: {e}"));
+                    }
+                    self.store.tasks = tasks::load(&self.remote.name);
+                }
+                self.keep_maint_selection();
+                self.toast(&match every {
+                    Some(d) => format!("{} every {d} (tasks.toml)", t.title),
+                    None => format!("{} is off (tasks.toml)", t.title),
+                });
+            }
         }
     }
 
@@ -2352,7 +2415,7 @@ impl App {
             Prompt::PlanNote(..) => self.toast("not planned"),
             // No note: what the run changed may still want reading again.
             Prompt::LogNote(_) => self.reread_box(),
-            Prompt::LogAddNote(_) | Prompt::PlanRevise(_) => {}
+            Prompt::LogAddNote(_) | Prompt::PlanRevise(_) | Prompt::TaskEvery(_) => {}
         }
     }
 
@@ -2389,8 +2452,9 @@ impl App {
                 .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
                 // Not on the key bar, to keep it to what the row takes.
                 .chain([
+                    ("F", "the audit report"),
                     ("w", "the workflows (0)"),
-                    ("e", "edit server_config.yaml (a task: its file)"),
+                    ("e", "edit server_config.yaml (on an item)"),
                 ])
                 .collect();
         }
@@ -2406,7 +2470,7 @@ impl App {
                 hints: &keys,
                 globals: &[("I", "read what needs root, once, with your sudo password")],
                 app: "sentry-server",
-                commands: ":q  :<screen>  :workflow <name>  :audit now  :log  :refresh",
+                commands: ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
                 footer: &[
                     "Destructive actions: preview → confirm → streamed output.",
                     &footer,
@@ -3191,14 +3255,9 @@ impl App {
                 let e = super::screens::maint::task_enter(&self.view(), &id);
                 self.apply(e, now);
             }
-            // Where it's written: the config (a cadence) or tasks.toml.
-            Fx::TaskEvery(_) => {
+            Fx::TaskEvery(id) => {
                 self.rec_view = None;
-                let e = match task.map(|t| t.source) {
-                    Some(sentry_core::maint::tasks::Source::Config) => Effect::EditConfig,
-                    _ => Effect::EditTasks,
-                };
-                self.apply(vec![e], now);
+                self.apply(vec![Effect::TaskEvery(id)], now);
             }
             Fx::TaskRemove(id) => {
                 self.rec_view = None;
@@ -3470,6 +3529,12 @@ impl App {
                 self.on_key(k, now);
             }
             (Some("audit"), Some("now")) => self.apply(vec![Effect::Fetch(Kind::Audit)], now),
+            // The audit report, over Maintenance.
+            (Some("audit"), None) => {
+                self.enter(ScreenId::Maint, now);
+                let e = self.screens.maint.open_report();
+                self.apply(e, now);
+            }
             (Some("log"), _) => self.open_records(sentry_core::tui::records::Section::Log, None),
             (Some("records" | "rec" | "tasks"), _) => {
                 self.open_records(sentry_core::tui::records::Section::Tasks, None)

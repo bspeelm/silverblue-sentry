@@ -1465,12 +1465,9 @@ impl App {
                 self.toast("noted in the maintenance log (v opens it)");
             }
             Prompt::TaskEvery(id) => {
-                let every = match text.trim() {
-                    "off" => None,
-                    d => match d.parse::<crate::config::Dur>() {
-                        Ok(d) => Some(d),
-                        Err(e) => return self.toast(e.to_string()),
-                    },
+                let every = match crate::maint::tasks::parse_every(text) {
+                    Ok(e) => e,
+                    Err(e) => return self.toast(e),
                 };
                 let all = crate::maint::tasks::effective(
                     &self.data.tasks,
