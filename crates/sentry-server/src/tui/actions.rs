@@ -1,5 +1,6 @@
 //! Maintenance: every action is a confirm box showing the exact command, then streamed output
-//! (or, when sudo wants a password, the terminal handed over). Nothing runs without `y`.
+//! (or, when sudo wants a password, the terminal handed over). Nothing runs without
+//! Enter on that box.
 
 use ratatui::text::Line;
 
@@ -317,7 +318,9 @@ pub fn custom(v: &View, r: &Remote) -> Vec<Effect> {
         .iter()
         .map(|a| (a.title.clone(), custom_one(v, r, a)))
         .collect();
-    vec![Effect::Choose("Actions".into(), choices)]
+    vec![Effect::Choose(super::app::Choice::numbered(
+        v.t, "Actions", choices,
+    ))]
 }
 
 fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {

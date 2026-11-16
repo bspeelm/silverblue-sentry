@@ -449,7 +449,10 @@ fn screen_keys_follow_sentry() {
     assert_eq!(a.screen, ScreenId::Maint);
     key(&mut a, KeyCode::Char('?'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Maintenance · keys") && s.contains("screens, numbered as in sentry"));
+    assert!(
+        s.contains("Maintenance:") && s.contains("switch screen"),
+        "{s}"
+    );
     assert!(!s.contains("tabs (or"), "{s}");
 }
 
@@ -648,10 +651,11 @@ fn restart_asks_first_then_streams() {
     key(&mut a, KeyCode::Char('y'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Restart · running") && s.contains("$ sudo -n systemctl restart app.service"),
-        "{s}"
+        s.contains("Restart") && s.contains("⠿ running"),
+        "sentry's run box: {s}"
     );
-    assert!(s.contains("C-c  stop it"), "{s}");
+    assert!(s.contains("$ sudo -n systemctl restart app.service"), "{s}");
+    assert!(s.contains("C-c  terminate"), "{s}");
     run_msg(
         &mut a,
         1,
@@ -669,12 +673,10 @@ fn restart_asks_first_then_streams() {
         },
     );
     let s = render_to_string(&mut a, 158, 41);
-    assert!(
-        s.contains("Restart · done") && s.contains("restarted"),
-        "{s}"
-    );
+    assert!(s.contains("✓ done") && s.contains("restarted"), "{s}");
+    assert!(s.contains("Esc  close"), "{s}");
     key(&mut a, KeyCode::Esc);
-    assert!(!render_to_string(&mut a, 158, 41).contains("Restart ·"));
+    assert!(!render_to_string(&mut a, 158, 41).contains("✓ done"));
     // ssh is the lifeline: restarting it is flagged.
     key(&mut a, KeyCode::Char('x'));
     let s = render_to_string(&mut a, 158, 41);
@@ -1029,6 +1031,288 @@ fn live_ask() {
 }
 
 /// Same look as sentry: key chips on the grey (`dim`) background, the badge ink on cyan.
+#[test]
+fn the_frame_is_sentrys() {
+    let mut a = app();
+    // The whole screen, top bar and clock included (the clock is the test's).
+    insta::assert_snapshot!("server_frame_158x41", render_to_string(&mut a, 158, 41));
+    insta::assert_snapshot!("server_frame_80x24", render_to_string(&mut a, 80, 24));
+    let s = render_to_string(&mut a, 158, 41);
+    let top = s.lines().next().unwrap();
+    assert!(
+        top.contains("sentry-server") && top.contains("myserver") && top.contains("kernel 6.1"),
+        "{top}"
+    );
+    assert!(
+        top.contains("● connected") && top.ends_with("Mon 26 Oct 12:00"),
+        "the connection where sentry says live, then the clock: {top}"
+    );
+    // Narrow: facts go first, the state never.
+    let s = render_to_string(&mut a, 80, 24);
+    let top = s.lines().next().unwrap();
+    assert!(
+        top.contains("● connected") && !top.contains("Debian"),
+        "{top}"
+    );
+}
+
+#[test]
+fn enter_confirms_and_the_bar_says_so() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char('5'));
+    key(&mut a, KeyCode::Char('R'));
+    let s = screen(&mut a);
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Enter  confirm") && bar.contains("Esc  cancel"),
+        "{bar}"
+    );
+    assert!(!bar.contains("y  confirm"), "{bar}");
+    // Esc cancels; Enter confirms (y and n still do too).
+    key(&mut a, KeyCode::Esc);
+    assert!(!screen(&mut a).contains("$ sudo"));
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("⠿ running"), "Enter started it");
+    // A choice names its keys the same way.
+    let mut a = app();
+    key(&mut a, KeyCode::Char('6'));
+    key(&mut a, KeyCode::Char('z'));
+    let s = screen(&mut a);
+    assert!(s.contains("pick one (1–3, n cancels)"), "{s}");
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("1–9  choose") && bar.contains("Esc  cancel"),
+        "{bar}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(!screen(&mut a).contains("pick one"));
+}
+
+#[test]
+fn a_toast_shares_the_key_bar() {
+    let mut a = app();
+    for c in ":xyz".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("?  help") && bar.contains("q  quit"),
+        "the hints stay: {bar}"
+    );
+    assert!(bar.ends_with("unknown command :xyz"), "at the right: {bar}");
+    // It goes by itself, as sentry's does.
+    let later = Instant::now() + sentry_core::tui::frame::TOAST_FOR;
+    a.tick(later);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("unknown command"), "{s}");
+}
+
+#[test]
+fn boxes_sit_in_the_body_over_a_dimmed_screen() {
+    use ratatui::style::Modifier;
+    let mut a = app();
+    key(&mut a, KeyCode::Char('q'));
+    let backend = ratatui::backend::TestBackend::new(158, 41);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(|f| a.draw(f)).unwrap();
+    let buf = term.backend().buffer().clone();
+    // The screen behind is dimmed; the top bar, the strip and the key bar aren't.
+    assert!(buf[(2, 6)].modifier.contains(Modifier::DIM), "the body");
+    for y in [0, 1, 40] {
+        assert!(!buf[(2, y)].modifier.contains(Modifier::DIM), "row {y}");
+    }
+    // The box is inside the body, also on a small terminal with a long box.
+    let mut a = app();
+    key(&mut a, KeyCode::Char('?'));
+    let s = render_to_string(&mut a, 80, 24);
+    let lines: Vec<&str> = s.lines().collect();
+    assert!(lines[0].contains("sentry-server"), "the top bar stays: {s}");
+    assert!(lines[1].contains("1 Dash"), "the strip stays: {s}");
+    assert!(lines[23].contains("q  quit"), "the key bar stays: {s}");
+}
+
+#[test]
+fn one_input_line_for_every_prompt() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    let bar = |a: &mut App| {
+        render_to_string(a, 158, 41)
+            .lines()
+            .last()
+            .unwrap()
+            .to_string()
+    };
+    // A filter and a command.
+    key(&mut a, KeyCode::Char('5'));
+    key(&mut a, KeyCode::Char('/'));
+    key(&mut a, KeyCode::Char('a'));
+    assert!(bar(&mut a).starts_with("/a▏   Enter keep · Esc clear"));
+    // Backspace on nothing closes a filter (and a command), keeping what it was.
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Backspace);
+    assert!(bar(&mut a).contains("?  help"));
+    key(&mut a, KeyCode::Char(':'));
+    assert!(bar(&mut a).starts_with(":▏"));
+    key(&mut a, KeyCode::Backspace);
+    assert!(bar(&mut a).contains("?  help"));
+    // A plan's note: Esc says it wasn't planned; a box over the line gets the keys first.
+    key(&mut a, KeyCode::Char('6'));
+    goto_item(&mut a, "engine");
+    key(&mut a, KeyCode::Char('p'));
+    key(&mut a, KeyCode::Char('1'));
+    let b = bar(&mut a);
+    assert!(
+        b.contains("plan engine →") && b.contains("a note (optional): ▏   Enter save · Esc cancel"),
+        "{b}"
+    );
+    // One Backspace too many loses nothing.
+    key(&mut a, KeyCode::Backspace);
+    assert!(bar(&mut a).contains("a note (optional)"));
+    key(&mut a, KeyCode::Esc);
+    assert!(bar(&mut a).ends_with("not planned"));
+    // A task done: the note for the log; Esc leaves none.
+    a.add_task_for_test(sentry_core::maint::tasks::Task {
+        id: "ups".into(),
+        title: "Check the UPS battery".into(),
+        why: "It is old.".into(),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: "by-hand".into(),
+        item: None,
+        steps: String::new(),
+        added: None,
+        off: false,
+        source: Default::default(),
+        review: None,
+        after: None,
+    });
+    a.apply(
+        vec![super::app::Effect::MaintFind("task:ups".into())],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Char('d'));
+    let b = bar(&mut a);
+    assert!(
+        b.contains("ups done · for the maintenance log") && b.contains("Enter save · Esc cancel"),
+        "{b}"
+    );
+    for c in "fine".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(screen(&mut a).contains("noted in the maintenance log"));
+    assert_eq!(
+        a.last_log.as_ref().map(|e| e.body.contains("fine")),
+        Some(true)
+    );
+}
+
+#[test]
+fn a_var_without_a_value_is_asked_again() {
+    let mut a = app();
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: "bump".into(),
+        path: "bump.toml".into(),
+        wf: sentry_core::workflows::parse(
+            "name = \"bump\"\ndescription = \"x\"\ndraft = true\n\
+             [vars.image]\nprompt = \"New image\"\n[vars.service]\nprompt = \"Which service\"\n\
+             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ service }} {{ image }}\"\n",
+        ),
+        issues: Vec::new(),
+    }]);
+    let bar = |a: &mut App| {
+        render_to_string(a, 158, 41)
+            .lines()
+            .last()
+            .unwrap()
+            .to_string()
+    };
+    a.apply(
+        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
+            "bump".into(),
+        ))],
+        Instant::now(),
+    );
+    assert!(bar(&mut a).contains("bump 1/2 · New image (image): ▏   Enter next · Esc cancel"));
+    // Nothing typed and no default: the same value is asked again, and says why.
+    key(&mut a, KeyCode::Enter);
+    let b = bar(&mut a);
+    assert!(
+        b.contains("bump 1/2 · New image (image): ▏") && b.contains("image needs a value"),
+        "{b}"
+    );
+    // Backspace on nothing doesn't drop the values asked for.
+    key(&mut a, KeyCode::Backspace);
+    assert!(bar(&mut a).contains("bump 1/2"));
+    for c in "example/web:2".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let b = bar(&mut a);
+    assert!(
+        b.contains("bump 2/2 · Which service (service): ▏   Enter next"),
+        "the next one, the note gone: {b}"
+    );
+}
+
+#[test]
+fn a_paste_goes_to_the_open_prompt() {
+    let mut a = app();
+    let paste = |a: &mut App, text: &str| a.on_event(Ev::Paste(text.into()), Instant::now());
+    // Nothing open: a paste does nothing (its letters aren't keys).
+    paste(&mut a, "q6");
+    assert_eq!(a.screen, ScreenId::Dash);
+    assert!(!render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
+    // The line being typed takes it whole, on one line.
+    key(&mut a, KeyCode::Char(':'));
+    paste(&mut a, "maint\n");
+    assert!(render_to_string(&mut a, 158, 41).contains(":maint▏"));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.screen, ScreenId::Maint);
+    // A box in front of a prompt: the paste isn't for the prompt.
+    goto_item(&mut a, "engine");
+    key(&mut a, KeyCode::Char('p'));
+    key(&mut a, KeyCode::Char('1'));
+    paste(&mut a, "first");
+    assert!(render_to_string(&mut a, 158, 41).contains("a note (optional): first▏"));
+    a.apply(
+        vec![super::app::Effect::Info("Note".into(), Vec::new())],
+        Instant::now(),
+    );
+    paste(&mut a, " second");
+    key(&mut a, KeyCode::Esc);
+    assert!(render_to_string(&mut a, 158, 41).contains("a note (optional): first▏"));
+}
+
+#[test]
+fn help_is_laid_out_like_sentrys() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('?'));
+    let s = render_to_string(&mut a, 158, 41);
+    for has in [
+        " Keys ",
+        "1–9 0 H   switch screen",
+        "j/k ↑↓    move selection",
+        ":q  :<screen>  :workflow <name>  :audit now  :log  :refresh",
+        "Dashboard:",
+        "sentry-server:",
+        "read what needs root, once, with your sudo password",
+        "Nothing keeps running on myserver after sentry-server exits.",
+    ] {
+        assert!(s.contains(has), "{has} not in: {s}");
+    }
+    // Maintenance: every row key, in the same grid.
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('6'));
+    key(&mut a, KeyCode::Char('?'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Maintenance:") && s.contains("z "), "{s}");
+}
+
 #[test]
 fn chips_and_badge_match_sentry() {
     let mut a = app();

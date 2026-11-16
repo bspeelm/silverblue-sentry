@@ -17,7 +17,7 @@ use crate::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::maint::recommend::{self, Action, Level, Rec};
 use crate::maint::{self, local};
 use crate::remote::Remote;
-use crate::tui::app::{Effect, Modal};
+use crate::tui::app::{Choice, Effect, Modal};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::widgets::{self, TableSpec, inner, panel};
@@ -759,7 +759,7 @@ pub fn key(c: char, v: &View) -> Vec<Effect> {
     }
 }
 
-fn later(key: &str, what: &str) -> Vec<Effect> {
+fn later(v: &View, key: &str, what: &str) -> Vec<Effect> {
     let today = jiff::Zoned::now().date();
     let choices = [7, 30, 90]
         .into_iter()
@@ -773,7 +773,11 @@ fn later(key: &str, what: &str) -> Vec<Effect> {
             )
         })
         .collect();
-    vec![Effect::Choose(format!("{what}: later"), choices)]
+    vec![Effect::Choose(Choice::numbered(
+        v.t,
+        &format!("{what}: later"),
+        choices,
+    ))]
 }
 
 fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
@@ -842,7 +846,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             ],
             yes: Some(("remove".into(), vec![Effect::TaskRemove(id.clone())])),
         })],
-        ('z', _) => later(&r.key, &r.title),
+        ('z', _) => later(v, &r.key, &r.title),
         // Plan keys work on the item the recommendation is about.
         ('p' | 'P' | 'x', _) => match r
             .item
@@ -942,7 +946,11 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
                     )
                 })
                 .collect();
-            vec![Effect::Choose(format!("Review {} later", s.id), choices)]
+            vec![Effect::Choose(Choice::numbered(
+                v.t,
+                &format!("Review {} later", s.id),
+                choices,
+            ))]
         }
         // A plan already there: say so, rather than quietly replacing it.
         'p' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
@@ -1010,14 +1018,15 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
                         )
                     }))
                     .collect();
-            vec![Effect::Choose(
-                format!(
+            vec![Effect::Choose(Choice::numbered(
+                v.t,
+                &format!(
                     "Plan: move {} from {} to",
                     s.id,
                     s.pinned.as_deref().unwrap_or("?")
                 ),
                 choices,
-            )]
+            ))]
         }
         // Enter opens the item's plan (or the one being written).
         '\n' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {

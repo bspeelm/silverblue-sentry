@@ -7,10 +7,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::text::Line;
 
 use super::data::{Kind, Store};
 use super::planview;
@@ -23,10 +20,12 @@ use sentry_core::claude::{self, Ask};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
 use sentry_core::tui::ScreenId;
 use sentry_core::tui::chat::{self as chatmod, Chat};
+use sentry_core::tui::frame::{self, Layer};
+use sentry_core::tui::input::{Input, PromptLine, Typed};
 use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::modal;
 use sentry_core::tui::theme::Theme;
-use sentry_core::tui::widgets::{self, chip};
+use sentry_core::tui::widgets;
 use sentry_core::workflows::Entry;
 use sentry_core::workflows::runner::Next;
 
@@ -48,7 +47,7 @@ pub enum Effect {
     /// Read-only output, fetched once, shown in the scrollable pane.
     Logs(String, Cmd),
     /// Pick one of several (digits 1-9).
-    Choose(String, Vec<Choice>),
+    Choose(Choice),
     /// Workflow actions.
     Wf(WfCmd),
     /// Read what needs root, with the terminal handed over for the password (after a confirm).
@@ -118,14 +117,70 @@ pub enum ReadsFor {
 }
 
 /// A workflow's `[vars]` being asked for, one at a time, before it starts.
-struct VarInput {
+#[derive(Clone, Debug)]
+pub struct VarInput {
     workflow: String,
     /// (name, prompt, default), in the order asked.
     asks: Vec<(String, String, Option<String>)>,
     values: BTreeMap<String, String>,
-    buf: String,
     /// Why the last answer wasn't taken.
     note: Option<String>,
+}
+
+/// What the one input line in the key bar asks for.
+#[derive(Clone, Debug)]
+pub enum Prompt {
+    /// A workflow's values, before it starts.
+    WfVar(VarInput),
+    /// A note for the entry a run, a plan or a task just wrote (optional).
+    LogNote(Box<crate::maint::log::LogEntry>),
+    /// A note added to an entry from Records.
+    LogAddNote(Box<crate::maint::log::LogEntry>),
+    /// A note for Claude before it plans an item (optional).
+    PlanNote(String, Box<PlanDoc>),
+    /// What to change in an item's plan.
+    PlanRevise(String),
+}
+
+impl PromptLine for Prompt {
+    fn label(&self) -> String {
+        match self {
+            Prompt::WfVar(v) => match v.current() {
+                Some((name, prompt, _)) => format!(
+                    "{} {}/{} · {prompt} ({name}): ",
+                    v.workflow,
+                    v.values.len() + 1,
+                    v.asks.len()
+                ),
+                None => format!("{}: ", v.workflow),
+            },
+            Prompt::LogNote(e) | Prompt::LogAddNote(e) => format!(
+                "{} {} · for the maintenance log, what to know next time (optional): ",
+                e.head.item.as_deref().unwrap_or(&e.head.workflow),
+                e.head.result
+            ),
+            Prompt::PlanNote(id, plan) => format!(
+                "plan {id} → {} · a note (optional): ",
+                plan.head.to.as_deref().unwrap_or("retire")
+            ),
+            Prompt::PlanRevise(_) => "revise the plan: ".into(),
+        }
+    }
+
+    fn enter_word(&self) -> &'static str {
+        match self {
+            Prompt::WfVar(_) => "next",
+            Prompt::PlanRevise(_) => "send",
+            _ => "save",
+        }
+    }
+
+    fn note(&self) -> Option<&str> {
+        match self {
+            Prompt::WfVar(v) => v.note.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 impl VarInput {
@@ -154,8 +209,8 @@ pub enum WfCmd {
     Close,
 }
 
-/// One entry of a chooser: its label and what picking it does.
-pub type Choice = (String, Vec<Effect>);
+/// A numbered choice between actions.
+pub type Choice = modal::Choice<Effect>;
 
 #[derive(Clone, Debug)]
 pub struct RunSpec {
@@ -198,7 +253,7 @@ pub struct App {
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
-    toast: Option<(String, Instant)>,
+    toast: Option<frame::Toast>,
     /// When each fetch of the screen in view is next due.
     due: HashMap<Kind, Instant>,
     /// While waiting for a reboot: when the boot id is read next.
@@ -206,7 +261,7 @@ pub struct App {
     /// Something wrong in `[keys]`, said once the TUI is up.
     keys_warning: Option<String>,
     pane: Option<Pane>,
-    chooser: Option<(String, Vec<Choice>)>,
+    choice: Option<Choice>,
     suspend: Option<(Cmd, String, Vec<Kind>)>,
     /// The suspended command reboots the server.
     suspend_reboot: bool,
@@ -222,23 +277,14 @@ pub struct App {
     last_change_at: Option<jiff::Timestamp>,
     /// After the log note: offer to read the server again (the run changed what was read).
     offer_reread: bool,
-    /// The log entry waiting for its note, and the note typed so far.
-    log_note: Option<(crate::maint::log::LogEntry, String)>,
-    /// The note is added to an entry from Records (not the one a run or task just wrote).
-    note_add: bool,
     /// Tests: the last entry written with a note.
     pub last_log: Option<crate::maint::log::LogEntry>,
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
-    /// The suspended command is a step of an approved plan (its exit advances the plan).
-    /// A plan waiting for its note: (item, plan, the note typed so far).
-    plan_note: Option<(String, PlanDoc, String)>,
     /// Claude writing a plan, in the background.
     writer: Option<planview::Writer>,
     /// The Plan view: the item shown, and lines scrolled from the top.
     plan_view: Option<(String, usize)>,
-    /// What to change in the plan (`r` in the Plan view), being typed.
-    revise_input: Option<String>,
     /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
     run_view: bool,
     /// The Review window (`R` on Maintenance).
@@ -267,13 +313,10 @@ pub struct App {
     apply: Option<sentry_core::apply::session::Session>,
     /// sudo's check for the session running (stream id; true: the password's check).
     apply_aux: Option<(u64, bool)>,
-    /// The `:` command line being typed.
-    cmdline: Option<String>,
-    /// A workflow's vars being asked for.
-    var_input: Option<VarInput>,
-    /// Each screen's `/` filter, and whether it's being typed.
+    /// The line being typed in the key bar: a `/` filter, a `:` command, or a prompt.
+    input: Input<Prompt>,
+    /// Each screen's `/` filter.
     filters: HashMap<ScreenId, String>,
-    filtering: bool,
     pub quit: bool,
     pub dirty: bool,
     /// Fixed clock for snapshot tests.
@@ -301,7 +344,7 @@ impl App {
             reboot_probe: None,
             keys_warning: warnings.into_iter().next(),
             pane: None,
-            chooser: None,
+            choice: None,
             suspend: None,
             suspend_reboot: false,
             suspend_inventory: false,
@@ -310,14 +353,10 @@ impl App {
             wf_logged: None,
             last_change_at: None,
             offer_reread: false,
-            log_note: None,
-            note_add: false,
             last_log: None,
             suspend_edit: false,
-            plan_note: None,
             writer: None,
             plan_view: None,
-            revise_input: None,
             rec_view: None,
             review_view: None,
             run_view: false,
@@ -333,10 +372,8 @@ impl App {
             chat: None,
             apply: None,
             apply_aux: None,
-            cmdline: None,
-            var_input: None,
+            input: Input::None,
             filters: Default::default(),
-            filtering: false,
             quit: false,
             dirty: true,
             now_override: None,
@@ -428,7 +465,7 @@ impl App {
         {
             self.dirty = true;
         }
-        if self.toast.as_ref().is_some_and(|(_, t)| now >= *t) {
+        if self.toast.as_ref().is_some_and(|t| t.over(now)) {
             self.toast = None;
             self.dirty = true;
         }
@@ -459,8 +496,8 @@ impl App {
         if let Some(t) = self.reboot_probe.filter(|_| self.reboot_wait.is_some()) {
             due = due.min(t);
         }
-        if let Some((_, t)) = &self.toast {
-            due = due.min(*t);
+        if let Some(t) = &self.toast {
+            due = due.min(t.until());
         }
         // A chat or an apply session working in view: its clocks tick.
         if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
@@ -666,7 +703,7 @@ impl App {
     }
 
     fn toast(&mut self, s: &str) {
-        self.toast = Some((s.to_string(), Instant::now() + Duration::from_secs(4)));
+        self.toast = Some(frame::Toast::new(s));
         self.dirty = true;
     }
 
@@ -705,25 +742,45 @@ impl App {
         }
     }
 
+    /// What's in front now, for [`frame::layer`]: who gets a key or a paste, and whose keys
+    /// the key bar names.
+    fn open(&self) -> frame::Open {
+        frame::Open {
+            run: self.pane.is_some(),
+            choice: self.choice.is_some(),
+            modal: self.modal.is_some(),
+            apply: self.apply.as_ref().is_some_and(|s| !s.chat.hidden),
+            chat: self.chat.as_ref().is_some_and(|c| !c.hidden),
+            input: self.input.is_open(),
+            docs: self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some(),
+        }
+    }
+
     /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
     /// letters must never act as keys).
     fn on_paste(&mut self, text: &str) {
         self.dirty = true;
-        let line = text.replace(['\r', '\n'], " ");
-        let line = line.trim_end();
-        if let Some(buf) = self.cmdline.as_mut() {
-            buf.push_str(line);
-        } else if let Some(buf) = self.revise_input.as_mut() {
-            buf.push_str(line);
-        } else if let Some((.., buf)) = self.plan_note.as_mut() {
-            buf.push_str(line);
-        } else if self.modal.is_some() || self.chooser.is_some() || self.pane.is_some() {
-        } else if let Some((_, buf)) = self.log_note.as_mut() {
-            buf.push_str(line);
-        } else if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
-            s.paste(text);
-        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden && !c.running()) {
-            c.paste(text);
+        match frame::layer(&self.open()) {
+            Layer::Apply => {
+                if let Some(s) = self.apply.as_mut() {
+                    s.paste(text);
+                }
+            }
+            Layer::Chat => {
+                if let Some(c) = self.chat.as_mut().filter(|c| !c.running()) {
+                    c.paste(text);
+                }
+            }
+            Layer::Input => self.input.paste(text),
+            Layer::Run | Layer::Choice | Layer::Modal | Layer::Docs | Layer::Screen => {}
+        }
+    }
+
+    /// The workflow whose values are being asked for.
+    fn asking_vars(&self) -> Option<&str> {
+        match &self.input {
+            Input::Prompt(Prompt::WfVar(v), _) => Some(&v.workflow),
+            _ => None,
         }
     }
 
@@ -743,150 +800,79 @@ impl App {
     }
 
     fn on_key_inner(&mut self, k: KeyEvent, now: Instant) {
-        if self.cmdline.is_some() {
-            self.cmdline_key(k, now);
-            return;
-        }
-        if self.filtering {
-            self.filter_key(k);
-            return;
-        }
-        if self.var_input.is_some() {
-            self.var_key(k);
-            return;
-        }
-        if self.plan_note.is_some() {
-            self.plan_note_key(k);
-            return;
-        }
-        if self.revise_input.is_some() {
-            self.revise_key(k);
-            return;
-        }
-        if self.log_note.is_some() && self.modal.is_none() {
-            self.log_note_key(k);
-            return;
-        }
-        // Over Records, a plan or a review: a screen key goes there, `:` still works.
-        if (self.rec_view.is_some() || self.review_view.is_some() || self.plan_view.is_some())
-            && self.modal.is_none()
-            && self.chooser.is_none()
-        {
-            match self.keys.resolve(&k) {
-                Some(Action::Screen(id)) if id != ScreenId::Upgrade => {
-                    self.rec_view = None;
-                    self.review_view = None;
-                    self.plan_view = None;
-                    self.enter(id, now);
-                    return;
+        use modal::{Answer, Pick};
+        match frame::layer(&self.open()) {
+            Layer::Run => return self.pane_key(k),
+            Layer::Choice => {
+                let n = self.choice.as_ref().map_or(0, |c| c.options.len());
+                match modal::pick(&k, n) {
+                    Pick::Option(i) => {
+                        if let Some(c) = self.choice.take() {
+                            self.apply(c.options[i].1.clone(), now);
+                        }
+                    }
+                    Pick::Close => self.choice = None,
+                    Pick::Stay => {}
                 }
-                Some(Action::Command) => {
-                    self.cmdline = Some(String::new());
-                    return;
-                }
-                _ => {}
+                return;
             }
-        }
-        if self.rec_view.is_some() && self.modal.is_none() {
-            self.records_key(k, now);
-            return;
-        }
-        if self.review_view.is_some() && self.modal.is_none() && self.chooser.is_none() {
-            self.review_view_key(k);
-            return;
-        }
-        if self.plan_view.is_some()
-            && self.modal.is_none()
-            && self.chooser.is_none()
-            && self.pane.is_none()
-        {
-            self.plan_view_key(k, now);
-            return;
-        }
-        // The apply session and the chat take raw keys (Backspace, any character) before the
-        // keymap, which knows neither; boxes opened from the chat still come first.
-        if self.apply.as_ref().is_some_and(|s| !s.chat.hidden)
-            && self.pane.is_none()
-            && self.chooser.is_none()
-            && self.modal.is_none()
-        {
-            let fx = self.apply.as_mut().map(|s| s.key(k)).unwrap_or_default();
-            self.apply_fx(fx);
-            self.dirty = true;
-            return;
-        }
-        if self.chat.as_ref().is_some_and(|c| !c.hidden)
-            && self.pane.is_none()
-            && self.chooser.is_none()
-            && self.modal.is_none()
-        {
-            self.chat_key(k);
-            return;
+            Layer::Modal => {
+                let has_yes = self.modal.as_ref().is_some_and(|m| m.yes.is_some());
+                match modal::answer(&k, has_yes) {
+                    Answer::Yes => {
+                        self.modal_no = None;
+                        if let Some((_, effects)) = self.modal.take().and_then(|m| m.yes) {
+                            self.apply(effects, now);
+                        }
+                    }
+                    Answer::No => {
+                        let title = self.modal.take().map(|m| m.title);
+                        if let Some((t, effects)) = self.modal_no.take()
+                            && Some(t) == title
+                        {
+                            self.apply(effects, now);
+                        }
+                    }
+                    Answer::Stay => {}
+                }
+                return;
+            }
+            // The apply session and the chat take raw keys (Backspace, any character).
+            Layer::Apply => {
+                let fx = self.apply.as_mut().map(|s| s.key(k)).unwrap_or_default();
+                return self.apply_fx(fx);
+            }
+            Layer::Chat => return self.chat_key(k),
+            Layer::Input => return self.input_key(k, now),
+            Layer::Docs => {
+                // Over Records, a plan or a review: a screen key goes there, `:` still works.
+                match self.keys.resolve(&k) {
+                    Some(Action::Screen(id)) if id != ScreenId::Upgrade => {
+                        self.rec_view = None;
+                        self.review_view = None;
+                        self.plan_view = None;
+                        return self.enter(id, now);
+                    }
+                    Some(Action::Command) => {
+                        self.input = Input::Command(String::new());
+                        return;
+                    }
+                    _ => {}
+                }
+                if self.rec_view.is_some() {
+                    self.records_key(k, now);
+                } else if self.review_view.is_some() {
+                    self.review_view_key(k);
+                } else {
+                    self.plan_view_key(k, now);
+                }
+                return;
+            }
+            Layer::Screen => {}
         }
         let Some(a) = self.keys.resolve(&k) else {
             return;
         };
-        if let Some(p) = self.pane.as_mut() {
-            let running = p.done.is_none();
-            let len = p.lines.len();
-            match a {
-                Action::Interrupt if running => {
-                    if let Some(pid) = p.pid {
-                        let _ = kill(pid);
-                        p.lines.push_back("■ stopping…".into());
-                    }
-                }
-                Action::Esc | Action::Quit | Action::Enter if !running => self.pane = None,
-                Action::Down => p.scroll = p.scroll.saturating_sub(1),
-                Action::Up => p.scroll = (p.scroll + 1).min(len),
-                Action::PageDown => p.scroll = p.scroll.saturating_sub(20),
-                Action::PageUp => p.scroll = (p.scroll + 20).min(len),
-                Action::Bottom => p.scroll = 0,
-                Action::Top => p.scroll = len,
-                _ if running => self.toast("running · C-c stops it"),
-                _ => {}
-            }
-            return;
-        }
-        if let Some((title, choices)) = self.chooser.take() {
-            // Digits are screen keys in the keymap; here they pick.
-            let digit = match a {
-                Action::Char(c) => c.to_digit(10),
-                Action::Screen(id) => id.key().to_digit(10),
-                _ => None,
-            };
-            if let Some(d) = digit
-                && let Some((_, e)) = choices.get((d as usize).wrapping_sub(1))
-            {
-                let e = e.clone();
-                self.apply(e, now);
-                return;
-            }
-            if !matches!(a, Action::Esc | Action::Quit | Action::NextMatch) {
-                self.chooser = Some((title, choices));
-            }
-            return;
-        }
-        if let Some(m) = self.modal.take() {
-            match a {
-                Action::Char('y') | Action::Enter if m.yes.is_some() => {
-                    self.modal_no = None;
-                    let effects = m.yes.map(|(_, e)| e).unwrap_or_default();
-                    self.apply(effects, now);
-                }
-                // `n` is bound to "next match" globally.
-                Action::Char('n') | Action::NextMatch | Action::Esc | Action::Quit => {
-                    if let Some((title, effects)) = self.modal_no.take()
-                        && title == m.title
-                    {
-                        self.apply(effects, now);
-                    }
-                }
-                Action::Enter if m.yes.is_none() => {}
-                _ => self.modal = Some(m),
-            }
-            return;
-        }
         if self.run_view {
             if self.wf.is_none() {
                 self.run_view = false;
@@ -913,21 +899,20 @@ impl App {
         match a {
             // As in sentry: q and Ctrl-C ask first, `:q` quits.
             Action::Quit | Action::Interrupt => {
-                self.modal = Some(Modal {
-                    title: "Quit".into(),
-                    color: self.theme.dim,
-                    lines: vec![Line::styled(
-                        format!(
-                            "Quit sentry-server? Nothing keeps running on {} after exit.",
-                            self.remote.name
-                        ),
-                        self.theme.fg(),
-                    )],
-                    yes: Some(("quit".into(), vec![Effect::Quit])),
-                })
+                self.modal = Some(frame::quit_modal(
+                    &self.theme,
+                    format!(
+                        "Quit sentry-server? Nothing keeps running on {} after exit.",
+                        self.remote.name
+                    ),
+                    Effect::Quit,
+                ))
             }
-            Action::Command => self.cmdline = Some(String::new()),
-            Action::Filter if Screens::filterable(self.screen) => self.filtering = true,
+            Action::Command => self.input = Input::Command(String::new()),
+            Action::Filter if Screens::filterable(self.screen) => {
+                self.input =
+                    Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
+            }
             Action::Filter => self.toast("nothing to filter on this screen"),
             Action::Esc
                 if self
@@ -960,48 +945,7 @@ impl App {
                 self.run_view = false;
                 self.enter(ids[(i + step) % ids.len()], now);
             }
-            Action::Help => {
-                let mut keys = self.screens.hints(self.screen, &self.view());
-                // Maintenance: every row key, not only the selected row's.
-                if self.screen == ScreenId::Maint {
-                    let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
-                    keys = sentry_core::tui::maintlist::GRAMMAR
-                        .iter()
-                        .copied()
-                        .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
-                        // Not on the key bar, to keep it to what the row takes.
-                        .chain([
-                            ("w", "start a workflow"),
-                            (
-                                "e",
-                                "edit server_config.yaml (on a task: where it's written)",
-                            ),
-                        ])
-                        .collect();
-                }
-                let own_a = keys.iter().any(|(k, _)| *k == "A");
-                let lines = keys
-                    .into_iter()
-                    .chain(super::actions::hints(self.screen))
-                    .chain((!own_a).then_some(("A", "ask Claude")))
-                    .chain([
-                        ("I", "read what needs root, once, with your sudo password"),
-                        ("1 4 5 6", "screens, numbered as in sentry (or Tab, h/l)"),
-                        ("0", "the workflow run (:wf too)"),
-                        ("j/k", "move"),
-                        ("/", "filter (Esc clears) · n/N next/prev"),
-                        (":", ":q quit · :r refresh · :<screen> · :wf <name>"),
-                        ("q", "quit (asks)"),
-                    ])
-                    .map(|(k, d)| Line::styled(format!("{k:<8} {d}"), self.theme.fg()))
-                    .collect();
-                self.modal = Some(Modal {
-                    title: format!("{} · keys", self.screen.name()),
-                    color: self.theme.cyan,
-                    lines,
-                    yes: None,
-                });
-            }
+            Action::Help => self.show_help(),
             Action::Ask => {
                 if let Some(sess) = self.apply.as_mut().filter(|s| s.chat.hidden) {
                     sess.chat.hidden = false;
@@ -1028,7 +972,7 @@ impl App {
                         .flatten();
                     match (ask, apply) {
                         (Some(ask), Some(apply)) => {
-                            self.chooser = Some(claude_choice(apply, ask));
+                            self.choice = Some(claude_choice(&self.theme, apply, ask));
                         }
                         (None, Some(apply)) => self.open_ask(apply),
                         (Some(ask), None) => self.open_ask(ask),
@@ -1099,9 +1043,9 @@ impl App {
                     }
                 }
                 Effect::Confirm(m) => self.modal = Some(m),
-                Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
+                Effect::Choose(c) => self.choice = Some(c),
                 Effect::PlanNote(id, plan) => {
-                    self.plan_note = Some((id, plan, String::new()));
+                    self.input = Input::Prompt(Prompt::PlanNote(id, Box::new(plan)), String::new());
                 }
                 Effect::PlanDrop(id) => {
                     if let Some(doc) = self.store.plans.remove(&id)
@@ -1697,12 +1641,12 @@ impl App {
                         Instant::now(),
                     );
                     let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
-                    if !going || self.var_input.is_some() {
+                    if !going || self.asking_vars().is_some() {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
                         self.toast(&format!(
-                            "{wf} needs you · the plan carries on when its run ends (A shows it)"
+                            "{wf} needs you · the plan carries on after its run (A)"
                         ));
                     }
                 }
@@ -1718,7 +1662,7 @@ impl App {
                 }
                 Fx::OpenRun(wf, vars) => {
                     // Its values being asked: they're in front already.
-                    let asking = self.var_input.as_ref().is_some_and(|v| v.workflow == wf);
+                    let asking = self.asking_vars() == Some(wf.as_str());
                     let running = self
                         .wf
                         .as_ref()
@@ -1734,7 +1678,7 @@ impl App {
                         }
                         self.open_run_view();
                         self.toast(&format!(
-                            "{other} is in progress: finish or abandon it, then A · Enter starts {wf}"
+                            "{other} is in progress: finish it, then A · Enter starts {wf}"
                         ));
                         continue;
                     }
@@ -1945,7 +1889,7 @@ impl App {
                 self.store.sudo.value == Some(SudoMode::Password) && self.inventory_at.is_some();
         }
         // What to know next time: asked now, while it's fresh.
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// After a run that changed the server: what Maintenance and Containers show was read
@@ -1982,124 +1926,102 @@ impl App {
         });
     }
 
-    /// The note for the maintenance log: Enter saves it (empty is fine), Esc leaves none.
-    fn log_note_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some((_, buf)) = self.log_note.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
+    /// The note for the maintenance log, typed: saved with the entry (empty is fine). `add`:
+    /// it's added to an entry from Records, not the one a run or task just wrote.
+    fn log_note_submit(&mut self, entry: crate::maint::log::LogEntry, note: &str, add: bool) {
+        let note = note.trim();
+        // From Records: appended, dated, to the entry as it is.
+        if add {
+            if note.is_empty() {
+                return;
             }
-            KeyCode::Esc => {
-                self.log_note = None;
-                if !std::mem::take(&mut self.note_add) {
-                    self.reread_box();
-                }
+            let mut with_note = entry.clone();
+            with_note.add_note(note);
+            if !self.offline
+                && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
+            {
+                return self.toast(&format!("couldn't write the note: {e}"));
             }
-            KeyCode::Enter => {
-                let Some((entry, note)) = self.log_note.take() else {
-                    return;
-                };
-                let note = note.trim();
-                // From Records: appended, dated, to the entry as it is.
-                if std::mem::take(&mut self.note_add) {
-                    if note.is_empty() {
-                        return;
-                    }
-                    let mut with_note = entry.clone();
-                    with_note.add_note(note);
-                    if !self.offline
-                        && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
-                    {
-                        return self.toast(&format!("couldn't write the note: {e}"));
-                    }
-                    self.last_log = Some(with_note);
-                    self.store.log = if self.offline {
-                        self.store.log.clone()
-                    } else {
-                        sentry_core::maint::log::list(&self.remote.name)
-                    };
-                    self.toast("noted in the maintenance log");
-                    return self.open_records(sentry_core::tui::records::Section::Log, None);
-                }
-                self.reread_box();
-                if note.is_empty() {
-                    return;
-                }
-                // Done by hand (no run): the same entry, with the note.
-                if entry.head.run.is_none() {
-                    let h = &entry.head;
-                    let task = h.tags.iter().find_map(|t| t.strip_prefix("task:"));
-                    let with_note = match task {
-                        Some(id) => sentry_core::maint::log::LogEntry::task(
-                            &h.server,
-                            id,
-                            &self
-                                .store
-                                .tasks
-                                .iter()
-                                .find(|t| t.id == id)
-                                .map_or(id.to_string(), |t| t.title.clone()),
-                            Some(note),
-                        ),
-                        None => crate::maint::log::LogEntry::by_hand(
-                            &h.server,
-                            h.item.as_deref().unwrap_or("?"),
-                            &h.kind,
-                            h.from.clone(),
-                            h.to.clone(),
-                            h.plan.as_deref().map(std::path::Path::new),
-                            Some(note),
-                        ),
-                    };
-                    if !self.offline
-                        && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
-                    {
-                        return self.toast(&format!("couldn't write the note: {e}"));
-                    }
-                    self.last_log = Some(with_note);
-                    return self.toast("noted in the maintenance log");
-                }
-                let Some(s) = self.wf.as_ref() else { return };
-                // Rebuilt with the note (it replaces the entry written when the run ended).
-                let info = entry
-                    .head
-                    .item
-                    .as_ref()
-                    .map(|item| crate::maint::log::ItemInfo {
-                        item: item.clone(),
-                        kind: entry.head.kind.clone(),
-                        risk: entry.head.risk.clone().unwrap_or_default(),
-                        from: entry.head.from.clone(),
-                        to: entry.head.to.clone(),
-                        plan: entry.head.plan.clone().map(Into::into),
-                    });
-                let mut with_note = crate::maint::log::LogEntry::from_run(
-                    &self.remote.name,
-                    &s.wf,
-                    &s.run.state,
-                    &s.run.dir,
-                    info.as_ref(),
-                    Some(note),
-                );
-                sentry_core::maint::tasks::tag_run(
-                    &mut with_note,
-                    &super::screens::maint::all_tasks(&self.view()),
-                );
-                if !self.offline
-                    && let Err(e) = crate::maint::log::write(&with_note)
-                {
-                    return self.toast(&format!("couldn't write the note: {e}"));
-                }
-                self.last_log = Some(with_note);
-                self.toast("noted in the maintenance log");
-            }
-            _ => {}
+            self.last_log = Some(with_note);
+            self.store.log = if self.offline {
+                self.store.log.clone()
+            } else {
+                sentry_core::maint::log::list(&self.remote.name)
+            };
+            self.toast("noted in the maintenance log");
+            return self.open_records(sentry_core::tui::records::Section::Log, None);
         }
+        self.reread_box();
+        if note.is_empty() {
+            return;
+        }
+        // Done by hand (no run): the same entry, with the note.
+        if entry.head.run.is_none() {
+            let h = &entry.head;
+            let task = h.tags.iter().find_map(|t| t.strip_prefix("task:"));
+            let with_note = match task {
+                Some(id) => sentry_core::maint::log::LogEntry::task(
+                    &h.server,
+                    id,
+                    &self
+                        .store
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map_or(id.to_string(), |t| t.title.clone()),
+                    Some(note),
+                ),
+                None => crate::maint::log::LogEntry::by_hand(
+                    &h.server,
+                    h.item.as_deref().unwrap_or("?"),
+                    &h.kind,
+                    h.from.clone(),
+                    h.to.clone(),
+                    h.plan.as_deref().map(std::path::Path::new),
+                    Some(note),
+                ),
+            };
+            if !self.offline
+                && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
+            {
+                return self.toast(&format!("couldn't write the note: {e}"));
+            }
+            self.last_log = Some(with_note);
+            return self.toast("noted in the maintenance log");
+        }
+        let Some(s) = self.wf.as_ref() else { return };
+        // Rebuilt with the note (it replaces the entry written when the run ended).
+        let info = entry
+            .head
+            .item
+            .as_ref()
+            .map(|item| crate::maint::log::ItemInfo {
+                item: item.clone(),
+                kind: entry.head.kind.clone(),
+                risk: entry.head.risk.clone().unwrap_or_default(),
+                from: entry.head.from.clone(),
+                to: entry.head.to.clone(),
+                plan: entry.head.plan.clone().map(Into::into),
+            });
+        let mut with_note = crate::maint::log::LogEntry::from_run(
+            &self.remote.name,
+            &s.wf,
+            &s.run.state,
+            &s.run.dir,
+            info.as_ref(),
+            Some(note),
+        );
+        sentry_core::maint::tasks::tag_run(
+            &mut with_note,
+            &super::screens::maint::all_tasks(&self.view()),
+        );
+        if !self.offline
+            && let Err(e) = crate::maint::log::write(&with_note)
+        {
+            return self.toast(&format!("couldn't write the note: {e}"));
+        }
+        self.last_log = Some(with_note);
+        self.toast("noted in the maintenance log");
     }
 
     /// `I`: what it reads and why, then the terminal for the password.
@@ -2244,13 +2166,15 @@ impl App {
                     return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
                 }
                 let buf = asks[0].2.clone().unwrap_or_default();
-                self.var_input = Some(VarInput {
-                    workflow: name,
-                    asks,
-                    values: BTreeMap::new(),
+                self.input = Input::Prompt(
+                    Prompt::WfVar(VarInput {
+                        workflow: name,
+                        asks,
+                        values: BTreeMap::new(),
+                        note: None,
+                    }),
                     buf,
-                    note: None,
-                });
+                );
                 self.dirty = true;
                 return;
             }
@@ -2284,13 +2208,15 @@ impl App {
                     return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
                 }
                 let buf = asks[0].2.clone().unwrap_or_default();
-                self.var_input = Some(VarInput {
-                    workflow: name,
-                    asks,
-                    values: BTreeMap::new(),
+                self.input = Input::Prompt(
+                    Prompt::WfVar(VarInput {
+                        workflow: name,
+                        asks,
+                        values: BTreeMap::new(),
+                        note: None,
+                    }),
                     buf,
-                    note: None,
-                });
+                );
                 self.dirty = true;
                 return;
             }
@@ -2427,70 +2353,143 @@ impl App {
         }
     }
 
-    fn cmdline_key(&mut self, k: KeyEvent, now: Instant) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(buf) = self.cmdline.as_mut() else {
-            return;
-        };
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                if buf.pop().is_none() {
-                    self.cmdline = None;
-                }
+    /// A key for the line being typed in the key bar.
+    fn input_key(&mut self, k: KeyEvent, now: Instant) {
+        match self.input.key(&k) {
+            Typed::Filter(f) => {
+                self.filters.insert(self.screen, f);
+                self.screens.reset_cursor(self.screen);
             }
-            KeyCode::Esc => self.cmdline = None,
-            KeyCode::Enter => {
-                let c = self.cmdline.take().unwrap_or_default();
-                self.command(c.trim(), now);
+            Typed::FilterCleared => {
+                self.filters.remove(&self.screen);
+                self.screens.reset_cursor(self.screen);
             }
-            _ => {}
+            Typed::Command(c) => self.command(c.trim(), now),
+            Typed::Submit(p, text) => self.submit(p, text.trim()),
+            Typed::Cancelled(Some(p)) => self.cancelled(p),
+            Typed::Editing | Typed::FilterKept | Typed::Cancelled(None) => {}
         }
-        self.dirty = true;
     }
 
-    /// Typing a workflow var: Enter takes it (an empty answer takes the default), Esc cancels
-    /// the start.
-    fn var_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(v) = self.var_input.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => v.buf.push(c),
-            KeyCode::Backspace => {
-                v.buf.pop();
-            }
-            KeyCode::Esc => {
-                self.var_input = None;
-                self.toast("not started");
-            }
-            KeyCode::Enter => {
+    /// Enter on a prompt: what was asked for is done with the answer.
+    fn submit(&mut self, p: Prompt, text: &str) {
+        match p {
+            // A workflow's values, one at a time: an empty answer takes the default; with
+            // none, it's asked again.
+            Prompt::WfVar(mut v) => {
                 let Some((name, _, default)) = v.current().cloned() else {
                     return;
                 };
-                let val = match v.buf.trim() {
+                let val = match text {
                     "" => default.unwrap_or_default(),
                     s => s.to_string(),
                 };
                 if val.is_empty() {
                     v.note = Some(format!("{name} needs a value"));
+                    self.input = Input::Prompt(Prompt::WfVar(v), String::new());
                     return;
                 }
                 v.note = None;
                 v.values.insert(name, val);
-                v.buf = v
-                    .current()
-                    .and_then(|(_, _, d)| d.clone())
-                    .unwrap_or_default();
-                if v.current().is_none() {
-                    let v = self.var_input.take().expect("var input");
-                    self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values));
+                match v.current().map(|(_, _, d)| d.clone().unwrap_or_default()) {
+                    Some(next) => self.input = Input::Prompt(Prompt::WfVar(v), next),
+                    None => self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values)),
                 }
             }
-            _ => {}
+            Prompt::LogNote(e) => self.log_note_submit(*e, text, false),
+            Prompt::LogAddNote(e) => self.log_note_submit(*e, text, true),
+            // The plan's note: an empty one is fine.
+            Prompt::PlanNote(id, mut plan) => {
+                plan.head.note = (!text.is_empty()).then(|| text.to_string());
+                if !claude::available() {
+                    return self.toast("plans are written by Claude Code, which isn't installed");
+                }
+                self.ask_for_plan(id, *plan);
+            }
+            Prompt::PlanRevise(id) => {
+                let Some(doc) = self.store.plans.get(&id).cloned() else {
+                    return;
+                };
+                if text.is_empty() {
+                    return;
+                }
+                let session = doc.head.session.clone();
+                self.write_plan(id, doc, planview::revise(text), session);
+            }
         }
+    }
+
+    /// Esc on a prompt.
+    fn cancelled(&mut self, p: Prompt) {
+        match p {
+            Prompt::WfVar(_) => self.toast("not started"),
+            Prompt::PlanNote(..) => self.toast("not planned"),
+            // No note: what the run changed may still want reading again.
+            Prompt::LogNote(_) => self.reread_box(),
+            Prompt::LogAddNote(_) | Prompt::PlanRevise(_) => {}
+        }
+    }
+
+    /// A key for the pane (a command's streamed output, or a log being read).
+    fn pane_key(&mut self, k: KeyEvent) {
+        use frame::RunKey;
+        let Some(p) = self.pane.as_mut() else { return };
+        let len = p.lines.len();
+        match frame::run_key(&k, p.done.is_none()) {
+            RunKey::Close => self.pane = None,
+            RunKey::Kill => {
+                if let Some(pid) = p.pid {
+                    let _ = kill(pid);
+                    p.lines.push_back("■ stopping…".into());
+                }
+            }
+            RunKey::Busy => self.toast("running · C-c stops it"),
+            RunKey::Scroll(n) => p.scroll = p.scroll.saturating_add_signed(n as isize).min(len),
+            RunKey::End => p.scroll = 0,
+            RunKey::Top => p.scroll = len,
+            RunKey::None => {}
+        }
+    }
+
+    /// `?`: the screen's keys, laid out as in sentry.
+    fn show_help(&mut self) {
+        let mut keys = self.screens.hints(self.screen, &self.view());
+        // Maintenance: every row key, not only the selected row's.
+        if self.screen == ScreenId::Maint {
+            let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
+            keys = sentry_core::tui::maintlist::GRAMMAR
+                .iter()
+                .copied()
+                .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
+                // Not on the key bar, to keep it to what the row takes.
+                .chain([
+                    ("w", "start a workflow"),
+                    ("e", "edit server_config.yaml (a task: its file)"),
+                ])
+                .collect();
+        }
+        keys.extend(super::actions::hints(self.screen));
+        let footer = format!(
+            "Nothing keeps running on {} after sentry-server exits.",
+            self.remote.name
+        );
+        self.modal = Some(frame::help_modal(
+            &self.theme,
+            &frame::Help {
+                screen: self.screen.name(),
+                hints: &keys,
+                globals: &[
+                    ("I", "read what needs root, once, with your sudo password"),
+                    ("0", "the workflow run (:wf too)"),
+                ],
+                app: "sentry-server",
+                commands: ":q  :<screen>  :workflow <name>  :audit now  :log  :refresh",
+                footer: &[
+                    "Destructive actions: preview → confirm → streamed output.",
+                    &footer,
+                ],
+            },
+        ));
     }
 
     /// `p`, after the note: what Claude is asked, in a confirm box; yes starts the writer.
@@ -2595,7 +2594,7 @@ impl App {
     fn start_box(&mut self, name: &str) {
         if self.wf.as_ref().is_some_and(|s| !s.done()) {
             self.open_run_view();
-            return self.toast("a workflow is already in progress: finish or abandon it first");
+            return self.toast("a workflow is in progress: finish or abandon it first");
         }
         if self.wf_entries.is_empty() && !self.offline {
             self.load_wf_entries();
@@ -2640,7 +2639,7 @@ impl App {
         if self.wf_entries.is_empty() && !self.offline {
             self.load_wf_entries();
         }
-        let choices: Vec<Choice> = self
+        let choices: Vec<(String, Vec<Effect>)> = self
             .wf_entries
             .iter()
             .map(|e| {
@@ -2658,7 +2657,11 @@ impl App {
         if choices.is_empty() {
             return self.toast(&format!("no workflows in {}", self.wf_dir));
         }
-        self.chooser = Some((format!("Start a workflow ({})", self.wf_dir), choices));
+        self.choice = Some(Choice::numbered(
+            &self.theme,
+            &format!("Start a workflow ({})", self.wf_dir),
+            choices,
+        ));
     }
 
     /// The Run view: the workflow in progress; its auto steps run while it's open.
@@ -3045,7 +3048,7 @@ impl App {
             self.store.log.insert(0, entry.clone());
         }
         self.last_change_at = Some(jiff::Timestamp::now());
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
@@ -3306,8 +3309,7 @@ impl App {
             }
             Fx::Note(e) => {
                 self.rec_view = None;
-                self.note_add = true;
-                self.log_note = Some((*e, String::new()));
+                self.input = Input::Prompt(Prompt::LogAddNote(e), String::new());
             }
             Fx::OpenPlan(item) => {
                 self.rec_view = None;
@@ -3406,7 +3408,7 @@ impl App {
                             "Is this plan still right for the server as it is now? What would you \
                              check or change first?",
                         );
-                        self.chooser = Some(claude_choice(apply, ask));
+                        self.choice = Some(claude_choice(&self.theme, apply, ask));
                     }
                     None => self.toast(&format!("{id} isn't tracked any more")),
                 }
@@ -3428,15 +3430,13 @@ impl App {
             KeyCode::PageUp => set(self, scroll.saturating_sub(20)),
             KeyCode::Home | KeyCode::Char('g') => set(self, 0),
             KeyCode::End | KeyCode::Char('G') => set(self, usize::MAX / 2),
-            _ if writing => {
-                self.toast("Claude is writing it · C-c stops · Esc goes back (it carries on)")
-            }
+            _ if writing => self.toast("Claude is writing it · C-c stops · Esc goes back"),
             KeyCode::Enter => self.apply_plan(&id, now),
             KeyCode::Char('r') => match self.store.plans.get(&id) {
-                Some(d) if d.head.session.is_some() => self.revise_input = Some(String::new()),
-                Some(_) => {
-                    self.toast("this plan has no Claude session to continue: p writes a new one")
+                Some(d) if d.head.session.is_some() => {
+                    self.input = Input::Prompt(Prompt::PlanRevise(id.clone()), String::new())
                 }
+                Some(_) => self.toast("no Claude session for this plan: p writes a new one"),
                 None => {}
             },
             KeyCode::Char('x') if self.store.plans.contains_key(&id) => {
@@ -3493,7 +3493,7 @@ impl App {
             self.fetch(Kind::Maint);
         }
         self.last_change_at = Some(jiff::Timestamp::now());
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
@@ -3538,90 +3538,6 @@ impl App {
         } else {
             self.wf_entries.iter().map(WfInfo::of).collect()
         }
-    }
-
-    /// `r` in the Plan view: what to change, then Claude rewrites the plan in its session.
-    fn revise_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(buf) = self.revise_input.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
-            }
-            KeyCode::Esc => self.revise_input = None,
-            KeyCode::Enter => {
-                let what = self.revise_input.take().unwrap_or_default();
-                let Some((id, _)) = self.plan_view.clone() else {
-                    return;
-                };
-                let Some(doc) = self.store.plans.get(&id).cloned() else {
-                    return;
-                };
-                if what.trim().is_empty() {
-                    return;
-                }
-                let session = doc.head.session.clone();
-                self.write_plan(id, doc, planview::revise(what.trim()), session);
-            }
-            _ => {}
-        }
-    }
-
-    /// The plan's note: Enter saves the plan (an empty note is fine), Esc doesn't save it.
-    fn plan_note_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some((_, _, buf)) = self.plan_note.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
-            }
-            KeyCode::Esc => {
-                self.plan_note = None;
-                self.toast("not planned");
-            }
-            KeyCode::Enter => {
-                let Some((id, mut plan, note)) = self.plan_note.take() else {
-                    return;
-                };
-                let note = note.trim();
-                plan.head.note = (!note.is_empty()).then(|| note.to_string());
-                if !claude::available() {
-                    return self.toast("plans are written by Claude Code, which isn't installed");
-                }
-                self.ask_for_plan(id, plan);
-            }
-            _ => {}
-        }
-    }
-
-    /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
-    fn filter_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let flt = self.filters.entry(self.screen).or_default();
-        match k.code {
-            KeyCode::Char(c) => flt.push(c),
-            KeyCode::Backspace => {
-                if flt.pop().is_none() {
-                    self.filtering = false;
-                }
-            }
-            KeyCode::Esc => {
-                flt.clear();
-                self.filtering = false;
-            }
-            KeyCode::Enter => self.filtering = false,
-            _ => {}
-        }
-        self.screens.reset_cursor(self.screen);
-        self.dirty = true;
     }
 
     /// `:` commands, as in sentry.
@@ -4175,69 +4091,28 @@ impl App {
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
-        let area = f.area();
         let t = self.theme;
-        if area.width < 80 || area.height < 24 {
-            widgets::placeholder(
-                f,
-                area,
-                &t,
-                &[(
-                    &format!(
-                        "terminal too small ({}×{}, need 80×24)",
-                        area.width, area.height
-                    ),
-                    t.dim(),
-                )],
-            );
+        // A run in progress, on every screen but its own.
+        let banner = self.wf.as_ref().filter(|s| !s.done() && !self.run_view);
+        let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
             return;
-        }
-        let [top, tabs_row, rule, body, keyrule, keybar] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        self.draw_top(f, top);
-        self.draw_tabs(f, tabs_row);
-        for r in [rule, keyrule] {
-            f.render_widget(
-                Paragraph::new("─".repeat(r.width as usize)).style(t.s(t.border)),
-                r,
+        };
+        let body = areas.body;
+        frame::draw_top(f, areas.top, &t, &self.top());
+        self.draw_tabs(f, areas.tabs);
+        if let Some(s) = banner {
+            let n = s.wf.steps.len();
+            frame::draw_banner(
+                f,
+                areas.banner,
+                &t,
+                &frame::Banner {
+                    workflow: &s.wf.name,
+                    step: s.next.idx().map(|i| (i + 1, n, s.title(i).to_string())),
+                    state: s.state_word(),
+                },
             );
         }
-        let body = Rect {
-            y: body.y + 1,
-            height: body.height.saturating_sub(1),
-            ..body
-        };
-        let body = match self.wf.as_ref().filter(|s| !s.done()) {
-            Some(s) if !self.run_view => {
-                let [ban, rest] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
-                let step = s
-                    .next
-                    .idx()
-                    .map(|i| format!("step {}/{} {}", i + 1, s.wf.steps.len(), s.title(i)))
-                    .unwrap_or_default();
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            format!(" ↻ {} · {step} · {}   ", s.wf.name, s.state_word()),
-                            t.s(t.yellow),
-                        ),
-                        Span::styled("press 0 to continue", t.dim()),
-                    ]))
-                    .style(Style::new().bg(t.banner_bg)),
-                    ban,
-                );
-                rest
-            }
-            _ => body,
-        };
         match (&self.wf, self.run_view) {
             (Some(s), true) => {
                 f.render_widget(ratatui::widgets::Clear, body);
@@ -4288,76 +4163,80 @@ impl App {
                 &path,
             );
         }
-        self.draw_keybar(f, keybar);
+        self.draw_keybar(f, areas.keybar);
+        // Whatever is in front sits in the body, over the screen dimmed.
         if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
             chatmod::draw(f, body, &t, c);
         }
         if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
             let wf = self.wf_glimpse();
             sentry_core::tui::applyview::draw(f, body, &t, sess, &wf);
         }
-        if let Some(p) = &self.pane {
-            draw_pane(f, body, &t, p);
-        }
-        if let Some((title, choices)) = &self.chooser {
-            let lines = choices
-                .iter()
-                .enumerate()
-                .map(|(i, (label, _))| Line::styled(format!("{}  {label}", i + 1), t.fg()))
-                .collect();
-            let m: Modal = Modal {
-                title: title.clone(),
-                color: t.cyan,
-                lines,
-                yes: None,
-            };
-            modal::draw(f, area, &t, &m);
-        }
         if let Some(m) = &self.modal {
-            modal::draw(f, area, &t, m);
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw(f, body, &t, m);
+        }
+        if let Some(c) = &self.choice {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw_choice(f, body, &t, c);
+        }
+        if let Some(p) = &self.pane {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            frame::draw_run(
+                f,
+                body,
+                &t,
+                &frame::RunView {
+                    title: &p.title,
+                    cmd: &p.cmd,
+                    len: p.lines.len(),
+                    scroll: p.scroll,
+                    started: p.started,
+                    done: p.done.map(|code| (code, None)),
+                },
+                p.lines.iter().map(String::as_str),
+            );
         }
     }
 
-    fn draw_top(&self, f: &mut Frame, area: Rect) {
+    /// The top bar: the server, what it runs and how long it's been up; the connection.
+    fn top(&self) -> frame::Top<'static> {
         let t = &self.theme;
         let s = &self.store;
-        let mut spans = vec![
-            Span::styled(
-                " sentry-server ",
-                Style::new()
-                    .fg(t.ink)
-                    .bg(t.cyan)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(format!("  {}", self.remote.name), t.fg()),
-        ];
+        let mut facts = Vec::new();
         if let Some((os, kernel)) = &s.host.value {
-            spans.push(Span::styled(format!("  {os}  {kernel}"), t.dim()));
+            facts.push(os.clone());
+            facts.push(format!("kernel {kernel}"));
         }
         if let Some(p) = &s.probe.value {
-            spans.push(Span::styled(
-                format!("  up {}", sentry_core::fmt::uptime(p.uptime_s)),
-                t.dim(),
-            ));
+            facts.push(format!("up {}", sentry_core::fmt::uptime(p.uptime_s)));
         }
         let state = match &s.unreachable {
-            Some(_) => Span::styled("○ unreachable · retrying", t.s(t.red)),
-            None if s.rebooted() => Span::styled("● rebooted", t.s(t.mag)),
+            Some(_) => ("○ unreachable · retrying".to_string(), t.red),
+            None if s.rebooted() => ("● rebooted".to_string(), t.mag),
             None if s.probe.value.is_some() || s.host.value.is_some() => {
-                Span::styled("● connected", t.s(t.green))
+                ("● connected".to_string(), t.green)
             }
-            None => Span::styled("○ connecting…", t.dim()),
+            None => ("○ connecting…".to_string(), t.dim),
         };
-        let left: usize = spans.iter().map(|s| s.width()).sum();
-        let pad = (area.width as usize).saturating_sub(left + state.width() + 1);
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(state);
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        let now = self
+            .now_override
+            .unwrap_or_else(jiff::Timestamp::now)
+            .to_zoned(jiff::tz::TimeZone::system());
+        frame::Top {
+            app: "sentry-server",
+            subject: self.remote.name.clone(),
+            facts,
+            state,
+            clock: frame::clock(&now),
+        }
     }
 
     /// The strip: sentry's, with this program's screens. The run (0) is on it while there
     /// is one.
-    fn draw_tabs(&self, f: &mut Frame, area: Rect) {
+    fn draw_tabs(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let v = self.view();
         let tabs: Vec<sentry_core::tui::frame::Tab> = SCREENS
             .ids
@@ -4389,137 +4268,76 @@ impl App {
         sentry_core::tui::frame::draw_tabs(f, area, &self.theme, &tabs, active);
     }
 
-    fn draw_keybar(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        if let Some(buf) = &self.cmdline {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!(":{buf}"), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((e, buf)) = &self.log_note {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{} {} · for the maintenance log, what to know next time (optional): ",
-                            e.head.item.as_deref().unwrap_or(&e.head.workflow),
-                            e.head.result
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter save · Esc none", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some(buf) = &self.revise_input {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("revise the plan: ", t.dim()),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter send · Esc cancel", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((id, plan, buf)) = &self.plan_note {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "plan {id} → {} · a note (optional): ",
-                            plan.head.to.as_deref().unwrap_or("retire")
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter save · Esc cancel", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some(v) = &self.var_input
-            && let Some((name, prompt, _)) = v.current()
+    /// The key bar: what's being typed, or the keys of whatever is in front.
+    fn draw_keybar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let toast = self.toast.as_ref().map(|t| t.msg());
+        let layer = frame::layer(&self.open());
+        // A box or a conversation over the line: its keys, not the line's.
+        if layer == Layer::Input
+            && let Some(bar) = self.input.bar()
         {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{} {}/{} · {prompt} ({name}): ",
-                            v.workflow,
-                            v.values.len() + 1,
-                            v.asks.len()
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(v.buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    match &v.note {
-                        Some(n) => Span::styled(format!("   {n}"), t.s(t.red)),
-                        None => Span::styled("   Enter next · Esc cancel", t.dim()),
-                    },
-                ])),
-                area,
-            );
-            return;
+            return frame::draw_keybar(f, area, &self.theme, &bar, toast);
         }
-        if self.filtering {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "/{}",
-                            self.filters.get(&self.screen).map_or("", String::as_str)
-                        ),
-                        t.fg(),
-                    ),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter keep · Esc clear", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((msg, _)) = &self.toast {
-            f.render_widget(
-                Paragraph::new(Span::styled(format!(" {msg}"), t.s(t.cyan))),
-                area,
-            );
-            return;
-        }
-        let hints: Vec<(&str, &str)> = if let Some(p) = &self.pane {
-            if p.done.is_some() {
-                vec![("Esc", "close"), ("j/k", "scroll"), ("G", "end")]
-            } else {
-                vec![("C-c", "stop it"), ("j/k", "scroll")]
+        let hints: frame::Hints = match layer {
+            Layer::Run => frame::run_hints(self.pane.as_ref().is_some_and(|p| p.done.is_some())),
+            Layer::Choice => frame::CHOICE_HINTS.to_vec(),
+            Layer::Modal if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) => {
+                frame::CONFIRM_HINTS.to_vec()
             }
-        } else if let Some(c) = self
-            .chat
-            .as_ref()
-            .filter(|c| !c.hidden && self.modal.is_none())
-        {
-            chatmod::keys(c)
-        } else if let Some(rv) = self.review_view.as_ref().filter(|_| self.modal.is_none()) {
+            // Their windows have their own key line.
+            Layer::Apply | Layer::Chat => Vec::new(),
+            // Records, a plan or a review (an info box over one leaves its keys named).
+            _ if self.open().docs => self.doc_hints(),
+            _ => {
+                let mut h = self.screens.hints(self.screen, &self.view());
+                if self.run_view {
+                    h = match &self.wf {
+                        Some(s) if s.done() => vec![("Enter", "close")],
+                        _ => vec![
+                            ("Enter", "run"),
+                            ("s", "skip"),
+                            ("a", "abandon"),
+                            ("L", "log"),
+                            ("Esc", "back (it carries on)"),
+                        ],
+                    };
+                }
+                h.extend(super::actions::hints(self.screen));
+                // sudo asks for a password: say where the root-only data comes from.
+                if self.store.sudo.value == Some(SudoMode::Password) {
+                    h.push(("I", "read with sudo"));
+                }
+                // A hidden conversation waiting takes `A` over.
+                let hidden = self
+                    .apply
+                    .as_ref()
+                    .filter(|s| s.chat.hidden)
+                    .map(|s| {
+                        if s.busy() {
+                            "applying…"
+                        } else {
+                            "the apply session"
+                        }
+                    })
+                    .or_else(|| {
+                        self.chat
+                            .as_ref()
+                            .filter(|c| c.hidden)
+                            .map(|c| c.hidden_word())
+                    });
+                frame::with_globals(h, hidden, claude::available())
+            }
+        };
+        frame::draw_keybar(f, area, &self.theme, &frame::KeyBar::Hints(hints), toast);
+    }
+
+    /// The keys of Records, a plan or a review, whichever is over the screen.
+    fn doc_hints(&self) -> frame::Hints<'_> {
+        if let Some(rv) = &self.review_view {
             rv.hints(self.store.review.as_ref(), self.writing_review())
-        } else if let Some(r) = self.rec_view.as_ref().filter(|_| self.modal.is_none()) {
+        } else if let Some(r) = &self.rec_view {
             r.hints()
-        } else if let Some((id, _)) = self
-            .plan_view
-            .as_ref()
-            .filter(|_| self.modal.is_none() && self.chooser.is_none())
-        {
+        } else if let Some((id, _)) = &self.plan_view {
             if self
                 .writer
                 .as_ref()
@@ -4540,82 +4358,9 @@ impl App {
                     ("Esc", "back"),
                 ]
             }
-        } else if self.chooser.is_some() {
-            vec![("1-9", "choose"), ("Esc", "cancel")]
-        } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
-            vec![("y", "confirm"), ("n", "cancel")]
         } else {
-            let mut h = self.screens.hints(self.screen, &self.view());
-            if self.run_view {
-                h = match &self.wf {
-                    Some(s) if s.done() => vec![("Enter", "close")],
-                    _ => vec![
-                        ("Enter", "run"),
-                        ("s", "skip"),
-                        ("a", "abandon"),
-                        ("L", "log"),
-                        ("Esc", "back (it carries on)"),
-                    ],
-                };
-            }
-            h.extend(super::actions::hints(self.screen));
-            // sudo asks for a password: say where the root-only data comes from.
-            if self.store.sudo.value == Some(SudoMode::Password) {
-                h.push(("I", "read with sudo"));
-            }
-            let hidden = self
-                .apply
-                .as_ref()
-                .filter(|s| s.chat.hidden)
-                .map(|s| {
-                    if s.busy() {
-                        "applying…"
-                    } else {
-                        "the apply session"
-                    }
-                })
-                .or_else(|| {
-                    self.chat
-                        .as_ref()
-                        .filter(|c| c.hidden)
-                        .map(|c| c.hidden_word())
-                });
-            match hidden {
-                Some(word) => {
-                    h.retain(|(k, _)| *k != "A");
-                    h.push(("A", word));
-                }
-                // Maintenance names its own `A` (apply or ask).
-                None if claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
-                    h.push(("A", "ask Claude"))
-                }
-                None => {}
-            }
-            h.extend([("?", "help"), ("q", "quit")]);
-            h
-        };
-        // Too wide: drop the screen's own hints from the end, never the global ones (A, ?, q)
-        // that end the list. Chips are ` k ` + ` d` + two spaces, as in sentry.
-        let mut hints = hints;
-        let width = |h: &[(&str, &str)]| -> usize {
-            h.iter()
-                .map(|(k, d)| k.chars().count() + d.chars().count() + 5)
-                .sum()
-        };
-        let globals = hints
-            .iter()
-            .rev()
-            .take_while(|(k, _)| matches!(*k, "A" | "?" | "q"))
-            .count();
-        while width(&hints) > area.width as usize && hints.len() > globals {
-            hints.remove(hints.len() - globals - 1);
+            Vec::new()
         }
-        let mut spans = Vec::new();
-        for (k, d) in hints {
-            spans.extend(chip(t, k, d, t.dim));
-            spans.push(Span::raw("  "));
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
 
@@ -4847,72 +4592,18 @@ pub fn kill_for_test(pid: u32) {
     let _ = kill(pid);
 }
 
-fn draw_pane(f: &mut Frame, area: Rect, t: &Theme, p: &Pane) {
-    let (state, color) = match p.done {
-        None => (
-            format!("running {} s", p.started.elapsed().as_secs()),
-            t.yellow,
-        ),
-        Some(0) => ("done".to_string(), t.green),
-        Some(c) => (format!("exit {c}"), t.red),
-    };
-    let inner = widgets::overlay(f, area, t, &format!("{} · {state}", p.title), color);
-    let [cmd, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            widgets::trunc(&format!("$ {}", p.cmd), cmd.width as usize),
-            t.dim(),
-        )),
-        cmd,
-    );
-    let h = body.height as usize;
-    let end = p.lines.len().saturating_sub(p.scroll);
-    let start = end.saturating_sub(h);
-    let lines: Vec<Line> = p
-        .lines
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .map(|l| Line::styled(widgets::trunc(l, body.width as usize), t.fg()))
-        .collect();
-    f.render_widget(Paragraph::new(lines), body);
-}
-
 /// Render the whole UI into plain text (snapshot tests).
 #[cfg(test)]
 pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
-    let backend = ratatui::backend::TestBackend::new(w, h);
-    let mut term = ratatui::Terminal::new(backend).unwrap();
-    term.draw(|f| app.draw(f)).unwrap();
-    let buf = term.backend().buffer().clone();
-    let mut out = String::new();
-    for y in 0..h {
-        let mut line = String::new();
-        for x in 0..w {
-            line.push_str(buf[(x, y)].symbol());
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    out
+    frame::render_to_string(w, h, |f| app.draw(f))
 }
 
 /// `A` where Claude can help apply something: apply it with Claude, or just ask.
-fn claude_choice(
-    apply: sentry_core::claude::Ask,
-    ask: sentry_core::claude::Ask,
-) -> (String, Vec<(String, Vec<Effect>)>) {
-    (
-        "Claude".into(),
-        vec![
-            (
-                "help me apply it: Claude plans, you approve, sentry-server runs it".into(),
-                vec![Effect::AskConsent(Box::new(apply.clone()))],
-            ),
-            (
-                "just ask about it".into(),
-                vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
-            ),
-        ],
+fn claude_choice(t: &Theme, apply: Ask, ask: Ask) -> Choice {
+    frame::claude_choice(
+        t,
+        "sentry-server",
+        vec![Effect::AskConsent(Box::new(apply.clone()))],
+        vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
     )
 }
