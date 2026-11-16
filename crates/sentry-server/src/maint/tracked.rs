@@ -55,7 +55,7 @@ pub fn save(server: &str, t: &Tracked) -> anyhow::Result<()> {
 
 fn file_text(t: &Tracked) -> anyhow::Result<String> {
     Ok(format!(
-        "# Maintenance items sentry-server tracks for you (t on the Maintenance tab), and what\n\
+        "# Maintenance items sentry-server tracks for you (t on Maintenance), and what\n\
          # you chose to ignore (x). Items in server_config.yaml win on the same id, except for\n\
          # what a review changed about them: `untracked` ids and `[set.<id>]`. Edit freely.\n\n{}",
         toml::to_string(t)?

@@ -11,6 +11,12 @@ use sentry_core::tui::widgets::{inner, panel, trunc};
 use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
+/// Screen `0`: the workflow run. For now only its view while a run exists.
+#[derive(Default)]
+pub struct Upgrade {
+    pub cur: sentry_core::tui::Cursor,
+}
+
 pub fn draw_session(f: &mut Frame, area: Rect, t: &Theme, s: &Session) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).areas(area);

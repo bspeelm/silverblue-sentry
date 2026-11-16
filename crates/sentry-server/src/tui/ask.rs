@@ -2,11 +2,11 @@
 //! `sentry-server exec <server>` (read-only allowlist). Fixing something is an apply session:
 //! Claude plans, you approve, sentry-server runs it.
 
-use super::Tab;
-use super::tabs::View;
+use super::screens::View;
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::Session;
 use sentry_core::claude::{Apply, Ask, Profile, StepRef};
+use sentry_core::tui::ScreenId;
 use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
@@ -32,7 +32,7 @@ pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>
     );
     p = with_web(p);
     // The maintenance log: the ledger and every entry in it.
-    let ledger = super::maint::ledger_path(&r.name);
+    let ledger = super::screens::maint::ledger_path(&r.name);
     let log_dir = std::path::Path::new(&ledger)
         .parent()
         .map(|d| d.display().to_string())
@@ -88,11 +88,11 @@ fn header(v: &View, r: &Remote) -> String {
 }
 
 /// Why `A` had nothing to ask about, when it doesn't.
-pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
+pub fn nothing_here(tab: ScreenId, v: &View) -> &'static str {
     match tab {
-        Tab::Containers if v.s.docker.value.is_none() => "the containers are still loading",
-        Tab::Services if v.s.units.value.is_none() => "the services are still loading",
-        Tab::Maint => "the maintenance is still loading",
+        ScreenId::Cont if v.s.docker.value.is_none() => "the containers are still loading",
+        ScreenId::Svc if v.s.units.value.is_none() => "the services are still loading",
+        ScreenId::Maint => "the maintenance is still loading",
         _ => "nothing selected to ask about here",
     }
 }
@@ -100,7 +100,7 @@ pub fn nothing_here(tab: Tab, v: &View) -> &'static str {
 /// The ranked recommendations, about one of them (`A` on Maintenance, any other row). A move
 /// itself is planned with `p`, which researches it; this is a question.
 fn ask_maintenance(v: &View, r: &Remote, about: &str) -> Ask {
-    let lines: Vec<String> = super::maint::recs(v)
+    let lines: Vec<String> = super::screens::maint::recs(v)
         .iter()
         .map(|x| format!("- [{}] {}: {}", x.level.word(), x.title, x.why))
         .collect();
@@ -184,23 +184,23 @@ pub fn ask_finding(v: &View, r: &Remote, f: &sentry_core::finding::Finding) -> A
     )
 }
 
-/// What `A` asks on each tab, from what's selected there.
-pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
+/// What `A` asks on each screen, from what's selected there.
+pub fn ask_for(tab: ScreenId, v: &View, r: &Remote) -> Option<Ask> {
     let h = header(v, r);
     match tab {
-        Tab::Overview => {
-            let rows = super::tabs::status_text(v).join("\n");
+        ScreenId::Dash => {
+            let rows = super::screens::status_text(v).join("\n");
             Some(Ask::new(
                 format!("{} · overview", r.name),
                 format!("{h}What sentry-server shows right now:\n{rows}"),
                 "How is this server doing? What needs attention, and what should I do first?",
             ))
         }
-        Tab::Services => {
-            let u = super::tabs::selected_unit(v)?;
+        ScreenId::Svc => {
+            let u = super::screens::selected_unit(v)?;
             Some(Ask::apply(
                 format!("{} · {u}", r.name),
-                format!("{h}{}", super::tabs::unit_text(v, &u)),
+                format!("{h}{}", super::screens::unit_text(v, &u)),
                 Apply {
                     key: format!("unit:{u}"),
                     remote: true,
@@ -208,8 +208,8 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
                 },
             ))
         }
-        Tab::Containers => {
-            let c = super::tabs::selected_container(v)?;
+        ScreenId::Cont => {
+            let c = super::screens::containers::selected_container(v)?;
             Some(Ask::apply(
                 format!("{} · container {}", r.name, c.name),
                 format!(
@@ -238,18 +238,19 @@ pub fn ask_for(tab: Tab, v: &View, r: &Remote) -> Option<Ask> {
             ))
         }
         // A finding: fix it; updates or the reboot: safe now? Anything else: what to do first.
-        Tab::Maint => match super::maint::pick(v)? {
-            super::maint::Sel::Rec(x) => match &x.action {
+        ScreenId::Maint => match super::screens::maint::pick(v)? {
+            super::screens::maint::Sel::Rec(x) => match &x.action {
                 crate::maint::recommend::Action::Fix(id) => {
-                    Some(ask_finding(v, r, super::maint::finding(v, id)?))
+                    Some(ask_finding(v, r, super::screens::maint::finding(v, id)?))
                 }
                 _ if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" => {
                     ask_updates(v, r)
                 }
                 _ => Some(ask_maintenance(v, r, &x.title)),
             },
-            super::maint::Sel::Item(s, _) => Some(ask_maintenance(v, r, &s.id)),
+            super::screens::maint::Sel::Item(s, _) => Some(ask_maintenance(v, r, &s.id)),
         },
+        _ => None,
     }
 }
 
@@ -345,7 +346,7 @@ fn ask_step(h: &str, r: &Remote, s: &Session) -> Ask {
 /// own fix flow; tracking, untracking and the audit are one key each). `steps` describes a
 /// workflow (the app has the files).
 pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option<Ask> {
-    use super::maint::{self as m, Sel};
+    use super::screens::maint::{self as m, Sel};
     use crate::maint::recommend::Action;
     use sentry_core::claude::Apply;
     let item = |id: &str, key: String| apply_item(v, r, id, key, steps);
@@ -430,7 +431,7 @@ pub fn apply_item(
     key: String,
     steps: &dyn Fn(&str) -> String,
 ) -> Option<Ask> {
-    use super::maint as m;
+    use super::screens::maint as m;
     use sentry_core::claude::Apply;
     use sentry_core::maint::plan::PlanStatus;
     let (s, it) = (m::status_of(v, id)?, m::item_of(v, id)?);

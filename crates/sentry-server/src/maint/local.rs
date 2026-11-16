@@ -229,7 +229,7 @@ pub fn read(r: &Remote, cfg: &Server) -> Read {
     }
 }
 
-/// The vars a workflow gets for an item (`p` on the Maintenance tab): a compose service and its
+/// The vars a workflow gets for an item (`p` on Maintenance): a compose service and its
 /// new image, or the unit being retired.
 pub fn vars_for(it: &MaintItem, l: &Local, target: Option<&str>) -> BTreeMap<String, String> {
     let mut v = BTreeMap::new();

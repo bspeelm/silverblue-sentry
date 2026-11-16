@@ -342,7 +342,7 @@ pub struct Session {
     pub next: Next,
     pub log: VecDeque<(String, LogKind)>,
     pub live: Option<Live>,
-    /// Auto steps may run (the user opened the Workflows tab or started the run).
+    /// Auto steps may run (the user opened the run (0) or started it).
     pub armed: bool,
     pub error: Option<String>,
     /// The running step's output had sudo refusing to run without a password.

@@ -1,6 +1,6 @@
-//! State, keys, refresh schedule and the frame around the tabs.
+//! State, keys, refresh schedule and the frame around the screens.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::ExitStatus;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -14,13 +14,14 @@ use ratatui::widgets::Paragraph;
 
 use super::data::{Kind, Store};
 use super::planview;
-use super::tabs::{self, View};
-use super::{Ev, Tab};
+use super::screens::{Screens, View};
+use super::{Ev, SCREENS};
 use crate::maint::plan::{PlanDoc, PlanStatus};
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Exec, Session};
 use sentry_core::claude::{self, Ask};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
+use sentry_core::tui::ScreenId;
 use sentry_core::tui::chat::{self as chatmod, Chat};
 use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::modal;
@@ -35,7 +36,7 @@ pub enum Effect {
     Fetch(Kind),
     Toast(String),
     Info(String, Vec<Line<'static>>),
-    Goto(Tab),
+    Goto(ScreenId),
     Expected(String, bool),
     Quit,
     Confirm(Modal),
@@ -185,32 +186,25 @@ const PANE_LINES: usize = 5000;
 
 pub type Modal = modal::Modal<Effect>;
 
-#[derive(Default)]
-struct Sched {
-    probe: Option<Instant>,
-    fast: Option<Instant>,
-    slow: Option<Instant>,
-}
-
-const PROBE: Duration = Duration::from_secs(1);
-const FAST: Duration = Duration::from_secs(5);
-const SLOW: Duration = Duration::from_secs(60);
-/// Updates and the apt simulation are slow-moving; re-read on entering the tab at most hourly.
-const APT_MAX_AGE: Duration = Duration::from_secs(3600);
-
 pub struct App {
     pub remote: Remote,
     tx: Sender<Ev>,
     pub theme: Theme,
     keys: Keymap,
     pub store: Store,
-    pub tab: Tab,
-    cursors: [usize; 4],
+    /// The screen in view.
+    pub screen: ScreenId,
+    screens: Screens,
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
     toast: Option<(String, Instant)>,
-    sched: Sched,
+    /// When each fetch of the screen in view is next due.
+    due: HashMap<Kind, Instant>,
+    /// While waiting for a reboot: when the boot id is read next.
+    reboot_probe: Option<Instant>,
+    /// Something wrong in `[keys]`, said once the TUI is up.
+    keys_warning: Option<String>,
     pane: Option<Pane>,
     chooser: Option<(String, Vec<Choice>)>,
     suspend: Option<(Cmd, String, Vec<Kind>)>,
@@ -245,8 +239,6 @@ pub struct App {
     plan_view: Option<(String, usize)>,
     /// What to change in the plan (`r` in the Plan view), being typed.
     revise_input: Option<String>,
-    /// The Maintenance row selected (`maint::row_key`): kept when the list changes under it.
-    maint_sel: Option<String>,
     /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
     run_view: bool,
     /// The Review window (`R` on Maintenance).
@@ -262,7 +254,7 @@ pub struct App {
     /// The workflow run in progress on this server.
     pub wf: Option<Session>,
     wf_entries: Vec<Entry>,
-    /// Where they come from (shown on the tab).
+    /// Where they come from (shown with the run).
     wf_dir: String,
     /// A step running with the terminal handed over, and where its output is captured.
     suspend_step: Option<(usize, String)>,
@@ -279,8 +271,8 @@ pub struct App {
     cmdline: Option<String>,
     /// A workflow's vars being asked for.
     var_input: Option<VarInput>,
-    /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 4],
+    /// Each screen's `/` filter, and whether it's being typed.
+    filters: HashMap<ScreenId, String>,
     filtering: bool,
     pub quit: bool,
     pub dirty: bool,
@@ -292,26 +284,22 @@ pub struct App {
 
 impl App {
     pub fn new(remote: Remote, tx: Sender<Ev>) -> Self {
-        // Every screen key resolves; the tabs take those they have.
-        let (keys, _) = Keymap::new(
-            &sentry_core::tui::ScreenSet {
-                ids: &sentry_core::tui::ScreenId::ALL,
-                aliases: &[],
-            },
-            &Default::default(),
-        );
+        // The same `[keys]` as sentry's (the other program's screens in it are skipped).
+        let (keys, warnings) = Keymap::new(&SCREENS, &sentry_core::config::Config::load().0.keys);
         Self {
             remote: remote.with_inventory(),
             tx,
             theme: Theme::detect(),
             keys,
             store: Store::default(),
-            tab: Tab::Overview,
-            cursors: [0; 4],
+            screen: ScreenId::Dash,
+            screens: Screens::default(),
             modal: None,
             modal_no: None,
             toast: None,
-            sched: Sched::default(),
+            due: HashMap::new(),
+            reboot_probe: None,
+            keys_warning: warnings.into_iter().next(),
             pane: None,
             chooser: None,
             suspend: None,
@@ -333,7 +321,6 @@ impl App {
             rec_view: None,
             review_view: None,
             run_view: false,
-            maint_sel: None,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
@@ -392,7 +379,10 @@ impl App {
                 .and_then(|e| e.head.ended.or(e.head.started));
             self.load_wf_entries();
         }
-        self.enter(self.tab, now);
+        self.enter(self.screen, now);
+        if let Some(w) = self.keys_warning.take() {
+            self.toast(&w);
+        }
     }
 
     fn fetch(&mut self, k: Kind) {
@@ -403,50 +393,30 @@ impl App {
         self.store.fetch(k, &r, &tx);
     }
 
-    /// Switch tabs; what the tab shows is fetched right away.
-    pub fn enter(&mut self, tab: Tab, now: Instant) {
-        self.tab = tab;
-        self.sched = Sched::default();
-        match tab {
-            Tab::Overview => {
-                // Status rows need a little of everything.
-                for k in [Kind::Units, Kind::Docker, Kind::Report] {
-                    self.fetch(k);
-                }
-                self.fetch_apt_if_stale();
-            }
-            Tab::Services => {
-                self.fetch(Kind::Units);
-                self.fetch(Kind::Journal);
-            }
-            Tab::Containers => self.fetch(Kind::Docker),
-            Tab::Maint => {
-                self.fetch(Kind::Maint);
-                self.fetch(Kind::Docker);
-                self.fetch(Kind::Report);
-                self.fetch_apt_if_stale();
-                // Upstream changes slowly: looked up again at most daily without `c`.
-                let stale = self
-                    .store
-                    .upstream_at
-                    .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
-                if stale && !self.cfg_items_empty() {
-                    self.fetch(Kind::Upstream);
-                }
+    /// Switch screens; what the screen shows is fetched right away, and from then on only
+    /// what it polls.
+    pub fn enter(&mut self, id: ScreenId, now: Instant) {
+        self.screen = id;
+        self.due.clear();
+        for p in Screens::polls(id, &self.remote.cfg) {
+            self.fetch(p.kind);
+            if let Some(every) = p.every {
+                self.due.insert(p.kind, now + every);
             }
         }
+        let e = self.with_screens(|s, v, _| s.on_enter(id, v));
+        self.apply(e, now);
         self.tick(now);
         self.dirty = true;
     }
 
-    fn cfg_items_empty(&self) -> bool {
-        self.remote.cfg.maintenance.items.is_empty()
-    }
-
-    fn fetch_apt_if_stale(&mut self) {
-        if self.store.apt.at.is_none_or(|t| t.elapsed() > APT_MAX_AGE) {
-            self.fetch(Kind::Apt);
-        }
+    /// The screens with the view they act on (the view borrows the rest of the app).
+    fn with_screens<R>(&mut self, f: impl FnOnce(&mut Screens, &View, &Remote) -> R) -> R {
+        let mut s = std::mem::take(&mut self.screens);
+        let cur = s.cur(self.screen);
+        let r = f(&mut s, &self.view_at(cur), &self.remote);
+        self.screens = s;
+        r
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -462,48 +432,32 @@ impl App {
             self.toast = None;
             self.dirty = true;
         }
-        if self.reboot_wait.is_some() && self.sched.probe.is_none_or(|t| now >= t) {
-            // Every 2 s on any tab until the boot id changes.
+        if self.reboot_wait.is_some() && self.reboot_probe.is_none_or(|t| now >= t) {
+            // Every 2 s on any screen until the boot id changes.
             self.fetch(Kind::Probe);
-            self.sched.probe = Some(now + Duration::from_secs(2));
+            self.reboot_probe = Some(now + Duration::from_secs(2));
         }
         if self.run_view {
             self.wf_auto();
         }
-        if self.tab != Tab::Overview {
-            return;
-        }
-        if self.sched.probe.is_none_or(|t| now >= t) {
-            self.fetch(Kind::Probe);
-            self.sched.probe = Some(now + PROBE);
-        }
-        if self.sched.fast.is_none_or(|t| now >= t) {
-            self.fetch(Kind::Gpu);
-            self.fetch(Kind::Temp);
-            self.sched.fast = Some(now + FAST);
-        }
-        if self.sched.slow.is_none_or(|t| now >= t) {
-            if self.sched.slow.is_some() {
-                self.fetch(Kind::Units);
-                self.fetch(Kind::Docker);
+        // Only what the screen in view polls.
+        for p in Screens::polls(self.screen, &self.remote.cfg) {
+            if let Some(every) = p.every
+                && self.due.get(&p.kind).is_none_or(|t| now >= *t)
+            {
+                self.fetch(p.kind);
+                self.due.insert(p.kind, now + every);
             }
-            self.fetch(Kind::Disks);
-            if !self.remote.cfg.smart.is_empty() {
-                self.fetch(Kind::Smart);
-            }
-            self.sched.slow = Some(now + SLOW);
         }
     }
 
     pub fn next_due(&self, now: Instant) -> Instant {
         let mut due = now + Duration::from_secs(60);
-        if self.tab == Tab::Overview || self.reboot_wait.is_some() {
-            for t in [self.sched.probe, self.sched.fast, self.sched.slow]
-                .into_iter()
-                .flatten()
-            {
-                due = due.min(t);
-            }
+        for t in self.due.values() {
+            due = due.min(*t);
+        }
+        if let Some(t) = self.reboot_probe.filter(|_| self.reboot_wait.is_some()) {
+            due = due.min(t);
         }
         if let Some((_, t)) = &self.toast {
             due = due.min(*t);
@@ -544,9 +498,6 @@ impl App {
                     self.check_back();
                 }
                 self.keep_maint_selection();
-                let n = self.rows();
-                let c = &mut self.cursors[self.tab.index()];
-                *c = (*c).min(n.saturating_sub(1));
                 self.dirty = true;
             }
             Ev::Run(id, m) => self.on_run(id, m),
@@ -720,15 +671,23 @@ impl App {
     }
 
     fn view(&self) -> View<'_> {
+        self.view_at(self.screens.cur(self.screen))
+    }
+
+    /// The view with `cur` as the row selected on the screen in view.
+    fn view_at(&self, cur: usize) -> View<'_> {
         View {
             t: &self.theme,
             s: &self.store,
             cfg: &self.remote.cfg,
             name: &self.remote.name,
-            cur: self.cursors[self.tab.index()],
+            cur,
             now: self.now_override.unwrap_or_else(jiff::Timestamp::now),
-            filter: Some(self.filters[self.tab.index()].as_str())
-                .filter(|f| !f.is_empty() && tabs::filterable(self.tab)),
+            filter: self
+                .filters
+                .get(&self.screen)
+                .map(String::as_str)
+                .filter(|f| !f.is_empty() && Screens::filterable(self.screen)),
             inventory: self
                 .inventory_at
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
@@ -744,10 +703,6 @@ impl App {
                 .map(|w| w.item.clone()),
             plans: &self.store.plans,
         }
-    }
-
-    fn rows(&self) -> usize {
-        tabs::rows(self.tab, &self.view())
     }
 
     /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
@@ -775,18 +730,16 @@ impl App {
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
         self.dirty = true;
         self.on_key_inner(k, now);
-        if self.tab == Tab::Maint {
-            self.maint_sel = super::maint::row_key(&self.view());
+        if self.screen == ScreenId::Maint {
+            self.screens.maint.sel = super::screens::maint::row_key(&self.view());
         }
     }
 
-    /// The list changed under the cursor: put it back on the row it was on.
+    /// The lists changed: Maintenance stays on the row it was on, and the cursor in view
+    /// stays inside its list.
     fn keep_maint_selection(&mut self) {
-        if let Some(key) = &self.maint_sel
-            && let Some(i) = super::maint::row_with(&self.view(), key)
-        {
-            self.cursors[Tab::Maint.index()] = i;
-        }
+        let id = self.screen;
+        self.with_screens(|s, v, _| s.clamp(id, v));
     }
 
     fn on_key_inner(&mut self, k: KeyEvent, now: Instant) {
@@ -814,20 +767,18 @@ impl App {
             self.log_note_key(k);
             return;
         }
-        // Over Records, a plan or a review: a tab key goes there, `:` still works.
+        // Over Records, a plan or a review: a screen key goes there, `:` still works.
         if (self.rec_view.is_some() || self.review_view.is_some() || self.plan_view.is_some())
             && self.modal.is_none()
             && self.chooser.is_none()
         {
             match self.keys.resolve(&k) {
-                Some(Action::Screen(id)) if id.key() != '0' => {
-                    if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
-                        self.rec_view = None;
-                        self.review_view = None;
-                        self.plan_view = None;
-                        self.enter(t, now);
-                        return;
-                    }
+                Some(Action::Screen(id)) if id != ScreenId::Upgrade => {
+                    self.rec_view = None;
+                    self.review_view = None;
+                    self.plan_view = None;
+                    self.enter(id, now);
+                    return;
                 }
                 Some(Action::Command) => {
                     self.cmdline = Some(String::new());
@@ -898,7 +849,7 @@ impl App {
             return;
         }
         if let Some((title, choices)) = self.chooser.take() {
-            // Digits are tab keys in the keymap; here they pick.
+            // Digits are screen keys in the keymap; here they pick.
             let digit = match a {
                 Action::Char(c) => c.to_digit(10),
                 Action::Screen(id) => id.key().to_digit(10),
@@ -955,12 +906,10 @@ impl App {
                     | Action::Help
                     | Action::Ask
             ) {
-                // The tab underneath isn't on screen: its keys don't act on it.
+                // The screen underneath isn't shown: its keys don't act on it.
                 return;
             }
         }
-        let n = self.rows();
-        let cur = &mut self.cursors[self.tab.index()];
         match a {
             // As in sentry: q and Ctrl-C ask first, `:q` quits.
             Action::Quit | Action::Interrupt => {
@@ -978,39 +927,43 @@ impl App {
                 })
             }
             Action::Command => self.cmdline = Some(String::new()),
-            Action::Filter if tabs::filterable(self.tab) => self.filtering = true,
-            Action::Filter => self.toast("nothing to filter on this tab"),
-            Action::Esc if !self.filters[self.tab.index()].is_empty() => {
-                self.filters[self.tab.index()].clear();
+            Action::Filter if Screens::filterable(self.screen) => self.filtering = true,
+            Action::Filter => self.toast("nothing to filter on this screen"),
+            Action::Esc
+                if self
+                    .filters
+                    .get(&self.screen)
+                    .is_some_and(|f| !f.is_empty()) =>
+            {
+                self.filters.remove(&self.screen);
+                self.keep_maint_selection();
             }
-            // Rows are already filtered, so n/N just walk them with wrap-around.
-            Action::NextMatch if n > 0 => *cur = (*cur + 1) % n,
-            Action::PrevMatch if n > 0 => *cur = (*cur + n - 1) % n,
-            Action::Screen(id) if id.key() == '0' => self.open_run_view(),
+            Action::Screen(ScreenId::Upgrade) => self.open_run_view(),
             Action::Screen(id) => {
-                if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
-                    self.run_view = false;
-                    self.enter(t, now);
-                }
+                self.run_view = false;
+                self.enter(id, now);
             }
-            Action::NextScreen => {
-                let i = (self.tab.index() + 1) % Tab::ALL.len();
-                self.enter(Tab::ALL[i], now);
+            Action::NextScreen | Action::PrevScreen => {
+                // The run has its own key (0); Tab walks the screens.
+                let ids: Vec<ScreenId> = SCREENS
+                    .ids
+                    .iter()
+                    .copied()
+                    .filter(|s| *s != ScreenId::Upgrade)
+                    .collect();
+                let i = ids.iter().position(|s| *s == self.screen).unwrap_or(0);
+                let step = if a == Action::NextScreen {
+                    1
+                } else {
+                    ids.len() - 1
+                };
+                self.run_view = false;
+                self.enter(ids[(i + step) % ids.len()], now);
             }
-            Action::PrevScreen => {
-                let i = (self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len();
-                self.enter(Tab::ALL[i], now);
-            }
-            Action::Down => *cur = (*cur + 1).min(n.saturating_sub(1)),
-            Action::Up => *cur = cur.saturating_sub(1),
-            Action::Top => *cur = 0,
-            Action::Bottom => *cur = n.saturating_sub(1),
-            Action::PageDown => *cur = (*cur + 10).min(n.saturating_sub(1)),
-            Action::PageUp => *cur = cur.saturating_sub(10),
             Action::Help => {
-                let mut keys = tabs::hints(self.tab, &self.view());
+                let mut keys = self.screens.hints(self.screen, &self.view());
                 // Maintenance: every row key, not only the selected row's.
-                if self.tab == Tab::Maint {
+                if self.screen == ScreenId::Maint {
                     let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
                     keys = sentry_core::tui::maintlist::GRAMMAR
                         .iter()
@@ -1029,37 +982,25 @@ impl App {
                 let own_a = keys.iter().any(|(k, _)| *k == "A");
                 let lines = keys
                     .into_iter()
-                    .chain(super::actions::hints(self.tab))
+                    .chain(super::actions::hints(self.screen))
                     .chain((!own_a).then_some(("A", "ask Claude")))
                     .chain([
                         ("I", "read what needs root, once, with your sudo password"),
-                        ("1-4", "tabs (or Tab, h/l)"),
+                        ("1 4 5 6", "screens, numbered as in sentry (or Tab, h/l)"),
                         ("0", "the workflow run (:wf too)"),
                         ("j/k", "move"),
                         ("/", "filter (Esc clears) · n/N next/prev"),
-                        (":", ":q quit · :r refresh · :<tab> · :wf <name>"),
+                        (":", ":q quit · :r refresh · :<screen> · :wf <name>"),
                         ("q", "quit (asks)"),
                     ])
                     .map(|(k, d)| Line::styled(format!("{k:<8} {d}"), self.theme.fg()))
                     .collect();
                 self.modal = Some(Modal {
-                    title: format!("{} · keys", self.tab.name()),
+                    title: format!("{} · keys", self.screen.name()),
                     color: self.theme.cyan,
                     lines,
                     yes: None,
                 });
-            }
-            Action::Refresh => {
-                let e = tabs::refresh(self.tab);
-                self.apply(e, now);
-            }
-            Action::Check => {
-                let e = tabs::check(self.tab);
-                self.apply(e, now);
-            }
-            Action::Enter => {
-                let e = tabs::enter(self.tab, &self.view());
-                self.apply(e, now);
             }
             Action::Ask => {
                 if let Some(sess) = self.apply.as_mut().filter(|s| s.chat.hidden) {
@@ -1069,15 +1010,18 @@ impl App {
                 } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
-                    if self.tab == Tab::Maint && !self.run_view && self.wf_entries.is_empty() {
+                    if self.screen == ScreenId::Maint
+                        && !self.run_view
+                        && self.wf_entries.is_empty()
+                    {
                         self.load_wf_entries();
                     }
                     let v = self.view();
                     let ask = match self.wf.as_ref().filter(|_| self.run_view) {
                         Some(s) => Some(super::ask::ask_run(&v, &self.remote, s)),
-                        None => super::ask::ask_for(self.tab, &v, &self.remote),
+                        None => self.screens.ask(self.screen, &v, &self.remote).ok(),
                     };
-                    let apply = (self.tab == Tab::Maint && !self.run_view)
+                    let apply = (self.screen == ScreenId::Maint && !self.run_view)
                         .then(|| {
                             super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf))
                         })
@@ -1089,7 +1033,7 @@ impl App {
                         (None, Some(apply)) => self.open_ask(apply),
                         (Some(ask), None) => self.open_ask(ask),
                         (None, None) => {
-                            let why = super::ask::nothing_here(self.tab, &v);
+                            let why = super::ask::nothing_here(self.screen, &v);
                             self.toast(why);
                         }
                     }
@@ -1099,24 +1043,17 @@ impl App {
                 let m = self.fresh_sudo();
                 self.inventory_box(m);
             }
-            Action::Char('a') => {
-                self.fresh_sudo();
-                let e = super::actions::custom(&self.view(), &self.remote);
-                self.apply(e, now);
-            }
-            Action::Char('B') if self.tab == Tab::Overview => {
-                self.fresh_sudo();
-                let e = super::actions::reboot(&self.view(), &self.remote);
-                self.apply(e, now);
-            }
-            Action::Char(c) => {
-                if super::actions::uses_root(self.tab, c) {
+            // The rest is the screen's: moving, Enter, r, c and its own letters.
+            a => {
+                if let Action::Char(c) = a
+                    && Screens::uses_root(self.screen, c)
+                {
                     self.fresh_sudo();
                 }
-                let e = tabs::key(self.tab, c, &self.view(), &self.remote);
+                let id = self.screen;
+                let e = self.with_screens(|s, v, r| s.handle(id, a, v, r));
                 self.apply(e, now);
             }
-            _ => {}
         }
     }
 
@@ -1183,7 +1120,7 @@ impl App {
                 }
                 Effect::ReviewOpen => self.review_open(),
                 Effect::TaskRemove(id) => {
-                    let all = super::maint::all_tasks(&self.view());
+                    let all = super::screens::maint::all_tasks(&self.view());
                     let Some(t) = all.into_iter().find(|t| t.id == id) else {
                         return;
                     };
@@ -1244,13 +1181,12 @@ impl App {
                 Effect::ChooseWorkflow => self.workflow_chooser(),
                 Effect::MaintFind(prefix) => {
                     let v = self.view();
-                    if let Some(i) = super::maint::recs(&v)
+                    if let Some(i) = super::screens::maint::recs(&v)
                         .iter()
                         .position(|r| r.key.starts_with(&prefix))
                     {
-                        let key = super::maint::row_key_at(&v, i);
-                        self.cursors[Tab::Maint.index()] = i;
-                        self.maint_sel = key;
+                        let key = super::screens::maint::row_key_at(&v, i);
+                        self.screens.maint.select(i, key);
                     }
                 }
                 Effect::FixFinding(id) => {
@@ -1258,16 +1194,15 @@ impl App {
                         self.toast("Claude Code isn't installed (or not on PATH)");
                     } else {
                         let v = self.view();
-                        if let Some(f) = super::maint::finding(&v, &id) {
+                        if let Some(f) = super::screens::maint::finding(&v, &id) {
                             let ask = super::ask::ask_finding(&v, &self.remote, f);
                             self.open_ask(ask);
                         }
                     }
                 }
                 Effect::MaintJump(id) => {
-                    if let Some(i) = super::maint::row_of(&self.view(), &id) {
-                        self.cursors[Tab::Maint.index()] = i;
-                        self.maint_sel = Some(format!("item:{id}"));
+                    if let Some(i) = super::screens::maint::row_of(&self.view(), &id) {
+                        self.screens.maint.select(i, Some(format!("item:{id}")));
                     }
                 }
                 Effect::ReadsSkipped => {
@@ -1388,7 +1323,7 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keys on the Workflows tab; true when handled.
+    /// Keys in the run view; true when handled.
     fn wf_key(&mut self, a: Action, _now: Instant) -> bool {
         let t = self.theme;
         let Some(s) = self.wf.as_ref() else {
@@ -1991,7 +1926,10 @@ impl App {
             info.as_ref(),
             None,
         );
-        sentry_core::maint::tasks::tag_run(&mut entry, &super::maint::all_tasks(&self.view()));
+        sentry_core::maint::tasks::tag_run(
+            &mut entry,
+            &super::screens::maint::all_tasks(&self.view()),
+        );
         self.apply_run_ended(&entry);
         if !self.offline {
             if let Err(e) = log::write(&entry) {
@@ -2150,7 +2088,7 @@ impl App {
                 );
                 sentry_core::maint::tasks::tag_run(
                     &mut with_note,
-                    &super::maint::all_tasks(&self.view()),
+                    &super::screens::maint::all_tasks(&self.view()),
                 );
                 if !self.offline
                     && let Err(e) = crate::maint::log::write(&with_note)
@@ -2341,7 +2279,7 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                let asks = super::maint::merge_defaults(asks, &given);
+                let asks = super::screens::maint::merge_defaults(asks, &given);
                 if asks.is_empty() {
                     return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
                 }
@@ -2607,7 +2545,7 @@ impl App {
             ),
         };
         let prompt = planview::request(
-            &super::maint::context(&v, &self.remote, s, it),
+            &super::screens::maint::context(&v, &self.remote, s, it),
             &doc.head.workflow,
             &steps,
             &goal,
@@ -2880,8 +2818,8 @@ impl App {
     /// Everything on Maintenance a review's changes may name, and `f` with it.
     fn with_known<R>(&self, f: impl FnOnce(&sentry_core::maint::changes::Known) -> R) -> R {
         let v = self.view_all();
-        let tasks = super::maint::all_tasks(&v);
-        let rows: Vec<(String, String)> = super::maint::recs(&v)
+        let tasks = super::screens::maint::all_tasks(&v);
+        let rows: Vec<(String, String)> = super::screens::maint::recs(&v)
             .into_iter()
             .map(|r| (r.key, r.title))
             .collect();
@@ -2932,7 +2870,7 @@ impl App {
     fn review_prompt(&self) -> String {
         let changes = self.with_known(|k| sentry_core::maint::changes::request_section(k, true));
         planview::review_request(
-            &super::maint::review_context(&self.view_all(), &self.remote),
+            &super::screens::maint::review_context(&self.view_all(), &self.remote),
             &changes,
         )
     }
@@ -3087,13 +3025,13 @@ impl App {
         let (id, title) = (task.id.clone(), task.title.clone());
         self.store.tasks.retain(|t| t.id != id);
         self.store.tasks.push(task);
-        self.toast(&format!("added to Maintenance (4): {title}"));
+        self.toast(&format!("added to Maintenance (6): {title}"));
     }
 
     /// A task done by hand: logged now (tagged `task:<id>`, which takes it off the list),
     /// then the note box, as for a plan done by hand.
     fn task_done(&mut self, id: &str) {
-        let title = super::maint::all_tasks(&self.view())
+        let title = super::screens::maint::all_tasks(&self.view())
             .into_iter()
             .find(|t| t.id == id)
             .map_or(id.to_string(), |t| t.title);
@@ -3276,7 +3214,7 @@ impl App {
                 _ if self.offline => format!("~/.config/sentry/servers/{name}"),
                 _ => dir,
             },
-            tasks: super::maint::all_tasks(&v),
+            tasks: super::screens::maint::all_tasks(&v),
             log: if self.offline {
                 self.store.log.clone()
             } else {
@@ -3334,7 +3272,7 @@ impl App {
             Fx::Close => self.rec_view = None,
             Fx::TaskDo(id) => {
                 self.rec_view = None;
-                let e = super::maint::task_enter(&self.view(), &id);
+                let e = super::screens::maint::task_enter(&self.view(), &id);
                 self.apply(e, now);
             }
             // Where it's written: the config (a cadence) or tasks.toml.
@@ -3667,22 +3605,22 @@ impl App {
     /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
     fn filter_key(&mut self, k: KeyEvent) {
         use ratatui::crossterm::event::KeyCode;
-        let i = self.tab.index();
+        let flt = self.filters.entry(self.screen).or_default();
         match k.code {
-            KeyCode::Char(c) => self.filters[i].push(c),
+            KeyCode::Char(c) => flt.push(c),
             KeyCode::Backspace => {
-                if self.filters[i].pop().is_none() {
+                if flt.pop().is_none() {
                     self.filtering = false;
                 }
             }
             KeyCode::Esc => {
-                self.filters[i].clear();
+                flt.clear();
                 self.filtering = false;
             }
             KeyCode::Enter => self.filtering = false,
             _ => {}
         }
-        self.cursors[i] = 0;
+        self.screens.reset_cursor(self.screen);
         self.dirty = true;
     }
 
@@ -3692,7 +3630,8 @@ impl App {
         match (parts.next(), parts.next()) {
             (Some("q" | "q!" | "quit" | "qa"), _) => self.quit = true,
             (Some("refresh" | "r"), _) => {
-                let e = tabs::refresh(self.tab);
+                let id = self.screen;
+                let e = self.with_screens(|s, v, r| s.handle(id, Action::Refresh, v, r));
                 self.apply(e, now);
             }
             (Some("help" | "h"), _) => {
@@ -3720,16 +3659,15 @@ impl App {
                 None if self.wf.as_ref().is_some_and(|s| !s.done()) => self.open_run_view(),
                 None => self.workflow_chooser(),
             },
-            (Some(name), None) => {
-                let name = name.to_ascii_lowercase();
-                match Tab::ALL.into_iter().find(|t| {
-                    let n = t.name().to_ascii_lowercase();
-                    n == name || (name.len() >= 3 && n.starts_with(&name))
-                }) {
-                    Some(t) => self.enter(t, now),
-                    None => self.toast(&format!("unknown command :{c}")),
+            // A screen, by sentry's names (and the ones the tabs had).
+            (Some(name), None) => match SCREENS.from_name(name) {
+                Some(ScreenId::Upgrade) => self.open_run_view(),
+                Some(id) => {
+                    self.run_view = false;
+                    self.enter(id, now)
                 }
-            }
+                None => self.toast(&format!("unknown command :{c}")),
+            },
             _ if c.is_empty() => {}
             _ => self.toast(&format!("unknown command :{c}")),
         }
@@ -4303,9 +4241,12 @@ impl App {
         match (&self.wf, self.run_view) {
             (Some(s), true) => {
                 f.render_widget(ratatui::widgets::Clear, body);
-                super::wftab::draw_session(f, body, &t, s)
+                super::screens::upgrade::draw_session(f, body, &t, s)
             }
-            _ => tabs::draw(f, body, self.tab, &self.view()),
+            _ => {
+                let id = self.screen;
+                self.with_screens(|s, v, _| s.render(id, f, body, v));
+            }
         }
         if let Some(rv) = &self.review_view {
             let w = self.writer.as_ref().filter(|w| w.review.is_some());
@@ -4414,37 +4355,38 @@ impl App {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
+    /// The strip: sentry's, with this program's screens. The run (0) is on it while there
+    /// is one.
     fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        let mut spans = Vec::new();
-        for tab in Tab::ALL {
-            let active = tab == self.tab;
-            let style = if active {
-                Style::new().bg(t.fg)
-            } else {
-                Style::new()
-            };
-            let (fg, kc) = if active {
-                (t.ink, t.ink)
-            } else {
-                (t.fg, t.dim)
-            };
-            spans.push(Span::styled(format!(" {}", tab.key()), style.fg(kc)));
-            spans.push(Span::styled(format!(" {}", tab.name()), style.fg(fg)));
-            if let Some((b, c)) = tabs::badge(tab, &self.view()) {
-                spans.push(Span::styled(b, style.fg(if active { t.ink } else { c })));
-            }
-            let flt = &self.filters[tab.index()];
-            if !flt.is_empty() && tabs::filterable(tab) {
-                spans.push(Span::styled(
-                    format!(" /{flt}"),
-                    style.fg(if active { t.ink } else { t.cyan }),
-                ));
-            }
-            spans.push(Span::styled(" ", style));
-            spans.push(Span::raw(" "));
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        let v = self.view();
+        let tabs: Vec<sentry_core::tui::frame::Tab> = SCREENS
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| *id != ScreenId::Upgrade || self.wf.is_some())
+            .map(|id| sentry_core::tui::frame::Tab {
+                id,
+                badge: match id {
+                    ScreenId::Upgrade => self
+                        .wf
+                        .as_ref()
+                        .filter(|s| !s.done())
+                        .map(|_| (" ●".to_string(), self.theme.yellow)),
+                    _ => self.screens.badge(id, &v),
+                },
+                filter: self
+                    .filters
+                    .get(&id)
+                    .filter(|_| Screens::filterable(id))
+                    .cloned(),
+            })
+            .collect();
+        let active = if self.run_view && self.wf.is_some() {
+            ScreenId::Upgrade
+        } else {
+            self.screen
+        };
+        sentry_core::tui::frame::draw_tabs(f, area, &self.theme, &tabs, active);
     }
 
     fn draw_keybar(&self, f: &mut Frame, area: Rect) {
@@ -4536,7 +4478,13 @@ impl App {
         if self.filtering {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(format!("/{}", self.filters[self.tab.index()]), t.fg()),
+                    Span::styled(
+                        format!(
+                            "/{}",
+                            self.filters.get(&self.screen).map_or("", String::as_str)
+                        ),
+                        t.fg(),
+                    ),
                     Span::styled("▏", t.s(t.cyan)),
                     Span::styled("   Enter keep · Esc clear", t.dim()),
                 ])),
@@ -4597,7 +4545,7 @@ impl App {
         } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
             vec![("y", "confirm"), ("n", "cancel")]
         } else {
-            let mut h = tabs::hints(self.tab, &self.view());
+            let mut h = self.screens.hints(self.screen, &self.view());
             if self.run_view {
                 h = match &self.wf {
                     Some(s) if s.done() => vec![("Enter", "close")],
@@ -4610,7 +4558,7 @@ impl App {
                     ],
                 };
             }
-            h.extend(super::actions::hints(self.tab));
+            h.extend(super::actions::hints(self.screen));
             // sudo asks for a password: say where the root-only data comes from.
             if self.store.sudo.value == Some(SudoMode::Password) {
                 h.push(("I", "read with sudo"));
@@ -4646,7 +4594,7 @@ impl App {
             h.extend([("?", "help"), ("q", "quit")]);
             h
         };
-        // Too wide: drop the tab's own hints from the end, never the global ones (A, ?, q)
+        // Too wide: drop the screen's own hints from the end, never the global ones (A, ?, q)
         // that end the list. Chips are ` k ` + ` d` + two spaces, as in sentry.
         let mut hints = hints;
         let width = |h: &[(&str, &str)]| -> usize {
@@ -4851,6 +4799,19 @@ impl App {
     /// Tests: the conversation, if one is open.
     pub fn chat_for_test(&self) -> Option<&Chat> {
         self.chat.as_ref()
+    }
+    /// Tests: `[keys]` as config.toml would give it; what's wrong in it.
+    pub fn set_keys_for_test(
+        &mut self,
+        overrides: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
+        let (keys, warnings) = Keymap::new(&SCREENS, overrides);
+        self.keys = keys;
+        warnings
+    }
+    /// Tests: what the screen in view fetches again by itself.
+    pub fn polled_for_test(&self) -> Vec<Kind> {
+        self.due.keys().copied().collect()
     }
     /// Tests: a task lands in `tasks.toml` (as an apply session's follow-up does).
     pub fn add_task_for_test(&mut self, task: sentry_core::maint::tasks::Task) {

@@ -4,9 +4,18 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::Ev;
 use super::app::{App, render_to_string};
 use super::data::{Kind, Payload};
-use super::{Ev, Tab};
+use sentry_core::tui::ScreenId;
+
+/// The screens with something to show (the run, `0`, only while there is one).
+const SHOWN: [ScreenId; 4] = [
+    ScreenId::Dash,
+    ScreenId::Cont,
+    ScreenId::Svc,
+    ScreenId::Maint,
+];
 use crate::audit;
 use crate::collect::{self, apt, docker, fixture, health, probe, units};
 use crate::config::{DiskRule, Server, TimerRule};
@@ -299,18 +308,18 @@ fn key(a: &mut App, c: KeyCode) {
     );
 }
 
-/// Drop the header line: it has no clock, but keep snapshots about the tabs.
+/// Drop the header line: it has no clock, but keep snapshots about the screens.
 fn body(s: &str) -> String {
     s.lines().skip(1).collect::<Vec<_>>().join("\n")
 }
 
 #[test]
-fn every_tab_renders() {
-    for tab in Tab::ALL {
+fn every_screen_renders() {
+    for tab in SHOWN {
         for (w, h) in [(158, 41), (80, 24)] {
             let mut a = app();
             key(&mut a, KeyCode::Char(tab.key()));
-            assert_eq!(a.tab, tab);
+            assert_eq!(a.screen, tab);
             let s = render_to_string(&mut a, w, h);
             assert!(
                 s.contains("sentry-server") && s.contains("myserver"),
@@ -345,7 +354,7 @@ fn overview_status_rows_jump_to_their_tab() {
     assert!(s.contains("1 of 3 containers not running"), "{s}");
     assert!(s.contains("sda ok 31°C") && s.contains("sdc asleep"), "{s}");
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Maint, "first row: reboot → Maintenance");
+    assert_eq!(a.screen, ScreenId::Maint, "first row: reboot → Maintenance");
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("A reboot has been pending") && s.contains("● reboot required"),
@@ -371,7 +380,7 @@ fn findings_are_recommendations_on_maintenance() {
         key(&mut a, KeyCode::Char('j'));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Maint);
+    assert_eq!(a.screen, ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("What  "), "the finding's details\n{s}");
     assert!(
@@ -381,28 +390,216 @@ fn findings_are_recommendations_on_maintenance() {
 }
 
 #[test]
-fn tabs_and_badges() {
+fn screens_and_badges() {
     let mut a = app();
     let s = render_to_string(&mut a, 158, 41);
     let tabs = s.lines().nth(1).unwrap();
-    assert!(tabs.contains("2 Services 1"), "one failed unit: {tabs}");
-    assert!(tabs.contains("3 Containers 1"), "db is down: {tabs}");
+    assert!(
+        tabs.starts_with(" 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance"),
+        "sentry's numbers; db is down, one unit failed: {tabs}"
+    );
     assert!(
         !tabs.contains("Updates"),
         "updates live on Maintenance: {tabs}"
     );
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.tab, Tab::Services);
+    assert_eq!(a.screen, ScreenId::Cont);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
-    assert_eq!(a.tab, Tab::Maint, "wraps around");
+    assert_eq!(a.screen, ScreenId::Maint, "wraps around");
 }
 
-/// Against a real server: `SENTRY_SERVER_LIVE=<name> cargo test live_tabs -- --ignored --nocapture`.
-/// Reads ~/.config/sentry/server_config.yaml; prints every tab; read-only.
+/// Type a `:` command.
+fn colon(a: &mut App, cmd: &str) {
+    key(a, KeyCode::Char(':'));
+    for c in cmd.chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+}
+
+#[test]
+fn screen_keys_follow_sentry() {
+    let mut a = app();
+    for (c, id) in [
+        ('4', ScreenId::Cont),
+        ('5', ScreenId::Svc),
+        ('6', ScreenId::Maint),
+        ('1', ScreenId::Dash),
+    ] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.screen, id, "{c}");
+    }
+    // Screens this program doesn't have (yet): their keys do nothing.
+    for c in ['2', '3', '7', 'H'] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.screen, ScreenId::Dash, "{c}");
+    }
+    // 0 is the run: nothing to show without one, and it's not on the strip.
+    key(&mut a, KeyCode::Char('0'));
+    assert_eq!(a.screen, ScreenId::Dash);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("no workflow in progress"), "{s}");
+    assert!(!s.lines().nth(1).unwrap().contains("Upgrade"), "{s}");
+    // Tab walks them in strip order and wraps; the help names them as screens.
+    key(&mut a, KeyCode::Tab);
+    assert_eq!(a.screen, ScreenId::Cont);
+    key(&mut a, KeyCode::BackTab);
+    key(&mut a, KeyCode::BackTab);
+    assert_eq!(a.screen, ScreenId::Maint);
+    key(&mut a, KeyCode::Char('?'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Maintenance · keys") && s.contains("screens, numbered as in sentry"));
+    assert!(!s.contains("tabs (or"), "{s}");
+}
+
+#[test]
+fn old_names_still_work() {
+    let mut a = app();
+    for (cmd, id) in [
+        ("maintenance", ScreenId::Maint),
+        ("overview", ScreenId::Dash),
+        ("services", ScreenId::Svc),
+        ("dashboard", ScreenId::Dash),
+        ("cont", ScreenId::Cont),
+        ("dash", ScreenId::Dash),
+        ("svc", ScreenId::Svc),
+        ("maint", ScreenId::Maint),
+        ("con", ScreenId::Cont),
+        ("ser", ScreenId::Svc),
+    ] {
+        colon(&mut a, cmd);
+        assert_eq!(a.screen, id, ":{cmd}");
+    }
+    // Not a screen here.
+    colon(&mut a, "flatpaks");
+    assert_eq!(a.screen, ScreenId::Svc);
+    assert!(render_to_string(&mut a, 158, 41).contains("unknown command :flatpaks"));
+}
+
+#[test]
+fn the_keys_table_is_honoured() {
+    let mut a = app();
+    let keys: std::collections::BTreeMap<String, String> = [
+        ("quit", "Q"),
+        ("screen.maintenance", "M"),
+        // sentry's screen, in the same config.toml: skipped without a word.
+        ("screen.flatpaks", "F"),
+        ("screen.nowhere", "X"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let warnings = a.set_keys_for_test(&keys);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("nowhere"), "{warnings:?}");
+    key(&mut a, KeyCode::Char('M'));
+    assert_eq!(a.screen, ScreenId::Maint);
+    key(&mut a, KeyCode::Char('F'));
+    assert_eq!(a.screen, ScreenId::Maint);
+    key(&mut a, KeyCode::Char('Q'));
+    assert!(render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
+}
+
+#[test]
+fn the_strip_shrinks_like_sentrys() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('6'));
+    let strip = |a: &mut App, w: u16| {
+        sentry_core::tui::frame::render_to_string(w, 24, |f| a.draw(f))
+            .lines()
+            .nth(1)
+            .unwrap()
+            .to_string()
+    };
+    // Room for all: full names. This program's four always fit in 80 columns.
+    let s = strip(&mut a, 80);
+    assert!(
+        s.starts_with(" 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance"),
+        "{s}"
+    );
+    // The strip is core's, so it narrows as sentry's does: short names (the one in view
+    // stays whole), then keys only.
+    let four: Vec<sentry_core::tui::frame::Tab> = SHOWN
+        .into_iter()
+        .map(|id| sentry_core::tui::frame::Tab {
+            id,
+            badge: None,
+            filter: None,
+        })
+        .collect();
+    let t = sentry_core::tui::theme::Theme::truecolor();
+    let at = |w: u16| {
+        sentry_core::tui::frame::render_to_string(w, 1, |f| {
+            sentry_core::tui::frame::draw_tabs(f, f.area(), &t, &four, ScreenId::Maint)
+        })
+    };
+    assert_eq!(
+        at(44).trim_end(),
+        " 1 Dash   4 Cont   5 Svc   6 Maintenance"
+    );
+    assert_eq!(at(26).trim_end(), " 1   4   5   6 Maintenance");
+    // A filter shows on its screen's name.
+    for c in "/web".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(strip(&mut a, 158).contains("/web"));
+}
+
+#[test]
+fn only_the_screen_in_view_is_fetched() {
+    use super::data::Kind;
+    use super::screens::Screens;
+    let mut a = app();
+    let now = Instant::now();
+    let polled = |a: &App| {
+        let mut k: Vec<String> = a
+            .polled_for_test()
+            .iter()
+            .map(|k| format!("{k:?}"))
+            .collect();
+        k.sort();
+        k
+    };
+    // The Dashboard samples the server while it's shown.
+    a.enter(ScreenId::Dash, now);
+    assert_eq!(
+        polled(&a),
+        ["Disks", "Docker", "Gpu", "Probe", "Smart", "Temp", "Units"]
+    );
+    // Nothing else polls: what they show is read when they're entered (and on r / c).
+    for id in [ScreenId::Cont, ScreenId::Svc, ScreenId::Maint] {
+        a.enter(id, now);
+        assert!(polled(&a).is_empty(), "{id:?}");
+        assert!(
+            Screens::polls(id, &a.remote.cfg)
+                .iter()
+                .all(|p| p.every.is_none() && p.kind != Kind::Probe),
+            "{id:?}"
+        );
+    }
+    // Leaving the Dashboard stops its sampling; the next wake-up is no sooner than a toast.
+    assert!(a.next_due(now) >= now + std::time::Duration::from_secs(1));
+    let at_entry = |id| -> Vec<Kind> {
+        Screens::polls(id, &a.remote.cfg)
+            .into_iter()
+            .map(|p| p.kind)
+            .collect()
+    };
+    assert_eq!(at_entry(ScreenId::Cont), [Kind::Docker]);
+    assert_eq!(at_entry(ScreenId::Svc), [Kind::Units, Kind::Journal]);
+    assert_eq!(
+        at_entry(ScreenId::Maint),
+        [Kind::Maint, Kind::Docker, Kind::Report]
+    );
+}
+
+/// Against a real server: `SENTRY_SERVER_LIVE=<name> cargo test live_screens -- --ignored --nocapture`.
+/// Reads ~/.config/sentry/server_config.yaml; prints every screen; read-only.
 #[test]
 #[ignore]
-fn live_tabs() {
+fn live_screens() {
     sentry_core::paths::use_real_dirs();
     let Ok(name) = std::env::var("SENTRY_SERVER_LIVE") else {
         return;
@@ -413,10 +610,10 @@ fn live_tabs() {
     let mut a = App::new(Remote::new(n, s), tx);
     a.theme = sentry_core::tui::theme::Theme::truecolor();
     a.start(Instant::now());
-    for tab in Tab::ALL {
+    for tab in SHOWN {
         a.enter(tab, Instant::now());
         let until = Instant::now()
-            + std::time::Duration::from_secs(if tab == Tab::Overview { 6 } else { 4 });
+            + std::time::Duration::from_secs(if tab == ScreenId::Dash { 6 } else { 4 });
         while Instant::now() < until {
             if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 a.on_event(ev, Instant::now());
@@ -435,7 +632,7 @@ fn run_msg(a: &mut App, id: u64, m: sentry_core::exec::StreamMsg) {
 fn restart_asks_first_then_streams() {
     use sentry_core::exec::StreamMsg;
     let mut a = app();
-    key(&mut a, KeyCode::Char('2'));
+    key(&mut a, KeyCode::Char('5'));
     key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -531,7 +728,7 @@ fn password_sudo_hands_over_the_terminal() {
         Kind::Sudo,
         Payload::Sudo(crate::remote::SudoMode::Password),
     );
-    key(&mut a, KeyCode::Char(Tab::Services.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Svc.key()));
     key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("terminal is handed over"), "{s}");
@@ -566,7 +763,7 @@ fn custom_actions_and_logs() {
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char('3'));
+    key(&mut a, KeyCode::Char('4'));
     key(&mut a, KeyCode::Char('j'));
     key(&mut a, KeyCode::Char('L'));
     a.on_event(Ev::Text(1, Ok("line one\nline two".into())), Instant::now());
@@ -638,7 +835,7 @@ fn live_actions() {
         }
     };
     pump(&mut a, 3);
-    key(&mut a, KeyCode::Char('4'));
+    key(&mut a, KeyCode::Char('6'));
     pump(&mut a, 8);
     key(&mut a, KeyCode::Char('C'));
     let s = render_to_string(&mut a, 158, 41);
@@ -648,8 +845,9 @@ fn live_actions() {
     let s = render_to_string(&mut a, 158, 41);
     println!("{s}");
     assert!(s.contains("Refresh package lists · done"), "{s}");
-    // 3. A custom action without sudo.
+    // 3. A custom action without sudo (they're on the Dashboard).
     key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('1'));
     key(&mut a, KeyCode::Char('a'));
     key(&mut a, KeyCode::Char('1'));
     key(&mut a, KeyCode::Char('y'));
@@ -737,7 +935,7 @@ fn live_workflow() {
 fn fixing_a_finding_on_the_server_is_an_apply_session() {
     use sentry_core::apply::session::{End, Phase, Turn};
     let mut a = app();
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
         vec![super::app::Effect::MaintFind("finding:".into())],
         Instant::now(),
@@ -853,7 +1051,7 @@ fn chips_and_badge_match_sentry() {
 fn chat_input_edits() {
     let mut a = app();
     // A plain question (the Overview): a chat.
-    key(&mut a, KeyCode::Char(Tab::Overview.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Dash.key()));
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Enter);
     a.chat_mut().unwrap().on_exit(0);
@@ -883,7 +1081,7 @@ fn quit_asks_and_colon_commands() {
     }
     assert!(render_to_string(&mut a, 158, 41).contains(":mai▏"));
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.tab, Tab::Maint, ":mai goes to Maintenance");
+    assert_eq!(a.screen, ScreenId::Maint, ":mai goes to Maintenance");
     for c in ":wf compose-update".chars() {
         key(&mut a, KeyCode::Char(c));
     }
@@ -911,7 +1109,7 @@ fn slash_filters_the_tab() {
         screen(&mut a).contains("nothing to filter"),
         "not on Overview"
     );
-    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     let all = screen(&mut a);
     assert!(all.contains("│ web") && all.contains("│ runner"));
     for c in "/DB".chars() {
@@ -928,9 +1126,9 @@ fn slash_filters_the_tab() {
     );
     assert!(!s.contains("│ web"));
     // Each tab has its own filter.
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     assert!(!screen(&mut a).contains("Maintenance /"));
-    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     // n/N wrap around the matches; Esc clears.
     key(&mut a, KeyCode::Char('n'));
     assert!(screen(&mut a).contains("│ db"));
@@ -970,7 +1168,7 @@ fn live_ask_boxes() {
         }
     };
     // Updates: A on their recommendation, once Maintenance has loaded.
-    a.enter(Tab::Maint, Instant::now());
+    a.enter(ScreenId::Maint, Instant::now());
     pump(&mut a, 15);
     a.apply(
         vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
@@ -1055,7 +1253,7 @@ fn the_run_view_keeps_the_tab_keys_to_itself() {
         issues: Vec::new(),
     }]);
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
         vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
             "apt-maintenance".into(),
@@ -1080,7 +1278,7 @@ fn the_run_view_keeps_the_tab_keys_to_itself() {
 fn ask_works_on_the_updates_recommendation() {
     let mut a = app();
     // Updates live on Maintenance now: A on their recommendation.
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
         vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
         Instant::now(),
@@ -1296,7 +1494,7 @@ fn live_inventory() {
             a.tick(Instant::now());
         }
     };
-    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     pump(&mut a, 3);
     let before = render_to_string(&mut a, 158, 41);
     println!("{before}");
@@ -1345,7 +1543,7 @@ fn live_inventory() {
 fn maintenance_tab_plans_one_item_at_a_time() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     goto_item(&mut a, "web");
     let s = screen(&mut a);
     assert!(
@@ -1495,7 +1693,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         sentry_core::apply::session::Phase::Settled(sentry_core::apply::session::End::Stopped);
     key(&mut a, KeyCode::Esc);
     // The plan stays until it's applied or dropped.
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     assert!(screen(&mut a).contains("planned → 1.5.1"));
     key(&mut a, KeyCode::Char('x'));
     key(&mut a, KeyCode::Char('y'));
@@ -1520,7 +1718,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     assert!(screen(&mut a).contains("Claude advises waiting: r revises it"));
     key(&mut a, KeyCode::Esc);
     // z offers later dates; A asks about the item among everything recommended.
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 30 days"));
     key(&mut a, KeyCode::Esc);
@@ -1547,7 +1745,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
 fn recommendations_come_first_and_enter_does_what_they_say() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     let s = screen(&mut a);
     assert!(s.contains("Recommended ·"), "{s}");
     assert!(s.contains("soon     os: end of life soon"), "{s}");
@@ -1565,7 +1763,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
     key(&mut a, KeyCode::Esc);
     // z puts one off.
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("look again in 7 days"));
     key(&mut a, KeyCode::Esc);
@@ -1584,7 +1782,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
 fn later_takes_the_row_off_at_once() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     assert!(screen(&mut a).contains("4 package update(s) waiting"));
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('1'));
@@ -1650,7 +1848,7 @@ fn a_password_sudo_says_press_i() {
         ),
         Instant::now(),
     );
-    key(&mut b, KeyCode::Char(Tab::Containers.key()));
+    key(&mut b, KeyCode::Char(ScreenId::Cont.key()));
     let s = render_to_string(&mut b, 158, 41);
     assert!(
         s.contains("Press  I  to read them once with your password"),
@@ -1708,7 +1906,7 @@ fn live_plan() {
             a.tick(Instant::now());
         }
     };
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     pump(&mut a, 10);
     for _ in 0..pos {
         key(&mut a, KeyCode::Char('j'));
@@ -1723,7 +1921,7 @@ fn live_plan() {
     );
     // Leave the Plan view and move about meanwhile: it's still written and saved.
     key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char(Tab::Overview.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Dash.key()));
     let mut asked = false;
     for _ in 0..300 {
         pump(&mut a, 3);
@@ -1741,7 +1939,7 @@ fn live_plan() {
     }
     println!("asked for reads before writing: {asked}");
     pump(&mut a, 1);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Enter);
     println!("{}", render_to_string(&mut a, 158, 41));
     let plan = a.store.plans.get(&item).cloned().expect("a saved plan");
@@ -1806,7 +2004,7 @@ fn live_claude_reads() {
 fn the_maintenance_log_can_be_reviewed() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('v'));
     let s = screen(&mut a);
     assert!(
@@ -1870,7 +2068,7 @@ fn the_maintenance_log_can_be_reviewed() {
     assert!(a.rec_view.is_some());
     // Later: what's put off; u brings it back.
     key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('1'));
     assert!(!screen(&mut a).contains("4 package update(s) waiting"));
@@ -1898,7 +2096,7 @@ fn a_read_from_before_the_last_change_says_so() {
     );
     let t = |s: &str| -> jiff::Timestamp { s.parse().unwrap() };
     a.set_inventory_times(t("2026-10-26T10:00:00Z"), t("2026-10-26T11:00:00Z"));
-    key(&mut a, KeyCode::Char(Tab::Containers.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("before the last change: I reads again"), "{s}");
     a.set_inventory_times(t("2026-10-26T11:30:00Z"), t("2026-10-26T11:00:00Z"));
@@ -1912,7 +2110,7 @@ fn a_read_from_before_the_last_change_says_so() {
 #[test]
 fn the_risk_is_coloured_only_where_something_needs_doing() {
     let mut a = app();
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     let backend = ratatui::backend::TestBackend::new(158, 41);
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| a.draw(f)).unwrap();
@@ -1946,7 +2144,7 @@ fn the_risk_is_coloured_only_where_something_needs_doing() {
 fn claude_reviews_the_maintenance_and_it_is_kept() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     // R: the review window on its brief; nothing is sent before Enter.
     key(&mut a, KeyCode::Char('R'));
     let s = screen(&mut a);
@@ -2023,7 +2221,7 @@ fn claude_reviews_the_maintenance_and_it_is_kept() {
 fn a_review_that_needs_root_reads_is_not_saved_until_they_are_back() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('R'));
     key(&mut a, KeyCode::Enter);
     a.writer_answered("READS PENDING\nwaiting for smartctl");
@@ -2071,7 +2269,7 @@ fn live_recommend() {
 fn audit_findings_are_recommendations() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     let s = screen(&mut a);
     // The fixture report's findings, by severity; its srv:maint:* ones aren't repeated.
     assert!(!s.contains("srv:maint:"), "{s}");
@@ -2107,7 +2305,7 @@ fn workflows_run_in_a_view_on_maintenance() {
     // No run yet: 0 says how to start one; w lists them.
     key(&mut a, KeyCode::Char('0'));
     assert!(screen(&mut a).contains("w on Maintenance starts one"));
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('w'));
     let s = screen(&mut a);
     assert!(
@@ -2129,7 +2327,7 @@ fn workflows_run_in_a_view_on_maintenance() {
 fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     goto_item(&mut a, "engine");
     assert!(
         screen(&mut a).contains("p: Claude plans it (no workflow: you run its steps)"),
@@ -2176,7 +2374,7 @@ fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
 fn a_review_changes_tasks_and_items_with_one_enter() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     let s = screen(&mut a);
     assert!(s.contains("Track cache") && s.contains("legacy"), "{s}");
     key(&mut a, KeyCode::Char('R'));
@@ -2468,7 +2666,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
         review: None,
         after: None,
     });
-    key(&mut a, KeyCode::Char(Tab::Maint.key()));
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
         vec![super::app::Effect::MaintFind("task:ups".into())],
         Instant::now(),

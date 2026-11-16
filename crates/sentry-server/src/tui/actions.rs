@@ -3,13 +3,13 @@
 
 use ratatui::text::Line;
 
-use super::Tab;
 use super::app::{Effect, Modal, RunSpec};
 use super::data::Kind;
-use super::tabs::View;
+use super::screens::View;
 use crate::config::CustomAction;
 use crate::remote::{Remote, SudoMode};
 use sentry_core::exec::{Cmd, sh_quote};
+use sentry_core::tui::ScreenId;
 
 /// A root command, built for how sudo behaves here: streamed when no password is needed,
 /// interactive when it asks for one.
@@ -20,14 +20,6 @@ fn root(r: &Remote, mode: Option<SudoMode>, argv: &[&str]) -> Result<(Cmd, bool)
         Some(SudoMode::Absent) => Err("this login has no sudo on the server".into()),
         None => Err("still checking how sudo works on the server".into()),
     }
-}
-
-/// Keys whose action may run something as root (so sudo is checked again first).
-pub fn uses_root(tab: Tab, c: char) -> bool {
-    matches!(
-        (tab, c),
-        (Tab::Services, 'R' | 'x') | (Tab::Containers, 'R' | 'p' | 'u')
-    )
 }
 
 pub struct Spec<'a> {
@@ -132,7 +124,7 @@ fn logs(r: &Remote, title: String, argv: &[&str]) -> Vec<Effect> {
     }
 }
 
-// ---------- per tab ----------
+// ---------- per screen ----------
 
 pub fn services(v: &View, r: &Remote, c: char, unit: &str, failed: bool) -> Vec<Effect> {
     let timer = unit.ends_with(".timer");
@@ -376,17 +368,17 @@ fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {
     })]
 }
 
-/// Keys each tab adds for maintenance.
-pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
+/// Keys each screen adds for maintenance.
+pub fn hints(tab: ScreenId) -> Vec<(&'static str, &'static str)> {
     match tab {
-        Tab::Overview => vec![("a", "actions"), ("B", "reboot")],
-        Tab::Services => vec![("R", "restart/run"), ("x", "reset failed"), ("L", "log")],
-        Tab::Containers => vec![
+        ScreenId::Dash => vec![("a", "actions"), ("B", "reboot")],
+        ScreenId::Svc => vec![("R", "restart/run"), ("x", "reset failed"), ("L", "log")],
+        ScreenId::Cont => vec![
             ("R", "restart"),
             ("L", "log"),
             ("p", "pull"),
             ("u", "up -d"),
         ],
-        Tab::Maint => Vec::new(),
+        _ => Vec::new(),
     }
 }

@@ -326,10 +326,10 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
             return 2;
         }
     };
-    // With what's tracked from the Maintenance tab (`t`) added, as the TUI shows it.
+    // With what's tracked from Maintenance (`t`) added, as the TUI shows it.
     let r = Remote::new(&n, &s).with_inventory();
     if r.cfg.maintenance.items.is_empty() {
-        println!("{n}: no maintenance items (server_config.yaml, or t on the Maintenance tab)");
+        println!("{n}: no maintenance items (server_config.yaml, or t on Maintenance)");
         return 0;
     }
     if refresh {

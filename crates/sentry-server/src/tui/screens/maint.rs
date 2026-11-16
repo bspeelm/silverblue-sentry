@@ -1,4 +1,4 @@
-//! The Maintenance tab: what to maintain next and why (recommendations, on top), then
+//! The Maintenance screen: what to maintain next and why (recommendations, on top), then
 //! everything tracked, how it stands against upstream, and the deliberate way to change it
 //! (a plan Claude writes, applied with its workflow; or look again later).
 
@@ -10,14 +10,14 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
-use super::app::{Effect, Modal};
-use super::tabs::View;
+use super::View;
 use crate::config::{MaintItem, Risk};
 use crate::maint::eval::{Flag, Status};
 use crate::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::maint::recommend::{self, Action, Level, Rec};
 use crate::maint::{self, local};
 use crate::remote::Remote;
+use crate::tui::app::{Effect, Modal};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::widgets::{self, TableSpec, inner, panel};
@@ -76,6 +76,61 @@ pub fn finding<'a>(v: &View<'a>, id: &str) -> Option<&'a sentry_core::finding::F
     report(v)?.findings.iter().find(|f| f.id == id)
 }
 
+/// Maintenance's own state: the cursor, and the row it's on (kept when the list changes).
+#[derive(Default)]
+pub struct Maint {
+    pub cur: sentry_core::tui::Cursor,
+    /// The row selected ([`row_key`]).
+    pub sel: Option<String>,
+}
+
+impl Maint {
+    pub fn handle(
+        &mut self,
+        a: sentry_core::tui::keys::Action,
+        v: &View,
+        _r: &Remote,
+    ) -> Vec<Effect> {
+        use crate::tui::data::Kind;
+        use sentry_core::tui::keys::Action as A;
+        match a {
+            A::Refresh => vec![Effect::Fetch(Kind::Maint)],
+            // Check everything: audit the server and look upstream up again.
+            A::Check => vec![
+                Effect::Fetch(Kind::Audit),
+                Effect::Fetch(Kind::Upstream),
+                Effect::Toast("auditing the server and looking up newer versions…".into()),
+            ],
+            A::Enter => key('\n', v),
+            A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm')) => key(c, v),
+            // A task: where it's written; anything else: the config.
+            A::Char('e') => match key('e', v) {
+                e if e.is_empty() => vec![Effect::EditConfig],
+                e => e,
+            },
+            A::Char('R') => vec![Effect::ReviewOpen],
+            A::Char('w') => vec![Effect::ChooseWorkflow],
+            A::Char('v') => vec![Effect::LogOpen(selected(v).map(|(s, _)| s.id.clone()))],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The list changed under the cursor: put it back on the row it was on.
+    pub fn keep(&mut self, v: &View) {
+        if let Some(key) = &self.sel
+            && let Some(i) = row_with(v, key)
+        {
+            self.cur.sel = i;
+        }
+    }
+
+    /// Select a row, by where it is and what it is.
+    pub fn select(&mut self, i: usize, key: Option<String>) {
+        self.cur.sel = i;
+        self.sel = key;
+    }
+}
+
 /// The selected row: a recommendation (they come first) or an item.
 pub enum Sel<'a> {
     Rec(Rec),
@@ -111,7 +166,7 @@ pub fn selected<'a>(v: &View<'a>) -> Option<(&'a Status, &'a MaintItem)> {
     }
 }
 
-/// Rows on the tab: recommendations, then items.
+/// Rows on the screen: recommendations, then items.
 pub fn count(v: &View) -> usize {
     recs(v).len() + rows(v).len()
 }
@@ -312,7 +367,7 @@ fn needs_attention(v: &View, s: &Status) -> bool {
         || (s.has(Flag::Behind) && !s.has(Flag::Held))
 }
 
-/// The count on the tab: security fixes, end of life, drift and reviews due.
+/// The count on the strip: security fixes, end of life, drift and reviews due.
 pub fn badge(v: &View) -> Option<(String, Color)> {
     v.s.maint.value.as_ref()?;
     let r = recs(v);
@@ -461,10 +516,10 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 l.push(Line::raw(""));
                 l.extend(detail(v, s, it));
             }
-            // Updates and the reboot: what's waiting, as the Updates tab showed it.
+            // Updates and the reboot: what's waiting, as the old Updates tab showed it.
             if x.key.starts_with("wf:apt-maintenance") || x.key == "reboot" {
                 l.push(Line::raw(""));
-                l.extend(super::tabs::updates_lines(v));
+                l.extend(super::updates_lines(v));
             }
             if let Action::Task(id) = &x.action
                 && let Some(task) = all_tasks(v).into_iter().find(|t| &t.id == id)
@@ -491,7 +546,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
                 && let Some(f) = finding(v, id)
             {
                 l.push(Line::raw(""));
-                l.extend(super::tabs::finding_lines(t, f));
+                l.extend(super::finding_lines(t, f));
             }
             // What the last audit couldn't check, beside its findings.
             if (matches!(x.action, Action::Fix(_)) || x.key == "audit")
@@ -694,7 +749,7 @@ pub fn workflow_of(it: &MaintItem) -> Option<&str> {
         .or(it.workflow.as_deref())
 }
 
-/// Keys on the tab: on a recommendation, Enter does what it recommends; the item keys work
+/// Keys on the screen: on a recommendation, Enter does what it recommends; the item keys work
 /// on the item it's about.
 pub fn key(c: char, v: &View) -> Vec<Effect> {
     match pick(v) {
@@ -761,7 +816,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Effect::Expected(id.clone(), true),
         ),
         ('\n', Action::Audit) => vec![
-            Effect::Fetch(super::data::Kind::Audit),
+            Effect::Fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
         ('\n', Action::Task(id)) => task_enter(v, id),
@@ -827,7 +882,7 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
             None => vec![Effect::Toast(format!("{it} isn't tracked any more"))],
         },
         Do::Audit => vec![
-            Effect::Fetch(super::data::Kind::Audit),
+            Effect::Fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
         Do::Job(j) => vec![Effect::Toast(format!(
@@ -970,7 +1025,7 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
         }
         '\n' => vec![Effect::Toast(format!("no plan for {}: p makes one", s.id))],
         'x' => match v.plans.get(&s.id) {
-            Some(p) => vec![Effect::Confirm(super::app::Modal {
+            Some(p) => vec![Effect::Confirm(crate::tui::app::Modal {
                 title: "Drop the plan".into(),
                 color: v.t.yellow,
                 lines: vec![Line::styled(

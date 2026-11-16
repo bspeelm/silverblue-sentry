@@ -271,3 +271,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A session's `workflow` step takes values (`vars = { … }`, `Kind::Workflow { name, vars }`); the server starts it with the plan's values as the base and the step's on top (`BeginPrefilled`, so they're shown filled in). `problems()` flags a value the workflow doesn't declare (`WfInfo`).
 - Apply sessions on a server get WebFetch/WebSearch, as plans do.
 
+## A32. sentry-server has sentry's screens (2026-11)
+- The server's tabs are screens with sentry's numbers and names where they are the same thing: `1` Dashboard (was Overview), `4` Containers, `5` Services (the slot sentry gives Flatpaks), `6` Maintenance, `0` the workflow run. `2`, `3`, `7` and `H` are not bound there yet. `:dashboard`, `:dash`, `:cont`, `:svc`, `:maint`, a prefix of three letters or more, and the old `:overview` all work.
+- One `ScreenId` in core names every screen either program has; each program declares its own in a `ScreenSet`. The strip is core's `frame::draw_tabs` (short names, then keys only, as it narrows), and `[keys]` in `config.toml` applies to both programs (a `screen.<slug>` of the other program's screen is skipped quietly).
+- Each server screen is a struct with its own cursor behind `Screens` (`crates/sentry-server/src/tui/screens/`); what a screen fetches is declared in `Screens::polls` and fetched only while it is the one in view. `a` (your actions) and `B` (reboot) are Dashboard keys; `I` stays global.
+

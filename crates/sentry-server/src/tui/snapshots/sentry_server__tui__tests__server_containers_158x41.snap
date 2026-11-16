@@ -1,8 +1,8 @@
 ---
-source: src/server/tui/tests.rs
+source: crates/sentry-server/src/tui/tests.rs
 expression: body(&s)
 ---
- 1 Overview   2 Services 1   3 Containers 1   4 Maintenance 8
+ 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Containers · stack running(3) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
