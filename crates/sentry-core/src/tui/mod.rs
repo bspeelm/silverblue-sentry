@@ -8,6 +8,8 @@
 pub mod applyview;
 pub mod chat;
 pub mod docview;
+pub mod frame;
+pub mod input;
 pub mod keys;
 pub mod maintlist;
 pub mod modal;
@@ -54,13 +56,18 @@ pub trait Ui {
     fn tick(&mut self, now: Instant);
 }
 
+/// Every screen either program has. Each declares its own in a [`ScreenSet`]: the keys and
+/// names are the same wherever two screens are the same thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScreenId {
     Dash,
     Proc,
     Net,
     Cont,
+    /// This machine's Flatpaks (`5` in sentry).
     Flat,
+    /// A server's services and timers (`5` in sentry-server).
+    Svc,
     Maint,
     Clean,
     Upgrade,
@@ -68,12 +75,13 @@ pub enum ScreenId {
 }
 
 impl ScreenId {
-    pub const ALL: [ScreenId; 9] = [
+    pub const ALL: [ScreenId; 10] = [
         ScreenId::Dash,
         ScreenId::Proc,
         ScreenId::Net,
         ScreenId::Cont,
         ScreenId::Flat,
+        ScreenId::Svc,
         ScreenId::Maint,
         ScreenId::Clean,
         ScreenId::Upgrade,
@@ -86,7 +94,7 @@ impl ScreenId {
             ScreenId::Proc => '2',
             ScreenId::Net => '3',
             ScreenId::Cont => '4',
-            ScreenId::Flat => '5',
+            ScreenId::Flat | ScreenId::Svc => '5',
             ScreenId::Maint => '6',
             ScreenId::Clean => '7',
             ScreenId::Upgrade => '0',
@@ -101,6 +109,7 @@ impl ScreenId {
             ScreenId::Net => "Network",
             ScreenId::Cont => "Containers",
             ScreenId::Flat => "Flatpaks",
+            ScreenId::Svc => "Services",
             ScreenId::Maint => "Maintenance",
             ScreenId::Clean => "Cleanup",
             ScreenId::Upgrade => "Upgrade",
@@ -115,6 +124,7 @@ impl ScreenId {
             ScreenId::Net => "Net",
             ScreenId::Cont => "Cont",
             ScreenId::Flat => "Flat",
+            ScreenId::Svc => "Svc",
             ScreenId::Maint => "Maint",
             ScreenId::Clean => "Clean",
             ScreenId::Upgrade => "Upgr",
@@ -130,18 +140,88 @@ impl ScreenId {
             ScreenId::Net => "network",
             ScreenId::Cont => "containers",
             ScreenId::Flat => "flatpaks",
+            ScreenId::Svc => "services",
             ScreenId::Maint => "maintenance",
             ScreenId::Clean => "cleanup",
             ScreenId::Upgrade => "upgrade",
             ScreenId::Hist => "history",
         }
     }
+}
 
-    pub fn from_name(s: &str) -> Option<Self> {
+/// The screens one program has, in strip order, and other names `:` takes for them.
+#[derive(Debug, Clone, Copy)]
+pub struct ScreenSet {
+    pub ids: &'static [ScreenId],
+    pub aliases: &'static [(&'static str, ScreenId)],
+}
+
+impl ScreenSet {
+    pub fn contains(&self, id: ScreenId) -> bool {
+        self.ids.contains(&id)
+    }
+
+    /// A screen by its slug, short name or an alias (any case); else by the start of its
+    /// slug, three letters or more, when only one screen starts so.
+    pub fn from_name(&self, s: &str) -> Option<ScreenId> {
         let s = s.to_ascii_lowercase();
-        Self::ALL
-            .into_iter()
+        if let Some(id) = self
+            .ids
+            .iter()
+            .copied()
             .find(|id| id.slug() == s || id.short().to_ascii_lowercase() == s)
+        {
+            return Some(id);
+        }
+        if let Some((_, id)) = self.aliases.iter().find(|(a, _)| *a == s) {
+            return Some(*id);
+        }
+        if s.len() < 3 {
+            return None;
+        }
+        let mut starts = self
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| id.slug().starts_with(&s));
+        match (starts.next(), starts.next()) {
+            (Some(id), None) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// List cursor shared by every table screen.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Cursor {
+    pub sel: usize,
+    pub page: usize,
+}
+
+impl Cursor {
+    /// Apply a navigation action; returns true if it was one.
+    pub fn nav(&mut self, a: keys::Action, len: usize) -> bool {
+        use keys::Action;
+        let page = self.page.max(1);
+        let last = len.saturating_sub(1);
+        self.sel = match a {
+            Action::Down => (self.sel + 1).min(last),
+            Action::Up => self.sel.saturating_sub(1),
+            Action::Top => 0,
+            Action::Bottom => last,
+            Action::PageDown => (self.sel + page / 2).min(last),
+            Action::PageUp => self.sel.saturating_sub(page / 2),
+            // Rows are already filtered, so n/N just walk the matches with wrap-around.
+            Action::NextMatch if len > 0 => (self.sel + 1) % len,
+            Action::PrevMatch if len > 0 => (self.sel + len - 1) % len,
+            _ => return false,
+        };
+        true
+    }
+
+    pub fn clamp(&mut self, len: usize) -> usize {
+        self.sel = self.sel.min(len.saturating_sub(1));
+        self.sel
     }
 }
 
@@ -293,5 +373,37 @@ fn event_loop<U: Ui>(term: &mut Term, app: &mut U, rx: &Receiver<U::Ev>) -> anyh
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
         app.tick(Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screens_by_slug_short_alias_and_prefix() {
+        use ScreenId::*;
+        let set = ScreenSet {
+            ids: &[Dash, Cont, Svc, Maint, Upgrade],
+            aliases: &[("overview", Dash), ("run", Upgrade)],
+        };
+        assert_eq!(set.from_name("maintenance"), Some(Maint));
+        assert_eq!(set.from_name("Maint"), Some(Maint));
+        assert_eq!(set.from_name("overview"), Some(Dash));
+        assert_eq!(set.from_name("ser"), Some(Svc));
+        assert_eq!(set.from_name("mai"), Some(Maint));
+        // Too short, not this program's, or nothing.
+        assert_eq!(set.from_name("ma"), None);
+        assert_eq!(set.from_name("flatpaks"), None);
+        assert_eq!(set.from_name("nope"), None);
+        // Two screens start so: neither.
+        let both = ScreenSet {
+            ids: &[Cont, Clean],
+            aliases: &[],
+        };
+        assert_eq!(both.from_name("c"), None);
+        assert_eq!(both.from_name("cle"), Some(Clean));
+        assert!(set.contains(Svc) && !set.contains(Flat));
+        assert_eq!((Svc.key(), Flat.key()), ('5', '5'));
     }
 }

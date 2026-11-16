@@ -57,38 +57,7 @@ pub fn sentry_cmd(args: &[&str]) -> crate::exec::Cmd {
         .timeout(None)
 }
 
-/// List cursor shared by every table screen.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Cursor {
-    pub sel: usize,
-    pub page: usize,
-}
-
-impl Cursor {
-    /// Apply a navigation action; returns true if it was one.
-    pub fn nav(&mut self, a: Action, len: usize) -> bool {
-        let page = self.page.max(1);
-        let last = len.saturating_sub(1);
-        self.sel = match a {
-            Action::Down => (self.sel + 1).min(last),
-            Action::Up => self.sel.saturating_sub(1),
-            Action::Top => 0,
-            Action::Bottom => last,
-            Action::PageDown => (self.sel + page / 2).min(last),
-            Action::PageUp => self.sel.saturating_sub(page / 2),
-            // Rows are already filtered, so n/N just walk the matches with wrap-around.
-            Action::NextMatch if len > 0 => (self.sel + 1) % len,
-            Action::PrevMatch if len > 0 => (self.sel + len - 1) % len,
-            _ => return false,
-        };
-        true
-    }
-
-    pub fn clamp(&mut self, len: usize) -> usize {
-        self.sel = self.sel.min(len.saturating_sub(1));
-        self.sel
-    }
-}
+pub use crate::tui::Cursor;
 
 #[derive(Default)]
 pub struct Screens {
@@ -127,6 +96,8 @@ impl Screens {
             ScreenId::Clean => self.clean.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, v),
             ScreenId::Hist => self.hist.handle(a, v),
+            // sentry-server's.
+            ScreenId::Svc => Vec::new(),
         }
     }
 
@@ -141,6 +112,7 @@ impl Screens {
             ScreenId::Clean => self.clean.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
+            ScreenId::Svc => {}
         }
     }
 
@@ -155,6 +127,7 @@ impl Screens {
             ScreenId::Clean => cleanup::hints(),
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Hist => history::hints(),
+            ScreenId::Svc => Vec::new(),
         }
     }
 
@@ -170,6 +143,7 @@ impl Screens {
             ScreenId::Clean => self.clean.ask(v),
             ScreenId::Upgrade => self.upgrade.ask(v),
             ScreenId::Hist => self.hist.ask(v),
+            ScreenId::Svc => Err("nothing to ask about here".into()),
         }
     }
 

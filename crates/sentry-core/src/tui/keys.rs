@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::ScreenId;
+use super::{ScreenId, ScreenSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -88,10 +88,18 @@ pub fn parse_key(spec: &str) -> Option<Key> {
     Some(Key { code, ctrl })
 }
 
+/// What a `[keys]` name is.
+enum Named {
+    Action(Action),
+    /// A screen only the other program has (both read the same config.toml).
+    NotHere,
+    Unknown,
+}
+
 /// Action names usable in `[keys]`.
-fn action_by_name(name: &str) -> Option<Action> {
+fn action_by_name(name: &str, set: &ScreenSet) -> Named {
     use Action::*;
-    Some(match name {
+    Named::Action(match name {
         "next_screen" => NextScreen,
         "prev_screen" => PrevScreen,
         "up" => Up,
@@ -112,12 +120,14 @@ fn action_by_name(name: &str) -> Option<Action> {
         "log_down" => LogDown,
         "log_up" => LogUp,
         "ask" => Ask,
-        n => Screen(
-            ScreenId::ALL
-                .iter()
-                .copied()
-                .find(|s| format!("screen.{}", s.slug()) == n)?,
-        ),
+        n => {
+            let is = |s: &ScreenId| format!("screen.{}", s.slug()) == n;
+            match set.ids.iter().copied().find(|s| is(s)) {
+                Some(s) => Screen(s),
+                None if ScreenId::ALL.iter().any(is) => return Named::NotHere,
+                None => return Named::Unknown,
+            }
+        }
     })
 }
 
@@ -127,7 +137,9 @@ pub struct Keymap {
 }
 
 impl Keymap {
-    pub fn new(overrides: &BTreeMap<String, String>) -> (Self, Vec<String>) {
+    /// The default keys with `overrides` (`[keys]`) on top, and what's wrong in those. Only
+    /// `set`'s screens get their keys.
+    pub fn new(set: &ScreenSet, overrides: &BTreeMap<String, String>) -> (Self, Vec<String>) {
         use Action::*;
         let mut map = HashMap::new();
         let ch = |c| Key {
@@ -142,8 +154,8 @@ impl Keymap {
             code: c,
             ctrl: false,
         };
-        for s in ScreenId::ALL {
-            map.insert(ch(s.key()), Screen(s));
+        for s in set.ids {
+            map.insert(ch(s.key()), Screen(*s));
         }
         for (k, a) in [
             (code(KeyCode::Tab), NextScreen),
@@ -184,12 +196,13 @@ impl Keymap {
         }
         let mut warnings = Vec::new();
         for (name, spec) in overrides {
-            match (action_by_name(name), parse_key(spec)) {
-                (Some(a), Some(k)) => {
+            match (action_by_name(name, set), parse_key(spec)) {
+                (Named::NotHere, _) => {}
+                (Named::Action(a), Some(k)) => {
                     map.retain(|_, v| *v != a);
                     map.insert(k, a);
                 }
-                (None, _) => warnings.push(format!("[keys]: unknown action `{name}`")),
+                (Named::Unknown, _) => warnings.push(format!("[keys]: unknown action `{name}`")),
                 (_, None) => {
                     warnings.push(format!("[keys]: can't parse key `{spec}` for `{name}`"))
                 }
@@ -241,9 +254,61 @@ mod tests {
         KeyEvent::new(c, m)
     }
 
+    /// sentry's screens.
+    const LOCAL: ScreenSet = ScreenSet {
+        ids: &[
+            ScreenId::Dash,
+            ScreenId::Proc,
+            ScreenId::Net,
+            ScreenId::Cont,
+            ScreenId::Flat,
+            ScreenId::Maint,
+            ScreenId::Clean,
+            ScreenId::Upgrade,
+            ScreenId::Hist,
+        ],
+        aliases: &[],
+    };
+
+    #[test]
+    fn a_set_binds_only_its_screens() {
+        let server = ScreenSet {
+            ids: &[ScreenId::Dash, ScreenId::Svc, ScreenId::Maint],
+            aliases: &[],
+        };
+        let (mut km, _) = Keymap::new(&server, &BTreeMap::new());
+        let press = |km: &mut Keymap, c| km.resolve(&ev(KeyCode::Char(c), KeyModifiers::NONE));
+        assert_eq!(press(&mut km, '5'), Some(Action::Screen(ScreenId::Svc)));
+        assert_eq!(press(&mut km, '6'), Some(Action::Screen(ScreenId::Maint)));
+        // No screen there: an ordinary key.
+        assert_eq!(press(&mut km, '2'), Some(Action::Char('2')));
+        assert_eq!(press(&mut km, '7'), Some(Action::Char('7')));
+        let (mut km, _) = Keymap::new(&LOCAL, &BTreeMap::new());
+        assert_eq!(press(&mut km, '5'), Some(Action::Screen(ScreenId::Flat)));
+    }
+
+    #[test]
+    fn the_other_programs_screen_is_skipped_quietly() {
+        let server = ScreenSet {
+            ids: &[ScreenId::Dash, ScreenId::Svc],
+            aliases: &[],
+        };
+        let mut o = BTreeMap::new();
+        o.insert("screen.flatpaks".to_string(), "F5".to_string());
+        o.insert("screen.services".to_string(), "F6".to_string());
+        o.insert("screen.nowhere".to_string(), "F7".to_string());
+        let (mut km, w) = Keymap::new(&server, &o);
+        assert_eq!(w, ["[keys]: unknown action `screen.nowhere`"]);
+        assert_eq!(km.resolve(&ev(KeyCode::F(5), KeyModifiers::NONE)), None);
+        assert_eq!(
+            km.resolve(&ev(KeyCode::F(6), KeyModifiers::NONE)),
+            Some(Action::Screen(ScreenId::Svc))
+        );
+    }
+
     #[test]
     fn gg_chord_and_screens() {
-        let (mut km, w) = Keymap::new(&BTreeMap::new());
+        let (mut km, w) = Keymap::new(&LOCAL, &BTreeMap::new());
         assert!(w.is_empty());
         let g = ev(KeyCode::Char('g'), KeyModifiers::NONE);
         assert_eq!(km.resolve(&g), None);
@@ -276,7 +341,7 @@ mod tests {
         o.insert("quit".to_string(), "Q".to_string());
         o.insert("screen.history".to_string(), "F9".to_string());
         o.insert("bogus".to_string(), "x".to_string());
-        let (mut km, w) = Keymap::new(&o);
+        let (mut km, w) = Keymap::new(&LOCAL, &o);
         assert_eq!(w.len(), 1);
         assert_eq!(
             km.resolve(&ev(KeyCode::Char('Q'), KeyModifiers::SHIFT)),

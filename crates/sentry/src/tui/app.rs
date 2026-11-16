@@ -8,19 +8,19 @@ use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::style::Color;
+use ratatui::text::Line;
 
 use super::data::{DataStore, Fetch};
+use super::frame::{self, Layer};
+use super::input::Typed;
 use super::keys::{Action, Keymap};
 use super::screens::maint::Sub;
 use super::screens::{Screens, View};
 use super::theme::Theme;
 use super::wf::{Exec, Session};
-use super::widgets::{self, chip};
-use super::{Event, ScreenId};
+use super::widgets;
+use super::{Event, SCREENS, ScreenId};
 use crate::config::Config;
 use crate::exec::{Cmd, ExecError, StreamMsg};
 use crate::fmt;
@@ -120,7 +120,7 @@ pub enum Prompt {
     LogAddNote(Box<crate::maint::log::LogEntry>),
 }
 
-impl Prompt {
+impl super::input::PromptLine for Prompt {
     fn label(&self) -> String {
         match self {
             Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
@@ -140,12 +140,7 @@ impl Prompt {
 }
 
 /// A numbered choice between actions (fix options).
-#[derive(Clone)]
-pub struct Choice {
-    pub title: String,
-    pub lines: Vec<Line<'static>>,
-    pub options: Vec<(String, Vec<Effect>)>,
-}
+pub type Choice = super::modal::Choice<Effect>;
 
 /// Workflow actions from the Upgrade screen, executed against the app's session.
 #[derive(Clone, Debug)]
@@ -225,12 +220,7 @@ struct RunPane {
 
 const RUN_LINES: usize = 2000;
 
-enum Input {
-    None,
-    Filter(String),
-    Command(String),
-    Prompt(Prompt, String),
-}
+type Input = super::input::Input<Prompt>;
 
 struct Sched {
     sys: Instant,
@@ -253,7 +243,7 @@ pub struct App {
     modal: Option<Modal>,
     run: Option<RunPane>,
     run_seq: u64,
-    toast: Option<(String, Instant)>,
+    toast: Option<frame::Toast>,
     input: Input,
     filters: HashMap<ScreenId, String>,
     sched: Sched,
@@ -291,8 +281,6 @@ pub struct App {
     wf_plan_path: Option<std::path::PathBuf>,
 }
 
-const TOAST_FOR: Duration = Duration::from_millis(2600);
-
 impl App {
     pub fn new(tx: Sender<Event>) -> Self {
         let (cfg, mut warnings) = Config::load();
@@ -302,7 +290,7 @@ impl App {
             &cfg.retention,
             jiff::Timestamp::now(),
         );
-        let (keys, kw) = Keymap::new(&cfg.keys);
+        let (keys, kw) = Keymap::new(&SCREENS, &cfg.keys);
         warnings.extend(kw);
         let now = Instant::now();
         let mut app = Self {
@@ -495,7 +483,7 @@ impl App {
     #[cfg(test)]
     pub fn for_test(cfg: Config, data: DataStore, screen: ScreenId) -> Self {
         let (tx, _rx) = std::sync::mpsc::channel();
-        let (keys, _) = Keymap::new(&cfg.keys);
+        let (keys, _) = Keymap::new(&SCREENS, &cfg.keys);
         let now = Instant::now();
         Self {
             screen,
@@ -566,7 +554,7 @@ impl App {
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some(frame::Toast::new(msg));
         self.dirty = true;
     }
 
@@ -615,8 +603,8 @@ impl App {
             ScreenId::Net => at(self.sched.net),
             _ => {}
         }
-        if let Some((_, t)) = &self.toast {
-            at(*t + TOAST_FOR);
+        if let Some(t) = &self.toast {
+            at(t.until());
         }
         if self.run.as_ref().is_some_and(|r| r.done.is_none()) {
             at(now + Duration::from_secs(1));
@@ -684,11 +672,7 @@ impl App {
             }
             _ => {}
         }
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, t)| now >= *t + TOAST_FOR)
-        {
+        if self.toast.as_ref().is_some_and(|t| t.over(now)) {
             self.toast = None;
             self.dirty = true;
         }
@@ -912,98 +896,103 @@ impl App {
         self.dirty = true;
     }
 
+    /// What's in front now, for [`frame::layer`]: who gets a key or a paste, and whose keys
+    /// the key bar names.
+    fn open(&self) -> frame::Open {
+        frame::Open {
+            run: self.run.is_some(),
+            choice: self.choice.is_some(),
+            modal: self.modal.is_some(),
+            apply: self.apply.as_ref().is_some_and(|s| !s.chat.hidden),
+            chat: self.chat.as_ref().is_some_and(|c| !c.hidden),
+            input: self.input.is_open(),
+            docs: self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some(),
+        }
+    }
+
     /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
     /// letters must never act as keys).
     fn on_paste(&mut self, text: &str) {
         self.dirty = true;
-        if self.run.is_some() || self.choice.is_some() || self.modal.is_some() {
-            return;
-        }
-        if let Input::Filter(s) | Input::Command(s) | Input::Prompt(_, s) = &mut self.input {
-            s.push_str(text.replace(['\r', '\n'], " ").trim_end());
-            return;
-        }
-        if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
-            s.paste(text);
-        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden && !c.running()) {
-            c.paste(text);
+        match frame::layer(&self.open()) {
+            Layer::Apply => {
+                if let Some(s) = self.apply.as_mut() {
+                    s.paste(text);
+                }
+            }
+            Layer::Chat => {
+                if let Some(c) = self.chat.as_mut().filter(|c| !c.running()) {
+                    c.paste(text);
+                }
+            }
+            Layer::Input => self.input.paste(text),
+            Layer::Run | Layer::Choice | Layer::Modal | Layer::Docs | Layer::Screen => {}
         }
     }
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
+        use super::modal::{Answer, Pick};
         self.dirty = true;
-        if self.run.is_some() {
-            self.run_key(k);
-            return;
-        }
-        if let Some(c) = self.choice.take() {
-            match k.code {
-                KeyCode::Char(d @ '1'..='9') => {
-                    let i = d as usize - '1' as usize;
-                    match c.options.get(i) {
-                        Some((_, effects)) => {
-                            let e = effects.clone();
-                            self.apply(e, now);
+        match frame::layer(&self.open()) {
+            Layer::Run => return self.run_key(k),
+            Layer::Choice => {
+                let n = self.choice.as_ref().map_or(0, |c| c.options.len());
+                match super::modal::pick(&k, n) {
+                    Pick::Option(i) => {
+                        if let Some(c) = self.choice.take() {
+                            self.apply(c.options[i].1.clone(), now);
                         }
-                        None => self.choice = Some(c),
                     }
+                    Pick::Close => self.choice = None,
+                    Pick::Stay => {}
                 }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {}
-                _ => self.choice = Some(c),
+                return;
             }
-            return;
-        }
-        if let Some(m) = self.modal.take() {
-            match k.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    if let Some((_, effects)) = m.yes {
-                        self.apply(effects, now);
+            Layer::Modal => {
+                let has_yes = self.modal.as_ref().is_some_and(|m| m.yes.is_some());
+                match super::modal::answer(&k, has_yes) {
+                    Answer::Yes => {
+                        if let Some((_, effects)) = self.modal.take().and_then(|m| m.yes) {
+                            self.apply(effects, now);
+                        }
                     }
+                    Answer::No => self.modal = None,
+                    Answer::Stay => {}
                 }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
-                _ => self.modal = Some(m),
+                return;
             }
-            return;
-        }
-        if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
-            let fx = s.key(k);
-            self.apply_fx(fx, now);
-            return;
-        }
-        if self.chat.as_ref().is_some_and(|c| !c.hidden) {
-            self.chat_key(k, now);
-            return;
-        }
-        if !matches!(self.input, Input::None) {
-            self.input_key(k, now);
-            return;
-        }
-        // Over Records, a plan or a review: a screen key goes there, `:` and `A` still work.
-        if self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some() {
-            match self.keys.resolve(&k) {
-                Some(Action::Screen(id)) => {
-                    self.close_docs();
-                    self.enter(id, now);
-                    return;
+            Layer::Apply => {
+                if let Some(s) = self.apply.as_mut() {
+                    let fx = s.key(k);
+                    self.apply_fx(fx, now);
                 }
-                Some(Action::Command) => {
-                    self.input = Input::Command(String::new());
-                    return;
-                }
-                _ => {}
+                return;
             }
-        }
-        if self.rec_view.is_some() {
-            self.records_key(k, now);
-            return;
-        }
-        if self.plan_view.is_some() {
-            self.plan_view_key(k, now);
-            return;
-        }
-        if self.review_view.is_some() {
-            self.review_view_key(k);
-            return;
+            Layer::Chat => return self.chat_key(k, now),
+            Layer::Input => return self.input_key(k, now),
+            Layer::Docs => {
+                // Over Records, a plan or a review: a screen key goes there, `:` still works.
+                match self.keys.resolve(&k) {
+                    Some(Action::Screen(id)) => {
+                        self.close_docs();
+                        return self.enter(id, now);
+                    }
+                    Some(Action::Command) => {
+                        self.input = Input::Command(String::new());
+                        return;
+                    }
+                    _ => {}
+                }
+                if self.rec_view.is_some() {
+                    self.records_key(k, now);
+                } else if self.plan_view.is_some() {
+                    self.plan_view_key(k, now);
+                } else {
+                    self.review_view_key(k);
+                }
+                return;
+            }
+            Layer::Screen => {}
         }
         let Some(action) = self.keys.resolve(&k) else {
             return;
@@ -1032,7 +1021,13 @@ impl App {
                     self.toast("sent SIGTERM to the step");
                 }
             }
-            Action::Quit | Action::Interrupt => self.modal = Some(quit_modal(&self.theme)),
+            Action::Quit | Action::Interrupt => {
+                self.modal = Some(frame::quit_modal(
+                    &self.theme,
+                    "Quit sentry? Nothing keeps running after exit.".into(),
+                    Effect::Quit,
+                ))
+            }
             Action::Filter => {
                 self.input =
                     Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
@@ -1065,38 +1060,17 @@ impl App {
     }
 
     fn input_key(&mut self, k: KeyEvent, now: Instant) {
-        let buf = match &mut self.input {
-            Input::Filter(s) | Input::Command(s) | Input::Prompt(_, s) => s,
-            Input::None => return,
-        };
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                if buf.pop().is_none() {
-                    self.input = Input::None;
-                }
+        match self.input.key(&k) {
+            Typed::Filter(s) => {
+                self.filters.insert(self.screen, s);
+                self.screens.reset_cursor(self.screen);
             }
-            KeyCode::Esc => {
-                if matches!(self.input, Input::Filter(_)) {
-                    self.filters.remove(&self.screen);
-                }
-                self.input = Input::None;
-                return;
+            Typed::FilterCleared => {
+                self.filters.remove(&self.screen);
             }
-            KeyCode::Enter => {
-                let input = std::mem::replace(&mut self.input, Input::None);
-                match input {
-                    Input::Command(c) => self.command(c.trim(), now),
-                    Input::Prompt(p, text) => self.submit(p, text.trim(), now),
-                    _ => {}
-                }
-                return;
-            }
-            _ => {}
-        }
-        if let Input::Filter(s) = &self.input {
-            self.filters.insert(self.screen, s.clone());
-            self.screens.reset_cursor(self.screen);
+            Typed::Command(c) => self.command(c.trim(), now),
+            Typed::Submit(p, text) => self.submit(p, text.trim(), now),
+            Typed::Editing | Typed::FilterKept | Typed::Cancelled(_) => {}
         }
     }
 
@@ -1348,7 +1322,20 @@ impl App {
                 ])
                 .collect();
         }
-        self.modal = Some(help_modal(&self.theme, self.screen.name(), &hints));
+        self.modal = Some(frame::help_modal(
+            &self.theme,
+            &frame::Help {
+                screen: self.screen.name(),
+                hints: &hints,
+                globals: &[],
+                app: "sentry",
+                commands: ":q  :<screen>  :job <name>  :workflow <name>  :refresh",
+                footer: &[
+                    "Destructive actions: preview → confirm → streamed output.",
+                    "Nothing runs in the background after sentry exits.",
+                ],
+            },
+        ));
     }
 
     /// `:workflow [name]`: open Upgrade and start `name` the same way Enter does there.
@@ -1383,12 +1370,23 @@ impl App {
             Prompt::WfVar {
                 workflow,
                 key,
+                prompt,
                 mut rest,
                 mut vars,
-                ..
             } => {
+                // Nothing given and no default: asked again, with the rest still to come.
                 if text.is_empty() {
                     self.toast(format!("{key} can't be empty"));
+                    self.input = Input::Prompt(
+                        Prompt::WfVar {
+                            workflow,
+                            key,
+                            prompt,
+                            rest,
+                            vars,
+                        },
+                        String::new(),
+                    );
                     return;
                 }
                 vars.insert(key, text.to_string());
@@ -1528,7 +1526,7 @@ impl App {
             (Some("plans"), None) => self.open_records(super::records::Section::Plans),
             (Some("reviews"), None) => self.open_records(super::records::Section::Reviews),
             (Some("later"), None) => self.open_records(super::records::Section::Later),
-            (Some(name), None) => match ScreenId::from_name(name) {
+            (Some(name), None) => match SCREENS.from_name(name) {
                 Some(id) => self.enter(id, now),
                 None => self.toast(format!("unknown command :{c}")),
             },
@@ -1538,23 +1536,21 @@ impl App {
     }
 
     fn run_key(&mut self, k: KeyEvent) {
+        use frame::RunKey;
         let Some(run) = self.run.as_mut() else { return };
-        let ctrl_c = k.code == KeyCode::Char('c')
-            && k.modifiers
-                .contains(ratatui::crossterm::event::KeyModifiers::CONTROL);
-        match (k.code, run.done) {
-            (KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q'), Some(_)) => self.run = None,
-            (_, None) if ctrl_c => {
+        match frame::run_key(&k, run.done.is_none()) {
+            RunKey::Close => self.run = None,
+            RunKey::Kill => {
                 if let Some(pid) = run.pid {
                     let _ = kill(pid);
                     self.toast("sent SIGTERM");
                 }
             }
-            (KeyCode::Esc, None) => self.toast("still running — Ctrl-C terminates"),
-            (KeyCode::Char('k') | KeyCode::Up, _) => run.scroll = run.scroll.saturating_add(1),
-            (KeyCode::Char('j') | KeyCode::Down, _) => run.scroll = run.scroll.saturating_sub(1),
-            (KeyCode::Char('G') | KeyCode::End, _) => run.scroll = 0,
-            _ => {}
+            RunKey::Busy => self.toast("still running — Ctrl-C terminates"),
+            RunKey::Scroll(n) => run.scroll = run.scroll.saturating_add_signed(n as isize),
+            RunKey::End => run.scroll = 0,
+            RunKey::Top => run.scroll = run.lines.len(),
+            RunKey::None => {}
         }
     }
 
@@ -3247,8 +3243,10 @@ impl App {
     fn visible_tabs(&self) -> Vec<ScreenId> {
         // History only appears once the recorder has produced data (spec §11); `H` still opens it.
         let has_rec = crate::recorder::ring::path().exists();
-        ScreenId::ALL
-            .into_iter()
+        SCREENS
+            .ids
+            .iter()
+            .copied()
             .filter(|s| *s != ScreenId::Hist || has_rec || self.screen == ScreenId::Hist)
             .collect()
     }
@@ -3256,81 +3254,39 @@ impl App {
     // ---------------------------------------------------------------- drawing
 
     pub fn draw(&mut self, f: &mut Frame) {
-        let area = f.area();
         let t = self.theme;
-        if area.width < 80 || area.height < 24 {
-            widgets::placeholder(
-                f,
-                area,
-                &t,
-                &[(
-                    &format!(
-                        "terminal too small ({}×{}, need 80×24)",
-                        area.width, area.height
-                    ),
-                    t.dim(),
-                )],
-            );
-            return;
-        }
-        let banner = (self.wf.is_some() && self.screen != ScreenId::Upgrade) as u16;
-        let [top, tabs, rule, ban, body, keyrule, keybar] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(banner),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        self.draw_top(f, top);
-        self.draw_tabs(f, tabs);
-        f.render_widget(
-            Paragraph::new("─".repeat(rule.width as usize)).style(t.s(t.border)),
-            rule,
-        );
-        if let Some(sess) = self
+        let banner = self
             .wf
             .as_ref()
-            .filter(|_| self.screen != ScreenId::Upgrade)
-        {
+            .filter(|_| self.screen != ScreenId::Upgrade);
+        let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
+            return;
+        };
+        let body = areas.body;
+        frame::draw_top(f, areas.top, &t, &self.top());
+        let tabs: Vec<frame::Tab> = self
+            .visible_tabs()
+            .into_iter()
+            .map(|id| frame::Tab {
+                id,
+                badge: self.badge(id),
+                filter: self.filters.get(&id).cloned(),
+            })
+            .collect();
+        frame::draw_tabs(f, areas.tabs, &t, &tabs, self.screen);
+        if let Some(sess) = banner {
             let n = sess.wf.steps.len();
-            let hint = "press 0 to continue";
-            let fixed = format!(
-                " ↻ workflow {} · step 99/{n}  · {}   ",
-                sess.wf.name,
-                sess.state_word()
-            );
-            let room = (ban.width as usize).saturating_sub(fixed.chars().count() + hint.len());
-            let step = sess.next.idx().map_or(String::new(), |i| {
-                format!(
-                    "step {}/{n} {}",
-                    i + 1,
-                    widgets::trunc(&sess.title(i), room)
-                )
-            });
-            let line = Line::from(vec![
-                Span::styled(
-                    format!(
-                        " ↻ workflow {} · {step} · {}   ",
-                        sess.wf.name,
-                        sess.state_word()
-                    ),
-                    t.s(t.yellow),
-                ),
-                Span::styled(hint, t.dim()),
-            ]);
-            f.render_widget(
-                Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
-                ban,
+            frame::draw_banner(
+                f,
+                areas.banner,
+                &t,
+                &frame::Banner {
+                    workflow: &sess.wf.name,
+                    step: sess.next.idx().map(|i| (i + 1, n, sess.title(i))),
+                    state: sess.state_word(),
+                },
             );
         }
-        let body = Rect {
-            y: body.y + 1,
-            height: body.height.saturating_sub(1),
-            ..body
-        };
         let v = View {
             d: &self.data,
             cfg: &self.cfg,
@@ -3372,11 +3328,7 @@ impl App {
                 },
             );
         }
-        f.render_widget(
-            Paragraph::new("─".repeat(keyrule.width as usize)).style(t.s(t.border)),
-            keyrule,
-        );
-        self.draw_keybar(f, keybar);
+        self.draw_keybar(f, areas.keybar);
         if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
             widgets::dim_backdrop(f.buffer_mut(), body);
             super::chat::draw(f, body, &t, c);
@@ -3388,26 +3340,33 @@ impl App {
         }
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
-            draw_modal(f, body, &t, m);
+            super::modal::draw(f, body, &t, m);
         }
         if let Some(c) = &self.choice {
             widgets::dim_backdrop(f.buffer_mut(), body);
-            let lines = c.lines.clone();
-            let m = Modal {
-                title: c.title.clone(),
-                color: t.yellow,
-                lines,
-                yes: None,
-            };
-            draw_modal(f, body, &t, &m);
+            super::modal::draw_choice(f, body, &t, c);
         }
         if let Some(r) = &self.run {
             widgets::dim_backdrop(f.buffer_mut(), body);
-            draw_run(f, body, &t, r);
+            frame::draw_run(
+                f,
+                body,
+                &t,
+                &frame::RunView {
+                    title: &r.title,
+                    cmd: &r.cmd,
+                    len: r.lines.len(),
+                    scroll: r.scroll,
+                    started: r.started,
+                    done: r.done.map(|(code, took)| (code, Some(took))),
+                },
+                r.lines.iter().map(|(s, _)| s.as_str()),
+            );
         }
     }
 
-    fn draw_top(&self, f: &mut Frame, area: Rect) {
+    /// The top bar: the OS booted, kernel and uptime; whether this screen samples.
+    fn top(&self) -> frame::Top<'static> {
         let t = &self.theme;
         let up = self
             .data
@@ -3415,45 +3374,22 @@ impl App {
             .as_ref()
             .map(|s| s.uptime_s)
             .unwrap_or_else(sysinfo::System::uptime);
-        let mut left = vec![
-            Span::styled(
-                " sentry ",
-                Style::new()
-                    .fg(t.ink)
-                    .bg(t.cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("  silverblue {}", self.data.os_version), t.fg()),
-            Span::styled(format!("  kernel {}", self.data.kernel), t.dim()),
-            Span::styled(format!("  up {}", fmt::uptime(up)), t.dim()),
-        ];
         let (live, color) = match self.screen {
             ScreenId::Dash => (format!("● live {} Hz", self.cfg.ui.dashboard_hz), t.green),
             ScreenId::Proc => (format!("● live {} Hz", self.cfg.ui.processes_hz), t.green),
             ScreenId::Net => ("● live 3 s".to_string(), t.green),
             _ => ("○ idle".to_string(), t.dim),
         };
-        let clock = jiff::Zoned::now().strftime("%a %d %b %H:%M").to_string();
-        let right = Line::from(vec![
-            Span::styled(live, t.s(color)),
-            Span::styled(format!("   {clock} "), t.dim()),
-        ]);
-        let rw = right.width() as u16;
-        // Narrow terminals: drop kernel, then uptime, rather than overlap the clock.
-        for drop in [2, 2] {
-            if Line::from(left.clone()).width() as u16 + rw + 1 > area.width && left.len() > drop {
-                left.remove(drop);
-            }
+        frame::Top {
+            app: "sentry",
+            subject: format!("silverblue {}", self.data.os_version),
+            facts: vec![
+                format!("kernel {}", self.data.kernel),
+                format!("up {}", fmt::uptime(up)),
+            ],
+            state: (live, color),
+            clock: frame::clock(&jiff::Zoned::now()),
         }
-        f.render_widget(Paragraph::new(Line::from(left)), area);
-        f.render_widget(
-            Paragraph::new(right),
-            Rect {
-                x: area.right().saturating_sub(rw),
-                width: rw,
-                ..area
-            },
-        );
     }
 
     fn badge(&self, id: ScreenId) -> Option<(String, Color)> {
@@ -3489,175 +3425,80 @@ impl App {
         }
     }
 
-    fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        let tabs = self.visible_tabs();
-        let full: usize = tabs.iter().map(|s| s.name().len() + 4).sum();
-        let short: usize = tabs.iter().map(|s| s.short().len() + 4).sum();
-        let w = area.width as usize;
-        let mut spans = Vec::new();
-        for id in tabs {
-            let active = id == self.screen;
-            let name = if full + 6 <= w || active {
-                id.name()
-            } else if short + 6 <= w {
-                id.short()
-            } else {
-                ""
-            };
-            let (fg, kc, bg) = if active {
-                (t.ink, t.ink, t.fg)
-            } else {
-                (t.fg, t.dim, Color::Reset)
-            };
-            let bg_style = if active {
-                Style::new().bg(bg)
-            } else {
-                Style::new()
-            };
-            spans.push(Span::styled(format!(" {}", id.key()), bg_style.fg(kc)));
-            if !name.is_empty() {
-                spans.push(Span::styled(format!(" {name}"), bg_style.fg(fg)));
-            }
-            if let Some((b, c)) = self.badge(id) {
-                spans.push(Span::styled(b, bg_style.fg(if active { t.ink } else { c })));
-            }
-            if let Some(flt) = self.filters.get(&id).filter(|s| !s.is_empty()) {
-                spans.push(Span::styled(
-                    format!(" /{flt}"),
-                    bg_style.fg(if active { t.ink } else { t.cyan }),
-                ));
-            }
-            spans.push(Span::styled(" ", bg_style));
-            spans.push(Span::raw(" "));
+    /// The key bar: what's being typed, or the keys of whatever is in front.
+    fn draw_keybar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let toast = self.toast.as_ref().map(|t| t.msg());
+        if let Some(bar) = self.input.bar().filter(|_| {
+            // A box or a conversation over the line: its keys, not the line's.
+            frame::layer(&self.open()) == Layer::Input
+        }) {
+            return frame::draw_keybar(f, area, &self.theme, &bar, toast);
         }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        let hints: frame::Hints = match frame::layer(&self.open()) {
+            Layer::Run => frame::run_hints(self.run.as_ref().is_some_and(|r| r.done.is_some())),
+            Layer::Choice => frame::CHOICE_HINTS.to_vec(),
+            Layer::Modal if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) => {
+                frame::CONFIRM_HINTS.to_vec()
+            }
+            // Their windows have their own key line.
+            Layer::Apply | Layer::Chat => Vec::new(),
+            // Records, a plan or a review (an info box over one leaves its keys named).
+            _ if self.open().docs => self.doc_hints(),
+            _ => {
+                let v = self.view();
+                // A hidden conversation waiting takes `A` over.
+                let hidden = self
+                    .apply
+                    .as_ref()
+                    .filter(|s| s.chat.hidden)
+                    .map(|s| {
+                        if s.busy() {
+                            "applying…"
+                        } else {
+                            "the apply session"
+                        }
+                    })
+                    .or_else(|| {
+                        self.chat
+                            .as_ref()
+                            .filter(|c| c.hidden)
+                            .map(|c| c.hidden_word())
+                    });
+                frame::with_globals(
+                    self.screens.hints(self.screen, &v),
+                    hidden,
+                    crate::claude::available(),
+                )
+            }
+        };
+        frame::draw_keybar(f, area, &self.theme, &frame::KeyBar::Hints(hints), toast);
     }
 
-    fn draw_keybar(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        let mut spans = Vec::new();
-        match &self.input {
-            Input::Filter(s) => {
-                spans.push(Span::styled(format!("/{s}"), t.fg()));
-                spans.push(Span::styled("▏", t.s(t.cyan)));
-                spans.push(Span::styled("   Enter keep · Esc clear", t.dim()));
+    /// The keys of Records, a plan or a review, whichever is over the screen.
+    fn doc_hints(&self) -> frame::Hints<'_> {
+        if let Some((wf, _)) = &self.plan_view {
+            if self.writing_plan(wf) {
+                vec![
+                    ("j/k", "scroll"),
+                    ("C-c", "stop"),
+                    ("Esc", "back (it carries on)"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "apply (start its workflow)"),
+                    ("A", "claude"),
+                    ("r", "revise"),
+                    ("x", "drop"),
+                    ("j/k", "scroll"),
+                    ("Esc", "back"),
+                ]
             }
-            Input::Command(s) => {
-                spans.push(Span::styled(format!(":{s}"), t.fg()));
-                spans.push(Span::styled("▏", t.s(t.cyan)));
-            }
-            Input::Prompt(p, s) => {
-                spans.push(Span::styled(p.label(), t.dim()));
-                spans.push(Span::styled(s.clone(), t.fg()));
-                spans.push(Span::styled("▏", t.s(t.cyan)));
-                spans.push(Span::styled("   Enter save · Esc cancel", t.dim()));
-            }
-            Input::None => {
-                let hints: Vec<(&str, &str)> = if let Some((wf, _)) = &self.plan_view {
-                    if self.writing_plan(wf) {
-                        vec![
-                            ("j/k", "scroll"),
-                            ("C-c", "stop"),
-                            ("Esc", "back (it carries on)"),
-                        ]
-                    } else {
-                        vec![
-                            ("Enter", "apply (start its workflow)"),
-                            ("A", "claude"),
-                            ("r", "revise"),
-                            ("x", "drop"),
-                            ("j/k", "scroll"),
-                            ("Esc", "back"),
-                        ]
-                    }
-                } else if let Some(rv) = &self.review_view {
-                    rv.hints(self.review.as_ref(), self.writing_review())
-                } else if let Some(r) = &self.rec_view {
-                    r.hints()
-                } else if self.run.is_some() {
-                    if self.run.as_ref().is_some_and(|r| r.done.is_some()) {
-                        vec![("Esc", "close"), ("j/k", "scroll")]
-                    } else {
-                        vec![("C-c", "terminate"), ("j/k", "scroll")]
-                    }
-                } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
-                    vec![("Enter", "confirm"), ("Esc", "cancel")]
-                } else {
-                    let v = self.view();
-                    let mut h = self.screens.hints(self.screen, &v);
-                    // `A` is global but invisible unless it's in the bar on every tab.
-                    // A screen may name its own (Maintenance: apply or ask); a hidden chat
-                    // waiting takes the key over.
-                    let hidden = self
-                        .apply
-                        .as_ref()
-                        .filter(|s| s.chat.hidden)
-                        .map(|s| {
-                            if s.busy() {
-                                "applying…"
-                            } else {
-                                "the apply session"
-                            }
-                        })
-                        .or_else(|| {
-                            self.chat
-                                .as_ref()
-                                .filter(|c| c.hidden)
-                                .map(|c| c.hidden_word())
-                        });
-                    match hidden {
-                        Some(word) => {
-                            h.retain(|(k, _)| *k != "A");
-                            h.push(("A", word));
-                        }
-                        None if crate::claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
-                            h.push(("A", "ask Claude"))
-                        }
-                        None => {}
-                    }
-                    h.extend([("?", "help"), ("q", "quit")]);
-                    h
-                };
-                // Too wide: drop the screen's own hints from the end, never the global
-                // ones (A, ?, q) that end the list. Chips are ` k ` + ` d` + two spaces.
-                let mut hints = hints;
-                let room = (area.width as usize).saturating_sub(
-                    self.toast
-                        .as_ref()
-                        .map_or(0, |(m, _)| m.chars().count() + 2),
-                );
-                let width = |h: &[(&str, &str)]| -> usize {
-                    h.iter()
-                        .map(|(k, d)| k.chars().count() + d.chars().count() + 5)
-                        .sum()
-                };
-                let globals = hints
-                    .iter()
-                    .rev()
-                    .take_while(|(k, _)| matches!(*k, "A" | "?" | "q"))
-                    .count();
-                while width(&hints) > room && hints.len() > globals {
-                    hints.remove(hints.len() - globals - 1);
-                }
-                for (k, d) in hints {
-                    spans.extend(chip(t, k, d, t.dim));
-                    spans.push(Span::raw("  "));
-                }
-            }
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
-        if let Some((msg, _)) = &self.toast {
-            let w = (msg.chars().count() as u16 + 1).min(area.width / 2);
-            let r = Rect {
-                x: area.right() - w,
-                width: w,
-                ..area
-            };
-            f.render_widget(
-                Paragraph::new(Span::styled(widgets::trunc(msg, w as usize - 1), t.fg())),
-                r,
-            );
+        } else if let Some(rv) = &self.review_view {
+            rv.hints(self.review.as_ref(), self.writing_review())
+        } else if let Some(r) = &self.rec_view {
+            r.hints()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -3666,104 +3507,6 @@ fn kill(pid: u32) -> std::io::Result<()> {
     let pid = rustix::process::Pid::from_raw(pid as i32)
         .ok_or_else(|| std::io::Error::other("bad pid"))?;
     rustix::process::kill_process(pid, rustix::process::Signal::TERM).map_err(std::io::Error::from)
-}
-
-fn draw_modal(f: &mut Frame, area: Rect, t: &Theme, m: &Modal) {
-    super::modal::draw(f, area, t, m);
-}
-
-fn draw_run(f: &mut Frame, area: Rect, t: &Theme, r: &RunPane) {
-    let rect = widgets::centered(
-        area,
-        area.width.saturating_sub(8).max(60),
-        area.height.saturating_sub(2),
-    );
-    let (color, status) = match r.done {
-        None => {
-            let s = r.started.elapsed().as_secs();
-            (t.cyan, format!("⠿ running · {}:{:02}", s / 60, s % 60))
-        }
-        Some((0, d)) => (t.green, format!("✓ done · {:.1}s", d.as_secs_f32())),
-        Some((c, d)) => (t.red, format!("✗ exit {c} · {:.1}s", d.as_secs_f32())),
-    };
-    let inner = widgets::overlay(f, rect, t, &r.title, color);
-    let [cmd, log, foot] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-    f.render_widget(
-        Paragraph::new(Span::styled(format!("$ {}", r.cmd), t.dim())),
-        cmd,
-    );
-    let h = log.height as usize;
-    let end = r.lines.len().saturating_sub(r.scroll);
-    let start = end.saturating_sub(h);
-    let lines: Vec<Line> = r
-        .lines
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .map(|(s, _)| {
-            let st = if s.contains("error") || s.contains("Error") {
-                t.s(t.red)
-            } else {
-                t.fg()
-            };
-            Line::styled(widgets::trunc(s, log.width as usize), st)
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), log);
-    f.render_widget(Paragraph::new(Span::styled(status, t.s(color))), foot);
-}
-
-fn help_modal(t: &Theme, screen: &str, hints: &[(&str, &str)]) -> Modal {
-    let l = |s: &str| Line::styled(s.to_string(), t.fg());
-    let mut lines = vec![
-        l("1–9 0 H   switch screen        Tab/S-Tab, h/l  next/prev screen"),
-        l("j/k ↑↓    move selection       gg/G  top/bottom   C-d/C-u  page"),
-        l("/         filter (Esc clears)  n/N   next/prev    C-h/C-l  pane focus"),
-        l("r         refresh current      c     check now    C-j/C-k  scroll log/diff"),
-        l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
-        l(":q  :<screen>  :job <name>  :workflow <name>  :refresh"),
-    ];
-    // The screen names its own `A` when it has one.
-    if !hints.iter().any(|(k, _)| *k == "A") {
-        lines.insert(
-            5,
-            l("A         ask Claude about the selected thing (you see what's sent first)"),
-        );
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(format!("{screen}:"), t.s(t.cyan)));
-    let mut row = String::new();
-    for (k, d) in hints {
-        let cell = format!("{k:<7} {d:<22}");
-        if row.chars().count() + cell.chars().count() > 76 {
-            lines.push(l(row.trim_end()));
-            row.clear();
-        }
-        row.push_str(&cell);
-    }
-    if !row.is_empty() {
-        lines.push(l(row.trim_end()));
-    }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "Destructive actions: preview → confirm → streamed output.",
-        t.dim(),
-    ));
-    lines.push(Line::styled(
-        "Nothing runs in the background after sentry exits.",
-        t.dim(),
-    ));
-    Modal {
-        title: "Keys".into(),
-        color: t.cyan,
-        lines,
-        yes: None,
-    }
 }
 
 /// The transcript's one line for a first question (the whole of it is in the brief).
@@ -3775,40 +3518,12 @@ fn first_sentence(ask: &crate::claude::Ask) -> String {
 }
 
 fn claude_choice(t: &Theme, apply: crate::claude::Ask, ask: crate::claude::Ask) -> Choice {
-    Choice {
-        title: "Claude · pick one (1–2, n cancels)".into(),
-        lines: vec![
-            Line::styled(
-                "1  help me apply it: Claude plans, you approve, sentry runs it",
-                t.fg(),
-            ),
-            Line::styled("2  just ask about it", t.fg()),
-            Line::raw(""),
-            Line::styled("Either way you see what's sent first.", t.dim()),
-        ],
-        options: vec![
-            (
-                "help me apply it".into(),
-                vec![Effect::AskConsent(apply.clone())],
-            ),
-            (
-                "just ask about it".into(),
-                vec![Effect::AskWith(Box::new(ask), Box::new(apply.clone()))],
-            ),
-        ],
-    }
-}
-
-fn quit_modal(t: &Theme) -> Modal {
-    Modal {
-        title: "Quit".into(),
-        color: t.dim,
-        lines: vec![Line::styled(
-            "Quit sentry? Nothing keeps running after exit.",
-            t.fg(),
-        )],
-        yes: Some(("quit".into(), vec![Effect::Quit])),
-    }
+    frame::claude_choice(
+        t,
+        "sentry",
+        vec![Effect::AskConsent(apply.clone())],
+        vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
+    )
 }
 
 pub fn info_modal(t: &Theme, title: &str, lines: Vec<Line<'static>>) -> Modal {
@@ -3823,20 +3538,7 @@ pub fn info_modal(t: &Theme, title: &str, lines: Vec<Line<'static>>) -> Modal {
 /// Render the whole UI into plain text (snapshot tests).
 #[cfg(test)]
 pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
-    let backend = ratatui::backend::TestBackend::new(w, h);
-    let mut term = ratatui::Terminal::new(backend).unwrap();
-    term.draw(|f| app.draw(f)).unwrap();
-    let buf = term.backend().buffer().clone();
-    let mut out = String::new();
-    for y in 0..h {
-        let mut line = String::new();
-        for x in 0..w {
-            line.push_str(buf[(x, y)].symbol());
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    out
+    frame::render_to_string(w, h, |f| app.draw(f))
 }
 
 impl super::Ui for App {

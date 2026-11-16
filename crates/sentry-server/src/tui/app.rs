@@ -292,7 +292,14 @@ pub struct App {
 
 impl App {
     pub fn new(remote: Remote, tx: Sender<Ev>) -> Self {
-        let (keys, _) = Keymap::new(&Default::default());
+        // Every screen key resolves; the tabs take those they have.
+        let (keys, _) = Keymap::new(
+            &sentry_core::tui::ScreenSet {
+                ids: &sentry_core::tui::ScreenId::ALL,
+                aliases: &[],
+            },
+            &Default::default(),
+        );
         Self {
             remote: remote.with_inventory(),
             tx,

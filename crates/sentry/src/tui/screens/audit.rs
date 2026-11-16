@@ -213,7 +213,7 @@ pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
                     reaudit,
                 )]
             }
-            Act::Open(slug) => match crate::tui::ScreenId::from_name(slug) {
+            Act::Open(slug) => match crate::tui::SCREENS.from_name(slug) {
                 Some(id) => vec![Effect::Goto(id)],
                 None => vec![],
             },

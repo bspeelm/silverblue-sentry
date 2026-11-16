@@ -135,7 +135,7 @@ fn key(a: &mut App, c: KeyCode) {
 
 #[test]
 fn every_screen_renders_at_both_sizes() {
-    for id in ScreenId::ALL {
+    for id in crate::tui::SCREENS.ids.iter().copied() {
         for (w, h) in [(158, 41), (80, 24), (120, 30)] {
             let s = render_to_string(&mut app(id), w, h);
             assert!(s.contains("sentry"), "{id:?} {w}x{h}");
@@ -1449,6 +1449,51 @@ fn a_review_s_changes_apply_with_one_enter() {
     }
     key(&mut a, KeyCode::Enter);
     assert!(render_to_string(&mut a, 158, 41).contains("2099-01-01"));
+}
+
+#[test]
+fn a_var_left_empty_is_asked_again() {
+    use crate::tui::app::{Effect, Prompt};
+    let mut a = app(ScreenId::Upgrade);
+    a.apply_for_test(vec![Effect::Prompt(
+        Prompt::WfVar {
+            workflow: "release-rebase".into(),
+            key: "target".into(),
+            prompt: "Target Fedora version".into(),
+            rest: vec![(
+                "window".into(),
+                "Maintenance window".into(),
+                "tonight".into(),
+            )],
+            vars: Default::default(),
+        },
+        String::new(),
+    )]);
+    // Enter on nothing: asked again, and what's still to ask isn't lost.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Target Fedora version: ▏") && s.contains("target can't be empty"),
+        "{s}"
+    );
+    // One Backspace too many doesn't close a prompt (Esc does).
+    key(&mut a, KeyCode::Backspace);
+    assert!(render_to_string(&mut a, 158, 41).contains("Target Fedora version: ▏"));
+    key(&mut a, KeyCode::Char('4'));
+    key(&mut a, KeyCode::Char('6'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Maintenance window: tonight▏"),
+        "the next one: {s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(!render_to_string(&mut a, 158, 41).contains("Maintenance window"));
+    // A command line still closes on Backspace.
+    key(&mut a, KeyCode::Char(':'));
+    assert!(render_to_string(&mut a, 158, 41).contains(":▏"));
+    key(&mut a, KeyCode::Backspace);
+    assert!(!render_to_string(&mut a, 158, 41).contains(":▏"));
 }
 
 /// Read-only on this machine: Maintenance from the real collectors, its views, and the
