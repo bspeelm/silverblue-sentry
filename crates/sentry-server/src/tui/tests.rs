@@ -10,8 +10,9 @@ use super::data::{Kind, Payload};
 use sentry_core::tui::ScreenId;
 
 /// The screens the server's data fills (`0`, the workflows, has tests of its own).
-const SHOWN: [ScreenId; 5] = [
+const SHOWN: [ScreenId; 6] = [
     ScreenId::Dash,
+    ScreenId::Proc,
     ScreenId::Net,
     ScreenId::Cont,
     ScreenId::Svc,
@@ -307,6 +308,17 @@ fn app() -> App {
     a
 }
 
+/// Two samples of the processes, two seconds apart: the second has CPU shares.
+fn feed_procs(a: &mut App) {
+    for f in ["procs-1.txt", "procs-2.txt"] {
+        data(
+            a,
+            Kind::Procs,
+            Payload::Procs(Box::new(collect::procs::parse(&fixture(f)).unwrap())),
+        );
+    }
+}
+
 /// Select a maintenance item's row (recommendations come first).
 fn goto_item(a: &mut App, id: &str) {
     a.apply(
@@ -334,6 +346,9 @@ fn every_screen_renders() {
             let mut a = app();
             key(&mut a, KeyCode::Char(tab.key()));
             assert_eq!(a.screen, tab);
+            if tab == ScreenId::Proc {
+                feed_procs(&mut a);
+            }
             let s = render_to_string(&mut a, w, h);
             assert!(
                 s.contains("sentry-server") && s.contains("myserver"),
@@ -414,7 +429,7 @@ fn screens_and_badges() {
     let tabs = s.lines().nth(1).unwrap();
     assert!(
         tabs.starts_with(
-            " 1 Dashboard   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"
+            " 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"
         ),
         "sentry's numbers; five new listeners, db is down, one unit failed: {tabs}"
     );
@@ -427,7 +442,7 @@ fn screens_and_badges() {
         "always there: {tabs}"
     );
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.screen, ScreenId::Net);
+    assert_eq!(a.screen, ScreenId::Proc);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
     assert_eq!(a.screen, ScreenId::Upgrade, "wraps around");
@@ -446,6 +461,7 @@ fn colon(a: &mut App, cmd: &str) {
 fn screen_keys_follow_sentry() {
     let mut a = app();
     for (c, id) in [
+        ('2', ScreenId::Proc),
         ('3', ScreenId::Net),
         ('4', ScreenId::Cont),
         ('5', ScreenId::Svc),
@@ -456,7 +472,7 @@ fn screen_keys_follow_sentry() {
         assert_eq!(a.screen, id, "{c}");
     }
     // Screens this program doesn't have (yet): their keys do nothing.
-    for c in ['2', '7', 'H'] {
+    for c in ['7', 'H'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.screen, ScreenId::Dash, "{c}");
     }
@@ -543,13 +559,13 @@ fn the_strip_shrinks_like_sentrys() {
     // Room for all: full names.
     let s = strip(&mut a, 120);
     assert!(
-        s.starts_with(" 1 Dashboard   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"),
+        s.starts_with(" 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"),
         "{s}"
     );
     // At 80 columns: short names, the one in view whole.
     let s = strip(&mut a, 80);
     assert!(
-        s.starts_with(" 1 Dash   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance"),
+        s.starts_with(" 1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance"),
         "{s}"
     );
     // The strip is core's, so it narrows as sentry's does: short names (the one in view
@@ -569,10 +585,10 @@ fn the_strip_shrinks_like_sentrys() {
         })
     };
     assert_eq!(
-        at(54).trim_end(),
-        " 1 Dash   3 Net   4 Cont   5 Svc   6 Maintenance"
+        at(62).trim_end(),
+        " 1 Dash   2 Proc   3 Net   4 Cont   5 Svc   6 Maintenance"
     );
-    assert_eq!(at(32).trim_end(), " 1   3   4   5   6 Maintenance");
+    assert_eq!(at(36).trim_end(), " 1   2   3   4   5   6 Maintenance");
     // A filter shows on its screen's name.
     for c in "/web".chars() {
         key(&mut a, KeyCode::Char(c));
@@ -3589,4 +3605,100 @@ fn b_again_unmarks() {
     key(&mut a, KeyCode::Char('b'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("still expected by server_config.yaml"), "{s}");
+}
+
+#[test]
+fn sort_and_filter_match_sentry() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('2'));
+    assert_eq!(a.screen, ScreenId::Proc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("reading processes…"), "{s}");
+    assert!(
+        s.contains("C/M  sort cpu/mem") && !s.contains("x  kill"),
+        "sentry's keys, nothing that changes the server yet: {s}"
+    );
+    feed_procs(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    let rows = |s: &str| -> Vec<String> {
+        s.lines()
+            .skip(5)
+            .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+            .map(|l| l.split_whitespace().next().unwrap().to_string())
+            .collect()
+    };
+    // By CPU first: the app at 75% of a core, postgres at 5%; no kernel threads.
+    assert!(s.contains("CPU% ▼"), "{s}");
+    assert_eq!(rows(&s)[..2], ["901", "1440"], "{s}");
+    assert!(s.contains("75.0") && !s.contains("kthreadd"), "{s}");
+    // M: by memory; C (or P) back.
+    key(&mut a, KeyCode::Char('M'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("MEM% ▼"), "{s}");
+    assert_eq!(rows(&s)[..3], ["901", "1440", "733"], "{s}");
+    key(&mut a, KeyCode::Char('P'));
+    assert!(render_to_string(&mut a, 158, 41).contains("CPU% ▼"));
+    // / filters on command, user and pid.
+    for c in "/postgres".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert_eq!(rows(&s), ["1440", "1502"], "{s}");
+    assert!(
+        s.lines().nth(1).unwrap().contains("2 Processes /postgres"),
+        "{s}"
+    );
+    // j moves within what's shown; A asks about that process, on the server.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('A'));
+    let p = a.consent_text().expect("A asks about the process");
+    assert!(
+        p.contains("Server `myserver`")
+            && p.contains("Process on the server")
+            && p.contains("pid 1502"),
+        "{p}"
+    );
+    assert!(p.contains("What is this process"), "{p}");
+    key(&mut a, KeyCode::Esc);
+    // ps missing: said, not an error dump.
+    let mut a = app();
+    key(&mut a, KeyCode::Char('2'));
+    a.on_event(
+        Ev::Data(
+            Kind::Procs,
+            Box::new(Err(crate::remote::SrvError::NotFound("ps".into()))),
+        ),
+        Instant::now(),
+    );
+    assert!(render_to_string(&mut a, 158, 41).contains("ps not found on myserver"));
+}
+
+#[test]
+fn the_processes_sample_feeds_the_probe() {
+    use super::screens::Screens;
+    let mut a = app();
+    let before = a.store.mem.0.len();
+    feed_procs(&mut a);
+    assert_eq!(
+        a.store.mem.0.len(),
+        before + 2,
+        "the Dashboard's series keep going on this screen"
+    );
+    assert_eq!(a.store.login_uid, Some(1000));
+    assert_eq!(a.store.procs.value.as_ref().map(Vec::len), Some(10));
+    // One exec per sample, every 2 s, only while the screen is shown; the second after 1 s.
+    let polls = Screens::polls(ScreenId::Proc, &a.remote.cfg);
+    assert_eq!(polls.len(), 1);
+    assert_eq!(
+        (polls[0].kind, polls[0].every),
+        (Kind::Procs, Some(std::time::Duration::from_secs(2)))
+    );
+    let now = Instant::now();
+    a.enter(ScreenId::Proc, now);
+    assert_eq!(a.polled_for_test(), [Kind::Procs]);
+    assert_eq!(a.next_due(now), now + std::time::Duration::from_secs(1));
+    a.enter(ScreenId::Cont, now);
+    assert!(a.polled_for_test().is_empty());
 }

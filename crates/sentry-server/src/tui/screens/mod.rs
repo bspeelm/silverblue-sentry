@@ -11,6 +11,7 @@ pub mod containers;
 pub mod dashboard;
 pub mod maint;
 pub mod network;
+pub mod processes;
 pub mod report;
 pub mod services;
 pub mod upgrade;
@@ -116,6 +117,7 @@ pub struct Screens {
     pub maint: maint::Maint,
     pub upgrade: upgrade::Upgrade,
     pub net: network::Network,
+    pub procs: processes::Processes,
 }
 
 impl Screens {
@@ -139,6 +141,8 @@ impl Screens {
                 }
                 p
             }
+            // One exec per sample: the probe and every process.
+            ScreenId::Proc => vec![at(Kind::Procs, Some(processes::EVERY))],
             ScreenId::Svc => vec![at(Kind::Units, None), at(Kind::Journal, None)],
             ScreenId::Cont => vec![at(Kind::Docker, None)],
             // One `ss` without sudo while it's shown; the names root sees and the
@@ -185,6 +189,7 @@ impl Screens {
             ScreenId::Cont => containers::container_list(v).len(),
             ScreenId::Maint => maint::count(v),
             ScreenId::Net => network::rows(v).len(),
+            ScreenId::Proc => processes::count(v),
             // The list, while nothing runs.
             ScreenId::Upgrade if v.wf.is_none() => v.wf_list.len(),
             _ => 0,
@@ -208,6 +213,7 @@ impl Screens {
             ScreenId::Maint => self.maint.handle(a, v, r),
             ScreenId::Upgrade => self.upgrade.handle(a, v, r),
             ScreenId::Net => self.net.handle(a, v),
+            ScreenId::Proc => self.procs.handle(a, v),
             _ => Vec::new(),
         }
     }
@@ -222,6 +228,7 @@ impl Screens {
             ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Upgrade => upgrade::draw(f, area, v),
             ScreenId::Net => self.net.render(f, area, v),
+            ScreenId::Proc => self.procs.render(f, area, v),
             _ => {}
         }
     }
@@ -250,6 +257,7 @@ impl Screens {
             }
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Net => network::hints(),
+            ScreenId::Proc => processes::hints(),
             _ => Vec::new(),
         }
     }
@@ -261,6 +269,10 @@ impl Screens {
             return report::selected(&self.maint.report, v)
                 .map(|f| crate::tui::ask::ask_finding(v, r, f))
                 .ok_or_else(|| "no finding selected (c audits the server)".to_string());
+        }
+        // The process selected, in the order the screen lists them.
+        if id == ScreenId::Proc {
+            return self.procs.ask(v, r);
         }
         crate::tui::ask::ask_for(id, v, r)
             .ok_or_else(|| crate::tui::ask::nothing_here(id, v).to_string())
@@ -304,7 +316,7 @@ impl Screens {
     pub fn filterable(id: ScreenId) -> bool {
         matches!(
             id,
-            ScreenId::Svc | ScreenId::Cont | ScreenId::Maint | ScreenId::Net
+            ScreenId::Svc | ScreenId::Cont | ScreenId::Maint | ScreenId::Net | ScreenId::Proc
         )
     }
 
@@ -325,6 +337,7 @@ impl Screens {
             ScreenId::Maint => &mut self.maint.cur,
             ScreenId::Upgrade => &mut self.upgrade.cur,
             ScreenId::Net => &mut self.net.cur,
+            ScreenId::Proc => &mut self.procs.cur,
             _ => &mut self.dash.cur,
         }
     }
@@ -337,6 +350,7 @@ impl Screens {
             ScreenId::Maint => self.maint.cur.sel,
             ScreenId::Upgrade => self.upgrade.cur.sel,
             ScreenId::Net => self.net.cur.sel,
+            ScreenId::Proc => self.procs.cur.sel,
             _ => self.dash.cur.sel,
         }
     }

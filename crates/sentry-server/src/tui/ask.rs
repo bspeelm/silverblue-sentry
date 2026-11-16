@@ -79,7 +79,7 @@ words unless asked for more.{sudo} Files on the laptop (the user's notes): {}",
     }
 }
 
-fn header(v: &View, r: &Remote) -> String {
+pub fn header(v: &View, r: &Remote) -> String {
     let (os, kernel) = v.s.host.value.clone().unwrap_or_default();
     let up = v.s.probe.value.as_ref().map_or(String::new(), |p| {
         format!(", up {}", sentry_core::fmt::uptime(p.uptime_s))

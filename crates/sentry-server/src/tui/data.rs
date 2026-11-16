@@ -19,6 +19,8 @@ pub enum Kind {
     /// How sudo behaves for this login, once.
     Sudo,
     Probe,
+    /// The probe plus every process (the Processes screen's sample).
+    Procs,
     Gpu,
     Temp,
     Disks,
@@ -48,6 +50,7 @@ pub enum Payload {
     Host(String, String),
     Sudo(SudoMode),
     Probe(probe::Probe),
+    Procs(Box<collect::procs::Raw>),
     Gpu(Option<gpu::Gpu>),
     Temp(Option<health::CpuTemp>),
     Disks(Vec<disk::Mount>),
@@ -135,6 +138,11 @@ pub struct Store {
     last_net: Option<(u64, u64, Instant)>,
     /// The boot id seen first; a different one means the server rebooted.
     pub boot_id: Option<String>,
+    /// The processes, with their share of a core since the sample before.
+    pub procs: Slot<Vec<sentry_core::collectors::procs::Proc>>,
+    proc_rates: collect::procs::Rates,
+    /// The uid sentry-server logs in as.
+    pub login_uid: Option<u32>,
     pub gpu: Slot<Option<gpu::Gpu>>,
     pub temp: Slot<Option<health::CpuTemp>>,
     pub disks: Slot<Vec<disk::Mount>>,
@@ -212,6 +220,13 @@ impl Store {
             Payload::Host(os, k) => self.host.set(Ok((os, k))),
             Payload::Sudo(m) => self.sudo.set(Ok(m)),
             Payload::Probe(p) => self.on_probe(p),
+            // The probe is in the same sample: the Dashboard's series keep going.
+            Payload::Procs(raw) => {
+                self.login_uid = raw.login_uid.or(self.login_uid);
+                let procs = self.proc_rates.procs(&raw);
+                self.procs.set(Ok(procs));
+                self.on_probe(raw.probe);
+            }
             Payload::Gpu(v) => self.gpu.set(Ok(v)),
             Payload::Temp(v) => self.temp.set(Ok(v)),
             Payload::Disks(v) => self.disks.set(Ok(v)),
@@ -248,6 +263,7 @@ impl Store {
             Kind::Host => self.host.err = Some(e),
             Kind::Sudo => self.sudo.err = Some(e),
             Kind::Probe => self.probe.err = Some(e),
+            Kind::Procs => self.procs.err = Some(e),
             Kind::Gpu => self.gpu.err = Some(e),
             Kind::Temp => self.temp.err = Some(e),
             Kind::Disks => self.disks.err = Some(e),
@@ -307,6 +323,7 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         }
         Kind::Sudo => Payload::Sudo(r.sudo_mode()?),
         Kind::Probe => Payload::Probe(probe::collect(r)?),
+        Kind::Procs => Payload::Procs(Box::new(collect::procs::collect(r)?)),
         Kind::Gpu => Payload::Gpu(collect::gpu(r)?),
         Kind::Temp => Payload::Temp(health::cpu_temp(r)?),
         Kind::Disks => Payload::Disks(collect::disks(r)?),

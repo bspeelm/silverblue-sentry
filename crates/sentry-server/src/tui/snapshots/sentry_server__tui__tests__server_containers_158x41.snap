@@ -2,7 +2,7 @@
 source: crates/sentry-server/src/tui/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Containers · stack running(3) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

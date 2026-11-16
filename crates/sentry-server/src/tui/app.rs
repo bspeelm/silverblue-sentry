@@ -472,6 +472,11 @@ impl App {
                 self.due.insert(p.kind, now + every);
             }
         }
+        // A process's share of a core needs two samples: the second comes sooner.
+        if id == ScreenId::Proc {
+            self.due
+                .insert(Kind::Procs, now + super::screens::processes::SECOND);
+        }
         let e = self.with_screens(|s, v, _| s.on_enter(id, v));
         self.apply(e, now);
         self.tick(now);

@@ -6,6 +6,7 @@ pub mod apt;
 pub mod docker;
 pub mod health;
 pub mod probe;
+pub mod procs;
 pub mod sockets;
 pub mod units;
 
@@ -272,6 +273,10 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
     };
     match kind {
         "probe" => j(serde_json::to_value(probe::collect(r)?)),
+        // One sample: no CPU share yet (that takes two).
+        "procs" => j(serde_json::to_value(
+            procs::Rates::default().procs(&procs::collect(r)?),
+        )),
         "units" => j(serde_json::to_value(units::collect(r)?)),
         "docker" => j(serde_json::to_value(docker::collect(r)?)),
         "docker-stats" => j(serde_json::to_value(docker::stats(r)?)),
@@ -300,6 +305,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
 
 pub const KINDS: &[&str] = &[
     "probe",
+    "procs",
     "units",
     "docker",
     "docker-stats",
