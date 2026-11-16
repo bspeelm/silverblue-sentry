@@ -279,7 +279,8 @@ impl DataStore {
 
     /// Spec §10: the dashboard graphs extend back over the recording (one point per sample).
     fn prefill_from_recording(&mut self) {
-        let Some((_, recs)) = crate::recorder::ring::read_metrics(&crate::recorder::ring::path())
+        let Some((_, recs)) =
+            crate::recorder::ring::read_metrics(&crate::recorder::ring::path(crate::maint::LOCAL))
         else {
             return;
         };

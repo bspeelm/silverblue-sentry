@@ -1605,14 +1605,20 @@ impl App {
                 Effect::Baseline(edit) => {
                     use crate::baseline::BaselineFile;
                     let (r, label) = match &edit {
-                        BaselineEdit::Listener(k) => (BaselineFile::add_listener(k), k.clone()),
+                        BaselineEdit::Listener(k) => (
+                            BaselineFile::add_listener(crate::maint::LOCAL, k),
+                            k.clone(),
+                        ),
                         BaselineEdit::Listeners(v) => (
                             v.iter().try_fold(false, |any, k| {
-                                BaselineFile::add_listener(k).map(|added| any | added)
+                                BaselineFile::add_listener(crate::maint::LOCAL, k)
+                                    .map(|added| any | added)
                             }),
                             format!("{} address(es)", v.len()),
                         ),
-                        BaselineEdit::Finding(k) => (BaselineFile::add_finding(k), k.clone()),
+                        BaselineEdit::Finding(k) => {
+                            (BaselineFile::add_finding(crate::maint::LOCAL, k), k.clone())
+                        }
                     };
                     match r {
                         Ok(true) => {
@@ -1630,14 +1636,20 @@ impl App {
                     use crate::baseline::BaselineFile;
                     let (r, label) = match &edit {
                         BaselineEdit::Listener(k) => (
-                            BaselineFile::remove_listeners(std::slice::from_ref(k)),
+                            BaselineFile::remove_listeners(
+                                crate::maint::LOCAL,
+                                std::slice::from_ref(k),
+                            ),
                             k.clone(),
                         ),
                         BaselineEdit::Listeners(v) => (
-                            BaselineFile::remove_listeners(v),
+                            BaselineFile::remove_listeners(crate::maint::LOCAL, v),
                             format!("{} address(es)", v.len()),
                         ),
-                        BaselineEdit::Finding(k) => (BaselineFile::remove_finding(k), k.clone()),
+                        BaselineEdit::Finding(k) => (
+                            BaselineFile::remove_finding(crate::maint::LOCAL, k),
+                            k.clone(),
+                        ),
                     };
                     self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
                     let still = match &edit {
@@ -2969,7 +2981,7 @@ impl App {
             })
             .collect();
         if self.records {
-            let b = crate::baseline::BaselineFile::load();
+            let b = crate::baseline::BaselineFile::load(crate::maint::LOCAL);
             later.extend(b.findings.into_iter().map(|k| LaterRow {
                 kind: LaterKind::Expected,
                 key: k,
@@ -3242,7 +3254,7 @@ impl App {
 
     fn visible_tabs(&self) -> Vec<ScreenId> {
         // History only appears once the recorder has produced data (spec §11); `H` still opens it.
-        let has_rec = crate::recorder::ring::path().exists();
+        let has_rec = crate::recorder::ring::path(crate::maint::LOCAL).exists();
         SCREENS
             .ids
             .iter()

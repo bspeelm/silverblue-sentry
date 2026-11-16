@@ -2,20 +2,8 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+pub use sentry_core::collectors::procs::{Proc, SortBy, sort};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Proc {
-    pub pid: u32,
-    pub user: String,
-    pub uid: Option<u32>,
-    /// Per-core percentage, like top.
-    pub cpu: f32,
-    pub mem_pct: f32,
-    pub run_time_s: u64,
-    pub cmd: String,
-}
 
 pub struct ProcSampler {
     sys: System,
@@ -87,27 +75,5 @@ impl ProcSampler {
                 }
             })
             .collect()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SortBy {
-    #[default]
-    Cpu,
-    Mem,
-}
-
-pub fn sort(procs: &mut [Proc], by: SortBy) {
-    match by {
-        SortBy::Cpu => procs.sort_by(|a, b| {
-            b.cpu
-                .total_cmp(&a.cpu)
-                .then(b.mem_pct.total_cmp(&a.mem_pct))
-        }),
-        SortBy::Mem => procs.sort_by(|a, b| {
-            b.mem_pct
-                .total_cmp(&a.mem_pct)
-                .then(b.cpu.total_cmp(&a.cpu))
-        }),
     }
 }

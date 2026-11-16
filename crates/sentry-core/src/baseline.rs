@@ -1,5 +1,6 @@
 //! Effective baseline = config `[baseline]` (user-authored) ∪ `~/.config/sentry/baseline.toml`
-//! (machine-written from the TUI). See spec-addendum A6.
+//! (machine-written from the TUI). See spec-addendum A6. A server's file is
+//! `servers/<name>/baseline.toml`, beside its other records ([`crate::maint::root`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -13,35 +14,40 @@ pub struct BaselineFile {
     pub findings: Vec<String>,
 }
 
-fn path() -> std::path::PathBuf {
-    paths::config_dir().join("baseline.toml")
+/// Where it's kept: this machine's (`""`) in the config dir, a server's under its records.
+pub fn path(server: &str) -> std::path::PathBuf {
+    crate::maint::root(server).join("baseline.toml")
 }
 
 impl BaselineFile {
-    pub fn load() -> Self {
-        std::fs::read_to_string(path())
+    pub fn load(server: &str) -> Self {
+        std::fs::read_to_string(path(server))
             .ok()
             .and_then(|t| toml::from_str(&t).ok())
             .unwrap_or_default()
     }
 
-    fn save(&self) -> anyhow::Result<()> {
+    fn save(&self, server: &str) -> anyhow::Result<()> {
         let body = format!(
             "# Written by sentry when you mark things as expected. Safe to edit.\n{}",
             toml::to_string_pretty(self)?
         );
-        paths::write_atomic(&path(), body.as_bytes())?;
+        let p = path(server);
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        paths::write_atomic(&p, body.as_bytes())?;
         Ok(())
     }
 
     /// Append a finding id; returns false if it was already present.
-    pub fn add_finding(id: &str) -> anyhow::Result<bool> {
-        let mut b = Self::load();
+    pub fn add_finding(server: &str, id: &str) -> anyhow::Result<bool> {
+        let mut b = Self::load(server);
         if b.findings.iter().any(|f| f == id) {
             return Ok(false);
         }
         b.findings.push(id.to_string());
-        b.save()?;
+        b.save(server)?;
         Ok(true)
     }
 
@@ -59,33 +65,33 @@ impl BaselineFile {
     }
 
     /// Remove every listener entry that covers one of `keys` (exact or glob). Returns how many.
-    pub fn remove_listeners(keys: &[String]) -> anyhow::Result<usize> {
-        let mut b = Self::load();
+    pub fn remove_listeners(server: &str, keys: &[String]) -> anyhow::Result<usize> {
+        let mut b = Self::load(server);
         let n = b.drop_listeners(keys);
         if n > 0 {
-            b.save()?;
+            b.save(server)?;
         }
         Ok(n)
     }
 
     /// Remove every finding entry that covers `id` (exact or glob). Returns how many.
-    pub fn remove_finding(id: &str) -> anyhow::Result<usize> {
-        let mut b = Self::load();
+    pub fn remove_finding(server: &str, id: &str) -> anyhow::Result<usize> {
+        let mut b = Self::load(server);
         let n = b.drop_finding(id);
         if n > 0 {
-            b.save()?;
+            b.save(server)?;
         }
         Ok(n)
     }
 
     /// Append a listener key; returns false if it was already present.
-    pub fn add_listener(key: &str) -> anyhow::Result<bool> {
-        let mut b = Self::load();
+    pub fn add_listener(server: &str, key: &str) -> anyhow::Result<bool> {
+        let mut b = Self::load(server);
         if b.listeners.iter().any(|l| l == key) {
             return Ok(false);
         }
         b.listeners.push(key.to_string());
-        b.save()?;
+        b.save(server)?;
         Ok(true)
     }
 }
@@ -99,7 +105,7 @@ pub struct Baseline {
 
 impl Baseline {
     pub fn effective(cfg: &Config) -> Self {
-        let file = BaselineFile::load();
+        let file = BaselineFile::load(crate::maint::LOCAL);
         let union = |a: &[String], b: Vec<String>| {
             let mut v = a.to_vec();
             for x in b {
@@ -181,6 +187,33 @@ mod tests {
         );
         assert_eq!(f.drop_finding("repo:other.repo"), 0);
         assert_eq!(f.findings, vec!["repo:_copr_x.repo"]);
+    }
+
+    #[test]
+    fn this_machine_s_file_stays_put_and_a_server_s_is_under_its_records() {
+        use crate::paths::config_dir;
+        assert_eq!(super::path(""), config_dir().join("baseline.toml"));
+        assert_eq!(
+            super::path("myserver"),
+            config_dir().join("servers/myserver/baseline.toml")
+        );
+        // Each has its own entries.
+        assert!(BaselineFile::add_listener("base-test", "*:443/*").unwrap());
+        assert!(!BaselineFile::add_listener("base-test", "*:443/*").unwrap());
+        assert!(BaselineFile::add_finding("base-test", "srv:listener:tcp:443").unwrap());
+        let f = BaselineFile::load("base-test");
+        assert_eq!(f.listeners, ["*:443/*"]);
+        assert_eq!(f.findings, ["srv:listener:tcp:443"]);
+        assert!(BaselineFile::load("other-test").listeners.is_empty());
+        assert_eq!(
+            BaselineFile::remove_listeners("base-test", &["0.0.0.0:443/nginx".into()]).unwrap(),
+            1
+        );
+        assert_eq!(
+            BaselineFile::remove_finding("base-test", "srv:listener:tcp:443").unwrap(),
+            1
+        );
+        assert!(BaselineFile::load("base-test").listeners.is_empty());
     }
 
     #[test]

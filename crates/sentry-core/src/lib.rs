@@ -14,5 +14,6 @@ pub mod finding;
 pub mod fmt;
 pub mod maint;
 pub mod paths;
+pub mod recorder;
 pub mod tui;
 pub mod workflows;

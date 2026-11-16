@@ -17,6 +17,10 @@ pub mod records;
 pub mod reviewview;
 pub mod theme;
 pub mod widgets;
+// The screens both programs show the same way.
+pub mod histview;
+pub mod netview;
+pub mod proctable;
 
 use std::io;
 use std::process::ExitStatus;
