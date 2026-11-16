@@ -2,7 +2,7 @@
 source: crates/sentry-server/src/tui/tests.rs
 expression: body(&s)
 ---
- 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+ 1 Dash   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance 8   0 Upgr
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ Recommended · 11 · audited 1h ago ──────┐ ┌ Details ─────────────────────────┐

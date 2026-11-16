@@ -19,15 +19,31 @@ pub fn path(server: &str) -> std::path::PathBuf {
     crate::maint::root(server).join("baseline.toml")
 }
 
+/// Where a server's file was before.
+fn old_path(server: &str) -> std::path::PathBuf {
+    paths::config_dir()
+        .join("servers")
+        .join(format!("{server}.baseline.toml"))
+}
+
 impl BaselineFile {
+    /// A server's file used to be `servers/<name>.baseline.toml` (findings only): it's moved
+    /// in the first time, so what was marked expected stays so.
     pub fn load(server: &str) -> Self {
+        let old = old_path(server);
+        if !server.is_empty() && !path(server).exists() && old.exists() {
+            if let Some(d) = path(server).parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::rename(&old, path(server));
+        }
         std::fs::read_to_string(path(server))
             .ok()
             .and_then(|t| toml::from_str(&t).ok())
             .unwrap_or_default()
     }
 
-    fn save(&self, server: &str) -> anyhow::Result<()> {
+    pub fn save(&self, server: &str) -> anyhow::Result<()> {
         let body = format!(
             "# Written by sentry when you mark things as expected. Safe to edit.\n{}",
             toml::to_string_pretty(self)?
@@ -51,7 +67,8 @@ impl BaselineFile {
         Ok(true)
     }
 
-    fn drop_listeners(&mut self, keys: &[String]) -> usize {
+    /// Drop every listener entry that covers one of `keys` (exact or glob); how many went.
+    pub fn drop_listeners(&mut self, keys: &[String]) -> usize {
         let before = self.listeners.len();
         self.listeners
             .retain(|p| !keys.iter().any(|k| listener_entry_matches(p, k)));
@@ -187,6 +204,30 @@ mod tests {
         );
         assert_eq!(f.drop_finding("repo:other.repo"), 0);
         assert_eq!(f.findings, vec!["repo:_copr_x.repo"]);
+    }
+
+    #[test]
+    fn server_file_lives_under_its_root_and_migrates() {
+        use crate::paths::config_dir;
+        let name = "baseline-migrate-test";
+        let old = super::old_path(name);
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "findings = [\"srv:docker-sock:*\"]\n").unwrap();
+        let b = BaselineFile::load(name);
+        assert_eq!(b.findings, ["srv:docker-sock:*"]);
+        assert!(b.listeners.is_empty());
+        assert!(!old.exists(), "moved, not copied");
+        assert!(
+            config_dir()
+                .join("servers")
+                .join(name)
+                .join("baseline.toml")
+                .exists()
+        );
+        // Listeners are kept in the same file from now on.
+        assert!(BaselineFile::add_listener(name, "*:443/*").unwrap());
+        let b = BaselineFile::load(name);
+        assert_eq!((b.listeners.len(), b.findings.len()), (1, 1));
     }
 
     #[test]

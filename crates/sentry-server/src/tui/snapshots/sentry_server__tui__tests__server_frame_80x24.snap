@@ -3,7 +3,7 @@ source: crates/sentry-server/src/tui/tests.rs
 expression: "render_to_string(&mut a, 80, 24)"
 ---
  sentry-server   myserver  up 14d 00:02          ● connected   Mon 26 Oct 12:00
- 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+ 1 Dashboard   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   0 Upgr
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ CPU · 20% · load 0.31 0.27 0.22 · 4 c┐┌ Memory · 36% of 30.5 GiB · swap 6% ──┐

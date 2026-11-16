@@ -10,8 +10,9 @@ use super::data::{Kind, Payload};
 use sentry_core::tui::ScreenId;
 
 /// The screens the server's data fills (`0`, the workflows, has tests of its own).
-const SHOWN: [ScreenId; 4] = [
+const SHOWN: [ScreenId; 5] = [
     ScreenId::Dash,
+    ScreenId::Net,
     ScreenId::Cont,
     ScreenId::Svc,
     ScreenId::Maint,
@@ -269,7 +270,15 @@ fn app() -> App {
         "fail2ban".into(),
         "needs sudo: add `fail2ban-client status` to sudo: in server_config.yaml".into(),
     )];
-    let findings = audit::derive(&snap, &cfg(), None, &["srv:docker-sock:*".into()]);
+    let findings = audit::derive(
+        &snap,
+        &cfg(),
+        None,
+        &sentry_core::baseline::BaselineFile {
+            findings: vec!["srv:docker-sock:*".into()],
+            ..Default::default()
+        },
+    );
     data(
         &mut a,
         Kind::Report,
@@ -279,6 +288,11 @@ fn app() -> App {
         }))),
     );
     data(&mut a, Kind::Maint, maint_payload());
+    data(
+        &mut a,
+        Kind::Sockets,
+        Payload::Sockets(collect::sockets::parse(&fixture("sockets.txt")).unwrap()),
+    );
     a.set_wf_entries(
         crate::workflow::SEEDS
             .iter()
@@ -399,8 +413,10 @@ fn screens_and_badges() {
     let s = render_to_string(&mut a, 158, 41);
     let tabs = s.lines().nth(1).unwrap();
     assert!(
-        tabs.starts_with(" 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance"),
-        "sentry's numbers; db is down, one unit failed: {tabs}"
+        tabs.starts_with(
+            " 1 Dashboard   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"
+        ),
+        "sentry's numbers; five new listeners, db is down, one unit failed: {tabs}"
     );
     assert!(
         !tabs.contains("Updates"),
@@ -411,7 +427,7 @@ fn screens_and_badges() {
         "always there: {tabs}"
     );
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.screen, ScreenId::Cont);
+    assert_eq!(a.screen, ScreenId::Net);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
     assert_eq!(a.screen, ScreenId::Upgrade, "wraps around");
@@ -430,6 +446,7 @@ fn colon(a: &mut App, cmd: &str) {
 fn screen_keys_follow_sentry() {
     let mut a = app();
     for (c, id) in [
+        ('3', ScreenId::Net),
         ('4', ScreenId::Cont),
         ('5', ScreenId::Svc),
         ('6', ScreenId::Maint),
@@ -439,7 +456,7 @@ fn screen_keys_follow_sentry() {
         assert_eq!(a.screen, id, "{c}");
     }
     // Screens this program doesn't have (yet): their keys do nothing.
-    for c in ['2', '3', '7', 'H'] {
+    for c in ['2', '7', 'H'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.screen, ScreenId::Dash, "{c}");
     }
@@ -523,10 +540,16 @@ fn the_strip_shrinks_like_sentrys() {
             .unwrap()
             .to_string()
     };
-    // Room for all: full names. This program's four always fit in 80 columns.
+    // Room for all: full names.
+    let s = strip(&mut a, 120);
+    assert!(
+        s.starts_with(" 1 Dashboard   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance"),
+        "{s}"
+    );
+    // At 80 columns: short names, the one in view whole.
     let s = strip(&mut a, 80);
     assert!(
-        s.starts_with(" 1 Dashboard   4 Containers 1   5 Services 1   6 Maintenance"),
+        s.starts_with(" 1 Dash   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance"),
         "{s}"
     );
     // The strip is core's, so it narrows as sentry's does: short names (the one in view
@@ -546,10 +569,10 @@ fn the_strip_shrinks_like_sentrys() {
         })
     };
     assert_eq!(
-        at(44).trim_end(),
-        " 1 Dash   4 Cont   5 Svc   6 Maintenance"
+        at(54).trim_end(),
+        " 1 Dash   3 Net   4 Cont   5 Svc   6 Maintenance"
     );
-    assert_eq!(at(26).trim_end(), " 1   4   5   6 Maintenance");
+    assert_eq!(at(32).trim_end(), " 1   3   4   5   6 Maintenance");
     // A filter shows on its screen's name.
     for c in "/web".chars() {
         key(&mut a, KeyCode::Char(c));
@@ -3413,4 +3436,157 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('m'));
     assert!(screen(&mut a).contains("mark done"));
+}
+
+/// The names root sees, as `sudo ss -tulpn` (or the inventory read) gives them.
+fn names(a: &mut App) {
+    data(
+        a,
+        Kind::Listeners,
+        Payload::Listeners(sentry_core::collectors::net::parse_listen(&fixture(
+            "ss-tulpn.txt",
+        ))),
+    );
+}
+
+#[test]
+fn network_badge_counts_new() {
+    let mut a = app();
+    let s = render_to_string(&mut a, 158, 41);
+    // tcp and udp 443 on both families and tcp 8080: five nothing expects (22 is in
+    // listeners:, 5432 is local, udp 68 a client).
+    assert!(s.contains("3 Network 5"), "{s}");
+    key(&mut a, KeyCode::Char('3'));
+    assert_eq!(a.screen, ScreenId::Net);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Listening · ss -tulpn · 9 · 5 new"), "{s}");
+    assert!(
+        s.contains("Established · 3") && s.contains("198.51.100.23:40112"),
+        "{s}"
+    );
+    for word in ["NEW", "baseline", "local", "client"] {
+        assert!(s.contains(word), "{word}: {s}");
+    }
+    // A port a container publishes says so; its own user's process has its name.
+    assert!(
+        s.contains("container web") || s.contains("needs sudo: ss -tulpn"),
+        "{s}"
+    );
+    assert!(s.contains("app (901)"), "{s}");
+    // :network and :net come here; / filters like sentry's.
+    key(&mut a, KeyCode::Char('1'));
+    for c in ":net".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.screen, ScreenId::Net);
+    for c in "/8080".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Listening · ss -tulpn · 1 · 1 new"), "{s}");
+    // A asks about the selected socket; nothing is sent before Enter.
+    key(&mut a, KeyCode::Char('A'));
+    let p = a.consent_text().expect("the brief");
+    assert!(
+        p.contains("A listening socket on the server (ss -tulpn): tcp 0.0.0.0:8080")
+            && p.contains("process: app (901)")
+            && p.contains("new (not expected)"),
+        "{p}"
+    );
+}
+
+#[test]
+fn names_come_from_the_inventory_read() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('3'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("sshd"), "{s}");
+    names(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("sshd (612)") && s.contains("postgres (1440)"),
+        "{s}"
+    );
+    assert!(!s.contains("needs sudo"), "{s}");
+    // sudo asks for a password and nothing was read with it yet: I reads them.
+    let mut a = app();
+    data(
+        &mut a,
+        Kind::Sudo,
+        Payload::Sudo(crate::remote::SudoMode::Password),
+    );
+    key(&mut a, KeyCode::Char('3'));
+    assert!(render_to_string(&mut a, 158, 41).contains("needs I"));
+}
+
+#[test]
+fn b_marks_every_family_of_the_port_and_the_finding() {
+    let mut a = app();
+    names(&mut a);
+    key(&mut a, KeyCode::Char('3'));
+    for c in "/tcp".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    // Rows are sorted by proto, address, port: 0.0.0.0:22, 0.0.0.0:443 …
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('b'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("tcp 443: expected (baseline.toml)"), "{s}");
+    // Both families, by the name root sees; the finding too. Nothing is written in tests.
+    let b = &a.store.baseline;
+    assert_eq!(
+        b.listeners,
+        ["0.0.0.0:443/docker-proxy", "[::]:443/docker-proxy"]
+    );
+    assert_eq!(b.findings, ["srv:listener:tcp:443"]);
+    // A baseline entry is an address, a port and a process, not a protocol: docker-proxy's
+    // udp 443 is covered with it, as in sentry.
+    assert!(s.contains("3 Network 1"), "only 8080 is still new: {s}");
+    // Without the name, the entry must still match once I shows it.
+    let mut a = app();
+    key(&mut a, KeyCode::Char('3'));
+    for c in "/udp".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('b'));
+    assert_eq!(a.store.baseline.listeners, ["0.0.0.0:443/*", "[::]:443/*"]);
+    names(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("3 Network 1"), "still expected with names: {s}");
+    // A local or client socket has nothing to mark (the DHCP client's, the second row).
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('b'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("not reachable from outside"), "{s}");
+}
+
+#[test]
+fn b_again_unmarks() {
+    let mut a = app();
+    key(&mut a, KeyCode::Char('3'));
+    for c in "/8080".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('b'));
+    assert_eq!(a.store.baseline.listeners, ["0.0.0.0:8080/app"]);
+    assert!(render_to_string(&mut a, 158, 41).contains("baseline"));
+    key(&mut a, KeyCode::Char('b'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("tcp 8080: no longer expected"), "{s}");
+    assert!(a.store.baseline.listeners.is_empty() && a.store.baseline.findings.is_empty());
+    assert!(s.contains("3 Network 5"), "{s}");
+    // What server_config.yaml expects stays expected: it isn't rewritten.
+    key(&mut a, KeyCode::Esc);
+    for c in "/:22".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('b'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("still expected by server_config.yaml"), "{s}");
 }

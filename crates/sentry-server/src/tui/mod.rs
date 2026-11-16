@@ -41,11 +41,13 @@ impl From<Input> for Ev {
     }
 }
 
-/// This program's screens, with sentry's numbers and names: `1` Dashboard, `4` Containers,
+/// This program's screens, with sentry's numbers and names: `1` Dashboard, `3` Network,
+/// `4` Containers,
 /// `5` Services (where sentry has Flatpaks), `6` Maintenance, `0` the workflow run.
 pub const SCREENS: ScreenSet = ScreenSet {
     ids: &[
         ScreenId::Dash,
+        ScreenId::Net,
         ScreenId::Cont,
         ScreenId::Svc,
         ScreenId::Maint,

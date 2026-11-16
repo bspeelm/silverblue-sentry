@@ -10,6 +10,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 pub mod containers;
 pub mod dashboard;
 pub mod maint;
+pub mod network;
 pub mod report;
 pub mod services;
 pub mod upgrade;
@@ -114,6 +115,7 @@ pub struct Screens {
     pub svc: services::Services,
     pub maint: maint::Maint,
     pub upgrade: upgrade::Upgrade,
+    pub net: network::Network,
 }
 
 impl Screens {
@@ -139,6 +141,13 @@ impl Screens {
             }
             ScreenId::Svc => vec![at(Kind::Units, None), at(Kind::Journal, None)],
             ScreenId::Cont => vec![at(Kind::Docker, None)],
+            // One `ss` without sudo while it's shown; the names root sees and the
+            // containers' ports are read once.
+            ScreenId::Net => vec![
+                at(Kind::Sockets, Some(FAST)),
+                at(Kind::Listeners, None),
+                at(Kind::Docker, None),
+            ],
             ScreenId::Maint => vec![
                 at(Kind::Maint, None),
                 at(Kind::Docker, None),
@@ -175,6 +184,7 @@ impl Screens {
             ScreenId::Svc => services::unit_rows(v).len(),
             ScreenId::Cont => containers::container_list(v).len(),
             ScreenId::Maint => maint::count(v),
+            ScreenId::Net => network::rows(v).len(),
             // The list, while nothing runs.
             ScreenId::Upgrade if v.wf.is_none() => v.wf_list.len(),
             _ => 0,
@@ -197,6 +207,7 @@ impl Screens {
             ScreenId::Cont => self.cont.handle(a, v, r),
             ScreenId::Maint => self.maint.handle(a, v, r),
             ScreenId::Upgrade => self.upgrade.handle(a, v, r),
+            ScreenId::Net => self.net.handle(a, v),
             _ => Vec::new(),
         }
     }
@@ -210,6 +221,7 @@ impl Screens {
             ScreenId::Cont => containers::containers(f, area, v),
             ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Upgrade => upgrade::draw(f, area, v),
+            ScreenId::Net => self.net.render(f, area, v),
             _ => {}
         }
     }
@@ -237,6 +249,7 @@ impl Screens {
                 h
             }
             ScreenId::Upgrade => upgrade::hints(v),
+            ScreenId::Net => network::hints(),
             _ => Vec::new(),
         }
     }
@@ -273,6 +286,11 @@ impl Screens {
                 (n > 0).then(|| (format!(" {n}"), t.red))
             }
             ScreenId::Maint => maint::badge(v),
+            // Listeners open to the network that nothing expects.
+            ScreenId::Net => {
+                let n = network::new_count(v);
+                (n > 0).then(|| (format!(" {n}"), t.red))
+            }
             // A run in progress.
             ScreenId::Upgrade => {
                 v.wf.filter(|s| !s.done())
@@ -284,7 +302,10 @@ impl Screens {
 
     /// Screens whose list `/` filters.
     pub fn filterable(id: ScreenId) -> bool {
-        matches!(id, ScreenId::Svc | ScreenId::Cont | ScreenId::Maint)
+        matches!(
+            id,
+            ScreenId::Svc | ScreenId::Cont | ScreenId::Maint | ScreenId::Net
+        )
     }
 
     /// Keys that change the server as root: sudo is checked again first.
@@ -303,6 +324,7 @@ impl Screens {
             ScreenId::Cont => &mut self.cont.cur,
             ScreenId::Maint => &mut self.maint.cur,
             ScreenId::Upgrade => &mut self.upgrade.cur,
+            ScreenId::Net => &mut self.net.cur,
             _ => &mut self.dash.cur,
         }
     }
@@ -314,6 +336,7 @@ impl Screens {
             ScreenId::Cont => self.cont.cur.sel,
             ScreenId::Maint => self.maint.cur.sel,
             ScreenId::Upgrade => self.upgrade.cur.sel,
+            ScreenId::Net => self.net.cur.sel,
             _ => self.dash.cur.sel,
         }
     }

@@ -6,6 +6,7 @@ pub mod apt;
 pub mod docker;
 pub mod health;
 pub mod probe;
+pub mod sockets;
 pub mod units;
 
 use jiff::Timestamp;
@@ -287,6 +288,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
         "fail2ban" => j(serde_json::to_value(health::fail2ban(r)?)),
         "disks" => j(serde_json::to_value(disks(r)?)),
         "listeners" => j(serde_json::to_value(listeners(r)?)),
+        "sockets" => j(serde_json::to_value(sockets::collect(r)?)),
         "journal" => j(serde_json::to_value(journal(r)?)),
         "snapshot" => j(serde_json::to_value(snapshot(r)?)),
         k => Err(SrvError::Failed(format!(
@@ -308,6 +310,7 @@ pub const KINDS: &[&str] = &[
     "fail2ban",
     "disks",
     "listeners",
+    "sockets",
     "journal",
     "snapshot",
 ];

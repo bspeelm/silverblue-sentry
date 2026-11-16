@@ -29,6 +29,8 @@ pub enum Kind {
     Smart,
     Jails,
     Listeners,
+    /// What listens and what's connected, without sudo (the Network screen's sample).
+    Sockets,
     Journal,
     /// The newest stored report (local disk, instant).
     Report,
@@ -56,6 +58,7 @@ pub enum Payload {
     Smart(Vec<Result<health::Smart, SrvError>>),
     Jails(Vec<health::Jail>),
     Listeners(Vec<net::Listener>),
+    Sockets(collect::sockets::Sockets),
     Journal(Vec<JournalUnit>),
     Report(Option<Box<Report>>),
     /// A report with the one before it, and where it is among those kept.
@@ -141,7 +144,12 @@ pub struct Store {
     pub apt: Slot<apt::Apt>,
     pub smart: Slot<Vec<Result<health::Smart, SrvError>>>,
     pub jails: Slot<Vec<health::Jail>>,
+    /// Listeners with the process names only root sees (sudo, or the inventory read).
     pub listeners: Slot<Vec<net::Listener>>,
+    pub sockets: Slot<collect::sockets::Sockets>,
+    /// What's marked expected (`servers/<name>/baseline.toml`): read at start and after
+    /// each change, never while drawing.
+    pub baseline: sentry_core::baseline::BaselineFile,
     pub journal: Slot<Vec<JournalUnit>>,
     pub report: Slot<Option<Box<Report>>>,
     /// What the audit report view shows (`F` on Maintenance): a report and the one before.
@@ -214,6 +222,7 @@ impl Store {
             Payload::Smart(v) => self.smart.set(Ok(v)),
             Payload::Jails(v) => self.jails.set(Ok(v)),
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
+            Payload::Sockets(v) => self.sockets.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
             Payload::Report(v) => {
                 self.report.set(Ok(v));
@@ -249,6 +258,7 @@ impl Store {
             Kind::Smart => self.smart.err = Some(e),
             Kind::Jails => self.jails.err = Some(e),
             Kind::Listeners => self.listeners.err = Some(e),
+            Kind::Sockets => self.sockets.err = Some(e),
             Kind::Journal => self.journal.err = Some(e),
             Kind::Report | Kind::ReportAt(_) | Kind::Audit => self.report.err = Some(e),
             Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
@@ -307,6 +317,7 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Smart => Payload::Smart(r.cfg.smart.iter().map(|d| health::smart(r, d)).collect()),
         Kind::Jails => Payload::Jails(health::fail2ban(r)?),
         Kind::Listeners => Payload::Listeners(collect::listeners(r)?),
+        Kind::Sockets => Payload::Sockets(collect::sockets::collect(r)?),
         Kind::Journal => Payload::Journal(collect::journal(r)?),
         Kind::Report => Payload::Reports(Box::new(audit::shown(&r.name, None))),
         Kind::ReportAt(i) => Payload::Reports(Box::new(audit::shown(&r.name, Some(i as usize)))),

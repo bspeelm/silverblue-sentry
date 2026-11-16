@@ -37,6 +37,14 @@ pub enum Effect {
     Info(String, Vec<Line<'static>>),
     Goto(ScreenId),
     Expected(String, bool),
+    /// `b` on Network: a port's listeners (their baseline keys) and its finding are expected
+    /// from now on, or not any more. `what` names the port for the toast.
+    ListenExpected {
+        keys: Vec<String>,
+        id: String,
+        what: String,
+        on: bool,
+    },
     Quit,
     Confirm(Modal),
     /// Stream a command's output into the pane (after a confirm).
@@ -413,6 +421,7 @@ impl App {
                 crate::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
             // Before the old plans move: their file also held the review dates.
             self.store.later = sentry_core::maint::later::load(&self.remote.name);
+            self.store.baseline = sentry_core::baseline::BaselineFile::load(&self.remote.name);
             crate::maint::migrate_plans(&self.remote.name);
             self.store.plans = crate::maint::plan::list(&self.remote.name);
             self.store.review = crate::maint::review::latest(&self.remote.name);
@@ -1282,24 +1291,27 @@ impl App {
                     }
                 }
                 // `id` may be a pattern (`B`: `srv:container:*`).
+                Effect::ListenExpected { keys, id, what, on } => {
+                    self.listen_expected(keys, &id, &what, on)
+                }
                 Effect::Expected(id, on) => {
-                    match crate::audit::set_expected(&self.remote.name, &id, on) {
+                    // What's in memory is the file as last read; tests write nothing.
+                    let mut b = self.store.baseline.clone();
+                    let changed = crate::audit::set_expected_in(&mut b, &id, on);
+                    let saved = if changed && !self.offline {
+                        b.save(&self.remote.name).map(|_| true)
+                    } else {
+                        Ok(changed)
+                    };
+                    if saved.is_ok() {
+                        self.store.baseline = b;
+                    }
+                    match saved {
                         // Still expected by something else: a pattern, or the config.
                         Ok(false) if !on => self
                             .toast("expected by a pattern or server_config.yaml: change it there"),
                         Ok(_) => {
-                            let hit = |f: &sentry_core::finding::Finding| {
-                                sentry_core::baseline::glob(&id, &f.id)
-                            };
-                            let reports = [
-                                self.store.report.value.as_mut().and_then(|r| r.as_mut()),
-                                self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
-                            ];
-                            for r in reports.into_iter().flatten() {
-                                for f in r.findings.iter_mut().filter(|f| hit(f)) {
-                                    f.expected = on;
-                                }
-                            }
+                            self.mark_findings(&id, on);
                             self.keep_maint_selection();
                             self.toast(if on {
                                 "marked expected"
@@ -1313,6 +1325,69 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    /// Set `expected` on the stored findings an id (or pattern) covers.
+    fn mark_findings(&mut self, id: &str, on: bool) {
+        let reports = [
+            self.store.report.value.as_mut().and_then(|r| r.as_mut()),
+            self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
+        ];
+        for r in reports.into_iter().flatten() {
+            for f in r
+                .findings
+                .iter_mut()
+                .filter(|f| sentry_core::baseline::glob(id, &f.id))
+            {
+                f.expected = on;
+            }
+        }
+    }
+
+    /// `b` on Network: the port's listeners and its finding go into the baseline file, or
+    /// come out of it. No box: it's one local file, and `b` again undoes it.
+    fn listen_expected(&mut self, keys: Vec<String>, id: &str, what: &str, on: bool) {
+        let mut b = self.store.baseline.clone();
+        if on {
+            for k in &keys {
+                if !b.listeners.contains(k) {
+                    b.listeners.push(k.clone());
+                }
+            }
+            crate::audit::set_expected_in(&mut b, id, true);
+        } else {
+            b.drop_listeners(&keys);
+            crate::audit::set_expected_in(&mut b, id, false);
+        }
+        if !self.offline
+            && let Err(e) = b.save(&self.remote.name)
+        {
+            return self.toast(&format!("couldn't save: {e}"));
+        }
+        self.store.baseline = b;
+        if on {
+            self.mark_findings(id, true);
+            self.keep_maint_selection();
+            return self.toast(&format!("{what}: expected (baseline.toml)"));
+        }
+        // Still expected: the config says so, which sentry-server doesn't rewrite.
+        let cfg = &self.remote.cfg;
+        let still = cfg
+            .findings
+            .iter()
+            .any(|g| sentry_core::baseline::glob(g, id))
+            || keys.iter().any(|k| {
+                cfg.listeners
+                    .iter()
+                    .any(|p| sentry_core::baseline::listener_entry_matches(p, k))
+            });
+        if still {
+            self.toast("still expected by server_config.yaml");
+        } else {
+            self.mark_findings(id, false);
+            self.keep_maint_selection();
+            self.toast(&format!("{what}: no longer expected"));
+        }
     }
 
     /// The workflows there are (a server's own, else the seeded ones), with their last runs.
@@ -3163,16 +3238,16 @@ impl App {
             })
             .collect();
         if !self.offline {
-            later.extend(
-                crate::audit::load_baseline(name)
-                    .findings
-                    .into_iter()
-                    .map(|k| LaterRow {
-                        kind: LaterKind::Expected,
-                        key: k,
-                        file: "baseline.toml",
-                    }),
-            );
+            later.extend(self.store.baseline.findings.iter().map(|k| LaterRow {
+                kind: LaterKind::Expected,
+                key: k.clone(),
+                file: "baseline.toml",
+            }));
+            later.extend(self.store.baseline.listeners.iter().map(|k| LaterRow {
+                kind: LaterKind::Listener,
+                key: k.clone(),
+                file: "baseline.toml",
+            }));
             let tracked = crate::maint::tracked::load(name);
             later.extend(
                 tracked
@@ -3336,7 +3411,17 @@ impl App {
                         }
                         self.fetch(Kind::Maint);
                     }
-                    LaterKind::Listener => {}
+                    // A listener marked expected on Network: new again.
+                    LaterKind::Listener => {
+                        let mut b = self.store.baseline.clone();
+                        b.listeners.retain(|k| k != &row.key);
+                        if !self.offline
+                            && let Err(e) = b.save(&name)
+                        {
+                            return self.toast(&format!("baseline.toml: {e}"));
+                        }
+                        self.store.baseline = b;
+                    }
                 }
                 self.toast(&format!("{}: back on Maintenance", row.key));
                 let item = None;

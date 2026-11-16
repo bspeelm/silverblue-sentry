@@ -93,6 +93,7 @@ pub fn nothing_here(tab: ScreenId, v: &View) -> &'static str {
         ScreenId::Cont if v.s.docker.value.is_none() => "the containers are still loading",
         ScreenId::Svc if v.s.units.value.is_none() => "the services are still loading",
         ScreenId::Maint => "the maintenance is still loading",
+        ScreenId::Net if v.s.sockets.value.is_none() => "the sockets are still loading",
         _ => "nothing selected to ask about here",
     }
 }
@@ -194,6 +195,14 @@ pub fn ask_for(tab: ScreenId, v: &View, r: &Remote) -> Option<Ask> {
                 format!("{} · overview", r.name),
                 format!("{h}What sentry-server shows right now:\n{rows}"),
                 "How is this server doing? What needs attention, and what should I do first?",
+            ))
+        }
+        ScreenId::Net => {
+            let l = super::screens::network::selected(v)?;
+            Some(Ask::new(
+                format!("{} · {} {}", r.name, l.proto, l.local()),
+                format!("{h}{}", super::screens::network::ask_text(v, &l)),
+                "What is this, does it need to be reachable, and how do I close it if not?",
             ))
         }
         ScreenId::Svc => {
