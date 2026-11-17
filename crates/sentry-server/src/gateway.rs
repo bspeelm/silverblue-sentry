@@ -403,7 +403,7 @@ mod tests {
             "true && /sbin/shutdown -h now",
             "sudo systemctl reboot",
             "cat /etc/shadow",
-            "sudo cat /opt/stack/.env",
+            "sudo cat /srv/app/.env",
             "cat ~/.ssh/id_ed25519",
             "",
         ] {
