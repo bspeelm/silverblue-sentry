@@ -162,7 +162,7 @@ fn one(
             }
             None => {
                 s.note
-                    .get_or_insert_with(|| "not looked up yet (c on the Maintenance tab)".into());
+                    .get_or_insert_with(|| "not looked up yet (c on Maintenance)".into());
             }
         }
     }
@@ -259,7 +259,7 @@ pub fn findings(statuses: &[Status], items: &[MaintItem]) -> Vec<Finding> {
                 format!("{}: newer releases mention security fixes ({})", s.id, fixes.join(", ")),
                 "Upstream released versions after the pinned one whose notes mention a security fix.",
                 format!("Pinned at {pinned}; the fix may matter for how this server uses it."),
-                "Plan the move (p on the Maintenance tab): Claude reads the release notes first.".into(),
+                "Plan the move (p on Maintenance): Claude reads the release notes first.".into(),
             ));
         }
         if s.has(Flag::Drift) {
@@ -317,7 +317,7 @@ pub fn findings(statuses: &[Status], items: &[MaintItem]) -> Vec<Finding> {
                 format!("{}: {pinned} → {newest} ({} newer)", s.id, s.newer.len()),
                 "Newer versions exist upstream.",
                 "Staying far behind makes the eventual move bigger.".into(),
-                "Plan the move when it suits (p on the Maintenance tab).".into(),
+                "Plan the move when it suits (p on Maintenance).".into(),
             ));
         }
         if s.has(Flag::Retire) {

@@ -1,0 +1,27 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: body(&s)
+---
+ 1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance 8   0 Upgr
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Recommended · 11 · audited 1h ago ──────┐ ┌ Details ─────────────────────────┐
+│          What         Why               │ │ now  4 package update(s)         │
+│ now      4 package up apt-maintenance a │ │ waiting, 1 for security          │
+│ now      backup.servi Whatever it provi │ │                                  │
+│ now      backup.timer Scheduled work (b │ │ apt-maintenance applies them.    │
+│ now      container db The service it pr │ │                                  │
+│ soon     os: end of l Fixes stop on 202 │ │ Enter: start apt-maintenance     │
+│ soon     A reboot has Running 6.1.0-9-a │ │                                  │
+└─────────────────────────────────────────┘ │ ● reboot required for 8d ·       │
+┌ Items · 4 · upstream not looked up yet ─┐ │ running 6.1.0-9-amd64 · newest   │
+│ Item                State               │ │ installed 6.1.0-25-amd64         │
+│ web                 security · 2 newer  │ │   asked for by                   │
+│ engine              held · 1 newer      │ │ linux-image-6.1.0-25-amd64       │
+│ legacy              to retire           │ │ package lists refreshed 4h ago · │
+│ os                  eol soon            │ │ unattended upgrade ran 8h ago    │
+│                                         │ │ held back (phased or would       │
+│                                         │ │ remove packages): libfoo1        │
+└─────────────────────────────────────────┘ └──────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  start   z  later   A  claude   c  check   ?  help   q  quit

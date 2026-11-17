@@ -1,6 +1,6 @@
 //! What's newer upstream, looked up from this machine (never from the server) with `curl`:
 //! GitHub releases, Docker Hub and GHCR tags, endoflife.date. Cached per server for a day;
-//! fetched only when asked (`c` on the Maintenance tab, `sentry-server maint --refresh`).
+//! fetched only when asked (`c` on Maintenance, `sentry-server maint --refresh`).
 
 use std::collections::BTreeMap;
 

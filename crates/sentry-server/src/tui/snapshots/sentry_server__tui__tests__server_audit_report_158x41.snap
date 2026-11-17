@@ -1,0 +1,44 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Maintenance › Audit report  Esc back
+┌ Findings · 2026-10-26-110000 (2/2) ──────────────────────────────────────────┐  ┌ Changes · since the audit before ────────────────────────────────────────┐
+│ Worth a look on this server.                                                 │  │ Changed: 1 new, 1 gone                                                   │
+│ Enter = fix it (Claude helps) · x = expected on/off · A = ask Claude · c = … │  │                                                                          │
+│        AREA      FINDING                                                     │  │ New since the previous audit                                             │
+│ check  container container db is exited (exit 137, killed: out of memory)    │  │ + check  container db is exited (exit 137, killed: out of memory)        │
+│ check  services  backup.service is failed (failed)                           │  │                                                                          │
+│ check  timers    backup.timer: last run failed (exit-code, exit 1)           │  │ Gone since the previous audit                                            │
+│ check  updates   1 security update(s) waiting                                │  │ - review old.service is failed                                           │
+│ review updates   reboot required for 8 days                                  │  │                                                                          │
+│ review services  report.service failed                                       │  │ Not checked                                                              │
+│ info   container container web restarted 9 h ago (3 restarts in total)       │  │   fail2ban: needs sudo: add `fail2ban-client status` to sudo: in server… │
+│ ok     container container runner can control docker (docker.sock mounted)   │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│ 4 to check · 2 to review · 1 info   not collected: fail2ban                  │  │                                                                          │
+│ ──────────────────────────────────────────────────────────────────────────── │  │                                                                          │
+│ What   A container isn't running.                                            │  │                                                                          │
+│ Why    The service it provides is down.                                      │  │                                                                          │
+│ To do  Look at its logs (L on Containers), then restart it (R) or bring the  │  │                                                                          │
+│        project up (u).                                                       │  │                                                                          │
+│ Fix    press Enter: Claude looks into it and plans the fix                   │  │                                                                          │
+│        postgres:17 · exited                                                  │  │                                                                          │
+│        srv:container-down:db                                                 │  │                                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  select   Enter  fix (with Claude)   x  expected on/off   B  all like it   c  run audit   A  ask Claude   ?  help   q  quit

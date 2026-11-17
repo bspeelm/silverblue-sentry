@@ -1,0 +1,42 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: "shown.join(\"\\n\")"
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Remove
+ ▸[x] item   legacy                stop tracking                                 Its replacement has run for months.
+ Add
+  [x] task   web-next              Plan web to 1.5.2 · once                      Security fix.
+  [x] task   restore-test          Test a backup restore · every 180d            Never tried.
+  [x] task   extra                 Something else · once
+  [x] track  image:cache           compose service cache (example/cache:7.2) ·…  Unpinned and unwatched.
+ Change
+  [x] item   web                   risk high                                     1.5 can't be undone.
+ Put off
+  [x] later  os                    until 2099-01-01 · os: end of life soon       Nothing to do before the next release.
+   not used: ignore image:nope: discovery found no such thing
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ item legacy: stop tracking
+ Its replacement has run for months.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Maintenance review · myserver
+
+
+ Now
+ - web
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  apply the ticked   Space  tick/untick   j/k  select   PgUp/Dn  scroll   R  review again   Esc  back   the review is saved: 7 changes to apply (Enter)

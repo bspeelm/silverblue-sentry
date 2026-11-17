@@ -1,32 +1,31 @@
-//! State, keys, refresh schedule and the frame around the tabs.
+//! State, keys, refresh schedule and the frame around the screens.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::ExitStatus;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::text::Line;
 
 use super::data::{Kind, Store};
 use super::planview;
-use super::tabs::{self, View};
-use super::{Ev, Tab};
+use super::screens::{Screens, View};
+use super::{Ev, SCREENS};
 use crate::maint::plan::{PlanDoc, PlanStatus};
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Exec, Session};
 use sentry_core::claude::{self, Ask};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
-use sentry_core::maint::tasks::SugState;
+use sentry_core::tui::ScreenId;
 use sentry_core::tui::chat::{self as chatmod, Chat};
+use sentry_core::tui::frame::{self, Layer};
+use sentry_core::tui::input::{Input, PromptLine, Typed};
 use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::modal;
 use sentry_core::tui::theme::Theme;
-use sentry_core::tui::widgets::{self, chip};
+use sentry_core::tui::widgets;
 use sentry_core::workflows::Entry;
 use sentry_core::workflows::runner::Next;
 
@@ -36,8 +35,16 @@ pub enum Effect {
     Fetch(Kind),
     Toast(String),
     Info(String, Vec<Line<'static>>),
-    Goto(Tab),
+    Goto(ScreenId),
     Expected(String, bool),
+    /// `b` on Network: a port's listeners (their baseline keys) and its finding are expected
+    /// from now on, or not any more. `what` names the port for the toast.
+    ListenExpected {
+        keys: Vec<String>,
+        id: String,
+        what: String,
+        on: bool,
+    },
     Quit,
     Confirm(Modal),
     /// Stream a command's output into the pane (after a confirm).
@@ -48,7 +55,7 @@ pub enum Effect {
     /// Read-only output, fetched once, shown in the scrollable pane.
     Logs(String, Cmd),
     /// Pick one of several (digits 1-9).
-    Choose(String, Vec<Choice>),
+    Choose(Choice),
     /// Workflow actions.
     Wf(WfCmd),
     /// Read what needs root, with the terminal handed over for the password (after a confirm).
@@ -65,8 +72,6 @@ pub enum Effect {
     LogOpen(Option<String>),
     /// The latest maintenance review (or the box to write one).
     ReviewOpen,
-    /// Claude writes a maintenance review (after the confirm box), with this request.
-    ReviewWrite(String),
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(crate::config::MaintItem),
     /// Don't suggest it again: (discovery key, its id).
@@ -77,8 +82,12 @@ pub enum Effect {
     StartWorkflow(String),
     /// Ask Claude how to fix an audit finding (the consent box first).
     FixFinding(String),
-    /// `w`: pick a workflow to start.
-    ChooseWorkflow,
+    /// The workflows are read again (`r` on screen 0).
+    ReloadWorkflows,
+    /// Open a workflow's file in $EDITOR (read again after).
+    EditWorkflow(std::path::PathBuf),
+    /// The current step's log, in the pane.
+    StepLog,
     /// Select the first Maintenance recommendation whose key starts with this.
     MaintFind(String),
     /// Select an item's row on Maintenance.
@@ -104,15 +113,12 @@ pub enum Effect {
     ApplyAsk,
     /// Just ask (the first), with what applying it would be (`a` in the chat).
     AskWith(Box<Ask>, Box<Ask>),
-    /// A review's suggested task: added to `tasks.toml`, or skipped.
-    TaskAdd(Box<sentry_core::maint::tasks::Task>),
-    TaskSkip(String),
     /// Take a task off `tasks.toml`.
     TaskRemove(String),
     /// A task done by hand: logged (tagged `task:<id>`), then the note box.
     TaskDone(String),
-    /// Open this server's tasks.toml in $EDITOR (read again after).
-    EditTasks,
+    /// Ask how often a task recurs (`e`): written to this server's tasks.toml.
+    TaskEvery(String),
 }
 
 /// Where the answer to read requests goes back to.
@@ -123,14 +129,73 @@ pub enum ReadsFor {
 }
 
 /// A workflow's `[vars]` being asked for, one at a time, before it starts.
-struct VarInput {
+#[derive(Clone, Debug)]
+pub struct VarInput {
     workflow: String,
     /// (name, prompt, default), in the order asked.
     asks: Vec<(String, String, Option<String>)>,
     values: BTreeMap<String, String>,
-    buf: String,
     /// Why the last answer wasn't taken.
     note: Option<String>,
+}
+
+/// What the one input line in the key bar asks for.
+#[derive(Clone, Debug)]
+pub enum Prompt {
+    /// A workflow's values, before it starts.
+    WfVar(VarInput),
+    /// A note for the entry a run, a plan or a task just wrote (optional).
+    LogNote(Box<crate::maint::log::LogEntry>),
+    /// A note added to an entry from Records.
+    LogAddNote(Box<crate::maint::log::LogEntry>),
+    /// A note for Claude before it plans an item (optional).
+    PlanNote(String, Box<PlanDoc>),
+    /// What to change in an item's plan.
+    PlanRevise(String),
+    /// A task's cadence (its id): `30d`, `off`.
+    TaskEvery(String),
+}
+
+impl PromptLine for Prompt {
+    fn label(&self) -> String {
+        match self {
+            Prompt::WfVar(v) => match v.current() {
+                Some((name, prompt, _)) => format!(
+                    "{} {}/{} · {prompt} ({name}): ",
+                    v.workflow,
+                    v.values.len() + 1,
+                    v.asks.len()
+                ),
+                None => format!("{}: ", v.workflow),
+            },
+            Prompt::LogNote(e) | Prompt::LogAddNote(e) => format!(
+                "{} {} · for the maintenance log, what to know next time (optional): ",
+                e.head.item.as_deref().unwrap_or(&e.head.workflow),
+                e.head.result
+            ),
+            Prompt::PlanNote(id, plan) => format!(
+                "plan {id} → {} · a note (optional): ",
+                plan.head.to.as_deref().unwrap_or("retire")
+            ),
+            Prompt::PlanRevise(_) => "revise the plan: ".into(),
+            Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
+        }
+    }
+
+    fn enter_word(&self) -> &'static str {
+        match self {
+            Prompt::WfVar(_) => "next",
+            Prompt::PlanRevise(_) => "send",
+            _ => "save",
+        }
+    }
+
+    fn note(&self) -> Option<&str> {
+        match self {
+            Prompt::WfVar(v) => v.note.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 impl VarInput {
@@ -159,8 +224,8 @@ pub enum WfCmd {
     Close,
 }
 
-/// One entry of a chooser: its label and what picking it does.
-pub type Choice = (String, Vec<Effect>);
+/// A numbered choice between actions.
+pub type Choice = modal::Choice<Effect>;
 
 #[derive(Clone, Debug)]
 pub struct RunSpec {
@@ -191,34 +256,33 @@ const PANE_LINES: usize = 5000;
 
 pub type Modal = modal::Modal<Effect>;
 
-#[derive(Default)]
-struct Sched {
-    probe: Option<Instant>,
-    fast: Option<Instant>,
-    slow: Option<Instant>,
-}
-
-const PROBE: Duration = Duration::from_secs(1);
-const FAST: Duration = Duration::from_secs(5);
-const SLOW: Duration = Duration::from_secs(60);
-/// Updates and the apt simulation are slow-moving; re-read on entering the tab at most hourly.
-const APT_MAX_AGE: Duration = Duration::from_secs(3600);
-
 pub struct App {
     pub remote: Remote,
     tx: Sender<Ev>,
     pub theme: Theme,
     keys: Keymap,
     pub store: Store,
-    pub tab: Tab,
-    cursors: [usize; 4],
+    /// The screen in view.
+    pub screen: ScreenId,
+    screens: Screens,
+    /// The samples taken become the server's metrics ring (History).
+    recorder: crate::recorder::Recorder,
+    /// There's a ring for this server: History is in the strip.
+    has_ring: bool,
+    /// The ring couldn't be written (said once).
+    ring_failed: bool,
     modal: Option<Modal>,
     /// What answering no (n, Esc) to a box does, for the box with that title (usually none).
     modal_no: Option<(String, Vec<Effect>)>,
-    toast: Option<(String, Instant)>,
-    sched: Sched,
+    toast: Option<frame::Toast>,
+    /// When each fetch of the screen in view is next due.
+    due: HashMap<Kind, Instant>,
+    /// While waiting for a reboot: when the boot id is read next.
+    reboot_probe: Option<Instant>,
+    /// Something wrong in `[keys]`, said once the TUI is up.
+    keys_warning: Option<String>,
     pane: Option<Pane>,
-    chooser: Option<(String, Vec<Choice>)>,
+    choice: Option<Choice>,
     suspend: Option<(Cmd, String, Vec<Kind>)>,
     /// The suspended command reboots the server.
     suspend_reboot: bool,
@@ -234,29 +298,16 @@ pub struct App {
     last_change_at: Option<jiff::Timestamp>,
     /// After the log note: offer to read the server again (the run changed what was read).
     offer_reread: bool,
-    /// The log entry waiting for its note, and the note typed so far.
-    log_note: Option<(crate::maint::log::LogEntry, String)>,
-    /// The note is added to an entry from Records (not the one a run or task just wrote).
-    note_add: bool,
     /// Tests: the last entry written with a note.
     pub last_log: Option<crate::maint::log::LogEntry>,
     /// The suspended command edits the config (reload it afterwards).
     suspend_edit: bool,
-    /// The suspended command is a step of an approved plan (its exit advances the plan).
-    /// A plan waiting for its note: (item, plan, the note typed so far).
-    plan_note: Option<(String, PlanDoc, String)>,
     /// Claude writing a plan, in the background.
     writer: Option<planview::Writer>,
     /// The Plan view: the item shown, and lines scrolled from the top.
     plan_view: Option<(String, usize)>,
-    /// What to change in the plan (`r` in the Plan view), being typed.
-    revise_input: Option<String>,
-    /// The Maintenance row selected (`maint::row_key`): kept when the list changes under it.
-    maint_sel: Option<String>,
-    /// The Run view: the workflow in progress (opens when one starts; `0` brings it back).
-    run_view: bool,
-    /// The Review view (`R` on Maintenance), scrolled this far.
-    review_view: Option<usize>,
+    /// The Review window (`R` on Maintenance).
+    review_view: Option<sentry_core::tui::reviewview::ReviewView>,
     /// The Log view (`v` on Maintenance, `:log`).
     /// Records (`v`, `R`, `:log`): tasks, log, plans, reviews, what's put off.
     pub rec_view: Option<sentry_core::tui::records::Records>,
@@ -268,7 +319,9 @@ pub struct App {
     /// The workflow run in progress on this server.
     pub wf: Option<Session>,
     wf_entries: Vec<Entry>,
-    /// Where they come from (shown on the tab).
+    /// The same, each with its last run (screen 0's list).
+    wf_list: Vec<sentry_core::tui::wflist::WfInfo>,
+    /// Where they come from (shown with the run).
     wf_dir: String,
     /// A step running with the terminal handed over, and where its output is captured.
     suspend_step: Option<(usize, String)>,
@@ -281,13 +334,10 @@ pub struct App {
     apply: Option<sentry_core::apply::session::Session>,
     /// sudo's check for the session running (stream id; true: the password's check).
     apply_aux: Option<(u64, bool)>,
-    /// The `:` command line being typed.
-    cmdline: Option<String>,
-    /// A workflow's vars being asked for.
-    var_input: Option<VarInput>,
-    /// Each tab's `/` filter, and whether it's being typed.
-    filters: [String; 4],
-    filtering: bool,
+    /// The line being typed in the key bar: a `/` filter, a `:` command, or a prompt.
+    input: Input<Prompt>,
+    /// Each screen's `/` filter.
+    filters: HashMap<ScreenId, String>,
     pub quit: bool,
     pub dirty: bool,
     /// Fixed clock for snapshot tests.
@@ -298,21 +348,27 @@ pub struct App {
 
 impl App {
     pub fn new(remote: Remote, tx: Sender<Ev>) -> Self {
-        let (keys, _) = Keymap::new(&Default::default());
+        // The same `[keys]` as sentry's (the other program's screens in it are skipped).
+        let (keys, warnings) = Keymap::new(&SCREENS, &sentry_core::config::Config::load().0.keys);
         Self {
             remote: remote.with_inventory(),
             tx,
             theme: Theme::detect(),
             keys,
             store: Store::default(),
-            tab: Tab::Overview,
-            cursors: [0; 4],
+            screen: ScreenId::Dash,
+            screens: Screens::default(),
+            recorder: Default::default(),
+            has_ring: false,
+            ring_failed: false,
             modal: None,
             modal_no: None,
             toast: None,
-            sched: Sched::default(),
+            due: HashMap::new(),
+            reboot_probe: None,
+            keys_warning: warnings.into_iter().next(),
             pane: None,
-            chooser: None,
+            choice: None,
             suspend: None,
             suspend_reboot: false,
             suspend_inventory: false,
@@ -321,23 +377,18 @@ impl App {
             wf_logged: None,
             last_change_at: None,
             offer_reread: false,
-            log_note: None,
-            note_add: false,
             last_log: None,
             suspend_edit: false,
-            plan_note: None,
             writer: None,
             plan_view: None,
-            revise_input: None,
             rec_view: None,
             review_view: None,
-            run_view: false,
-            maint_sel: None,
             suspend_reads: None,
             run_seq: 0,
             reboot_wait: None,
             wf: None,
             wf_entries: Vec::new(),
+            wf_list: Vec::new(),
             wf_dir: "~/.config/sentry/server-workflows/".into(),
             suspend_step: None,
             wf_reboot_id: None,
@@ -345,10 +396,8 @@ impl App {
             chat: None,
             apply: None,
             apply_aux: None,
-            cmdline: None,
-            var_input: None,
+            input: Input::None,
             filters: Default::default(),
-            filtering: false,
             quit: false,
             dirty: true,
             now_override: None,
@@ -373,12 +422,16 @@ impl App {
             );
             self.wf = Session::resume(&self.remote);
             // A run left in progress: show it (its auto steps wait until it's open).
-            self.run_view = self.wf.is_some();
+            if self.wf.is_some() {
+                self.screen = ScreenId::Upgrade;
+            }
             self.inventory_at = crate::inventory::load(&self.remote.name).map(|c| c.fetched_at);
             self.store.upstream_at =
                 crate::maint::upstream::load(&self.remote.name).map(|c| c.fetched_at);
             // Before the old plans move: their file also held the review dates.
             self.store.later = sentry_core::maint::later::load(&self.remote.name);
+            self.store.baseline = sentry_core::baseline::BaselineFile::load(&self.remote.name);
+            self.has_ring = sentry_core::recorder::ring::path(&self.remote.name).exists();
             crate::maint::migrate_plans(&self.remote.name);
             self.store.plans = crate::maint::plan::list(&self.remote.name);
             self.store.review = crate::maint::review::latest(&self.remote.name);
@@ -391,7 +444,10 @@ impl App {
                 .and_then(|e| e.head.ended.or(e.head.started));
             self.load_wf_entries();
         }
-        self.enter(self.tab, now);
+        self.enter(self.screen, now);
+        if let Some(w) = self.keys_warning.take() {
+            self.toast(&w);
+        }
     }
 
     fn fetch(&mut self, k: Kind) {
@@ -402,50 +458,48 @@ impl App {
         self.store.fetch(k, &r, &tx);
     }
 
-    /// Switch tabs; what the tab shows is fetched right away.
-    pub fn enter(&mut self, tab: Tab, now: Instant) {
-        self.tab = tab;
-        self.sched = Sched::default();
-        match tab {
-            Tab::Overview => {
-                // Status rows need a little of everything.
-                for k in [Kind::Units, Kind::Docker, Kind::Report] {
-                    self.fetch(k);
-                }
-                self.fetch_apt_if_stale();
+    /// Switch screens; what the screen shows is fetched right away, and from then on only
+    /// what it polls.
+    pub fn enter(&mut self, id: ScreenId, now: Instant) {
+        // Arriving at Maintenance from elsewhere: its list, not a view left open.
+        if id == ScreenId::Maint && self.screen != ScreenId::Maint {
+            self.screens.maint.view = None;
+        }
+        self.screen = id;
+        if id == ScreenId::Upgrade {
+            if self.wf_entries.is_empty() && !self.offline {
+                self.load_wf_entries();
             }
-            Tab::Services => {
-                self.fetch(Kind::Units);
-                self.fetch(Kind::Journal);
-            }
-            Tab::Containers => self.fetch(Kind::Docker),
-            Tab::Maint => {
-                self.fetch(Kind::Maint);
-                self.fetch(Kind::Docker);
-                self.fetch(Kind::Report);
-                self.fetch_apt_if_stale();
-                // Upstream changes slowly: looked up again at most daily without `c`.
-                let stale = self
-                    .store
-                    .upstream_at
-                    .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
-                if stale && !self.cfg_items_empty() {
-                    self.fetch(Kind::Upstream);
-                }
+            // Its auto steps may run now that it's in view.
+            if let Some(s) = self.wf.as_mut() {
+                s.armed = true;
             }
         }
+        self.due.clear();
+        for p in Screens::polls(id, &self.remote.cfg) {
+            self.fetch(p.kind);
+            if let Some(every) = p.every {
+                self.due.insert(p.kind, now + every);
+            }
+        }
+        // A process's share of a core needs two samples: the second comes sooner.
+        if id == ScreenId::Proc {
+            self.due
+                .insert(Kind::Procs, now + super::screens::processes::SECOND);
+        }
+        let e = self.with_screens(|s, v, _| s.on_enter(id, v));
+        self.apply(e, now);
         self.tick(now);
         self.dirty = true;
     }
 
-    fn cfg_items_empty(&self) -> bool {
-        self.remote.cfg.maintenance.items.is_empty()
-    }
-
-    fn fetch_apt_if_stale(&mut self) {
-        if self.store.apt.at.is_none_or(|t| t.elapsed() > APT_MAX_AGE) {
-            self.fetch(Kind::Apt);
-        }
+    /// The screens with the view they act on (the view borrows the rest of the app).
+    fn with_screens<R>(&mut self, f: impl FnOnce(&mut Screens, &View, &Remote) -> R) -> R {
+        let mut s = std::mem::take(&mut self.screens);
+        let cur = s.cur(self.screen);
+        let r = f(&mut s, &self.view_at(cur), &self.remote);
+        self.screens = s;
+        r
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -457,55 +511,39 @@ impl App {
         {
             self.dirty = true;
         }
-        if self.toast.as_ref().is_some_and(|(_, t)| now >= *t) {
+        if self.toast.as_ref().is_some_and(|t| t.over(now)) {
             self.toast = None;
             self.dirty = true;
         }
-        if self.reboot_wait.is_some() && self.sched.probe.is_none_or(|t| now >= t) {
-            // Every 2 s on any tab until the boot id changes.
+        if self.reboot_wait.is_some() && self.reboot_probe.is_none_or(|t| now >= t) {
+            // Every 2 s on any screen until the boot id changes.
             self.fetch(Kind::Probe);
-            self.sched.probe = Some(now + Duration::from_secs(2));
+            self.reboot_probe = Some(now + Duration::from_secs(2));
         }
-        if self.run_view {
+        if self.screen == ScreenId::Upgrade {
             self.wf_auto();
         }
-        if self.tab != Tab::Overview {
-            return;
-        }
-        if self.sched.probe.is_none_or(|t| now >= t) {
-            self.fetch(Kind::Probe);
-            self.sched.probe = Some(now + PROBE);
-        }
-        if self.sched.fast.is_none_or(|t| now >= t) {
-            self.fetch(Kind::Gpu);
-            self.fetch(Kind::Temp);
-            self.sched.fast = Some(now + FAST);
-        }
-        if self.sched.slow.is_none_or(|t| now >= t) {
-            if self.sched.slow.is_some() {
-                self.fetch(Kind::Units);
-                self.fetch(Kind::Docker);
+        // Only what the screen in view polls.
+        for p in Screens::polls(self.screen, &self.remote.cfg) {
+            if let Some(every) = p.every
+                && self.due.get(&p.kind).is_none_or(|t| now >= *t)
+            {
+                self.fetch(p.kind);
+                self.due.insert(p.kind, now + every);
             }
-            self.fetch(Kind::Disks);
-            if !self.remote.cfg.smart.is_empty() {
-                self.fetch(Kind::Smart);
-            }
-            self.sched.slow = Some(now + SLOW);
         }
     }
 
     pub fn next_due(&self, now: Instant) -> Instant {
         let mut due = now + Duration::from_secs(60);
-        if self.tab == Tab::Overview || self.reboot_wait.is_some() {
-            for t in [self.sched.probe, self.sched.fast, self.sched.slow]
-                .into_iter()
-                .flatten()
-            {
-                due = due.min(t);
-            }
-        }
-        if let Some((_, t)) = &self.toast {
+        for t in self.due.values() {
             due = due.min(*t);
+        }
+        if let Some(t) = self.reboot_probe.filter(|_| self.reboot_wait.is_some()) {
+            due = due.min(t);
+        }
+        if let Some(t) = &self.toast {
+            due = due.min(t.until());
         }
         // A chat or an apply session working in view: its clocks tick.
         if self.chat.as_ref().is_some_and(|c| c.running() && !c.hidden)
@@ -542,10 +580,12 @@ impl App {
                 if k == Kind::Probe {
                     self.check_back();
                 }
+                self.record_sample();
+                if k == Kind::History {
+                    let recorded = |h: &sentry_core::tui::histview::HistData| h.header.is_some();
+                    self.has_ring |= self.store.history.value.as_ref().is_some_and(recorded);
+                }
                 self.keep_maint_selection();
-                let n = self.rows();
-                let c = &mut self.cursors[self.tab.index()];
-                *c = (*c).min(n.saturating_sub(1));
                 self.dirty = true;
             }
             Ev::Run(id, m) => self.on_run(id, m),
@@ -687,6 +727,61 @@ impl App {
     }
 
     /// While rebooting: a probe with a new boot id means it's back.
+    /// A sample just arrived (the Dashboard's probe, or Processes'): it goes towards the
+    /// server's ring, one record every ten seconds. Nothing is read for this.
+    fn record_sample(&mut self) {
+        use crate::recorder::{fresh, root_pct, write};
+        let Some(s) = self.store.sampled.take() else {
+            return;
+        };
+        let st = &self.store;
+        let Some(p) = &st.probe.value else {
+            return;
+        };
+        let now = Instant::now();
+        let temp = fresh(
+            st.temp.value.as_ref().and_then(|t| t.as_ref()),
+            st.temp.at,
+            now,
+        );
+        let gpu = fresh(
+            st.gpu.value.as_ref().and_then(|g| g.as_ref()),
+            st.gpu.at,
+            now,
+        );
+        let Some(rec) = self.recorder.feed(
+            jiff::Timestamp::now().as_second(),
+            s.cpu,
+            s.rx,
+            s.tx,
+            p,
+            temp.map(|t| t.c),
+            gpu.map(|g| (g.util, g.temp)),
+            st.disks.value.as_deref().and_then(root_pct),
+        ) else {
+            return;
+        };
+        match write(&self.remote.name, self.offline, &rec) {
+            Ok(wrote) => self.has_ring |= wrote,
+            Err(e) if !self.ring_failed => {
+                self.ring_failed = true;
+                self.toast(&format!("history isn't being recorded: {e}"));
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// The screens in the strip: History only once something was recorded (`H` still opens
+    /// it), as in sentry.
+    fn visible(&self) -> Vec<ScreenId> {
+        SCREENS
+            .ids
+            .iter()
+            .copied()
+            .filter(|s| *s != ScreenId::Hist || self.has_ring || self.screen == ScreenId::Hist)
+            .collect()
+    }
+
     fn check_back(&mut self) {
         let Some((since, old)) = &self.reboot_wait else {
             return;
@@ -714,20 +809,28 @@ impl App {
     }
 
     fn toast(&mut self, s: &str) {
-        self.toast = Some((s.to_string(), Instant::now() + Duration::from_secs(4)));
+        self.toast = Some(frame::Toast::new(s));
         self.dirty = true;
     }
 
     fn view(&self) -> View<'_> {
+        self.view_at(self.screens.cur(self.screen))
+    }
+
+    /// The view with `cur` as the row selected on the screen in view.
+    fn view_at(&self, cur: usize) -> View<'_> {
         View {
             t: &self.theme,
             s: &self.store,
             cfg: &self.remote.cfg,
             name: &self.remote.name,
-            cur: self.cursors[self.tab.index()],
+            cur,
             now: self.now_override.unwrap_or_else(jiff::Timestamp::now),
-            filter: Some(self.filters[self.tab.index()].as_str())
-                .filter(|f| !f.is_empty() && tabs::filterable(self.tab)),
+            filter: self
+                .filters
+                .get(&self.screen)
+                .map(String::as_str)
+                .filter(|f| !f.is_empty() && Screens::filterable(self.screen)),
             inventory: self
                 .inventory_at
                 .filter(|_| self.store.sudo.value == Some(SudoMode::Password)),
@@ -742,324 +845,195 @@ impl App {
                 .filter(|w| w.running())
                 .map(|w| w.item.clone()),
             plans: &self.store.plans,
+            wf: self.wf.as_ref(),
+            wf_list: &self.wf_list,
         }
     }
 
-    fn rows(&self) -> usize {
-        tabs::rows(self.tab, &self.view())
+    /// What's in front now, for [`frame::layer`]: who gets a key or a paste, and whose keys
+    /// the key bar names.
+    fn open(&self) -> frame::Open {
+        frame::Open {
+            run: self.pane.is_some(),
+            choice: self.choice.is_some(),
+            modal: self.modal.is_some(),
+            apply: self.apply.as_ref().is_some_and(|s| !s.chat.hidden),
+            chat: self.chat.as_ref().is_some_and(|c| !c.hidden),
+            input: self.input.is_open(),
+            docs: self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some(),
+        }
     }
 
     /// A paste goes to the input that has the focus, whole; with none, it does nothing (its
     /// letters must never act as keys).
     fn on_paste(&mut self, text: &str) {
         self.dirty = true;
-        let line = text.replace(['\r', '\n'], " ");
-        let line = line.trim_end();
-        if let Some(buf) = self.cmdline.as_mut() {
-            buf.push_str(line);
-        } else if let Some(buf) = self.revise_input.as_mut() {
-            buf.push_str(line);
-        } else if let Some((.., buf)) = self.plan_note.as_mut() {
-            buf.push_str(line);
-        } else if self.modal.is_some() || self.chooser.is_some() || self.pane.is_some() {
-        } else if let Some((_, buf)) = self.log_note.as_mut() {
-            buf.push_str(line);
-        } else if let Some(s) = self.apply.as_mut().filter(|s| !s.chat.hidden) {
-            s.paste(text);
-        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden && !c.running()) {
-            c.paste(text);
+        match frame::layer(&self.open()) {
+            Layer::Apply => {
+                if let Some(s) = self.apply.as_mut() {
+                    s.paste(text);
+                }
+            }
+            Layer::Chat => {
+                if let Some(c) = self.chat.as_mut().filter(|c| !c.running()) {
+                    c.paste(text);
+                }
+            }
+            Layer::Input => self.input.paste(text),
+            Layer::Run | Layer::Choice | Layer::Modal | Layer::Docs | Layer::Screen => {}
+        }
+    }
+
+    /// The workflow whose values are being asked for.
+    fn asking_vars(&self) -> Option<&str> {
+        match &self.input {
+            Input::Prompt(Prompt::WfVar(v), _) => Some(&v.workflow),
+            _ => None,
         }
     }
 
     fn on_key(&mut self, k: KeyEvent, now: Instant) {
         self.dirty = true;
         self.on_key_inner(k, now);
-        if self.tab == Tab::Maint {
-            self.maint_sel = super::maint::row_key(&self.view());
+        if self.screen == ScreenId::Maint {
+            self.screens.maint.sel = super::screens::maint::row_key(&self.view());
         }
     }
 
-    /// The list changed under the cursor: put it back on the row it was on.
+    /// The lists changed: Maintenance stays on the row it was on, and the cursor in view
+    /// stays inside its list.
     fn keep_maint_selection(&mut self) {
-        if let Some(key) = &self.maint_sel
-            && let Some(i) = super::maint::row_with(&self.view(), key)
-        {
-            self.cursors[Tab::Maint.index()] = i;
-        }
+        let id = self.screen;
+        self.with_screens(|s, v, _| s.clamp(id, v));
     }
 
     fn on_key_inner(&mut self, k: KeyEvent, now: Instant) {
-        if self.cmdline.is_some() {
-            self.cmdline_key(k, now);
-            return;
-        }
-        if self.filtering {
-            self.filter_key(k);
-            return;
-        }
-        if self.var_input.is_some() {
-            self.var_key(k);
-            return;
-        }
-        if self.plan_note.is_some() {
-            self.plan_note_key(k);
-            return;
-        }
-        if self.revise_input.is_some() {
-            self.revise_key(k);
-            return;
-        }
-        if self.log_note.is_some() && self.modal.is_none() {
-            self.log_note_key(k);
-            return;
-        }
-        // Over Records, a plan or a review: a tab key goes there, `:` still works.
-        if (self.rec_view.is_some() || self.review_view.is_some() || self.plan_view.is_some())
-            && self.modal.is_none()
-            && self.chooser.is_none()
-        {
-            match self.keys.resolve(&k) {
-                Some(Action::Screen(id)) if id.key() != '0' => {
-                    if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
+        use modal::{Answer, Pick};
+        match frame::layer(&self.open()) {
+            Layer::Run => return self.pane_key(k),
+            Layer::Choice => {
+                let n = self.choice.as_ref().map_or(0, |c| c.options.len());
+                match modal::pick(&k, n) {
+                    Pick::Option(i) => {
+                        if let Some(c) = self.choice.take() {
+                            self.apply(c.options[i].1.clone(), now);
+                        }
+                    }
+                    Pick::Close => self.choice = None,
+                    Pick::Stay => {}
+                }
+                return;
+            }
+            Layer::Modal => {
+                let has_yes = self.modal.as_ref().is_some_and(|m| m.yes.is_some());
+                match modal::answer(&k, has_yes) {
+                    Answer::Yes => {
+                        self.modal_no = None;
+                        if let Some((_, effects)) = self.modal.take().and_then(|m| m.yes) {
+                            self.apply(effects, now);
+                        }
+                    }
+                    Answer::No => {
+                        let title = self.modal.take().map(|m| m.title);
+                        if let Some((t, effects)) = self.modal_no.take()
+                            && Some(t) == title
+                        {
+                            self.apply(effects, now);
+                        }
+                    }
+                    Answer::Stay => {}
+                }
+                return;
+            }
+            // The apply session and the chat take raw keys (Backspace, any character).
+            Layer::Apply => {
+                let fx = self.apply.as_mut().map(|s| s.key(k)).unwrap_or_default();
+                return self.apply_fx(fx);
+            }
+            Layer::Chat => return self.chat_key(k),
+            Layer::Input => return self.input_key(k, now),
+            Layer::Docs => {
+                // Over Records, a plan or a review: a screen key goes there, `:` still works.
+                match self.keys.resolve(&k) {
+                    Some(Action::Screen(id)) if id != ScreenId::Upgrade => {
                         self.rec_view = None;
                         self.review_view = None;
                         self.plan_view = None;
-                        self.enter(t, now);
+                        return self.enter(id, now);
+                    }
+                    Some(Action::Command) => {
+                        self.input = Input::Command(String::new());
                         return;
                     }
+                    _ => {}
                 }
-                Some(Action::Command) => {
-                    self.cmdline = Some(String::new());
-                    return;
+                if self.rec_view.is_some() {
+                    self.records_key(k, now);
+                } else if self.review_view.is_some() {
+                    self.review_view_key(k);
+                } else {
+                    self.plan_view_key(k, now);
                 }
-                _ => {}
+                return;
             }
-        }
-        if self.rec_view.is_some() && self.modal.is_none() {
-            self.records_key(k, now);
-            return;
-        }
-        if self.review_view.is_some() && self.modal.is_none() && self.chooser.is_none() {
-            self.review_view_key(k);
-            return;
-        }
-        if self.plan_view.is_some()
-            && self.modal.is_none()
-            && self.chooser.is_none()
-            && self.pane.is_none()
-        {
-            self.plan_view_key(k, now);
-            return;
-        }
-        // The apply session and the chat take raw keys (Backspace, any character) before the
-        // keymap, which knows neither; boxes opened from the chat still come first.
-        if self.apply.as_ref().is_some_and(|s| !s.chat.hidden)
-            && self.pane.is_none()
-            && self.chooser.is_none()
-            && self.modal.is_none()
-        {
-            let fx = self.apply.as_mut().map(|s| s.key(k)).unwrap_or_default();
-            self.apply_fx(fx);
-            self.dirty = true;
-            return;
-        }
-        if self.chat.as_ref().is_some_and(|c| !c.hidden)
-            && self.pane.is_none()
-            && self.chooser.is_none()
-            && self.modal.is_none()
-        {
-            self.chat_key(k);
-            return;
+            Layer::Screen => {}
         }
         let Some(a) = self.keys.resolve(&k) else {
             return;
         };
-        if let Some(p) = self.pane.as_mut() {
-            let running = p.done.is_none();
-            let len = p.lines.len();
-            match a {
-                Action::Interrupt if running => {
-                    if let Some(pid) = p.pid {
-                        let _ = kill(pid);
-                        p.lines.push_back("■ stopping…".into());
-                    }
-                }
-                Action::Esc | Action::Quit | Action::Enter if !running => self.pane = None,
-                Action::Down => p.scroll = p.scroll.saturating_sub(1),
-                Action::Up => p.scroll = (p.scroll + 1).min(len),
-                Action::PageDown => p.scroll = p.scroll.saturating_sub(20),
-                Action::PageUp => p.scroll = (p.scroll + 20).min(len),
-                Action::Bottom => p.scroll = 0,
-                Action::Top => p.scroll = len,
-                _ if running => self.toast("running · C-c stops it"),
-                _ => {}
-            }
-            return;
-        }
-        if let Some((title, choices)) = self.chooser.take() {
-            // Digits are tab keys in the keymap; here they pick.
-            let digit = match a {
-                Action::Char(c) => c.to_digit(10),
-                Action::Screen(id) => id.key().to_digit(10),
-                _ => None,
-            };
-            if let Some(d) = digit
-                && let Some((_, e)) = choices.get((d as usize).wrapping_sub(1))
-            {
-                let e = e.clone();
-                self.apply(e, now);
-                return;
-            }
-            if !matches!(a, Action::Esc | Action::Quit | Action::NextMatch) {
-                self.chooser = Some((title, choices));
-            }
-            return;
-        }
-        if let Some(m) = self.modal.take() {
-            match a {
-                Action::Char('y') | Action::Enter if m.yes.is_some() => {
-                    self.modal_no = None;
-                    let effects = m.yes.map(|(_, e)| e).unwrap_or_default();
-                    self.apply(effects, now);
-                }
-                // `n` is bound to "next match" globally.
-                Action::Char('n') | Action::NextMatch | Action::Esc | Action::Quit => {
-                    if let Some((title, effects)) = self.modal_no.take()
-                        && title == m.title
-                    {
-                        self.apply(effects, now);
-                    }
-                }
-                Action::Enter if m.yes.is_none() => {}
-                _ => self.modal = Some(m),
-            }
-            return;
-        }
-        if self.run_view {
-            if self.wf.is_none() {
-                self.run_view = false;
-            } else if self.wf_key(a, now) {
-                return;
-            } else if matches!(a, Action::Esc) {
-                self.run_view = false;
-                return;
-            } else if !matches!(
-                a,
-                Action::Quit
-                    | Action::Interrupt
-                    | Action::Command
-                    | Action::Screen(_)
-                    | Action::NextScreen
-                    | Action::PrevScreen
-                    | Action::Help
-                    | Action::Ask
-            ) {
-                // The tab underneath isn't on screen: its keys don't act on it.
-                return;
-            }
-        }
-        let n = self.rows();
-        let cur = &mut self.cursors[self.tab.index()];
         match a {
+            // C-c on a running step stops the step, as in sentry.
+            Action::Interrupt
+                if self.screen == ScreenId::Upgrade
+                    && self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.live.as_ref().is_some_and(|l| l.pid.is_some())) =>
+            {
+                // Its exit ends the step as failed; the run stays.
+                if let Some(pid) = self.wf.as_ref().and_then(|s| s.live.as_ref()?.pid) {
+                    let _ = kill(pid);
+                }
+                self.toast("sent SIGTERM to the step");
+            }
             // As in sentry: q and Ctrl-C ask first, `:q` quits.
             Action::Quit | Action::Interrupt => {
-                self.modal = Some(Modal {
-                    title: "Quit".into(),
-                    color: self.theme.dim,
-                    lines: vec![Line::styled(
-                        format!(
-                            "Quit sentry-server? Nothing keeps running on {} after exit.",
-                            self.remote.name
-                        ),
-                        self.theme.fg(),
-                    )],
-                    yes: Some(("quit".into(), vec![Effect::Quit])),
-                })
+                self.modal = Some(frame::quit_modal(
+                    &self.theme,
+                    format!(
+                        "Quit sentry-server? Nothing keeps running on {} after exit.",
+                        self.remote.name
+                    ),
+                    Effect::Quit,
+                ))
             }
-            Action::Command => self.cmdline = Some(String::new()),
-            Action::Filter if tabs::filterable(self.tab) => self.filtering = true,
-            Action::Filter => self.toast("nothing to filter on this tab"),
-            Action::Esc if !self.filters[self.tab.index()].is_empty() => {
-                self.filters[self.tab.index()].clear();
+            Action::Command => self.input = Input::Command(String::new()),
+            Action::Filter if Screens::filterable(self.screen) => {
+                self.input =
+                    Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
             }
-            // Rows are already filtered, so n/N just walk them with wrap-around.
-            Action::NextMatch if n > 0 => *cur = (*cur + 1) % n,
-            Action::PrevMatch if n > 0 => *cur = (*cur + n - 1) % n,
-            Action::Screen(id) if id.key() == '0' => self.open_run_view(),
-            Action::Screen(id) => {
-                if let Some(t) = Tab::ALL.into_iter().find(|t| t.key() == id.key()) {
-                    self.run_view = false;
-                    self.enter(t, now);
-                }
+            Action::Filter => self.toast("nothing to filter on this screen"),
+            Action::Esc
+                if self
+                    .filters
+                    .get(&self.screen)
+                    .is_some_and(|f| !f.is_empty()) =>
+            {
+                self.filters.remove(&self.screen);
+                self.keep_maint_selection();
             }
-            Action::NextScreen => {
-                let i = (self.tab.index() + 1) % Tab::ALL.len();
-                self.enter(Tab::ALL[i], now);
+            Action::Screen(id) => self.enter(id, now),
+            Action::NextScreen | Action::PrevScreen => {
+                let ids = self.visible();
+                let i = ids.iter().position(|s| *s == self.screen).unwrap_or(0);
+                let step = if a == Action::NextScreen {
+                    1
+                } else {
+                    ids.len() - 1
+                };
+                self.enter(ids[(i + step) % ids.len()], now);
             }
-            Action::PrevScreen => {
-                let i = (self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len();
-                self.enter(Tab::ALL[i], now);
-            }
-            Action::Down => *cur = (*cur + 1).min(n.saturating_sub(1)),
-            Action::Up => *cur = cur.saturating_sub(1),
-            Action::Top => *cur = 0,
-            Action::Bottom => *cur = n.saturating_sub(1),
-            Action::PageDown => *cur = (*cur + 10).min(n.saturating_sub(1)),
-            Action::PageUp => *cur = cur.saturating_sub(10),
-            Action::Help => {
-                let mut keys = tabs::hints(self.tab, &self.view());
-                // Maintenance: every row key, not only the selected row's.
-                if self.tab == Tab::Maint {
-                    let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
-                    keys = sentry_core::tui::maintlist::GRAMMAR
-                        .iter()
-                        .copied()
-                        .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
-                        // Not on the key bar, to keep it to what the row takes.
-                        .chain([
-                            ("w", "start a workflow"),
-                            (
-                                "e",
-                                "edit server_config.yaml (on a task: where it's written)",
-                            ),
-                        ])
-                        .collect();
-                }
-                let own_a = keys.iter().any(|(k, _)| *k == "A");
-                let lines = keys
-                    .into_iter()
-                    .chain(super::actions::hints(self.tab))
-                    .chain((!own_a).then_some(("A", "ask Claude")))
-                    .chain([
-                        ("I", "read what needs root, once, with your sudo password"),
-                        ("1-4", "tabs (or Tab, h/l)"),
-                        ("0", "the workflow run (:wf too)"),
-                        ("j/k", "move"),
-                        ("/", "filter (Esc clears) · n/N next/prev"),
-                        (":", ":q quit · :r refresh · :<tab> · :wf <name>"),
-                        ("q", "quit (asks)"),
-                    ])
-                    .map(|(k, d)| Line::styled(format!("{k:<8} {d}"), self.theme.fg()))
-                    .collect();
-                self.modal = Some(Modal {
-                    title: format!("{} · keys", self.tab.name()),
-                    color: self.theme.cyan,
-                    lines,
-                    yes: None,
-                });
-            }
-            Action::Refresh => {
-                let e = tabs::refresh(self.tab);
-                self.apply(e, now);
-            }
-            Action::Check => {
-                let e = tabs::check(self.tab);
-                self.apply(e, now);
-            }
-            Action::Enter => {
-                let e = tabs::enter(self.tab, &self.view());
-                self.apply(e, now);
-            }
+            Action::Help => self.show_help(),
             Action::Ask => {
                 if let Some(sess) = self.apply.as_mut().filter(|s| s.chat.hidden) {
                     sess.chat.hidden = false;
@@ -1068,27 +1042,28 @@ impl App {
                 } else if !claude::available() {
                     self.toast("Claude Code isn't installed (or not on PATH)");
                 } else {
-                    if self.tab == Tab::Maint && !self.run_view && self.wf_entries.is_empty() {
+                    if self.screen == ScreenId::Maint && self.wf_entries.is_empty() {
                         self.load_wf_entries();
                     }
                     let v = self.view();
-                    let ask = match self.wf.as_ref().filter(|_| self.run_view) {
+                    let on_run = self.screen == ScreenId::Upgrade;
+                    let ask = match self.wf.as_ref().filter(|_| on_run) {
                         Some(s) => Some(super::ask::ask_run(&v, &self.remote, s)),
-                        None => super::ask::ask_for(self.tab, &v, &self.remote),
+                        None => self.screens.ask(self.screen, &v, &self.remote).ok(),
                     };
-                    let apply = (self.tab == Tab::Maint && !self.run_view)
+                    let apply = (self.screen == ScreenId::Maint)
                         .then(|| {
                             super::ask::apply_ask(&v, &self.remote, &|wf| self.workflow_text(wf))
                         })
                         .flatten();
                     match (ask, apply) {
                         (Some(ask), Some(apply)) => {
-                            self.chooser = Some(claude_choice(apply, ask));
+                            self.choice = Some(claude_choice(&self.theme, apply, ask));
                         }
                         (None, Some(apply)) => self.open_ask(apply),
                         (Some(ask), None) => self.open_ask(ask),
                         (None, None) => {
-                            let why = super::ask::nothing_here(self.tab, &v);
+                            let why = super::ask::nothing_here(self.screen, &v);
                             self.toast(why);
                         }
                     }
@@ -1098,24 +1073,17 @@ impl App {
                 let m = self.fresh_sudo();
                 self.inventory_box(m);
             }
-            Action::Char('a') => {
-                self.fresh_sudo();
-                let e = super::actions::custom(&self.view(), &self.remote);
-                self.apply(e, now);
-            }
-            Action::Char('B') if self.tab == Tab::Overview => {
-                self.fresh_sudo();
-                let e = super::actions::reboot(&self.view(), &self.remote);
-                self.apply(e, now);
-            }
-            Action::Char(c) => {
-                if super::actions::uses_root(self.tab, c) {
+            // The rest is the screen's: moving, Enter, r, c and its own letters.
+            a => {
+                let id = self.screen;
+                if let Action::Char(c) = a
+                    && self.with_screens(|s, v, _| s.uses_root(id, c, v))
+                {
                     self.fresh_sudo();
                 }
-                let e = tabs::key(self.tab, c, &self.view(), &self.remote);
+                let e = self.with_screens(|s, v, r| s.handle(id, a, v, r));
                 self.apply(e, now);
             }
-            _ => {}
         }
     }
 
@@ -1161,9 +1129,9 @@ impl App {
                     }
                 }
                 Effect::Confirm(m) => self.modal = Some(m),
-                Effect::Choose(title, choices) => self.chooser = Some((title, choices)),
+                Effect::Choose(c) => self.choice = Some(c),
                 Effect::PlanNote(id, plan) => {
-                    self.plan_note = Some((id, plan, String::new()));
+                    self.input = Input::Prompt(Prompt::PlanNote(id, Box::new(plan)), String::new());
                 }
                 Effect::PlanDrop(id) => {
                     if let Some(doc) = self.store.plans.remove(&id)
@@ -1180,20 +1148,9 @@ impl App {
                 Effect::LogOpen(item) => {
                     self.open_records(sentry_core::tui::records::Section::Log, item)
                 }
-                // Being written: watch it. Written: every review is in Records. None: write one.
-                Effect::ReviewOpen => {
-                    if self.writing_review() {
-                        self.review_view = Some(0);
-                    } else if self.store.review.is_some() {
-                        self.open_records(sentry_core::tui::records::Section::Reviews, None);
-                    } else {
-                        self.review_box();
-                    }
-                }
-                Effect::TaskAdd(task) => self.task_add(*task),
-                Effect::TaskSkip(id) => self.suggestion_mark(&id, SugState::Skipped),
+                Effect::ReviewOpen => self.review_open(),
                 Effect::TaskRemove(id) => {
-                    let all = super::maint::all_tasks(&self.view());
+                    let all = super::screens::maint::all_tasks(&self.view());
                     let Some(t) = all.into_iter().find(|t| t.id == id) else {
                         return;
                     };
@@ -1216,10 +1173,6 @@ impl App {
                     self.store.tasks = sentry_core::maint::tasks::load(&self.remote.name);
                 }
                 Effect::TaskDone(id) => self.task_done(&id),
-                Effect::ReviewWrite(prompt) => {
-                    let doc = crate::maint::review::ReviewDoc::new(&self.remote.name);
-                    self.start_writer(planview::Writer::review(doc), prompt, None);
-                }
                 Effect::Track(item) => {
                     let id = item.id.clone();
                     match crate::maint::tracked::track(&self.remote.name, item) {
@@ -1254,17 +1207,43 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::StartWorkflow(name) => self.start_box(&name),
-                Effect::ChooseWorkflow => self.workflow_chooser(),
+                Effect::StartWorkflow(name) => self.wf_start(&name, now),
+                Effect::ReloadWorkflows => {
+                    if !self.offline {
+                        self.load_wf_entries();
+                    }
+                    self.toast("workflows read again");
+                }
+                Effect::StepLog => match self.wf.as_ref().and_then(|s| s.step_log()) {
+                    Some((title, text)) => {
+                        self.run_seq += 1;
+                        self.pane = Some(Pane {
+                            id: self.run_seq,
+                            title,
+                            cmd: String::new(),
+                            lines: text.lines().map(str::to_string).collect(),
+                            pid: None,
+                            done: Some(0),
+                            started: Instant::now(),
+                            scroll: 0,
+                            then: Vec::new(),
+                            reboot: false,
+                        });
+                    }
+                    None => self.toast("no log for this step yet"),
+                },
                 Effect::MaintFind(prefix) => {
                     let v = self.view();
-                    if let Some(i) = super::maint::recs(&v)
+                    match super::screens::maint::recs(&v)
                         .iter()
                         .position(|r| r.key.starts_with(&prefix))
                     {
-                        let key = super::maint::row_key_at(&v, i);
-                        self.cursors[Tab::Maint.index()] = i;
-                        self.maint_sel = key;
+                        Some(i) => {
+                            let key = super::screens::maint::row_key_at(&v, i);
+                            self.screens.maint.select(i, key);
+                        }
+                        // Not read yet: selected when it's there.
+                        None => self.screens.maint.find = Some(prefix),
                     }
                 }
                 Effect::FixFinding(id) => {
@@ -1272,19 +1251,21 @@ impl App {
                         self.toast("Claude Code isn't installed (or not on PATH)");
                     } else {
                         let v = self.view();
-                        if let Some(f) = super::maint::finding(&v, &id) {
+                        if let Some(f) = super::screens::maint::finding(&v, &id) {
                             let ask = super::ask::ask_finding(&v, &self.remote, f);
                             self.open_ask(ask);
                         }
                     }
                 }
                 Effect::MaintJump(id) => {
-                    if let Some(i) = super::maint::row_of(&self.view(), &id) {
-                        self.cursors[Tab::Maint.index()] = i;
-                        self.maint_sel = Some(format!("item:{id}"));
+                    if let Some(i) = super::screens::maint::row_of(&self.view(), &id) {
+                        self.screens.maint.select(i, Some(format!("item:{id}")));
                     }
                 }
-                Effect::ReadsSkipped => self.writer_follow(planview::reads_skipped()),
+                Effect::ReadsSkipped => {
+                    let review = self.writer.as_ref().is_some_and(|w| w.review.is_some());
+                    self.writer_follow(planview::reads_skipped(review))
+                }
                 Effect::PlanWrite(id, doc, prompt) => {
                     if !self.offline {
                         let _ = sentry_core::maint::plan::retire(&self.remote.name, &id);
@@ -1303,14 +1284,21 @@ impl App {
                         Err(e) => self.toast(&format!("couldn't save it: {e}")),
                     }
                 }
-                Effect::EditConfig | Effect::EditTasks => {
+                Effect::TaskEvery(id) => {
+                    let cur = super::screens::maint::all_tasks(&self.view())
+                        .iter()
+                        .find(|t| t.id == id)
+                        .and_then(|t| t.every)
+                        .map_or(String::new(), |d| d.to_string());
+                    self.input = Input::Prompt(Prompt::TaskEvery(id), cur);
+                }
+                Effect::EditConfig | Effect::EditWorkflow(_) => {
                     let editor = std::env::var("VISUAL")
                         .or_else(|_| std::env::var("EDITOR"))
                         .unwrap_or_else(|_| "vi".into());
-                    let path = if matches!(e, Effect::EditTasks) {
-                        sentry_core::maint::tasks::path(&self.remote.name)
-                    } else {
-                        crate::config::path()
+                    let path = match e {
+                        Effect::EditWorkflow(p) => p,
+                        _ => crate::config::path(),
                     };
                     let mut words = editor.split_whitespace();
                     let cmd = Cmd::local(words.next().unwrap_or("vi"))
@@ -1377,14 +1365,29 @@ impl App {
                         });
                     }
                 }
+                // `id` may be a pattern (`B`: `srv:container:*`).
+                Effect::ListenExpected { keys, id, what, on } => {
+                    self.listen_expected(keys, &id, &what, on)
+                }
                 Effect::Expected(id, on) => {
-                    match crate::audit::set_expected(&self.remote.name, &id, on) {
+                    // What's in memory is the file as last read; tests write nothing.
+                    let mut b = self.store.baseline.clone();
+                    let changed = crate::audit::set_expected_in(&mut b, &id, on);
+                    let saved = if changed && !self.offline {
+                        b.save(&self.remote.name).map(|_| true)
+                    } else {
+                        Ok(changed)
+                    };
+                    if saved.is_ok() {
+                        self.store.baseline = b;
+                    }
+                    match saved {
+                        // Still expected by something else: a pattern, or the config.
+                        Ok(false) if !on => self
+                            .toast("expected by a pattern or server_config.yaml: change it there"),
                         Ok(_) => {
-                            if let Some(Some(r)) = self.store.report.value.as_mut() {
-                                for f in r.findings.iter_mut().filter(|f| f.id == id) {
-                                    f.expected = on;
-                                }
-                            }
+                            self.mark_findings(&id, on);
+                            self.keep_maint_selection();
                             self.toast(if on {
                                 "marked expected"
                             } else {
@@ -1399,105 +1402,76 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keys on the Workflows tab; true when handled.
-    fn wf_key(&mut self, a: Action, _now: Instant) -> bool {
-        let t = self.theme;
-        let Some(s) = self.wf.as_ref() else {
-            return false;
-        };
-        let failed = matches!(s.next, Next::Stopped(_) | Next::Manual { failed: true, .. });
-        let idx = s.next.idx();
-        let title = idx.map(|i| s.title(i)).unwrap_or_default();
-        let ask = |title: &str, line: String, label: &str, cmd: WfCmd, color| Modal {
-            title: title.into(),
-            color,
-            lines: vec![Line::styled(line, t.fg())],
-            yes: Some((label.into(), vec![Effect::Wf(cmd)])),
-        };
-        match a {
-            Action::Enter if s.done() => self.wf_cmd(WfCmd::Close),
-            Action::Enter => match s.next {
-                Next::Reboot {
-                    requested: false, ..
-                } => {
-                    self.modal = Some(Modal {
-                        title: "Reboot the server".into(),
-                        color: t.red,
-                        lines: vec![
-                            Line::styled(title, t.fg()),
-                            Line::styled(
-                                format!("$ sudo systemctl reboot   on {}", self.remote.name),
-                                t.fg(),
-                            ),
-                            Line::styled(
-                                "Everything on it stops until it's back; sentry-server waits here.",
-                                t.s(t.yellow),
-                            ),
-                        ],
-                        yes: Some(("reboot".into(), vec![Effect::Wf(WfCmd::Go)])),
-                    })
-                }
-                _ => self.wf_cmd(WfCmd::Go),
-            },
-            Action::Char('s') => {
-                let optional = idx.is_some_and(|i| s.wf.steps[i].optional);
-                if optional {
-                    self.wf_cmd(WfCmd::Skip(false));
-                } else if idx.is_some() {
-                    self.modal = Some(ask(
-                        "Skip step",
-                        format!("{title}: it isn't optional, later steps may expect it."),
-                        "skip it",
-                        WfCmd::Skip(true),
-                        t.yellow,
-                    ));
-                }
+    /// Set `expected` on the stored findings an id (or pattern) covers.
+    fn mark_findings(&mut self, id: &str, on: bool) {
+        let reports = [
+            self.store.report.value.as_mut().and_then(|r| r.as_mut()),
+            self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
+        ];
+        for r in reports.into_iter().flatten() {
+            for f in r
+                .findings
+                .iter_mut()
+                .filter(|f| sentry_core::baseline::glob(id, &f.id))
+            {
+                f.expected = on;
             }
-            Action::Char('d') if idx.is_some() => {
-                self.modal = Some(ask(
-                    "Done by hand",
-                    format!("{title}: mark it done only if you've made sure of it yourself."),
-                    "mark done",
-                    WfCmd::Done,
-                    t.yellow,
-                ))
-            }
-            Action::Refresh if failed => self.wf_cmd(WfCmd::Retry),
-            Action::Char('a') => {
-                self.modal = Some(ask(
-                    "Abandon workflow",
-                    format!("Abandon {}? The server is left as it is now.", s.wf.name),
-                    "abandon",
-                    WfCmd::Abandon,
-                    t.red,
-                ))
-            }
-            Action::Char('L') => {
-                if let Some((title, text)) = s.step_log() {
-                    self.run_seq += 1;
-                    self.pane = Some(Pane {
-                        id: self.run_seq,
-                        title,
-                        cmd: String::new(),
-                        lines: text.lines().map(str::to_string).collect(),
-                        pid: None,
-                        done: Some(0),
-                        started: Instant::now(),
-                        scroll: 0,
-                        then: Vec::new(),
-                        reboot: false,
-                    });
-                } else {
-                    self.toast("no log for this step yet");
-                }
-            }
-            _ => return false,
         }
-        true
     }
 
+    /// `b` on Network: the port's listeners and its finding go into the baseline file, or
+    /// come out of it. No box: it's one local file, and `b` again undoes it.
+    fn listen_expected(&mut self, keys: Vec<String>, id: &str, what: &str, on: bool) {
+        let mut b = self.store.baseline.clone();
+        if on {
+            for k in &keys {
+                if !b.listeners.contains(k) {
+                    b.listeners.push(k.clone());
+                }
+            }
+            crate::audit::set_expected_in(&mut b, id, true);
+        } else {
+            b.drop_listeners(&keys);
+            crate::audit::set_expected_in(&mut b, id, false);
+        }
+        if !self.offline
+            && let Err(e) = b.save(&self.remote.name)
+        {
+            return self.toast(&format!("couldn't save: {e}"));
+        }
+        self.store.baseline = b;
+        if on {
+            self.mark_findings(id, true);
+            self.keep_maint_selection();
+            return self.toast(&format!("{what}: expected (baseline.toml)"));
+        }
+        // Still expected: the config says so, which sentry-server doesn't rewrite.
+        let cfg = &self.remote.cfg;
+        let still = cfg
+            .findings
+            .iter()
+            .any(|g| sentry_core::baseline::glob(g, id))
+            || keys.iter().any(|k| {
+                cfg.listeners
+                    .iter()
+                    .any(|p| sentry_core::baseline::listener_entry_matches(p, k))
+            });
+        if still {
+            self.toast("still expected by server_config.yaml");
+        } else {
+            self.mark_findings(id, false);
+            self.keep_maint_selection();
+            self.toast(&format!("{what}: no longer expected"));
+        }
+    }
+
+    /// The workflows there are (a server's own, else the seeded ones), with their last runs.
     fn load_wf_entries(&mut self) {
         self.wf_entries = workflow::list_for(&self.remote.name);
+        self.wf_list = sentry_core::tui::wflist::load_infos(
+            self.wf_entries.clone(),
+            &workflow::root(&self.remote.name),
+        );
         self.store.workflows = self.wf_entries.iter().map(|e| e.name.clone()).collect();
         let d = workflow::dir_for(&self.remote.name);
         let home = std::env::var("HOME").unwrap_or_default();
@@ -1681,7 +1655,7 @@ impl App {
                 Fx::Reaudit => {}
                 Fx::RetryStep => {
                     self.wf_cmd(WfCmd::Retry);
-                    self.run_view = true;
+                    self.enter(ScreenId::Upgrade, Instant::now());
                 }
                 Fx::MarkDone => {
                     let a = self
@@ -1773,12 +1747,12 @@ impl App {
                         Instant::now(),
                     );
                     let going = self.wf.as_ref().is_some_and(|s| s.live.is_some());
-                    if !going || self.var_input.is_some() {
+                    if !going || self.asking_vars().is_some() {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
                         self.toast(&format!(
-                            "{wf} needs you · the plan carries on when its run ends (A shows it)"
+                            "{wf} needs you · the plan carries on after its run (A)"
                         ));
                     }
                 }
@@ -1794,7 +1768,7 @@ impl App {
                 }
                 Fx::OpenRun(wf, vars) => {
                     // Its values being asked: they're in front already.
-                    let asking = self.var_input.as_ref().is_some_and(|v| v.workflow == wf);
+                    let asking = self.asking_vars() == Some(wf.as_str());
                     let running = self
                         .wf
                         .as_ref()
@@ -1808,9 +1782,9 @@ impl App {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
-                        self.open_run_view();
+                        self.enter(ScreenId::Upgrade, Instant::now());
                         self.toast(&format!(
-                            "{other} is in progress: finish or abandon it, then A · Enter starts {wf}"
+                            "{other} is in progress: finish it, then A · Enter starts {wf}"
                         ));
                         continue;
                     }
@@ -1823,7 +1797,7 @@ impl App {
                         sess.chat.hidden = true;
                     }
                     if running {
-                        self.open_run_view();
+                        self.enter(ScreenId::Upgrade, Instant::now());
                     }
                     self.toast("the plan carries on when the run ends · A shows it");
                 }
@@ -2002,7 +1976,10 @@ impl App {
             info.as_ref(),
             None,
         );
-        sentry_core::maint::tasks::tag_run(&mut entry, &super::maint::all_tasks(&self.view()));
+        sentry_core::maint::tasks::tag_run(
+            &mut entry,
+            &super::screens::maint::all_tasks(&self.view()),
+        );
         self.apply_run_ended(&entry);
         if !self.offline {
             if let Err(e) = log::write(&entry) {
@@ -2018,7 +1995,7 @@ impl App {
                 self.store.sudo.value == Some(SudoMode::Password) && self.inventory_at.is_some();
         }
         // What to know next time: asked now, while it's fresh.
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// After a run that changed the server: what Maintenance and Containers show was read
@@ -2055,124 +2032,102 @@ impl App {
         });
     }
 
-    /// The note for the maintenance log: Enter saves it (empty is fine), Esc leaves none.
-    fn log_note_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some((_, buf)) = self.log_note.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
+    /// The note for the maintenance log, typed: saved with the entry (empty is fine). `add`:
+    /// it's added to an entry from Records, not the one a run or task just wrote.
+    fn log_note_submit(&mut self, entry: crate::maint::log::LogEntry, note: &str, add: bool) {
+        let note = note.trim();
+        // From Records: appended, dated, to the entry as it is.
+        if add {
+            if note.is_empty() {
+                return;
             }
-            KeyCode::Esc => {
-                self.log_note = None;
-                if !std::mem::take(&mut self.note_add) {
-                    self.reread_box();
-                }
+            let mut with_note = entry.clone();
+            with_note.add_note(note);
+            if !self.offline
+                && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
+            {
+                return self.toast(&format!("couldn't write the note: {e}"));
             }
-            KeyCode::Enter => {
-                let Some((entry, note)) = self.log_note.take() else {
-                    return;
-                };
-                let note = note.trim();
-                // From Records: appended, dated, to the entry as it is.
-                if std::mem::take(&mut self.note_add) {
-                    if note.is_empty() {
-                        return;
-                    }
-                    let mut with_note = entry.clone();
-                    with_note.add_note(note);
-                    if !self.offline
-                        && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
-                    {
-                        return self.toast(&format!("couldn't write the note: {e}"));
-                    }
-                    self.last_log = Some(with_note);
-                    self.store.log = if self.offline {
-                        self.store.log.clone()
-                    } else {
-                        sentry_core::maint::log::list(&self.remote.name)
-                    };
-                    self.toast("noted in the maintenance log");
-                    return self.open_records(sentry_core::tui::records::Section::Log, None);
-                }
-                self.reread_box();
-                if note.is_empty() {
-                    return;
-                }
-                // Done by hand (no run): the same entry, with the note.
-                if entry.head.run.is_none() {
-                    let h = &entry.head;
-                    let task = h.tags.iter().find_map(|t| t.strip_prefix("task:"));
-                    let with_note = match task {
-                        Some(id) => sentry_core::maint::log::LogEntry::task(
-                            &h.server,
-                            id,
-                            &self
-                                .store
-                                .tasks
-                                .iter()
-                                .find(|t| t.id == id)
-                                .map_or(id.to_string(), |t| t.title.clone()),
-                            Some(note),
-                        ),
-                        None => crate::maint::log::LogEntry::by_hand(
-                            &h.server,
-                            h.item.as_deref().unwrap_or("?"),
-                            &h.kind,
-                            h.from.clone(),
-                            h.to.clone(),
-                            h.plan.as_deref().map(std::path::Path::new),
-                            Some(note),
-                        ),
-                    };
-                    if !self.offline
-                        && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
-                    {
-                        return self.toast(&format!("couldn't write the note: {e}"));
-                    }
-                    self.last_log = Some(with_note);
-                    return self.toast("noted in the maintenance log");
-                }
-                let Some(s) = self.wf.as_ref() else { return };
-                // Rebuilt with the note (it replaces the entry written when the run ended).
-                let info = entry
-                    .head
-                    .item
-                    .as_ref()
-                    .map(|item| crate::maint::log::ItemInfo {
-                        item: item.clone(),
-                        kind: entry.head.kind.clone(),
-                        risk: entry.head.risk.clone().unwrap_or_default(),
-                        from: entry.head.from.clone(),
-                        to: entry.head.to.clone(),
-                        plan: entry.head.plan.clone().map(Into::into),
-                    });
-                let mut with_note = crate::maint::log::LogEntry::from_run(
-                    &self.remote.name,
-                    &s.wf,
-                    &s.run.state,
-                    &s.run.dir,
-                    info.as_ref(),
-                    Some(note),
-                );
-                sentry_core::maint::tasks::tag_run(
-                    &mut with_note,
-                    &super::maint::all_tasks(&self.view()),
-                );
-                if !self.offline
-                    && let Err(e) = crate::maint::log::write(&with_note)
-                {
-                    return self.toast(&format!("couldn't write the note: {e}"));
-                }
-                self.last_log = Some(with_note);
-                self.toast("noted in the maintenance log");
-            }
-            _ => {}
+            self.last_log = Some(with_note);
+            self.store.log = if self.offline {
+                self.store.log.clone()
+            } else {
+                sentry_core::maint::log::list(&self.remote.name)
+            };
+            self.toast("noted in the maintenance log");
+            return self.open_records(sentry_core::tui::records::Section::Log, None);
         }
+        self.reread_box();
+        if note.is_empty() {
+            return;
+        }
+        // Done by hand (no run): the same entry, with the note.
+        if entry.head.run.is_none() {
+            let h = &entry.head;
+            let task = h.tags.iter().find_map(|t| t.strip_prefix("task:"));
+            let with_note = match task {
+                Some(id) => sentry_core::maint::log::LogEntry::task(
+                    &h.server,
+                    id,
+                    &self
+                        .store
+                        .tasks
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map_or(id.to_string(), |t| t.title.clone()),
+                    Some(note),
+                ),
+                None => crate::maint::log::LogEntry::by_hand(
+                    &h.server,
+                    h.item.as_deref().unwrap_or("?"),
+                    &h.kind,
+                    h.from.clone(),
+                    h.to.clone(),
+                    h.plan.as_deref().map(std::path::Path::new),
+                    Some(note),
+                ),
+            };
+            if !self.offline
+                && let Err(e) = crate::maint::log::write_replacing(&entry, &with_note)
+            {
+                return self.toast(&format!("couldn't write the note: {e}"));
+            }
+            self.last_log = Some(with_note);
+            return self.toast("noted in the maintenance log");
+        }
+        let Some(s) = self.wf.as_ref() else { return };
+        // Rebuilt with the note (it replaces the entry written when the run ended).
+        let info = entry
+            .head
+            .item
+            .as_ref()
+            .map(|item| crate::maint::log::ItemInfo {
+                item: item.clone(),
+                kind: entry.head.kind.clone(),
+                risk: entry.head.risk.clone().unwrap_or_default(),
+                from: entry.head.from.clone(),
+                to: entry.head.to.clone(),
+                plan: entry.head.plan.clone().map(Into::into),
+            });
+        let mut with_note = crate::maint::log::LogEntry::from_run(
+            &self.remote.name,
+            &s.wf,
+            &s.run.state,
+            &s.run.dir,
+            info.as_ref(),
+            Some(note),
+        );
+        sentry_core::maint::tasks::tag_run(
+            &mut with_note,
+            &super::screens::maint::all_tasks(&self.view()),
+        );
+        if !self.offline
+            && let Err(e) = crate::maint::log::write(&with_note)
+        {
+            return self.toast(&format!("couldn't write the note: {e}"));
+        }
+        self.last_log = Some(with_note);
+        self.toast("noted in the maintenance log");
     }
 
     /// `I`: what it reads and why, then the terminal for the password.
@@ -2317,13 +2272,15 @@ impl App {
                     return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
                 }
                 let buf = asks[0].2.clone().unwrap_or_default();
-                self.var_input = Some(VarInput {
-                    workflow: name,
-                    asks,
-                    values: BTreeMap::new(),
+                self.input = Input::Prompt(
+                    Prompt::WfVar(VarInput {
+                        workflow: name,
+                        asks,
+                        values: BTreeMap::new(),
+                        note: None,
+                    }),
                     buf,
-                    note: None,
-                });
+                );
                 self.dirty = true;
                 return;
             }
@@ -2352,18 +2309,20 @@ impl App {
                                 .collect()
                         })
                         .unwrap_or_default();
-                let asks = super::maint::merge_defaults(asks, &given);
+                let asks = super::screens::maint::merge_defaults(asks, &given);
                 if asks.is_empty() {
                     return self.wf_cmd(WfCmd::BeginWith(name, BTreeMap::new()));
                 }
                 let buf = asks[0].2.clone().unwrap_or_default();
-                self.var_input = Some(VarInput {
-                    workflow: name,
-                    asks,
-                    values: BTreeMap::new(),
+                self.input = Input::Prompt(
+                    Prompt::WfVar(VarInput {
+                        workflow: name,
+                        asks,
+                        values: BTreeMap::new(),
+                        note: None,
+                    }),
                     buf,
-                    note: None,
-                });
+                );
                 self.dirty = true;
                 return;
             }
@@ -2371,7 +2330,8 @@ impl App {
                 Some(e) => match Session::begin(e, &self.remote, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
-                        self.run_view = true;
+                        // Its screen: the run is followed there, and its auto steps start.
+                        self.enter(ScreenId::Upgrade, Instant::now());
                         Ok(None)
                     }
                     Err(e) => Err(e.to_string()),
@@ -2380,7 +2340,6 @@ impl App {
             },
             WfCmd::Close => {
                 self.wf = None;
-                self.run_view = false;
                 if !self.offline {
                     self.load_wf_entries();
                 }
@@ -2413,10 +2372,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// Run the next auto step while the Run view is open.
+    /// Run the next auto step while the run is in view (screen 0).
     fn wf_auto(&mut self) {
         self.wf_log_change();
-        if !self.run_view {
+        if self.screen != ScreenId::Upgrade {
             return;
         }
         if !self
@@ -2500,70 +2459,174 @@ impl App {
         }
     }
 
-    fn cmdline_key(&mut self, k: KeyEvent, now: Instant) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(buf) = self.cmdline.as_mut() else {
-            return;
-        };
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                if buf.pop().is_none() {
-                    self.cmdline = None;
-                }
+    /// A key for the line being typed in the key bar.
+    fn input_key(&mut self, k: KeyEvent, now: Instant) {
+        match self.input.key(&k) {
+            Typed::Filter(f) => {
+                self.filters.insert(self.screen, f);
+                self.screens.reset_cursor(self.screen);
             }
-            KeyCode::Esc => self.cmdline = None,
-            KeyCode::Enter => {
-                let c = self.cmdline.take().unwrap_or_default();
-                self.command(c.trim(), now);
+            Typed::FilterCleared => {
+                self.filters.remove(&self.screen);
+                self.screens.reset_cursor(self.screen);
             }
-            _ => {}
+            Typed::Command(c) => self.command(c.trim(), now),
+            Typed::Submit(p, text) => self.submit(p, text.trim()),
+            Typed::Cancelled(Some(p)) => self.cancelled(p),
+            Typed::Editing | Typed::FilterKept | Typed::Cancelled(None) => {}
         }
-        self.dirty = true;
     }
 
-    /// Typing a workflow var: Enter takes it (an empty answer takes the default), Esc cancels
-    /// the start.
-    fn var_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(v) = self.var_input.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => v.buf.push(c),
-            KeyCode::Backspace => {
-                v.buf.pop();
-            }
-            KeyCode::Esc => {
-                self.var_input = None;
-                self.toast("not started");
-            }
-            KeyCode::Enter => {
+    /// Enter on a prompt: what was asked for is done with the answer.
+    fn submit(&mut self, p: Prompt, text: &str) {
+        match p {
+            // A workflow's values, one at a time: an empty answer takes the default; with
+            // none, it's asked again.
+            Prompt::WfVar(mut v) => {
                 let Some((name, _, default)) = v.current().cloned() else {
                     return;
                 };
-                let val = match v.buf.trim() {
+                let val = match text {
                     "" => default.unwrap_or_default(),
                     s => s.to_string(),
                 };
                 if val.is_empty() {
                     v.note = Some(format!("{name} needs a value"));
+                    self.input = Input::Prompt(Prompt::WfVar(v), String::new());
                     return;
                 }
                 v.note = None;
                 v.values.insert(name, val);
-                v.buf = v
-                    .current()
-                    .and_then(|(_, _, d)| d.clone())
-                    .unwrap_or_default();
-                if v.current().is_none() {
-                    let v = self.var_input.take().expect("var input");
-                    self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values));
+                match v.current().map(|(_, _, d)| d.clone().unwrap_or_default()) {
+                    Some(next) => self.input = Input::Prompt(Prompt::WfVar(v), next),
+                    None => self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values)),
                 }
             }
-            _ => {}
+            Prompt::LogNote(e) => self.log_note_submit(*e, text, false),
+            Prompt::LogAddNote(e) => self.log_note_submit(*e, text, true),
+            // The plan's note: an empty one is fine.
+            Prompt::PlanNote(id, mut plan) => {
+                plan.head.note = (!text.is_empty()).then(|| text.to_string());
+                if !claude::available() {
+                    return self.toast("plans are written by Claude Code, which isn't installed");
+                }
+                self.ask_for_plan(id, *plan);
+            }
+            Prompt::PlanRevise(id) => {
+                let Some(doc) = self.store.plans.get(&id).cloned() else {
+                    return;
+                };
+                if text.is_empty() {
+                    return;
+                }
+                let session = doc.head.session.clone();
+                self.write_plan(id, doc, planview::revise(text), session);
+            }
+            // A task's cadence: tasks.toml's task takes the place of one from the config.
+            Prompt::TaskEvery(id) => {
+                use sentry_core::maint::tasks;
+                let every = match tasks::parse_every(text) {
+                    Ok(e) => e,
+                    Err(e) => return self.toast(&e),
+                };
+                let Some(t) = super::screens::maint::all_tasks(&self.view())
+                    .into_iter()
+                    .find(|t| t.id == id)
+                else {
+                    return;
+                };
+                if self.offline {
+                    self.store.tasks.retain(|x| x.id != id);
+                    self.store.tasks.push(tasks::Task {
+                        every: every.or(t.every),
+                        off: every.is_none(),
+                        source: tasks::Source::File,
+                        ..t.clone()
+                    });
+                } else {
+                    if let Err(e) = tasks::set_every(&self.remote.name, &t, every) {
+                        return self.toast(&format!("tasks.toml: {e}"));
+                    }
+                    self.store.tasks = tasks::load(&self.remote.name);
+                }
+                self.keep_maint_selection();
+                self.toast(&match every {
+                    Some(d) => format!("{} every {d} (tasks.toml)", t.title),
+                    None => format!("{} is off (tasks.toml)", t.title),
+                });
+            }
         }
+    }
+
+    /// Esc on a prompt.
+    fn cancelled(&mut self, p: Prompt) {
+        match p {
+            Prompt::WfVar(_) => self.toast("not started"),
+            Prompt::PlanNote(..) => self.toast("not planned"),
+            // No note: what the run changed may still want reading again.
+            Prompt::LogNote(_) => self.reread_box(),
+            Prompt::LogAddNote(_) | Prompt::PlanRevise(_) | Prompt::TaskEvery(_) => {}
+        }
+    }
+
+    /// A key for the pane (a command's streamed output, or a log being read).
+    fn pane_key(&mut self, k: KeyEvent) {
+        use frame::RunKey;
+        let Some(p) = self.pane.as_mut() else { return };
+        let len = p.lines.len();
+        match frame::run_key(&k, p.done.is_none()) {
+            RunKey::Close => self.pane = None,
+            RunKey::Kill => {
+                if let Some(pid) = p.pid {
+                    let _ = kill(pid);
+                    p.lines.push_back("■ stopping…".into());
+                }
+            }
+            RunKey::Busy => self.toast("running · C-c stops it"),
+            RunKey::Scroll(n) => p.scroll = p.scroll.saturating_add_signed(n as isize).min(len),
+            RunKey::End => p.scroll = 0,
+            RunKey::Top => p.scroll = len,
+            RunKey::None => {}
+        }
+    }
+
+    /// `?`: the screen's keys, laid out as in sentry.
+    fn show_help(&mut self) {
+        let mut keys = self.screens.hints(self.screen, &self.view());
+        // Maintenance: every row key, not only the selected row's.
+        if self.screen == ScreenId::Maint {
+            let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
+            keys = sentry_core::tui::maintlist::GRAMMAR
+                .iter()
+                .copied()
+                .chain(keys.into_iter().filter(|(k, _)| !row.contains(k)))
+                // Not on the key bar, to keep it to what the row takes.
+                .chain([
+                    ("F", "the audit report"),
+                    ("w", "the workflows (0)"),
+                    ("e", "edit server_config.yaml (on an item)"),
+                ])
+                .collect();
+        }
+        keys.extend(super::actions::hints(self.screen));
+        let footer = format!(
+            "Nothing keeps running on {} after sentry-server exits.",
+            self.remote.name
+        );
+        self.modal = Some(frame::help_modal(
+            &self.theme,
+            &frame::Help {
+                screen: self.screen.name(),
+                hints: &keys,
+                globals: &[("I", "read what needs root, once, with your sudo password")],
+                app: "sentry-server",
+                commands: ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
+                footer: &[
+                    "Destructive actions: preview → confirm → streamed output.",
+                    &footer,
+                ],
+            },
+        ));
     }
 
     /// `p`, after the note: what Claude is asked, in a confirm box; yes starts the writer.
@@ -2618,7 +2681,7 @@ impl App {
             ),
         };
         let prompt = planview::request(
-            &super::maint::context(&v, &self.remote, s, it),
+            &super::screens::maint::context(&v, &self.remote, s, it),
             &doc.head.workflow,
             &steps,
             &goal,
@@ -2665,14 +2728,46 @@ impl App {
     }
 
     /// The start box for a workflow: what it does, then `start`.
-    fn start_box(&mut self, name: &str) {
+    /// Enter on a workflow (screen 0, `:wf <name>`): its values are asked when it takes any,
+    /// otherwise the box that says what starting it does.
+    fn wf_start(&mut self, name: &str, now: Instant) {
+        if self.screen != ScreenId::Upgrade {
+            self.enter(ScreenId::Upgrade, now);
+        }
         if self.wf.as_ref().is_some_and(|s| !s.done()) {
-            self.open_run_view();
-            return self.toast("a workflow is already in progress: finish or abandon it first");
+            return self.toast("a workflow is in progress: finish or abandon it first");
         }
         if self.wf_entries.is_empty() && !self.offline {
             self.load_wf_entries();
         }
+        let t = self.theme;
+        let Some(i) = self.wf_entries.iter().position(|e| e.name == name) else {
+            return self.toast(&format!("no workflow {name}"));
+        };
+        self.screens.upgrade.cur.sel = i;
+        let e = &self.wf_entries[i];
+        if let Some(why) = e.blocked() {
+            self.modal = Some(Modal {
+                title: format!("{} can't start", e.name),
+                color: t.cyan,
+                lines: vec![
+                    Line::styled(why, t.s(t.yellow)),
+                    Line::styled(
+                        format!("Edit with e: {}", widgets::short_home(&e.path)),
+                        t.dim(),
+                    ),
+                ],
+                yes: None,
+            });
+            return;
+        }
+        if e.wf.as_ref().is_ok_and(|w| !w.vars.is_empty()) {
+            return self.wf_cmd(WfCmd::Begin(name.to_string()));
+        }
+        self.start_box(name);
+    }
+
+    fn start_box(&mut self, name: &str) {
         let t = self.theme;
         let Some(e) = self.wf_entries.iter().find(|e| e.name == name) else {
             return self.toast(&format!("no workflow {name}"));
@@ -2708,44 +2803,6 @@ impl App {
         });
     }
 
-    /// `w` on Maintenance: which workflow to start.
-    fn workflow_chooser(&mut self) {
-        if self.wf_entries.is_empty() && !self.offline {
-            self.load_wf_entries();
-        }
-        let choices: Vec<Choice> = self
-            .wf_entries
-            .iter()
-            .map(|e| {
-                (
-                    format!(
-                        "{}{}",
-                        e.name,
-                        e.wf.as_ref()
-                            .map_or(String::new(), |w| format!("  · {}", w.description))
-                    ),
-                    vec![Effect::StartWorkflow(e.name.clone())],
-                )
-            })
-            .collect();
-        if choices.is_empty() {
-            return self.toast(&format!("no workflows in {}", self.wf_dir));
-        }
-        self.chooser = Some((format!("Start a workflow ({})", self.wf_dir), choices));
-    }
-
-    /// The Run view: the workflow in progress; its auto steps run while it's open.
-    fn open_run_view(&mut self) {
-        match self.wf.as_mut() {
-            Some(s) => {
-                s.armed = true;
-                self.run_view = true;
-                self.wf_auto();
-            }
-            None => self.toast("no workflow in progress · w on Maintenance starts one"),
-        }
-    }
-
     fn writing_review(&self) -> bool {
         self.writer
             .as_ref()
@@ -2759,7 +2816,9 @@ impl App {
         }
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         let profile = if w.review.is_some() {
-            self.review_view = Some(0);
+            self.review_view
+                .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
+                .brief = false;
             planview::review_profile(&self.remote, &os, &kernel, self.store.sudo.value)
         } else {
             self.plan_view = Some((w.item.clone(), 0));
@@ -2800,73 +2859,267 @@ impl App {
         }
     }
 
-    /// `R` with no review yet, or `R` in the Review view: what Claude will do, then yes.
-    fn review_box(&mut self) {
-        if !claude::available() {
-            return self.toast("reviews are written by Claude Code, which isn't installed");
-        }
-        let v = self.view();
-        let tasks = sentry_core::maint::tasks::request_section(
-            &self.store.workflows,
-            &self.item_ids(),
-            &super::maint::all_tasks(&v),
-        );
-        let prompt =
-            planview::review_request(&super::maint::review_context(&v, &self.remote), &tasks);
+    /// `R` on Maintenance: the review window. A review with changes still to apply shows
+    /// them; otherwise the brief, and Enter starts a new one.
+    fn review_open(&mut self) {
+        use sentry_core::tui::reviewview::ReviewView;
+        self.rec_view = None;
+        self.plan_view = None;
+        self.review_view = Some(if self.writing_review() {
+            ReviewView::show()
+        } else {
+            ReviewView::open(self.store.review.as_ref())
+        });
+    }
+
+    /// What a review reads and does, shown before one is started.
+    fn review_brief(&self) -> Vec<Line<'static>> {
         let t = self.theme;
+        if !claude::available() {
+            return vec![Line::styled(
+                "  Reviews are written by Claude Code, which isn't installed.",
+                t.s(t.yellow),
+            )];
+        }
+        let name = &self.remote.name;
         let notes = &self.remote.cfg.maintenance.notes;
-        let lines = vec![
+        vec![
+            Line::raw(""),
             Line::styled(
                 format!(
-                    "Claude reviews the maintenance of {}: every tracked item, what isn't \
-                     tracked, updates and reboots waiting, the maintenance log, and upstream's \
-                     release notes, then writes what to do now, soon and routinely, and why. It \
-                     ends with tasks you can add to Maintenance (a in the review).",
-                    self.remote.name
+                    "  Claude reviews the maintenance of {name}: every tracked item, what isn't tracked,"
                 ),
+                t.fg(),
+            ),
+            Line::styled(
+                "  tasks and what's put off, updates and reboots waiting, the maintenance log and upstream's",
+                t.fg(),
+            ),
+            Line::styled(
+                "  release notes, then writes what to do now, soon and routinely, and why.",
                 t.fg(),
             ),
             Line::raw(""),
             Line::styled(
+                "  It ends with how the list should change: tasks to add, remove or change, items to track",
+                t.fg(),
+            ),
+            Line::styled(
+                "  or stop tracking, and what can wait. You see those as one list, ticked; Enter applies them",
+                t.fg(),
+            ),
+            Line::styled("  together.", t.fg()),
+            Line::raw(""),
+            Line::styled(
                 format!(
-                    "It reads the web, your notes ({}), and {} read-only through the gateway; \
-                     reads that need root are asked for first. Saved in {}.",
+                    "  It reads the web, your notes ({}), and {name} read-only through the gateway; reads",
                     if notes.is_empty() {
                         "none".to_string()
                     } else {
                         notes.join(", ")
-                    },
-                    self.remote.name,
-                    crate::maint::review::dir(&self.remote.name).display()
+                    }
                 ),
                 t.dim(),
             ),
-            Line::raw(""),
             Line::styled(
-                "Sent to Claude through your Claude Code login (Anthropic). Nothing on the \
-                 server changes.",
+                format!(
+                    "  that need root are asked for first. Saved in {}.",
+                    sentry_core::tui::widgets::short_home(&crate::maint::review::dir(name))
+                ),
+                t.dim(),
+            ),
+            Line::styled(
+                "  Sent to Claude through your Claude Code login (Anthropic). Nothing on the server changes.",
                 t.s(t.yellow),
             ),
-        ];
-        self.modal = Some(Modal {
-            title: "Review maintenance with Claude".into(),
-            color: t.mag,
-            lines,
-            yes: Some(("review".into(), vec![Effect::ReviewWrite(prompt)])),
-        });
+            Line::raw(""),
+            Line::styled("  Enter starts the review.", t.s(t.cyan)),
+        ]
     }
 
-    /// Keys in the Review view: scroll, R writes a new one, C-c stops it, Esc goes back.
-    fn review_view_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        let Some(scroll) = self.review_view else {
+    /// The view with no `/` filter: a review is about everything on the list.
+    fn view_all(&self) -> View<'_> {
+        View {
+            filter: None,
+            ..self.view()
+        }
+    }
+
+    /// Everything on Maintenance a review's changes may name, and `f` with it.
+    fn with_known<R>(&self, f: impl FnOnce(&sentry_core::maint::changes::Known) -> R) -> R {
+        let v = self.view_all();
+        let tasks = super::screens::maint::all_tasks(&v);
+        let rows: Vec<(String, String)> = super::screens::maint::recs(&v)
+            .into_iter()
+            .map(|r| (r.key, r.title))
+            .collect();
+        let own: Vec<String> = crate::maint::tracked::load(&self.remote.name)
+            .items
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let items: Vec<(String, String)> = self
+            .remote
+            .cfg
+            .maintenance
+            .items
+            .iter()
+            .map(|i| {
+                (
+                    i.id.clone(),
+                    format!(
+                        "{} risk; defined in {}",
+                        i.risk.as_str(),
+                        if own.contains(&i.id) {
+                            "items.toml"
+                        } else {
+                            "server_config.yaml"
+                        }
+                    ),
+                )
+            })
+            .collect();
+        let found: Vec<(String, String)> = self
+            .store
+            .maint_found
+            .candidates
+            .iter()
+            .map(|c| (c.key.clone(), c.what.clone()))
+            .collect();
+        f(&sentry_core::maint::changes::Known {
+            workflows: &self.store.workflows,
+            tasks: &tasks,
+            rows: &rows,
+            later: Some(&self.store.later),
+            items: &items,
+            found: &found,
+        })
+    }
+
+    /// What a review is sent.
+    fn review_prompt(&self) -> String {
+        let changes = self.with_known(|k| sentry_core::maint::changes::request_section(k, true));
+        planview::review_request(
+            &super::screens::maint::review_context(&self.view_all(), &self.remote),
+            &changes,
+        )
+    }
+
+    /// Enter on the brief: Claude writes the review.
+    fn review_start(&mut self) {
+        if !claude::available() {
+            return self.toast("reviews are written by Claude Code, which isn't installed");
+        }
+        let prompt = self.review_prompt();
+        let doc = crate::maint::review::ReviewDoc::new(&self.remote.name);
+        self.start_writer(planview::Writer::review(doc), prompt, None);
+    }
+
+    /// Enter on a review's changes: those ticked are applied together, the rest skipped,
+    /// and the log says what was done.
+    fn review_apply(&mut self) {
+        use crate::maint::tracked;
+        use sentry_core::maint::{changes, later, log, tasks as tk};
+        let Some(mut rd) = self.store.review.clone() else {
             return;
         };
+        let name = self.remote.name.clone();
+        let derived = crate::maint::cadence_tasks(&self.remote.cfg, &self.store.workflows);
+        let mut tasks = self.store.tasks.clone();
+        let mut snoozes = self.store.later.clone();
+        let mut items = tracked::load(&name);
+        let before = items.clone();
+        // The ids server_config.yaml defines: never rewritten, changed through items.toml.
+        let yaml: Vec<String> = match crate::config::load() {
+            Ok((f, _)) if !self.offline => f.servers.get(&name).map_or(Vec::new(), |s| {
+                s.maintenance.items.iter().map(|i| i.id.clone()).collect()
+            }),
+            _ => self
+                .item_ids()
+                .into_iter()
+                .filter(|id| !items.items.iter().any(|i| &i.id == id))
+                .collect(),
+        };
+        let found = self.store.maint_found.candidates.clone();
+        let now = jiff::Timestamp::now();
+        let (done, skipped, failed) = changes::settle(&mut rd.head.changes, |c| {
+            changes::apply(c, &mut tasks, &mut snoozes, &derived, now)
+                .or_else(|| tracked::apply(&mut items, c, &yaml, &found))
+                .unwrap_or_else(|| Err("not something sentry-server can change".into()))
+        });
+        if !self.offline {
+            let saved = tk::save(&name, &tasks)
+                .and_then(|_| later::replace(&name, &snoozes))
+                .and_then(|_| {
+                    if items == before {
+                        Ok(())
+                    } else {
+                        tracked::save(&name, &items)
+                    }
+                })
+                .and_then(|_| crate::maint::review::save(&rd).map(|_| ()));
+            if let Err(e) = saved {
+                return self.toast(&format!("couldn't apply the changes: {e}"));
+            }
+        }
+        self.store.tasks = tasks;
+        self.store.later = snoozes;
+        if done + failed > 0 {
+            let entry = log::LogEntry::event(
+                &name,
+                "review",
+                "review",
+                failed == 0,
+                &changes::summary(&rd.head.changes),
+                &[format!("review:{}", rd.file_name())],
+                now,
+            );
+            if self.offline {
+                self.store.log.insert(0, entry);
+            } else if let Err(e) = log::write(&entry) {
+                self.toast(&format!("couldn't write the maintenance log: {e}"));
+            } else {
+                self.store.log = log::list(&name);
+            }
+        }
+        self.store.review = Some(rd);
+        if items != before {
+            // What was tracked or ignored isn't "found" any more.
+            self.store.maint_found.candidates.retain(|c| {
+                !items.ignore.contains(&c.key) && !items.items.iter().any(|i| i.id == c.item.id)
+            });
+            if self.offline {
+                self.remote.cfg = tracked::merged(&self.remote.cfg, &items).into();
+                if let Some(st) = self.store.maint.value.as_mut() {
+                    st.retain(|s| !items.untracked.contains(&s.id));
+                }
+            } else {
+                self.reload_config();
+            }
+        } else if !self.offline {
+            self.fetch(Kind::Maint);
+        }
+        self.keep_maint_selection();
+        self.toast(&format!(
+            "review: {}",
+            sentry_core::tui::reviewview::outcome(done, skipped, failed)
+        ));
+    }
+
+    /// Keys in the Review window: its own, and what they ask for.
+    fn review_view_key(&mut self, k: KeyEvent) {
+        use sentry_core::tui::reviewview::Fx;
         self.dirty = true;
         let writing = self.writing_review();
-        match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.review_view = None,
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+        let Some(v) = self.review_view.as_mut() else {
+            return;
+        };
+        match v.key(k, self.store.review.as_mut(), writing) {
+            Fx::None => {}
+            Fx::Close => self.review_view = None,
+            Fx::Start => self.review_start(),
+            Fx::Apply => self.review_apply(),
+            Fx::Stop => {
                 if let Some(pid) = self
                     .writer
                     .as_ref()
@@ -2877,18 +3130,6 @@ impl App {
                     self.toast("stopped");
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.review_view = Some(scroll + 1),
-            KeyCode::Up | KeyCode::Char('k') => self.review_view = Some(scroll.saturating_sub(1)),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.review_view = Some(scroll + 20),
-            KeyCode::PageUp => self.review_view = Some(scroll.saturating_sub(20)),
-            KeyCode::Home | KeyCode::Char('g') => self.review_view = Some(0),
-            KeyCode::End | KeyCode::Char('G') => self.review_view = Some(usize::MAX / 2),
-            KeyCode::Char('R') if !writing => {
-                self.review_view = None;
-                self.review_box();
-            }
-            KeyCode::Char(c @ ('a' | 'x')) if !writing => self.suggestion_pick(c == 'a'),
-            _ => {}
         }
     }
 
@@ -2902,56 +3143,7 @@ impl App {
             .collect()
     }
 
-    /// `a`/`x` in the review view: pick an open suggestion to add (preview, confirm) or skip.
-    fn suggestion_pick(&mut self, add: bool) {
-        let t = self.theme;
-        let open: Vec<sentry_core::maint::tasks::Task> = self
-            .store
-            .review
-            .as_ref()
-            .map(|d| d.open().into_iter().map(|s| s.task.clone()).collect())
-            .unwrap_or_default();
-        if open.is_empty() {
-            return self.toast("no suggested tasks left in this review");
-        }
-        let file = sentry_core::tui::widgets::short_home(&sentry_core::maint::tasks::path(
-            &self.remote.name,
-        ));
-        let effects = |task: &sentry_core::maint::tasks::Task| {
-            if add {
-                vec![Effect::Confirm(Modal {
-                    title: "Add this task to Maintenance".into(),
-                    color: t.mag,
-                    lines: sentry_core::tui::docview::task_lines(&t, task, &file),
-                    yes: Some(("add".into(), vec![Effect::TaskAdd(Box::new(task.clone()))])),
-                })]
-            } else {
-                vec![Effect::TaskSkip(task.id.clone())]
-            }
-        };
-        let e = if open.len() == 1 {
-            effects(&open[0])
-        } else {
-            vec![Effect::Choose(
-                format!(
-                    "{} which task? (1–{})",
-                    if add { "Add" } else { "Skip" },
-                    open.len().min(9)
-                ),
-                open.iter()
-                    .take(9)
-                    .map(|s| {
-                        (
-                            format!("[{}] {} · {}", s.level.word(), s.title, s.when()),
-                            effects(s),
-                        )
-                    })
-                    .collect(),
-            )]
-        };
-        self.apply(e, Instant::now());
-    }
-
+    /// A task from an apply session's follow-up: into `tasks.toml`.
     fn task_add(&mut self, task: sentry_core::maint::tasks::Task) {
         let mut task = task;
         task.added = Some(jiff::Timestamp::now());
@@ -2963,30 +3155,13 @@ impl App {
         let (id, title) = (task.id.clone(), task.title.clone());
         self.store.tasks.retain(|t| t.id != id);
         self.store.tasks.push(task);
-        self.suggestion_mark(&id, SugState::Added);
-        self.toast(&format!("added to Maintenance (4): {title}"));
-    }
-
-    /// Record what was done with a suggestion in the review itself.
-    fn suggestion_mark(&mut self, id: &str, state: SugState) {
-        let Some(rd) = self.store.review.as_mut() else {
-            return;
-        };
-        rd.mark(id, state);
-        if !self.offline
-            && let Err(e) = sentry_core::maint::review::save(rd)
-        {
-            return self.toast(&format!("couldn't update the review: {e}"));
-        }
-        if state == SugState::Skipped {
-            self.toast(&format!("skipped {id}"));
-        }
+        self.toast(&format!("added to Maintenance (6): {title}"));
     }
 
     /// A task done by hand: logged now (tagged `task:<id>`, which takes it off the list),
     /// then the note box, as for a plan done by hand.
     fn task_done(&mut self, id: &str) {
-        let title = super::maint::all_tasks(&self.view())
+        let title = super::screens::maint::all_tasks(&self.view())
             .into_iter()
             .find(|t| t.id == id)
             .map_or(id.to_string(), |t| t.title);
@@ -3000,32 +3175,40 @@ impl App {
             self.store.log.insert(0, entry.clone());
         }
         self.last_change_at = Some(jiff::Timestamp::now());
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
     fn writer_turn_ended(&mut self) {
-        let workflows = self.store.workflows.clone();
-        let items = self.item_ids();
-        let Some(w) = self.writer.as_mut() else {
-            return;
-        };
-        if let Some(mut rd) = w.review.clone() {
-            rd.head.session = w.session.clone().or(rd.head.session);
-            let msg = match (&w.answer, &w.err) {
+        if let Some(mut rd) = self.writer.as_ref().and_then(|w| w.review.clone()) {
+            let (answer, err, session) = self
+                .writer
+                .as_ref()
+                .map(|w| (w.answer.clone(), w.err.clone(), w.session.clone()))
+                .unwrap_or_default();
+            rd.head.session = session.or(rd.head.session);
+            // Waiting for reads that need root: no review yet; ask for them.
+            if answer.as_deref().is_some_and(planview::waits_for_reads) {
+                if let Some(w) = self.writer.as_mut() {
+                    w.review = Some(rd);
+                    w.doing = "waiting for reads that need root".into();
+                }
+                if !self.offline {
+                    let reads = crate::gateway::take_reads(&self.remote.name);
+                    if reads.is_empty() {
+                        return self.writer_follow(planview::reads_skipped(true));
+                    }
+                    self.reads_box(reads, ReadsFor::Plan);
+                }
+                return;
+            }
+            let msg = match (&answer, &err) {
                 (Some(a), _) if !a.trim().is_empty() => {
-                    rd.take_answer(
-                        a,
-                        &sentry_core::maint::tasks::Known {
-                            workflows: &workflows,
-                            items: &items,
-                        },
-                    );
+                    let today = jiff::Zoned::now().date();
+                    self.with_known(|k| rd.take_answer(a, k, today));
                     match rd.open().len() {
-                        0 => "the maintenance review is saved".to_string(),
-                        n => format!(
-                            "the maintenance review is saved: {n} suggested tasks (a adds one)"
-                        ),
+                        0 => "the review is saved: no changes to the list".to_string(),
+                        n => format!("the review is saved: {n} changes to apply (Enter)"),
                     }
                 }
                 (_, err) => format!(
@@ -3034,7 +3217,9 @@ impl App {
                         .unwrap_or_else(|| "Claude gave no answer".into())
                 ),
             };
-            w.review = Some(rd.clone());
+            if let Some(w) = self.writer.as_mut() {
+                w.review = Some(rd.clone());
+            }
             if rd.head.status == PlanStatus::Ready {
                 if !self.offline
                     && let Err(e) = crate::maint::review::save(&rd)
@@ -3042,10 +3227,16 @@ impl App {
                     return self.toast(&format!("couldn't save the review: {e}"));
                 }
                 self.store.review = Some(rd);
+                if let Some(v) = self.review_view.as_mut() {
+                    *v = sentry_core::tui::reviewview::ReviewView::show();
+                }
             }
             self.toast(&msg);
             return self.offer_reads(ReadsFor::Plan);
         }
+        let Some(w) = self.writer.as_mut() else {
+            return;
+        };
         let mut doc = w.doc.clone();
         doc.head.session = w.session.clone().or(doc.head.session);
         // Waiting for reads that need root: no plan yet; ask for them.
@@ -3056,7 +3247,7 @@ impl App {
                 let reads = crate::gateway::take_reads(&self.remote.name);
                 if reads.is_empty() {
                     // Nothing queued after all: have it write the plan.
-                    return self.writer_follow(planview::reads_skipped());
+                    return self.writer_follow(planview::reads_skipped(false));
                 }
                 self.reads_box(reads, ReadsFor::Plan);
             }
@@ -3122,20 +3313,22 @@ impl App {
             })
             .collect();
         if !self.offline {
+            later.extend(self.store.baseline.findings.iter().map(|k| LaterRow {
+                kind: LaterKind::Expected,
+                key: k.clone(),
+                file: "baseline.toml",
+            }));
+            later.extend(self.store.baseline.listeners.iter().map(|k| LaterRow {
+                kind: LaterKind::Listener,
+                key: k.clone(),
+                file: "baseline.toml",
+            }));
+            let tracked = crate::maint::tracked::load(name);
             later.extend(
-                crate::audit::load_baseline(name)
-                    .findings
-                    .into_iter()
-                    .map(|k| LaterRow {
-                        kind: LaterKind::Expected,
-                        key: k,
-                        file: "baseline.toml",
-                    }),
-            );
-            later.extend(
-                crate::maint::tracked::load(name)
+                tracked
                     .ignore
                     .into_iter()
+                    .chain(tracked.untracked.iter().map(|id| format!("item:{id}")))
                     .map(|k| LaterRow {
                         kind: LaterKind::Ignored,
                         key: k,
@@ -3151,7 +3344,7 @@ impl App {
                 _ if self.offline => format!("~/.config/sentry/servers/{name}"),
                 _ => dir,
             },
-            tasks: super::maint::all_tasks(&v),
+            tasks: super::screens::maint::all_tasks(&v),
             log: if self.offline {
                 self.store.log.clone()
             } else {
@@ -3209,17 +3402,12 @@ impl App {
             Fx::Close => self.rec_view = None,
             Fx::TaskDo(id) => {
                 self.rec_view = None;
-                let e = super::maint::task_enter(&self.view(), &id);
+                let e = super::screens::maint::task_enter(&self.view(), &id);
                 self.apply(e, now);
             }
-            // Where it's written: the config (a cadence) or tasks.toml.
-            Fx::TaskEvery(_) => {
+            Fx::TaskEvery(id) => {
                 self.rec_view = None;
-                let e = match task.map(|t| t.source) {
-                    Some(sentry_core::maint::tasks::Source::Config) => Effect::EditConfig,
-                    _ => Effect::EditTasks,
-                };
-                self.apply(vec![e], now);
+                self.apply(vec![Effect::TaskEvery(id)], now);
             }
             Fx::TaskRemove(id) => {
                 self.rec_view = None;
@@ -3243,8 +3431,7 @@ impl App {
             }
             Fx::Note(e) => {
                 self.rec_view = None;
-                self.note_add = true;
-                self.log_note = Some((*e, String::new()));
+                self.input = Input::Prompt(Prompt::LogAddNote(e), String::new());
             }
             Fx::OpenPlan(item) => {
                 self.rec_view = None;
@@ -3259,13 +3446,16 @@ impl App {
                 Some(d) => {
                     self.store.review = Some(d);
                     self.rec_view = None;
-                    self.review_view = Some(0);
+                    self.review_view = Some(sentry_core::tui::reviewview::ReviewView::show());
                 }
                 None => self.toast("couldn't read that review"),
             },
             Fx::NewReview => {
                 self.rec_view = None;
-                self.review_box();
+                self.review_view = Some(sentry_core::tui::reviewview::ReviewView {
+                    brief: true,
+                    ..Default::default()
+                });
             }
             Fx::Undo(row) => {
                 let name = self.remote.name.clone();
@@ -3282,13 +3472,31 @@ impl App {
                     LaterKind::Expected => {
                         self.apply(vec![Effect::Expected(row.key.clone(), false)], now)
                     }
+                    // A YAML item a review untracked: tracked again.
+                    LaterKind::Ignored if row.key.starts_with("item:") => {
+                        let id = row.key.trim_start_matches("item:");
+                        if let Err(e) = crate::maint::tracked::retrack(&name, id) {
+                            return self.toast(&format!("items.toml: {e}"));
+                        }
+                        self.reload_config();
+                    }
                     LaterKind::Ignored => {
                         if let Err(e) = crate::maint::tracked::unignore(&name, &row.key) {
                             return self.toast(&format!("items.toml: {e}"));
                         }
                         self.fetch(Kind::Maint);
                     }
-                    LaterKind::Listener => {}
+                    // A listener marked expected on Network: new again.
+                    LaterKind::Listener => {
+                        let mut b = self.store.baseline.clone();
+                        b.listeners.retain(|k| k != &row.key);
+                        if !self.offline
+                            && let Err(e) = b.save(&name)
+                        {
+                            return self.toast(&format!("baseline.toml: {e}"));
+                        }
+                        self.store.baseline = b;
+                    }
                 }
                 self.toast(&format!("{}: back on Maintenance", row.key));
                 let item = None;
@@ -3332,7 +3540,7 @@ impl App {
                             "Is this plan still right for the server as it is now? What would you \
                              check or change first?",
                         );
-                        self.chooser = Some(claude_choice(apply, ask));
+                        self.choice = Some(claude_choice(&self.theme, apply, ask));
                     }
                     None => self.toast(&format!("{id} isn't tracked any more")),
                 }
@@ -3354,15 +3562,13 @@ impl App {
             KeyCode::PageUp => set(self, scroll.saturating_sub(20)),
             KeyCode::Home | KeyCode::Char('g') => set(self, 0),
             KeyCode::End | KeyCode::Char('G') => set(self, usize::MAX / 2),
-            _ if writing => {
-                self.toast("Claude is writing it · C-c stops · Esc goes back (it carries on)")
-            }
+            _ if writing => self.toast("Claude is writing it · C-c stops · Esc goes back"),
             KeyCode::Enter => self.apply_plan(&id, now),
             KeyCode::Char('r') => match self.store.plans.get(&id) {
-                Some(d) if d.head.session.is_some() => self.revise_input = Some(String::new()),
-                Some(_) => {
-                    self.toast("this plan has no Claude session to continue: p writes a new one")
+                Some(d) if d.head.session.is_some() => {
+                    self.input = Input::Prompt(Prompt::PlanRevise(id.clone()), String::new())
                 }
+                Some(_) => self.toast("no Claude session for this plan: p writes a new one"),
                 None => {}
             },
             KeyCode::Char('x') if self.store.plans.contains_key(&id) => {
@@ -3419,7 +3625,7 @@ impl App {
             self.fetch(Kind::Maint);
         }
         self.last_change_at = Some(jiff::Timestamp::now());
-        self.log_note = Some((entry, String::new()));
+        self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
     /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
@@ -3466,97 +3672,14 @@ impl App {
         }
     }
 
-    /// `r` in the Plan view: what to change, then Claude rewrites the plan in its session.
-    fn revise_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some(buf) = self.revise_input.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
-            }
-            KeyCode::Esc => self.revise_input = None,
-            KeyCode::Enter => {
-                let what = self.revise_input.take().unwrap_or_default();
-                let Some((id, _)) = self.plan_view.clone() else {
-                    return;
-                };
-                let Some(doc) = self.store.plans.get(&id).cloned() else {
-                    return;
-                };
-                if what.trim().is_empty() {
-                    return;
-                }
-                let session = doc.head.session.clone();
-                self.write_plan(id, doc, planview::revise(what.trim()), session);
-            }
-            _ => {}
-        }
-    }
-
-    /// The plan's note: Enter saves the plan (an empty note is fine), Esc doesn't save it.
-    fn plan_note_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let Some((_, _, buf)) = self.plan_note.as_mut() else {
-            return;
-        };
-        self.dirty = true;
-        match k.code {
-            KeyCode::Char(c) => buf.push(c),
-            KeyCode::Backspace => {
-                buf.pop();
-            }
-            KeyCode::Esc => {
-                self.plan_note = None;
-                self.toast("not planned");
-            }
-            KeyCode::Enter => {
-                let Some((id, mut plan, note)) = self.plan_note.take() else {
-                    return;
-                };
-                let note = note.trim();
-                plan.head.note = (!note.is_empty()).then(|| note.to_string());
-                if !claude::available() {
-                    return self.toast("plans are written by Claude Code, which isn't installed");
-                }
-                self.ask_for_plan(id, plan);
-            }
-            _ => {}
-        }
-    }
-
-    /// Typing a `/` filter: rows narrow as you type; Enter keeps it, Esc clears it.
-    fn filter_key(&mut self, k: KeyEvent) {
-        use ratatui::crossterm::event::KeyCode;
-        let i = self.tab.index();
-        match k.code {
-            KeyCode::Char(c) => self.filters[i].push(c),
-            KeyCode::Backspace => {
-                if self.filters[i].pop().is_none() {
-                    self.filtering = false;
-                }
-            }
-            KeyCode::Esc => {
-                self.filters[i].clear();
-                self.filtering = false;
-            }
-            KeyCode::Enter => self.filtering = false,
-            _ => {}
-        }
-        self.cursors[i] = 0;
-        self.dirty = true;
-    }
-
     /// `:` commands, as in sentry.
     fn command(&mut self, c: &str, now: Instant) {
         let mut parts = c.split_whitespace();
         match (parts.next(), parts.next()) {
             (Some("q" | "q!" | "quit" | "qa"), _) => self.quit = true,
             (Some("refresh" | "r"), _) => {
-                let e = tabs::refresh(self.tab);
+                let id = self.screen;
+                let e = self.with_screens(|s, v, r| s.handle(id, Action::Refresh, v, r));
                 self.apply(e, now);
             }
             (Some("help" | "h"), _) => {
@@ -3566,6 +3689,12 @@ impl App {
                 self.on_key(k, now);
             }
             (Some("audit"), Some("now")) => self.apply(vec![Effect::Fetch(Kind::Audit)], now),
+            // The audit report, over Maintenance.
+            (Some("audit"), None) => {
+                self.enter(ScreenId::Maint, now);
+                let e = self.screens.maint.open_report();
+                self.apply(e, now);
+            }
             (Some("log"), _) => self.open_records(sentry_core::tui::records::Section::Log, None),
             (Some("records" | "rec" | "tasks"), _) => {
                 self.open_records(sentry_core::tui::records::Section::Tasks, None)
@@ -3579,21 +3708,16 @@ impl App {
             (Some("later"), _) => {
                 self.open_records(sentry_core::tui::records::Section::Later, None)
             }
+            // As in sentry: screen 0, and Enter on the workflow named.
             (Some("workflow" | "wf"), name) => match name {
-                Some(n) => self.start_box(n),
-                None if self.wf.as_ref().is_some_and(|s| !s.done()) => self.open_run_view(),
-                None => self.workflow_chooser(),
+                Some(n) => self.wf_start(n, now),
+                None => self.enter(ScreenId::Upgrade, now),
             },
-            (Some(name), None) => {
-                let name = name.to_ascii_lowercase();
-                match Tab::ALL.into_iter().find(|t| {
-                    let n = t.name().to_ascii_lowercase();
-                    n == name || (name.len() >= 3 && n.starts_with(&name))
-                }) {
-                    Some(t) => self.enter(t, now),
-                    None => self.toast(&format!("unknown command :{c}")),
-                }
-            }
+            // A screen, by sentry's names (and the ones the tabs had).
+            (Some(name), None) => match SCREENS.from_name(name) {
+                Some(id) => self.enter(id, now),
+                None => self.toast(&format!("unknown command :{c}")),
+            },
             _ if c.is_empty() => {}
             _ => self.toast(&format!("unknown command :{c}")),
         }
@@ -3800,7 +3924,10 @@ impl App {
         }
         text.push_str("\nContinue from here.");
         match to {
-            ReadsFor::Plan => self.writer_follow(planview::reads_back(&text)),
+            ReadsFor::Plan => {
+                let review = self.writer.as_ref().is_some_and(|w| w.review.is_some());
+                self.writer_follow(planview::reads_back(&text, review))
+            }
             _ if self.chat.is_some() => self.ask_turn(text),
             _ => self.toast("the conversation is closed: the output wasn't sent"),
         }
@@ -4045,6 +4172,7 @@ impl App {
         }
         if std::mem::take(&mut self.suspend_edit) {
             self.reload_config();
+            self.load_wf_entries();
             self.store.tasks = sentry_core::maint::tasks::load(&self.remote.name);
             return;
         }
@@ -4098,79 +4226,52 @@ impl App {
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
-        let area = f.area();
         let t = self.theme;
-        if area.width < 80 || area.height < 24 {
-            widgets::placeholder(
-                f,
-                area,
-                &t,
-                &[(
-                    &format!(
-                        "terminal too small ({}×{}, need 80×24)",
-                        area.width, area.height
-                    ),
-                    t.dim(),
-                )],
-            );
+        // A run in progress, on every screen but its own.
+        let banner = self
+            .wf
+            .as_ref()
+            .filter(|_| self.screen != ScreenId::Upgrade);
+        let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
             return;
-        }
-        let [top, tabs_row, rule, body, keyrule, keybar] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        self.draw_top(f, top);
-        self.draw_tabs(f, tabs_row);
-        for r in [rule, keyrule] {
-            f.render_widget(
-                Paragraph::new("─".repeat(r.width as usize)).style(t.s(t.border)),
-                r,
+        };
+        let body = areas.body;
+        frame::draw_top(f, areas.top, &t, &self.top());
+        self.draw_tabs(f, areas.tabs);
+        if let Some(s) = banner {
+            let n = s.wf.steps.len();
+            frame::draw_banner(
+                f,
+                areas.banner,
+                &t,
+                &frame::Banner {
+                    workflow: &s.wf.name,
+                    step: s.next.idx().map(|i| (i + 1, n, s.title(i).to_string())),
+                    state: s.state_word(),
+                },
             );
         }
-        let body = Rect {
-            y: body.y + 1,
-            height: body.height.saturating_sub(1),
-            ..body
-        };
-        let body = match self.wf.as_ref().filter(|s| !s.done()) {
-            Some(s) if !self.run_view => {
-                let [ban, rest] =
-                    Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
-                let step = s
-                    .next
-                    .idx()
-                    .map(|i| format!("step {}/{} {}", i + 1, s.wf.steps.len(), s.title(i)))
-                    .unwrap_or_default();
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            format!(" ↻ {} · {step} · {}   ", s.wf.name, s.state_word()),
-                            t.s(t.yellow),
-                        ),
-                        Span::styled("press 0 to continue", t.dim()),
-                    ]))
-                    .style(Style::new().bg(t.banner_bg)),
-                    ban,
-                );
-                rest
-            }
-            _ => body,
-        };
-        match (&self.wf, self.run_view) {
-            (Some(s), true) => {
-                f.render_widget(ratatui::widgets::Clear, body);
-                super::wftab::draw_session(f, body, &t, s)
-            }
-            _ => tabs::draw(f, body, self.tab, &self.view()),
-        }
-        if let Some(scroll) = self.review_view {
+        let id = self.screen;
+        self.with_screens(|s, v, _| s.render(id, f, body, v));
+        if let Some(rv) = &self.review_view {
             let w = self.writer.as_ref().filter(|w| w.review.is_some());
-            super::planview::draw_review(f, body, &t, self.store.review.as_ref(), w, scroll);
+            let path = self.store.review.as_ref().map_or(String::new(), |d| {
+                sentry_core::tui::widgets::short_home(
+                    &crate::maint::review::dir(&self.remote.name).join(d.file_name()),
+                )
+            });
+            sentry_core::tui::reviewview::draw(
+                f,
+                body,
+                &t,
+                rv,
+                &sentry_core::tui::reviewview::Shown {
+                    doc: self.store.review.as_ref(),
+                    writer: w,
+                    brief: &self.review_brief(),
+                    path: &path,
+                },
+            );
         } else if let Some(r) = &self.rec_view {
             sentry_core::tui::records::draw(f, body, &t, r);
         } else if let Some((id, scroll)) = &self.plan_view {
@@ -4192,243 +4293,161 @@ impl App {
                 &path,
             );
         }
-        self.draw_keybar(f, keybar);
+        self.draw_keybar(f, areas.keybar);
+        // Whatever is in front sits in the body, over the screen dimmed.
         if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
             chatmod::draw(f, body, &t, c);
         }
         if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
             let wf = self.wf_glimpse();
             sentry_core::tui::applyview::draw(f, body, &t, sess, &wf);
         }
-        if let Some(p) = &self.pane {
-            draw_pane(f, body, &t, p);
-        }
-        if let Some((title, choices)) = &self.chooser {
-            let lines = choices
-                .iter()
-                .enumerate()
-                .map(|(i, (label, _))| Line::styled(format!("{}  {label}", i + 1), t.fg()))
-                .collect();
-            let m: Modal = Modal {
-                title: title.clone(),
-                color: t.cyan,
-                lines,
-                yes: None,
-            };
-            modal::draw(f, area, &t, &m);
-        }
         if let Some(m) = &self.modal {
-            modal::draw(f, area, &t, m);
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw(f, body, &t, m);
+        }
+        if let Some(c) = &self.choice {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw_choice(f, body, &t, c);
+        }
+        if let Some(p) = &self.pane {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            frame::draw_run(
+                f,
+                body,
+                &t,
+                &frame::RunView {
+                    title: &p.title,
+                    cmd: &p.cmd,
+                    len: p.lines.len(),
+                    scroll: p.scroll,
+                    started: p.started,
+                    done: p.done.map(|code| (code, None)),
+                },
+                p.lines.iter().map(String::as_str),
+            );
         }
     }
 
-    fn draw_top(&self, f: &mut Frame, area: Rect) {
+    /// The top bar: the server, what it runs and how long it's been up; the connection.
+    fn top(&self) -> frame::Top<'static> {
         let t = &self.theme;
         let s = &self.store;
-        let mut spans = vec![
-            Span::styled(
-                " sentry-server ",
-                Style::new()
-                    .fg(t.ink)
-                    .bg(t.cyan)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(format!("  {}", self.remote.name), t.fg()),
-        ];
+        let mut facts = Vec::new();
         if let Some((os, kernel)) = &s.host.value {
-            spans.push(Span::styled(format!("  {os}  {kernel}"), t.dim()));
+            facts.push(os.clone());
+            facts.push(format!("kernel {kernel}"));
         }
         if let Some(p) = &s.probe.value {
-            spans.push(Span::styled(
-                format!("  up {}", sentry_core::fmt::uptime(p.uptime_s)),
-                t.dim(),
-            ));
+            facts.push(format!("up {}", sentry_core::fmt::uptime(p.uptime_s)));
         }
         let state = match &s.unreachable {
-            Some(_) => Span::styled("○ unreachable · retrying", t.s(t.red)),
-            None if s.rebooted() => Span::styled("● rebooted", t.s(t.mag)),
+            Some(_) => ("○ unreachable · retrying".to_string(), t.red),
+            None if s.rebooted() => ("● rebooted".to_string(), t.mag),
             None if s.probe.value.is_some() || s.host.value.is_some() => {
-                Span::styled("● connected", t.s(t.green))
+                ("● connected".to_string(), t.green)
             }
-            None => Span::styled("○ connecting…", t.dim()),
+            None => ("○ connecting…".to_string(), t.dim),
         };
-        let left: usize = spans.iter().map(|s| s.width()).sum();
-        let pad = (area.width as usize).saturating_sub(left + state.width() + 1);
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(state);
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        let now = self
+            .now_override
+            .unwrap_or_else(jiff::Timestamp::now)
+            .to_zoned(jiff::tz::TimeZone::system());
+        frame::Top {
+            app: "sentry-server",
+            subject: self.remote.name.clone(),
+            facts,
+            state,
+            clock: frame::clock(&now),
+        }
     }
 
-    fn draw_tabs(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        let mut spans = Vec::new();
-        for tab in Tab::ALL {
-            let active = tab == self.tab;
-            let style = if active {
-                Style::new().bg(t.fg)
-            } else {
-                Style::new()
-            };
-            let (fg, kc) = if active {
-                (t.ink, t.ink)
-            } else {
-                (t.fg, t.dim)
-            };
-            spans.push(Span::styled(format!(" {}", tab.key()), style.fg(kc)));
-            spans.push(Span::styled(format!(" {}", tab.name()), style.fg(fg)));
-            if let Some((b, c)) = tabs::badge(tab, &self.view()) {
-                spans.push(Span::styled(b, style.fg(if active { t.ink } else { c })));
-            }
-            let flt = &self.filters[tab.index()];
-            if !flt.is_empty() && tabs::filterable(tab) {
-                spans.push(Span::styled(
-                    format!(" /{flt}"),
-                    style.fg(if active { t.ink } else { t.cyan }),
-                ));
-            }
-            spans.push(Span::styled(" ", style));
-            spans.push(Span::raw(" "));
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    /// The strip: sentry's, with this program's screens.
+    fn draw_tabs(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let v = self.view();
+        let tabs: Vec<sentry_core::tui::frame::Tab> = self
+            .visible()
+            .into_iter()
+            .map(|id| sentry_core::tui::frame::Tab {
+                id,
+                badge: match id {
+                    ScreenId::Upgrade => self
+                        .wf
+                        .as_ref()
+                        .filter(|s| !s.done())
+                        .map(|_| (" ●".to_string(), self.theme.yellow)),
+                    _ => self.screens.badge(id, &v),
+                },
+                filter: self
+                    .filters
+                    .get(&id)
+                    .filter(|_| Screens::filterable(id))
+                    .cloned(),
+            })
+            .collect();
+        sentry_core::tui::frame::draw_tabs(f, area, &self.theme, &tabs, self.screen);
     }
 
-    fn draw_keybar(&self, f: &mut Frame, area: Rect) {
-        let t = &self.theme;
-        if let Some(buf) = &self.cmdline {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!(":{buf}"), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((e, buf)) = &self.log_note {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{} {} · for the maintenance log, what to know next time (optional): ",
-                            e.head.item.as_deref().unwrap_or(&e.head.workflow),
-                            e.head.result
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter save · Esc none", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some(buf) = &self.revise_input {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("revise the plan: ", t.dim()),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter send · Esc cancel", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((id, plan, buf)) = &self.plan_note {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "plan {id} → {} · a note (optional): ",
-                            plan.head.to.as_deref().unwrap_or("retire")
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter save · Esc cancel", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some(v) = &self.var_input
-            && let Some((name, prompt, _)) = v.current()
+    /// The key bar: what's being typed, or the keys of whatever is in front.
+    fn draw_keybar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let toast = self.toast.as_ref().map(|t| t.msg());
+        let layer = frame::layer(&self.open());
+        // A box or a conversation over the line: its keys, not the line's.
+        if layer == Layer::Input
+            && let Some(bar) = self.input.bar()
         {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{} {}/{} · {prompt} ({name}): ",
-                            v.workflow,
-                            v.values.len() + 1,
-                            v.asks.len()
-                        ),
-                        t.dim(),
-                    ),
-                    Span::styled(v.buf.clone(), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    match &v.note {
-                        Some(n) => Span::styled(format!("   {n}"), t.s(t.red)),
-                        None => Span::styled("   Enter next · Esc cancel", t.dim()),
-                    },
-                ])),
-                area,
-            );
-            return;
+            return frame::draw_keybar(f, area, &self.theme, &bar, toast);
         }
-        if self.filtering {
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!("/{}", self.filters[self.tab.index()]), t.fg()),
-                    Span::styled("▏", t.s(t.cyan)),
-                    Span::styled("   Enter keep · Esc clear", t.dim()),
-                ])),
-                area,
-            );
-            return;
-        }
-        if let Some((msg, _)) = &self.toast {
-            f.render_widget(
-                Paragraph::new(Span::styled(format!(" {msg}"), t.s(t.cyan))),
-                area,
-            );
-            return;
-        }
-        let hints: Vec<(&str, &str)> = if let Some(p) = &self.pane {
-            if p.done.is_some() {
-                vec![("Esc", "close"), ("j/k", "scroll"), ("G", "end")]
-            } else {
-                vec![("C-c", "stop it"), ("j/k", "scroll")]
+        let hints: frame::Hints = match layer {
+            Layer::Run => frame::run_hints(self.pane.as_ref().is_some_and(|p| p.done.is_some())),
+            Layer::Choice => frame::CHOICE_HINTS.to_vec(),
+            Layer::Modal if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) => {
+                frame::CONFIRM_HINTS.to_vec()
             }
-        } else if let Some(c) = self
-            .chat
-            .as_ref()
-            .filter(|c| !c.hidden && self.modal.is_none())
-        {
-            chatmod::keys(c)
-        } else if self.review_view.is_some() && self.modal.is_none() {
-            if self.writing_review() {
-                vec![
-                    ("j/k", "scroll"),
-                    ("C-c", "stop"),
-                    ("Esc", "back (it carries on)"),
-                ]
-            } else {
-                vec![
-                    ("j/k PgUp/Dn", "scroll"),
-                    ("R", "review again"),
-                    ("Esc", "back"),
-                ]
+            // Their windows have their own key line.
+            Layer::Apply | Layer::Chat => Vec::new(),
+            // Records, a plan or a review (an info box over one leaves its keys named).
+            _ if self.open().docs => self.doc_hints(),
+            _ => {
+                let mut h = self.screens.hints(self.screen, &self.view());
+                h.extend(super::actions::hints(self.screen));
+                // sudo asks for a password: say where the root-only data comes from.
+                if self.store.sudo.value == Some(SudoMode::Password) {
+                    h.push(("I", "read with sudo"));
+                }
+                // A hidden conversation waiting takes `A` over.
+                let hidden = self
+                    .apply
+                    .as_ref()
+                    .filter(|s| s.chat.hidden)
+                    .map(|s| {
+                        if s.busy() {
+                            "applying…"
+                        } else {
+                            "the apply session"
+                        }
+                    })
+                    .or_else(|| {
+                        self.chat
+                            .as_ref()
+                            .filter(|c| c.hidden)
+                            .map(|c| c.hidden_word())
+                    });
+                frame::with_globals(h, hidden, claude::available())
             }
-        } else if let Some(r) = self.rec_view.as_ref().filter(|_| self.modal.is_none()) {
+        };
+        frame::draw_keybar(f, area, &self.theme, &frame::KeyBar::Hints(hints), toast);
+    }
+
+    /// The keys of Records, a plan or a review, whichever is over the screen.
+    fn doc_hints(&self) -> frame::Hints<'_> {
+        if let Some(rv) = &self.review_view {
+            rv.hints(self.store.review.as_ref(), self.writing_review())
+        } else if let Some(r) = &self.rec_view {
             r.hints()
-        } else if let Some((id, _)) = self
-            .plan_view
-            .as_ref()
-            .filter(|_| self.modal.is_none() && self.chooser.is_none())
-        {
+        } else if let Some((id, _)) = &self.plan_view {
             if self
                 .writer
                 .as_ref()
@@ -4449,82 +4468,9 @@ impl App {
                     ("Esc", "back"),
                 ]
             }
-        } else if self.chooser.is_some() {
-            vec![("1-9", "choose"), ("Esc", "cancel")]
-        } else if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) {
-            vec![("y", "confirm"), ("n", "cancel")]
         } else {
-            let mut h = tabs::hints(self.tab, &self.view());
-            if self.run_view {
-                h = match &self.wf {
-                    Some(s) if s.done() => vec![("Enter", "close")],
-                    _ => vec![
-                        ("Enter", "run"),
-                        ("s", "skip"),
-                        ("a", "abandon"),
-                        ("L", "log"),
-                        ("Esc", "back (it carries on)"),
-                    ],
-                };
-            }
-            h.extend(super::actions::hints(self.tab));
-            // sudo asks for a password: say where the root-only data comes from.
-            if self.store.sudo.value == Some(SudoMode::Password) {
-                h.push(("I", "read with sudo"));
-            }
-            let hidden = self
-                .apply
-                .as_ref()
-                .filter(|s| s.chat.hidden)
-                .map(|s| {
-                    if s.busy() {
-                        "applying…"
-                    } else {
-                        "the apply session"
-                    }
-                })
-                .or_else(|| {
-                    self.chat
-                        .as_ref()
-                        .filter(|c| c.hidden)
-                        .map(|c| c.hidden_word())
-                });
-            match hidden {
-                Some(word) => {
-                    h.retain(|(k, _)| *k != "A");
-                    h.push(("A", word));
-                }
-                // Maintenance names its own `A` (apply or ask).
-                None if claude::available() && !h.iter().any(|(k, _)| *k == "A") => {
-                    h.push(("A", "ask Claude"))
-                }
-                None => {}
-            }
-            h.extend([("?", "help"), ("q", "quit")]);
-            h
-        };
-        // Too wide: drop the tab's own hints from the end, never the global ones (A, ?, q)
-        // that end the list. Chips are ` k ` + ` d` + two spaces, as in sentry.
-        let mut hints = hints;
-        let width = |h: &[(&str, &str)]| -> usize {
-            h.iter()
-                .map(|(k, d)| k.chars().count() + d.chars().count() + 5)
-                .sum()
-        };
-        let globals = hints
-            .iter()
-            .rev()
-            .take_while(|(k, _)| matches!(*k, "A" | "?" | "q"))
-            .count();
-        while width(&hints) > area.width as usize && hints.len() > globals {
-            hints.remove(hints.len() - globals - 1);
+            Vec::new()
         }
-        let mut spans = Vec::new();
-        for (k, d) in hints {
-            spans.extend(chip(t, k, d, t.dim));
-            spans.push(Span::raw("  "));
-        }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
 
@@ -4602,15 +4548,20 @@ fn kill(pid: u32) -> std::io::Result<()> {
 impl App {
     pub fn set_wf_entries(&mut self, e: Vec<Entry>) {
         self.store.workflows = e.iter().map(|x| x.name.clone()).collect();
+        self.wf_list = e
+            .iter()
+            .cloned()
+            .map(|entry| sentry_core::tui::wflist::WfInfo { entry, last: None })
+            .collect();
         self.wf_entries = e;
         self.keep_maint_selection();
     }
-    /// Tests: the request waiting in a box (a review's), or the brief of a conversation
-    /// just opened.
+    /// Tests: the request waiting in a box (a plan's), what the review window on its brief
+    /// would send, or the brief of a conversation just opened.
     pub fn consent_text_any(&self) -> Option<String> {
         match self.modal.as_ref().and_then(|m| m.yes.as_ref()?.1.first()) {
-            Some(Effect::ReviewWrite(p)) => Some(p.clone()),
             Some(Effect::PlanWrite(_, _, p)) => Some(p.clone()),
+            _ if self.review_view.as_ref().is_some_and(|v| v.brief) => Some(self.review_prompt()),
             _ => self.consent_text(),
         }
     }
@@ -4709,6 +4660,31 @@ impl App {
     pub fn chat_for_test(&self) -> Option<&Chat> {
         self.chat.as_ref()
     }
+    /// Tests: `[keys]` as config.toml would give it; what's wrong in it.
+    pub fn set_keys_for_test(
+        &mut self,
+        overrides: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
+        let (keys, warnings) = Keymap::new(&SCREENS, overrides);
+        self.keys = keys;
+        warnings
+    }
+    /// Tests: the command the run pane shows.
+    pub fn pane_cmd_for_test(&self) -> Option<String> {
+        self.pane.as_ref().map(|p| p.cmd.clone())
+    }
+    /// Tests: what the screen in view fetches again by itself.
+    pub fn polled_for_test(&self) -> Vec<Kind> {
+        self.due.keys().copied().collect()
+    }
+    /// Tests: a task lands in `tasks.toml` (as an apply session's follow-up does).
+    pub fn add_task_for_test(&mut self, task: sentry_core::maint::tasks::Task) {
+        self.task_add(task);
+    }
+    /// Tests: what a review left in the tracked items' file, were it written.
+    pub fn review_for_test(&self) -> Option<&sentry_core::maint::review::ReviewDoc> {
+        self.store.review.as_ref()
+    }
     /// Tests: a chat turn ended (online: reads Claude asked for are offered).
     pub fn turn_ended_online_for_reads(&mut self) {
         self.offer_reads(ReadsFor::Chat);
@@ -4735,72 +4711,18 @@ pub fn kill_for_test(pid: u32) {
     let _ = kill(pid);
 }
 
-fn draw_pane(f: &mut Frame, area: Rect, t: &Theme, p: &Pane) {
-    let (state, color) = match p.done {
-        None => (
-            format!("running {} s", p.started.elapsed().as_secs()),
-            t.yellow,
-        ),
-        Some(0) => ("done".to_string(), t.green),
-        Some(c) => (format!("exit {c}"), t.red),
-    };
-    let inner = widgets::overlay(f, area, t, &format!("{} · {state}", p.title), color);
-    let [cmd, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            widgets::trunc(&format!("$ {}", p.cmd), cmd.width as usize),
-            t.dim(),
-        )),
-        cmd,
-    );
-    let h = body.height as usize;
-    let end = p.lines.len().saturating_sub(p.scroll);
-    let start = end.saturating_sub(h);
-    let lines: Vec<Line> = p
-        .lines
-        .iter()
-        .skip(start)
-        .take(end - start)
-        .map(|l| Line::styled(widgets::trunc(l, body.width as usize), t.fg()))
-        .collect();
-    f.render_widget(Paragraph::new(lines), body);
-}
-
 /// Render the whole UI into plain text (snapshot tests).
 #[cfg(test)]
 pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
-    let backend = ratatui::backend::TestBackend::new(w, h);
-    let mut term = ratatui::Terminal::new(backend).unwrap();
-    term.draw(|f| app.draw(f)).unwrap();
-    let buf = term.backend().buffer().clone();
-    let mut out = String::new();
-    for y in 0..h {
-        let mut line = String::new();
-        for x in 0..w {
-            line.push_str(buf[(x, y)].symbol());
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    out
+    frame::render_to_string(w, h, |f| app.draw(f))
 }
 
 /// `A` where Claude can help apply something: apply it with Claude, or just ask.
-fn claude_choice(
-    apply: sentry_core::claude::Ask,
-    ask: sentry_core::claude::Ask,
-) -> (String, Vec<(String, Vec<Effect>)>) {
-    (
-        "Claude".into(),
-        vec![
-            (
-                "help me apply it: Claude plans, you approve, sentry-server runs it".into(),
-                vec![Effect::AskConsent(Box::new(apply.clone()))],
-            ),
-            (
-                "just ask about it".into(),
-                vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
-            ),
-        ],
+fn claude_choice(t: &Theme, apply: Ask, ask: Ask) -> Choice {
+    frame::claude_choice(
+        t,
+        "sentry-server",
+        vec![Effect::AskConsent(Box::new(apply.clone()))],
+        vec![Effect::AskWith(Box::new(ask), Box::new(apply))],
     )
 }

@@ -271,3 +271,19 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A session's `workflow` step takes values (`vars = { … }`, `Kind::Workflow { name, vars }`); the server starts it with the plan's values as the base and the step's on top (`BeginPrefilled`, so they're shown filled in). `problems()` flags a value the workflow doesn't declare (`WfInfo`).
 - Apply sessions on a server get WebFetch/WebSearch, as plans do.
 
+## A32. sentry-server has sentry's screens (2026-11)
+- The server's tabs are screens with sentry's numbers and names where they are the same thing: `1` Dashboard (was Overview), `4` Containers, `5` Services (the slot sentry gives Flatpaks), `6` Maintenance, `0` the workflow run. `2`, `3`, `7` and `H` are not bound there yet. `:dashboard`, `:dash`, `:cont`, `:svc`, `:maint`, a prefix of three letters or more, and the old `:overview` all work.
+- One `ScreenId` in core names every screen either program has; each program declares its own in a `ScreenSet`. The strip is core's `frame::draw_tabs` (short names, then keys only, as it narrows), and `[keys]` in `config.toml` applies to both programs (a `screen.<slug>` of the other program's screen is skipped quietly).
+- Each server screen is a struct with its own cursor behind `Screens` (`crates/sentry-server/src/tui/screens/`); what a screen fetches is declared in `Screens::polls` and fetched only while it is the one in view. `a` (your actions) and `B` (reboot) are Dashboard keys; `I` stays global.
+
+## A33. sentry-server draws in sentry's frame (2026-11)
+- The server's frame is core's (`tui/frame.rs`), so it is sentry's: the top bar keeps the connection state where sentry says live or idle and gains the clock; a workflow's banner has its own row; a toast sits at the right of the key bar for 2.6 s beside the hints instead of replacing them.
+- Boxes, choices and the streamed-output pane are drawn inside the body over the screen dimmed. A confirm box's keys are `Enter confirm · Esc cancel` (`y` and `n` still work); a choice is numbered and names its keys; the pane is sentry's run box.
+- One order for keys, pastes and the key bar's hints (`frame::layer`): run pane, choice, box, apply session, chat, the line being typed, Records/plan/review, the screen. While a chat or an apply window is in front the key bar shows no hints (the window has its own key line).
+- One input line (`Input<Prompt>`): `/`, `:`, a workflow's values, a plan's note, a plan's revision, a log note. Backspace on nothing closes a filter or a command, never a prompt; a value left empty with no default is asked again, with why.
+- `?` is sentry's help layout, with the server's own keys (`I`, `0`) under `sentry-server:`.
+
+## A34. sentry-server: screen `0` is Upgrade, as in sentry (2026-11)
+- `0` is a real screen and always on the strip (` ●` while a run is in progress). With nothing running it lists the workflows as sentry's Upgrade does (core `tui/wflist.rs`, used by both): steps, draft, lint, last run, and the selected one's chain and start card. `Enter` starts the one selected: its values are asked first when it takes any (the key bar's prompt), otherwise the box that says what starting does. `e` edits its file, `r` reads them again, `v` opens Records.
+- A run is followed on the same screen (steps, log, the step's card; Enter, `s`, `d`, `r`, `a`, `L`; `C-c` stops a running step). Its auto steps run only while `0` is in view; on any other screen the banner row says where it stands. A finished run stays until Enter closes it.
+- `w` on Maintenance goes to `0` (the chooser is gone); `:wf` opens it and `:wf <name>` does what Enter on that workflow does. Tab and `h`/`l` walk all the screens, `0` included.

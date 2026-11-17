@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::changes::{Change, Kind, Known, State};
 use super::plan::PlanStatus;
-use super::tasks::{Known, SugState, Suggestion};
+use super::tasks::Task;
 use crate::paths;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -20,9 +21,24 @@ pub struct ReviewHead {
     pub created: Option<jiff::Timestamp>,
     pub updated: Option<jiff::Timestamp>,
     pub session: Option<String>,
-    /// The tasks Claude suggested (its `sentry-tasks` block), and what you did with each.
+    /// What Claude proposed to change on the list (its `sentry-changes` block), and what
+    /// became of each.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub suggest: Vec<Suggestion>,
+    pub changes: Vec<Change>,
+    /// Proposals that couldn't be used, and why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<String>,
+    /// Reviews written before changes: the tasks they suggested (read, never written).
+    #[serde(skip_serializing)]
+    suggest: Vec<Suggested>,
+}
+
+/// An older review's suggested task.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct Suggested {
+    #[serde(default)]
+    state: String,
+    task: Task,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -61,27 +77,42 @@ impl ReviewDoc {
         let end = rest
             .find(&format!("\n{FENCE}"))
             .ok_or("unterminated header")?;
+        let mut head: ReviewHead = toml::from_str(&rest[..end]).map_err(|e| e.to_string())?;
+        // An older review's suggestions are tasks to add.
+        for s in std::mem::take(&mut head.suggest) {
+            head.changes.push(Change {
+                why: s.task.why.clone(),
+                state: match s.state.as_str() {
+                    "added" => State::Applied,
+                    "skipped" => State::Skipped,
+                    _ => State::Open,
+                },
+                label: format!("{} · {}", s.task.title, s.task.when()),
+                note: String::new(),
+                on: true,
+                kind: Kind::AddTask {
+                    task: Box::new(s.task),
+                },
+            });
+        }
         Ok(Self {
-            head: toml::from_str(&rest[..end]).map_err(|e| e.to_string())?,
+            head,
             body: rest[end + 1 + FENCE.len()..].trim().to_string(),
         })
     }
 
     /// Claude's answer: the review, from its title on (before it: Claude saying what it reads);
-    /// its tasks block becomes the suggestions.
-    pub fn take_answer(&mut self, answer: &str, known: &Known) {
-        let (answer, tasks) = super::tasks::take_suggestions(answer, known);
+    /// its changes block becomes the changes.
+    pub fn take_answer(&mut self, answer: &str, known: &Known, today: jiff::civil::Date) {
+        let (answer, mut changes, dropped) = super::changes::take(answer, known, today);
         let review = self.file_name();
-        self.head.suggest = tasks
-            .into_iter()
-            .map(|mut task| {
+        for c in &mut changes {
+            if let Kind::AddTask { task } = &mut c.kind {
                 task.review = Some(review.clone());
-                Suggestion {
-                    state: SugState::Open,
-                    task,
-                }
-            })
-            .collect();
+            }
+        }
+        self.head.changes = changes;
+        self.head.dropped = dropped;
         let lines: Vec<&str> = answer.lines().collect();
         let start = lines
             .iter()
@@ -92,22 +123,13 @@ impl ReviewDoc {
         self.head.updated = Some(jiff::Timestamp::now());
     }
 
-    /// The suggestions not yet added or skipped.
-    pub fn open(&self) -> Vec<&Suggestion> {
+    /// The changes not yet applied or skipped.
+    pub fn open(&self) -> Vec<&Change> {
         self.head
-            .suggest
+            .changes
             .iter()
-            .filter(|s| s.state == SugState::Open)
+            .filter(|c| c.state == State::Open)
             .collect()
-    }
-
-    /// Mark a suggestion added or skipped.
-    pub fn mark(&mut self, id: &str, state: SugState) {
-        for s in &mut self.head.suggest {
-            if s.task.id == id {
-                s.state = state;
-            }
-        }
     }
 
     pub fn file_name(&self) -> String {
@@ -177,27 +199,47 @@ mod tests {
     #[test]
     fn the_answer_becomes_the_review_and_round_trips() {
         let mut d = ReviewDoc::new("myserver");
+        let items = [("web".to_string(), "medium risk".to_string())];
         let known = Known {
-            workflows: &[],
-            items: &["web".to_string()],
+            items: &items,
+            ..Default::default()
         };
         d.take_answer(
             "Reading the ledger first.\n# Maintenance review · myserver\n\n## Now\n- web: plan 1.5.2\n\n\
-             ```sentry-tasks\n[[task]]\nid = \"web\"\ntitle = \"Plan web\"\nlevel = \"now\"\n\
-             do = \"plan web\"\n```",
+             ```sentry-changes\n[[add]]\nid = \"web\"\ntitle = \"Plan web\"\nlevel = \"now\"\n\
+             do = \"plan web\"\n\n[[untrack]]\nitem = \"nope\"\n```",
             &known,
+            "2026-11-16".parse().unwrap(),
         );
         assert!(d.body.starts_with("# Maintenance review"));
-        assert!(!d.body.contains("sentry-tasks"));
+        assert!(!d.body.contains("sentry-changes"));
         assert_eq!(d.head.status, PlanStatus::Ready);
         assert_eq!(d.open().len(), 1);
-        assert_eq!(
-            d.head.suggest[0].task.review.as_deref(),
-            Some(d.file_name().as_str())
-        );
+        assert_eq!(d.head.dropped, ["untrack nope: not a tracked item"]);
+        let Kind::AddTask { task } = &d.head.changes[0].kind else {
+            panic!()
+        };
+        assert_eq!(task.review.as_deref(), Some(d.file_name().as_str()));
         assert_eq!(ReviewDoc::parse(&d.to_md()).unwrap(), d);
-        d.mark("web", SugState::Added);
+        d.head.changes[0].state = State::Applied;
         assert!(d.open().is_empty());
         assert_eq!(ReviewDoc::parse(&d.to_md()).unwrap(), d);
+    }
+
+    #[test]
+    fn an_old_review_s_suggestions_still_load() {
+        let old = "+++\nserver = \"myserver\"\nstatus = \"ready\"\n\n[[suggest]]\nstate = \"open\"\n\n\
+            [suggest.task]\nid = \"ups\"\ntitle = \"Check the UPS\"\nwhy = \"it's old\"\nlevel = \"routine\"\n\
+            every = \"90d\"\ndo = \"by-hand\"\n\n[[suggest]]\nstate = \"added\"\n\n[suggest.task]\n\
+            id = \"web\"\ntitle = \"Plan web\"\nlevel = \"now\"\ndo = \"by-hand\"\n+++\n\n# Review\n";
+        let d = ReviewDoc::parse(old).unwrap();
+        assert_eq!(d.head.changes.len(), 2);
+        assert_eq!(d.open().len(), 1);
+        assert_eq!(d.open()[0].label, "Check the UPS · every 90d");
+        assert_eq!(d.head.changes[1].state, State::Applied);
+        // Written back, they're changes.
+        let again = ReviewDoc::parse(&d.to_md()).unwrap();
+        assert_eq!(again, d);
+        assert!(!d.to_md().contains("[[suggest]]"));
     }
 }

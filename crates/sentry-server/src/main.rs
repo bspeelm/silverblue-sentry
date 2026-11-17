@@ -42,8 +42,9 @@ enum Command {
     },
     /// Test the connection, sudo and the tools sentry-server uses.
     Check { name: Option<String> },
-    /// Run one collector and print its result as JSON (probe, units, docker, apt, smart,
-    /// sensors, gpu, fail2ban, disks, listeners, journal, docker-stats, snapshot).
+    /// Run one collector and print its result as JSON (probe, procs, units, docker, apt,
+    /// smart, sensors, gpu, fail2ban, disks, listeners, sockets, journal, docker-stats,
+    /// snapshot).
     Collect { server: String, kind: String },
     /// Audit a server: what needs attention, written to a report.
     Audit { name: Option<String> },
@@ -70,6 +71,10 @@ enum Command {
         #[arg(long)]
         refresh: bool,
     },
+    /// Record a server's metrics every 10 s for the History screen, from this machine, in the
+    /// foreground until Ctrl-C (the TUI records too, while it samples). Nothing runs on the
+    /// server.
+    Record { name: Option<String> },
     /// List a server's workflows (`list`) or show their lint issues (`lint`). A server's own
     /// workflows live in ~/.config/sentry/servers/<name>/workflows/ and replace the generic ones.
     Workflow {
@@ -90,6 +95,7 @@ fn main() -> ExitCode {
         Some(Command::Audit { name }) => cli::audit(name.as_deref()),
         Some(Command::Cond { server, name, wait }) => cli::cond(&server, &name, wait),
         Some(Command::Maint { name, refresh }) => cli::maint(name.as_deref(), refresh),
+        Some(Command::Record { name }) => cli::record(name.as_deref()),
         Some(Command::Workflow { what, server }) => cli::workflow(&what, server.as_deref()),
         Some(Command::Exec { server, argv }) => cli::exec(&server, &argv),
         None => cli::tui(cli.server.as_deref()),

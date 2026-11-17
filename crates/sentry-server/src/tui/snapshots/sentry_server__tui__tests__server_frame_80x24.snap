@@ -1,0 +1,28 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: "render_to_string(&mut a, 80, 24)"
+---
+ sentry-server   myserver  up 14d 00:02          ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   0 Upgr
+────────────────────────────────────────────────────────────────────────────────
+
+┌ CPU · 20% · load 0.31 0.27 0.22 · 4 c┐┌ Memory · 36% of 30.5 GiB · swap 6% ──┐
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                  ▇▇▇ │
+│                                   ██ ││                                  ███ │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+┌ Network · eth0 ↓ 0 B/s ↑ 0 B/s ──────┐┌ Hardware ────────────────────────────┐
+│                                      ││ CPU  41°C                            │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+┌ Disks ───────────────────────────────┐┌ Status ──────────────────────────────┐
+│ /            ███░░░  50% 60.0G       ││ ● reboot required for 8d · kernel…   │
+│ /boot/efi    ░░░░░░   1% 512M        ││ ● 1 security update(s) waiting (4…   │
+│ /srv/data    ██████  93% 1.8T        ││ ● backup ran 4h ago and failed       │
+│                                      ││ ● down: backup.service               │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  open screen   A  ask Claude   ?  help   q  quit

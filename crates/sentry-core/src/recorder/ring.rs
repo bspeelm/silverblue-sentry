@@ -6,6 +6,10 @@
 //! Record (128 bytes): ts i64, then f32s cpu %, mem used GiB, swap used GiB, rx B/s, tx B/s,
 //! load1, cpu °C, gpu %, gpu °C, `/` used %; then 3 × (name [u8;16], cpu f32); zero pad.
 //! Missing values are NaN.
+//!
+//! This machine's ring is `<data>/metrics/ring.bin`, written by `sentry record`; a server's is
+//! `<data>/servers/<name>/metrics/ring.bin`, written from this machine by whoever samples it
+//! ([`append`]: more than one writer may, so none keeps the header in memory).
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -148,12 +152,20 @@ impl Header {
     }
 }
 
-pub fn dir() -> PathBuf {
-    crate::paths::data_dir().join("metrics")
+/// Where the metrics live: this machine's (`""`), or a server's.
+pub fn dir(server: &str) -> PathBuf {
+    if server.is_empty() {
+        crate::paths::data_dir().join("metrics")
+    } else {
+        crate::paths::data_dir()
+            .join("servers")
+            .join(server)
+            .join("metrics")
+    }
 }
 
-pub fn path() -> PathBuf {
-    dir().join("ring.bin")
+pub fn path(server: &str) -> PathBuf {
+    dir(server).join("ring.bin")
 }
 
 /// Records the ring holds: `retention_hours` at `interval`, capped by `max_mb`.
@@ -214,6 +226,13 @@ impl Writer {
         self.f.write_all(&self.h.encode())?;
         Ok(())
     }
+}
+
+/// One record into the ring at `p`, by a writer that keeps nothing open: the file is opened
+/// (or created, like [`Writer::open`]), its header read again, the record written and then
+/// the header. So two writers taking turns never overwrite each other's records.
+pub fn append(p: &Path, capacity: u64, interval_s: u32, r: &Rec) -> std::io::Result<()> {
+    Writer::open(p, capacity, interval_s)?.push(r)
 }
 
 /// All records, oldest first, plus the header.
@@ -303,6 +322,42 @@ mod tests {
         assert!(read(&p).unwrap().1.is_empty());
         assert!(p.with_extension("bin.old").exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn two_writers_append_in_order() {
+        let d = std::env::temp_dir().join(format!("sentry-ring2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let p = d.join("servers/myserver/metrics/ring.bin");
+        // Two writers (the TUI and `record`) take turns; neither holds the file open.
+        for ts in 1..=7 {
+            let who = if ts % 2 == 0 { "tui" } else { "record" };
+            let mut r = rec(ts);
+            r.top = vec![(who.into(), 1.0)];
+            append(&p, 5, 10, &r).unwrap();
+        }
+        let (h, v) = read(&p).unwrap();
+        assert_eq!(h.written, 7);
+        assert_eq!(
+            v.iter().map(|r| r.ts).collect::<Vec<_>>(),
+            vec![3, 4, 5, 6, 7],
+            "every record, in order, the oldest two overwritten"
+        );
+        assert_eq!(v[0].top[0].0, "record");
+        assert_eq!(v[1].top[0].0, "tui");
+        // A long-lived writer that pushed before them would overwrite: `append` doesn't.
+        assert!(!p.with_extension("bin.old").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn where_the_rings_live() {
+        let data = crate::paths::data_dir();
+        assert_eq!(path(""), data.join("metrics/ring.bin"));
+        assert_eq!(
+            path("myserver"),
+            data.join("servers/myserver/metrics/ring.bin")
+        );
     }
 
     #[test]

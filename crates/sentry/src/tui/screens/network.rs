@@ -2,15 +2,14 @@
 //! selected listener as expected (written to baseline.toml).
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{Cell, Paragraph, Row};
+use ratatui::layout::Rect;
 
 use super::{Cursor, Hints, View};
 use crate::collectors::net::{ListenStatus, Listener};
 use crate::tui::app::{BaselineEdit, Effect};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
-use crate::tui::widgets::{TableSpec, inner, panel, table};
+use crate::tui::netview::{self, ListenRow, NetView};
 
 #[derive(Default)]
 pub struct Network {
@@ -18,12 +17,7 @@ pub struct Network {
 }
 
 pub fn hints() -> Hints {
-    vec![
-        ("j/k", "select"),
-        ("b", "expected on/off"),
-        ("/", "filter"),
-        ("r", "refresh"),
-    ]
+    netview::hints()
 }
 
 impl Network {
@@ -90,104 +84,39 @@ impl Network {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
-        let t = v.t;
-        let [left, right] =
-            Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)])
-                .spacing(2)
-                .areas(area);
         let rows = self.rows(v);
         let sel = self.cur.clamp(rows.len());
-        let new = rows
-            .iter()
-            .filter(|l| l.status == ListenStatus::New)
-            .count();
-        let block = panel(
-            t,
-            "Listening",
-            format!("ss -tulpn · {} · {new} new", rows.len()),
-        );
-        let r = inner(&block, left);
-        f.render_widget(block, left);
-        self.cur.page = r.height as usize;
-        if v.d.net.get().is_none() {
-            f.render_widget(
-                Paragraph::new(v.d.net.status(v.d.loading(Fetch::Net))).style(t.dim()),
-                r,
-            );
-        } else {
-            let body: Vec<Row> = rows
-                .iter()
+        let net = v.d.net.get();
+        let listen = net.map(|_| {
+            rows.iter()
                 .map(|l| {
-                    let (txt, c) = match l.status {
-                        ListenStatus::New => ("NEW", t.red),
-                        ListenStatus::Baseline => ("baseline", t.dim),
-                        ListenStatus::Local => ("local", t.green),
-                        ListenStatus::Ephemeral => ("client", t.dim),
-                    };
                     let svc = l
                         .port
                         .parse()
                         .ok()
                         .and_then(|p| crate::audit::known::service(&l.proto, p))
                         .map(|s| s.name);
-                    let proc = match (&l.process, l.pid, svc) {
-                        (Some(p), Some(pid), _) => format!("{p} ({pid})"),
-                        (Some(p), None, _) => p.clone(),
+                    let process = match (netview::owner(l), svc) {
+                        (Some(o), _) => o,
                         // Root-owned: ss can't show the process to a normal user.
-                        (None, _, Some(s)) => format!("root · {s}"),
+                        (None, Some(s)) => format!("root · {s}"),
                         _ => "root · unknown".into(),
                     };
-                    Row::new(vec![
-                        Cell::from(l.proto.clone()).style(t.dim()),
-                        Cell::from(l.local()),
-                        Cell::from(proc),
-                        Cell::from(txt).style(t.s(c)),
-                    ])
+                    ListenRow { l, process }
                 })
-                .collect();
-            table(
-                f,
-                r,
-                t,
-                TableSpec {
-                    header: vec!["PROTO", "LOCAL", "PROCESS", "STATUS"],
-                    widths: vec![
-                        Constraint::Length(5),
-                        Constraint::Fill(3),
-                        Constraint::Fill(2),
-                        Constraint::Length(8),
-                    ],
-                    rows: body,
-                    selected: (!rows.is_empty()).then_some(sel),
-                },
-            );
-        }
-
-        let est =
-            v.d.net
-                .get()
-                .map_or(Vec::new(), |n| n.established.iter().collect::<Vec<_>>());
-        let block = panel(t, "Established", est.len().to_string());
-        let r = inner(&block, right);
-        f.render_widget(block, right);
-        let body: Vec<Row> = est
-            .iter()
-            .map(|c| {
-                Row::new(vec![
-                    Cell::from(c.peer.clone()),
-                    Cell::from(c.process.clone().unwrap_or_else(|| "?".into())).style(t.dim()),
-                ])
-            })
-            .collect();
-        table(
+                .collect()
+        });
+        self.cur.page = netview::draw(
             f,
-            r,
-            t,
-            TableSpec {
-                header: vec!["PEER", "PROCESS"],
-                widths: vec![Constraint::Fill(1), Constraint::Length(18)],
-                rows: body,
-                selected: None,
+            area,
+            v.t,
+            &NetView {
+                listen,
+                waiting: v.d.net.status(v.d.loading(Fetch::Net)),
+                source: "ss -tulpn",
+                note: String::new(),
+                established: net.map_or(&[], |n| &n.established),
+                sel,
             },
         );
     }

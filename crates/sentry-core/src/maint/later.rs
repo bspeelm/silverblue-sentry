@@ -71,6 +71,11 @@ pub fn set(server: &str, key: &str, until: Date, today: Date) -> anyhow::Result<
     save(server, &s)
 }
 
+/// Write them all (a review's changes, applied together).
+pub fn replace(server: &str, snooze: &Snoozes) -> anyhow::Result<()> {
+    save(server, snooze)
+}
+
 /// Bring it back now.
 pub fn remove(server: &str, key: &str) -> anyhow::Result<()> {
     let mut s = load(server);

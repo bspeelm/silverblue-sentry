@@ -1,0 +1,44 @@
+---
+source: crates/sentry-server/src/tui/tests.rs
+expression: body(&s)
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Workflows ───────────────────────────────────────────────┐  ┌ Last result ─────────────────────────────────────────────────────────────────────────────────┐
+│ apt-maintenance  8 steps                                 │  │ No workflow in progress.                                                                     │
+│ Debian/Ubuntu: refresh package lists, upgrade, reboot if │  │                                                                                              │
+│ needed, check everything came back                       │  │ apt-maintenance has never run.                                                               │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ compose-update  4 steps                                  │  │                                                                                              │
+│ Docker compose: pull newer images, recreate what         │  │                                                                                              │
+│ changed, wait until healthy                              │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
+│                                                          │  │ │ apt-maintenance.toml                                                                     │ │
+│                                                          │  │ │ preview → update → upgrade → autoremove → reboot → verify-kernel → services → containers │ │
+│                                                          │  │ │ [Enter] start   [e] edit   lint ✓                                                        │ │
+│                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  start   e  edit toml   r  reload   v  records   A  ask Claude   ?  help   q  quit

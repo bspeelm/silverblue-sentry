@@ -1,0 +1,43 @@
+---
+source: crates/sentry/src/tui/screens/tests.rs
+expression: "shown.join(\"\\n\")"
+---
+ 1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   7 Cleanup   0 Upgrade ↑
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Maintenance review   2026-10-27 12:00  3 changes · Enter applies the 3 ticked
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Add
+ ▸[x] task   ups                   Check the UPS battery · every 90d             It is three years old.
+  [x] task   update                Install the waiting updates · once
+ Change
+  [x] task   job-audit             every 30d → every 14d                         Findings come often.
+   not used: remove nope: no such task
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ task ups: Check the UPS battery · every 90d
+ It is three years old.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Maintenance review
+
+
+ Now
+ - update
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  apply the ticked   Space  tick/untick   j/k  select   PgUp/Dn  scroll   R  review again   Esc  back   the review is saved: 3 changes to apply (Enter)

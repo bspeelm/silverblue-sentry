@@ -1,5 +1,5 @@
 //! What collectors share (their context and error), and the parsers both programs use on
-//! command output: `disk` (findmnt), `gpu` (nvidia-smi), `journal`, `net` (ss), `procfs`. This machine's collectors are
+//! command output: `disk` (findmnt), `gpu` (nvidia-smi), `journal`, `net` (ss), `procfs`, and the process list (`procs`). This machine's collectors are
 //! sentry's own.
 
 use std::path::PathBuf;
@@ -14,6 +14,7 @@ pub mod gpu;
 pub mod journal;
 pub mod net;
 pub mod procfs;
+pub mod procs;
 
 pub struct Ctx {
     pub cfg: Config,

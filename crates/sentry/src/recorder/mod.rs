@@ -2,7 +2,7 @@
 //! samples into `metrics/ring.bin`, raises threshold alerts with `notify-send` while it runs,
 //! and exits on Ctrl-C. No unit, no autostart: when it stops, nothing keeps recording.
 
-pub mod ring;
+pub use sentry_core::recorder::{Live, ring};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,48 +12,25 @@ use crate::collectors::system::Sampler;
 use crate::collectors::{Ctx, gpu, net};
 use crate::config::{Config, Dur};
 use crate::exec::Cmd;
+use crate::maint::LOCAL;
 use ring::Rec;
 
-/// `metrics/recorder.pid`: pid, interval seconds, start time.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Live {
-    pub pid: u32,
-    pub interval_s: u32,
-    pub started: i64,
-}
-
 fn pid_path() -> std::path::PathBuf {
-    ring::dir().join("recorder.pid")
+    sentry_core::recorder::pid_path(LOCAL)
 }
 
 fn alerts_path() -> std::path::PathBuf {
-    ring::dir().join("alerts.log")
+    sentry_core::recorder::alerts_path(LOCAL)
 }
 
 /// The running recorder, if its pid file points at a live `sentry` process.
 pub fn live() -> Option<Live> {
-    let text = std::fs::read_to_string(pid_path()).ok()?;
-    let mut it = text.split_whitespace();
-    let l = Live {
-        pid: it.next()?.parse().ok()?,
-        interval_s: it.next()?.parse().ok()?,
-        started: it.next()?.parse().ok()?,
-    };
-    let comm = std::fs::read_to_string(format!("/proc/{}/comm", l.pid)).ok()?;
-    comm.trim().starts_with("sentry").then_some(l)
+    sentry_core::recorder::live(LOCAL)
 }
 
 /// Recent alert lines (`<rfc3339>\t<text>`), newest last.
 pub fn recent_alerts(n: usize) -> Vec<(String, String)> {
-    let text = std::fs::read_to_string(alerts_path()).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..]
-        .iter()
-        .filter_map(|l| {
-            let (ts, msg) = l.split_once('\t')?;
-            Some((ts.to_string(), msg.to_string()))
-        })
-        .collect()
+    sentry_core::recorder::recent_alerts(LOCAL, n)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +210,7 @@ fn record(cfg: &Config, secs: u32) -> anyhow::Result<()> {
         );
     }
     let cap = ring::capacity(cfg.recorder.retention_hours, secs, cfg.recorder.max_mb);
-    let mut w = ring::Writer::open(&ring::path(), cap, secs)?;
+    let mut w = ring::Writer::open(&ring::path(LOCAL), cap, secs)?;
     let started = jiff::Timestamp::now().as_second();
     crate::paths::write_atomic(
         &pid_path(),
@@ -261,7 +238,7 @@ fn record(cfg: &Config, secs: u32) -> anyhow::Result<()> {
     }
     println!(
         "recording every {secs}s → {} ({} samples ≈ {}h kept) · alerts: {} · Ctrl-C stops",
-        ring::path().display(),
+        ring::path(LOCAL).display(),
         cap,
         cap * secs as u64 / 3600,
         if alerts.is_empty() {
@@ -412,7 +389,7 @@ fn record(cfg: &Config, secs: u32) -> anyhow::Result<()> {
         }
     }
     let _ = std::fs::remove_file(pid_path());
-    println!("recorder stopped · {} kept", ring::path().display());
+    println!("recorder stopped · {} kept", ring::path(LOCAL).display());
     Ok(())
 }
 

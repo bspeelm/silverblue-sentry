@@ -19,6 +19,8 @@ pub enum Kind {
     /// How sudo behaves for this login, once.
     Sudo,
     Probe,
+    /// The probe plus every process (the Processes screen's sample).
+    Procs,
     Gpu,
     Temp,
     Disks,
@@ -29,21 +31,28 @@ pub enum Kind {
     Smart,
     Jails,
     Listeners,
+    /// What listens and what's connected, without sudo (the Network screen's sample).
+    Sockets,
     Journal,
     /// The newest stored report (local disk, instant).
     Report,
+    /// The stored report at this index, oldest first (the report view's `[` `]`).
+    ReportAt(u16),
     /// A new audit: snapshot over ssh, findings, stored.
     Audit,
     /// Maintenance items: the server's side now, upstream from the cache.
     Maint,
     /// Look upstream versions up again (from this machine, network).
     Upstream,
+    /// The server's metrics ring, read from this machine's disk (no ssh).
+    History,
 }
 
 pub enum Payload {
     Host(String, String),
     Sudo(SudoMode),
     Probe(probe::Probe),
+    Procs(Box<collect::procs::Raw>),
     Gpu(Option<gpu::Gpu>),
     Temp(Option<health::CpuTemp>),
     Disks(Vec<disk::Mount>),
@@ -54,14 +63,18 @@ pub enum Payload {
     Smart(Vec<Result<health::Smart, SrvError>>),
     Jails(Vec<health::Jail>),
     Listeners(Vec<net::Listener>),
+    Sockets(collect::sockets::Sockets),
     Journal(Vec<JournalUnit>),
     Report(Option<Box<Report>>),
+    /// A report with the one before it, and where it is among those kept.
+    Reports(Box<audit::Shown>),
     Maint(
         Vec<maint::eval::Status>,
         BTreeMap<String, maint::local::Local>,
         maint::discover::Found,
     ),
     Upstream(jiff::Timestamp),
+    History(Box<sentry_core::tui::histview::HistData>),
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -92,6 +105,15 @@ impl<T> Slot<T> {
             Err(e) => self.err = Some(e),
         }
     }
+}
+
+/// What one probe added: CPU % and bytes per second since the one before (none on the
+/// first, or across a reboot).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampled {
+    pub cpu: Option<f32>,
+    pub rx: Option<f64>,
+    pub tx: Option<f64>,
 }
 
 const HIST: usize = 240;
@@ -126,8 +148,21 @@ pub struct Store {
     pub rx: Ring,
     pub tx: Ring,
     last_net: Option<(u64, u64, Instant)>,
+    /// The sample that just arrived, until the recorder takes it.
+    pub sampled: Option<Sampled>,
+    /// What was recorded for this server (the History screen).
+    pub history: Slot<sentry_core::tui::histview::HistData>,
     /// The boot id seen first; a different one means the server rebooted.
     pub boot_id: Option<String>,
+    /// The processes, with their share of a core since the sample before.
+    pub procs: Slot<Vec<sentry_core::collectors::procs::Proc>>,
+    proc_rates: collect::procs::Rates,
+    /// The uid sentry-server logs in as.
+    pub login_uid: Option<u32>,
+    /// Each process's start time and parent, from the last sample (what a kill checks).
+    pub proc_ticks: std::collections::HashMap<u32, collect::procs::Tick>,
+    /// The shell that took the last sample: its ancestors are our ssh session.
+    pub proc_self: Option<u32>,
     pub gpu: Slot<Option<gpu::Gpu>>,
     pub temp: Slot<Option<health::CpuTemp>>,
     pub disks: Slot<Vec<disk::Mount>>,
@@ -137,9 +172,16 @@ pub struct Store {
     pub apt: Slot<apt::Apt>,
     pub smart: Slot<Vec<Result<health::Smart, SrvError>>>,
     pub jails: Slot<Vec<health::Jail>>,
+    /// Listeners with the process names only root sees (sudo, or the inventory read).
     pub listeners: Slot<Vec<net::Listener>>,
+    pub sockets: Slot<collect::sockets::Sockets>,
+    /// What's marked expected (`servers/<name>/baseline.toml`): read at start and after
+    /// each change, never while drawing.
+    pub baseline: sentry_core::baseline::BaselineFile,
     pub journal: Slot<Vec<JournalUnit>>,
     pub report: Slot<Option<Box<Report>>>,
+    /// What the audit report view shows (`F` on Maintenance): a report and the one before.
+    pub shown: Option<audit::Shown>,
     pub maint: Slot<Vec<maint::eval::Status>>,
     /// The server's side of each item (the pinned image's repository, for planning).
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
@@ -198,6 +240,15 @@ impl Store {
             Payload::Host(os, k) => self.host.set(Ok((os, k))),
             Payload::Sudo(m) => self.sudo.set(Ok(m)),
             Payload::Probe(p) => self.on_probe(p),
+            // The probe is in the same sample: the Dashboard's series keep going.
+            Payload::Procs(raw) => {
+                self.login_uid = raw.login_uid.or(self.login_uid);
+                self.proc_self = raw.self_pid;
+                let procs = self.proc_rates.procs(&raw);
+                self.procs.set(Ok(procs));
+                self.proc_ticks = raw.ticks;
+                self.on_probe(raw.probe);
+            }
             Payload::Gpu(v) => self.gpu.set(Ok(v)),
             Payload::Temp(v) => self.temp.set(Ok(v)),
             Payload::Disks(v) => self.disks.set(Ok(v)),
@@ -208,14 +259,25 @@ impl Store {
             Payload::Smart(v) => self.smart.set(Ok(v)),
             Payload::Jails(v) => self.jails.set(Ok(v)),
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
+            Payload::Sockets(v) => self.sockets.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
-            Payload::Report(v) => self.report.set(Ok(v)),
+            Payload::Report(v) => {
+                self.report.set(Ok(v));
+                self.shown = None;
+            }
+            Payload::Reports(s) => {
+                if s.latest() {
+                    self.report.set(Ok(s.cur.clone()));
+                }
+                self.shown = Some(*s);
+            }
             Payload::Maint(st, local, found) => {
                 self.maint.set(Ok(st));
                 self.maint_local = Some(local);
                 self.maint_found = found;
             }
             Payload::Upstream(at) => self.upstream_at = Some(at),
+            Payload::History(h) => self.history.set(Ok(*h)),
         }
     }
 
@@ -224,6 +286,7 @@ impl Store {
             Kind::Host => self.host.err = Some(e),
             Kind::Sudo => self.sudo.err = Some(e),
             Kind::Probe => self.probe.err = Some(e),
+            Kind::Procs => self.procs.err = Some(e),
             Kind::Gpu => self.gpu.err = Some(e),
             Kind::Temp => self.temp.err = Some(e),
             Kind::Disks => self.disks.err = Some(e),
@@ -234,14 +297,21 @@ impl Store {
             Kind::Smart => self.smart.err = Some(e),
             Kind::Jails => self.jails.err = Some(e),
             Kind::Listeners => self.listeners.err = Some(e),
+            Kind::Sockets => self.sockets.err = Some(e),
             Kind::Journal => self.journal.err = Some(e),
-            Kind::Report | Kind::Audit => self.report.err = Some(e),
+            Kind::Report | Kind::ReportAt(_) | Kind::Audit => self.report.err = Some(e),
             Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
+            Kind::History => self.history.err = Some(e),
         }
     }
 
     fn on_probe(&mut self, p: probe::Probe) {
-        if let Some(c) = self.cpu_delta.pct(p.cpu) {
+        let mut sampled = Sampled {
+            cpu: self.cpu_delta.pct(p.cpu),
+            rx: None,
+            tx: None,
+        };
+        if let Some(c) = sampled.cpu {
             self.cpu.push(c as f64);
         }
         self.mem.push(p.mem_used_pct() as f64);
@@ -249,10 +319,13 @@ impl Store {
         if let Some((rx, tx, at)) = self.last_net {
             let dt = now.duration_since(at).as_secs_f64();
             if dt > 0.0 && p.rx_bytes >= rx && p.tx_bytes >= tx {
+                sampled.rx = Some((p.rx_bytes - rx) as f64 / dt);
+                sampled.tx = Some((p.tx_bytes - tx) as f64 / dt);
                 self.rx.push((p.rx_bytes - rx) as f64 / dt);
                 self.tx.push((p.tx_bytes - tx) as f64 / dt);
             }
         }
+        self.sampled = Some(sampled);
         self.last_net = Some((p.rx_bytes, p.tx_bytes, now));
         if self.boot_id.is_none() {
             self.boot_id = Some(p.boot_id.clone());
@@ -282,6 +355,7 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         }
         Kind::Sudo => Payload::Sudo(r.sudo_mode()?),
         Kind::Probe => Payload::Probe(probe::collect(r)?),
+        Kind::Procs => Payload::Procs(Box::new(collect::procs::collect(r)?)),
         Kind::Gpu => Payload::Gpu(collect::gpu(r)?),
         Kind::Temp => Payload::Temp(health::cpu_temp(r)?),
         Kind::Disks => Payload::Disks(collect::disks(r)?),
@@ -292,9 +366,14 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Smart => Payload::Smart(r.cfg.smart.iter().map(|d| health::smart(r, d)).collect()),
         Kind::Jails => Payload::Jails(health::fail2ban(r)?),
         Kind::Listeners => Payload::Listeners(collect::listeners(r)?),
+        Kind::Sockets => Payload::Sockets(collect::sockets::collect(r)?),
         Kind::Journal => Payload::Journal(collect::journal(r)?),
-        Kind::Report => Payload::Report(audit::latest(&r.name).map(Box::new)),
-        Kind::Audit => Payload::Report(Some(Box::new(audit::run(r)?.0))),
+        Kind::Report => Payload::Reports(Box::new(audit::shown(&r.name, None))),
+        Kind::ReportAt(i) => Payload::Reports(Box::new(audit::shown(&r.name, Some(i as usize)))),
+        Kind::Audit => {
+            audit::run(r)?;
+            Payload::Reports(Box::new(audit::shown(&r.name, None)))
+        }
         Kind::Maint => {
             let (st, local, found) = collect::maint_read(r);
             Payload::Maint(st, local, found)
@@ -303,5 +382,6 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
             maint::upstream::refresh(&r.name, &r.cfg);
             Payload::Upstream(jiff::Timestamp::now())
         }
+        Kind::History => Payload::History(Box::new(sentry_core::tui::histview::load(&r.name))),
     })
 }

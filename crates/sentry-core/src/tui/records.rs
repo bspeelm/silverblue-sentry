@@ -457,7 +457,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, r: &Records) {
                         Cell::from(if open == 0 {
                             String::new()
                         } else {
-                            format!("{open} suggested task(s)")
+                            format!("{open} change(s) to apply")
                         })
                         .style(t.s(t.yellow)),
                         Cell::from(

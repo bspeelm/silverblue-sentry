@@ -13,6 +13,22 @@ mod wf;
 
 pub use sentry_core::tui::*;
 
+/// sentry's screens, in strip order.
+pub const SCREENS: ScreenSet = ScreenSet {
+    ids: &[
+        ScreenId::Dash,
+        ScreenId::Proc,
+        ScreenId::Net,
+        ScreenId::Cont,
+        ScreenId::Flat,
+        ScreenId::Maint,
+        ScreenId::Clean,
+        ScreenId::Upgrade,
+        ScreenId::Hist,
+    ],
+    aliases: &[],
+};
+
 use ratatui::crossterm::event::KeyEvent;
 
 use crate::exec::StreamMsg;

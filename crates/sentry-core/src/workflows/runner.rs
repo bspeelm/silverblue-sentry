@@ -492,8 +492,8 @@ mod tests {
         let (wf, mut st, env) = quick(true);
         env.staged.set(true);
         let ritual = wf.steps.iter().position(|s| s.id == "reboot-1").unwrap();
-        for i in 0..ritual {
-            if wf.steps[i].when.as_deref() == Some("!kernel_changed") {
+        for (i, step) in wf.steps.iter().enumerate().take(ritual) {
+            if step.when.as_deref() == Some("!kernel_changed") {
                 skip(&mut st, i, "test");
             } else {
                 mark_done(&mut st, i, "test");

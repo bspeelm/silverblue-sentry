@@ -1,7 +1,7 @@
 //! Findings for a server: what in a [`Snapshot`] needs attention, given what the config says
 //! is normal. Pure ([`derive`]), so every rule is tested on synthetic snapshots. Reports go to
 //! `~/.local/share/sentry/servers/<name>/reports/`; findings marked expected go to
-//! `~/.config/sentry/servers/<name>.baseline.toml`.
+//! `~/.config/sentry/servers/<name>/baseline.toml` (the Network screen's expected listeners too).
 
 use std::path::PathBuf;
 
@@ -13,7 +13,8 @@ use super::collect::apt::Kind;
 use super::collect::health::SmartHealth;
 use super::config::Server;
 use super::remote::{Remote, SrvError};
-use sentry_core::baseline::{glob, listener_entry_matches};
+use sentry_core::baseline::{BaselineFile, glob, listener_entry_matches};
+use sentry_core::collectors::net::{ListenStatus, Listener};
 use sentry_core::finding::{Finding, Sev};
 use sentry_core::paths;
 
@@ -29,11 +30,30 @@ impl Report {
     }
 }
 
-/// What sentry-server itself has marked expected (`b` in the TUI).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ServerBaseline {
-    pub findings: Vec<String>,
+/// The finding a listener open to the network gets (one per protocol and port).
+pub fn listener_id(l: &Listener) -> String {
+    format!("srv:listener:{}:{}", l.proto, l.port)
+}
+
+/// How a listening socket stands, for the audit and the Network screen alike: loopback is
+/// local, DHCP's client sockets are clients, what `listeners:` in the config or the baseline
+/// file covers is expected, and the rest is new.
+pub fn listener_status(l: &Listener, cfg: &Server, base: &BaselineFile) -> ListenStatus {
+    if l.addr.starts_with("127.") || l.addr == "[::1]" || l.addr == "::1" {
+        return ListenStatus::Local;
+    }
+    if l.proto == "udp" && (l.port == "68" || l.port == "546") {
+        return ListenStatus::Ephemeral;
+    }
+    if cfg
+        .listeners
+        .iter()
+        .chain(&base.listeners)
+        .any(|p| listener_entry_matches(p, &l.key()))
+    {
+        return ListenStatus::Baseline;
+    }
+    ListenStatus::New
 }
 
 fn f(id: String, sev: Sev, category: &str, message: String) -> Finding {
@@ -76,12 +96,12 @@ fn ago(secs: i64) -> String {
 }
 
 /// Every finding for this snapshot. `prev` is the last report's snapshot (restart counts),
-/// `accepted` the ids marked expected outside the config.
+/// `base` what was marked expected outside the config (findings, and listeners).
 pub fn derive(
     s: &Snapshot,
     cfg: &Server,
     prev: Option<&Snapshot>,
-    accepted: &[String],
+    base: &BaselineFile,
 ) -> Vec<Finding> {
     let now = s.taken_at.unwrap_or_else(Timestamp::now);
     let mut out = Vec::new();
@@ -236,18 +256,10 @@ pub fn derive(
     if let Some(ls) = &s.listeners {
         let mut seen: Vec<String> = Vec::new();
         for l in ls {
-            let local = l.addr.starts_with("127.") || l.addr == "[::1]" || l.addr == "::1";
-            if local || (l.proto == "udp" && (l.port == "68" || l.port == "546")) {
+            if listener_status(l, cfg, base) != ListenStatus::New {
                 continue;
             }
-            if cfg
-                .listeners
-                .iter()
-                .any(|p| listener_entry_matches(p, &l.key()))
-            {
-                continue;
-            }
-            let id = format!("srv:listener:{}:{}", l.proto, l.port);
+            let id = listener_id(l);
             if seen.contains(&id) {
                 continue;
             }
@@ -495,7 +507,11 @@ pub fn derive(
     ));
 
     for x in &mut out {
-        x.expected = cfg.findings.iter().chain(accepted).any(|g| glob(g, &x.id));
+        x.expected = cfg
+            .findings
+            .iter()
+            .chain(&base.findings)
+            .any(|g| glob(g, &x.id));
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.id.cmp(&b.id)));
     out
@@ -508,23 +524,9 @@ pub fn reports_dir(server: &str) -> PathBuf {
         .join("reports")
 }
 
-pub fn baseline_path(server: &str) -> PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(format!("{server}.baseline.toml"))
-}
-
-pub fn load_baseline(server: &str) -> ServerBaseline {
-    std::fs::read_to_string(baseline_path(server))
-        .ok()
-        .and_then(|t| toml::from_str(&t).ok())
-        .unwrap_or_default()
-}
-
-/// Mark a finding expected (or not); returns whether anything changed.
-pub fn set_expected(server: &str, id: &str, expected: bool) -> anyhow::Result<bool> {
-    let mut b = load_baseline(server);
-    let changed = if expected {
+/// Mark a finding expected (or not) in a baseline; whether anything changed.
+pub fn set_expected_in(b: &mut BaselineFile, id: &str, expected: bool) -> bool {
+    if expected {
         !b.findings.iter().any(|x| x == id) && {
             b.findings.push(id.to_string());
             true
@@ -533,19 +535,80 @@ pub fn set_expected(server: &str, id: &str, expected: bool) -> anyhow::Result<bo
         let n = b.findings.len();
         b.findings.retain(|x| x != id);
         b.findings.len() != n
-    };
+    }
+}
+
+/// Mark a finding expected (or not) in the server's baseline file; returns whether anything
+/// changed.
+pub fn set_expected(server: &str, id: &str, expected: bool) -> anyhow::Result<bool> {
+    let mut b = BaselineFile::load(server);
+    let changed = set_expected_in(&mut b, id, expected);
     if changed {
-        let p = baseline_path(server);
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        let text = format!(
-            "# Findings marked expected in sentry-server (b). Edit freely.\n{}",
-            toml::to_string(&b)?
-        );
-        paths::write_atomic(&p, text.as_bytes())?;
+        b.save(server)?;
     }
     Ok(changed)
+}
+
+/// Every stored report's name (its file's, without `.json`), oldest first.
+pub fn names(server: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(reports_dir(server))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| Some(p.file_stem()?.to_string_lossy().to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// One stored report, by name.
+pub fn load(server: &str, name: &str) -> Option<Report> {
+    let text = std::fs::read_to_string(reports_dir(server).join(format!("{name}.json"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// A report as the report view shows it: with the one before it, and where it is among
+/// those kept.
+#[derive(Debug, Clone, Default)]
+pub struct Shown {
+    pub names: Vec<String>,
+    pub idx: usize,
+    pub cur: Option<Box<Report>>,
+    pub prev: Option<Box<Report>>,
+}
+
+impl Shown {
+    pub fn latest(&self) -> bool {
+        self.idx + 1 >= self.names.len()
+    }
+}
+
+/// The report at `idx` (None: the newest), read from disk.
+pub fn shown(server: &str, idx: Option<usize>) -> Shown {
+    let names = names(server);
+    let Some(last) = names.len().checked_sub(1) else {
+        return Shown::default();
+    };
+    let idx = idx.unwrap_or(last).min(last);
+    let at = |i: usize| load(server, &names[i]).map(Box::new);
+    Shown {
+        cur: at(idx),
+        prev: idx.checked_sub(1).and_then(at),
+        idx,
+        names,
+    }
+}
+
+/// `B`: the pattern for every finding like this one (`srv:<kind>:*`), and what that is in
+/// words. None for a finding that is the only one of its kind.
+pub fn pattern_for(id: &str) -> Option<(String, String)> {
+    let rest = id.strip_prefix("srv:")?;
+    let (kind, what) = rest.split_once(':')?;
+    if what.is_empty() {
+        return None;
+    }
+    Some((format!("srv:{kind}:*"), format!("every {kind} finding")))
 }
 
 /// The newest stored report.
@@ -564,8 +627,8 @@ pub fn latest(server: &str) -> Option<Report> {
 pub fn run(r: &Remote) -> Result<(Report, PathBuf), SrvError> {
     let snap = super::collect::snapshot(r)?;
     let prev = latest(&r.name);
-    let accepted = load_baseline(&r.name).findings;
-    let findings = derive(&snap, &r.cfg, prev.as_ref().map(|p| &p.snapshot), &accepted);
+    let base = BaselineFile::load(&r.name);
+    let findings = derive(&snap, &r.cfg, prev.as_ref().map(|p| &p.snapshot), &base);
     let report = Report {
         snapshot: snap,
         findings,
@@ -597,6 +660,50 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_pattern_covers_everything_of_a_kind() {
+        let (p, what) = pattern_for("srv:container:db:exited").unwrap();
+        assert_eq!(
+            (p.as_str(), what.as_str()),
+            ("srv:container:*", "every container finding")
+        );
+        assert!(glob(&p, "srv:container:web:unhealthy"));
+        assert!(!glob(&p, "srv:unit:backup.service"));
+        // The only one of its kind, or not the server's: no pattern.
+        assert_eq!(pattern_for("srv:reboot-required"), None);
+        assert_eq!(pattern_for("listener:x"), None);
+    }
+
+    #[test]
+    fn stored_reports_are_listed_and_read_with_the_one_before() {
+        let server = "shown-test";
+        let dir = reports_dir(server);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rep = |id: &str| Report {
+            snapshot: Default::default(),
+            findings: vec![f(id.into(), Sev::Low, "logs", id.into())],
+        };
+        for (name, id) in [
+            ("2026-10-01-000000", "srv:a:1"),
+            ("2026-10-02-000000", "srv:a:2"),
+        ] {
+            std::fs::write(
+                dir.join(format!("{name}.json")),
+                serde_json::to_vec(&rep(id)).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(names(server), ["2026-10-01-000000", "2026-10-02-000000"]);
+        let s = shown(server, None);
+        assert!(s.latest() && s.idx == 1);
+        assert_eq!(s.cur.unwrap().findings[0].id, "srv:a:2");
+        assert_eq!(s.prev.unwrap().findings[0].id, "srv:a:1");
+        let s = shown(server, Some(0));
+        assert!(!s.latest() && s.prev.is_none());
+        assert_eq!(s.cur.unwrap().findings[0].id, "srv:a:1");
+        assert!(shown("nothing-kept", None).cur.is_none());
     }
 
     fn snap() -> Snapshot {
@@ -656,13 +763,92 @@ mod tests {
         }
     }
 
+    fn none() -> BaselineFile {
+        BaselineFile::default()
+    }
+
+    #[test]
+    fn listener_status_matches_the_findings() {
+        let s = snap();
+        let f = derive(&s, &cfg(), None, &none());
+        let ls = s.listeners.as_ref().unwrap();
+        // Every new listener has its finding, and nothing else has one.
+        for l in ls {
+            let new = listener_status(l, &cfg(), &none()) == ListenStatus::New;
+            let found = f.iter().any(|x| x.id == listener_id(l));
+            assert_eq!(new, found, "{} {}", l.proto, l.local());
+        }
+        let word = |proto: &str, addr: &str, port: &str| {
+            let l = ls
+                .iter()
+                .find(|l| l.proto == proto && l.addr == addr && l.port == port)
+                .unwrap();
+            listener_status(l, &cfg(), &none())
+        };
+        assert_eq!(word("tcp", "127.0.0.1", "5432"), ListenStatus::Local);
+        assert_eq!(
+            word("udp", "192.0.2.10%eth0", "68"),
+            ListenStatus::Ephemeral
+        );
+        assert_eq!(word("tcp", "0.0.0.0", "22"), ListenStatus::Baseline);
+        assert_eq!(word("tcp", "[::]", "443"), ListenStatus::New);
+        // A UDP service on a high port is new too (it isn't taken for a client socket).
+        let vpn = Listener {
+            proto: "udp".into(),
+            addr: "0.0.0.0".into(),
+            port: "51820".into(),
+            process: None,
+            pid: None,
+            status: ListenStatus::New,
+        };
+        assert_eq!(listener_status(&vpn, &cfg(), &none()), ListenStatus::New);
+    }
+
+    #[test]
+    fn baseline_listeners_silence_the_finding() {
+        let base = BaselineFile {
+            listeners: vec!["0.0.0.0:443/*".into(), "[::]:443/*".into()],
+            ..Default::default()
+        };
+        let f = derive(&snap(), &cfg(), None, &base);
+        let ids = ids(&f);
+        assert!(!ids.contains(&"srv:listener:tcp:443"), "{ids:?}");
+        assert!(!ids.contains(&"srv:listener:udp:443"), "{ids:?}");
+        // One family only: the other still shows.
+        let half = BaselineFile {
+            listeners: vec!["0.0.0.0:443/*".into()],
+            ..Default::default()
+        };
+        assert!(
+            ids_of(&derive(&snap(), &cfg(), None, &half))
+                .contains(&"srv:listener:tcp:443".to_string())
+        );
+        // Marking the finding expected, and taking that back.
+        let mut b = none();
+        assert!(set_expected_in(&mut b, "srv:listener:tcp:443", true));
+        assert!(!set_expected_in(&mut b, "srv:listener:tcp:443", true));
+        let f = derive(&snap(), &cfg(), None, &b);
+        assert!(
+            f.iter()
+                .find(|x| x.id == "srv:listener:tcp:443")
+                .unwrap()
+                .expected
+        );
+        assert!(set_expected_in(&mut b, "srv:listener:tcp:443", false));
+        assert!(!set_expected_in(&mut b, "srv:listener:tcp:443", false));
+    }
+
+    fn ids_of(f: &[Finding]) -> Vec<String> {
+        f.iter().map(|f| f.id.clone()).collect()
+    }
+
     fn ids(f: &[Finding]) -> Vec<&str> {
         f.iter().map(|f| f.id.as_str()).collect()
     }
 
     #[test]
     fn every_rule_on_one_snapshot() {
-        let f = derive(&snap(), &cfg(), None, &[]);
+        let f = derive(&snap(), &cfg(), None, &none());
         let ids = ids(&f);
         for want in [
             "srv:service-down:backup.service",
@@ -720,7 +906,15 @@ mod tests {
             .unwrap()
             .result = "success".into();
         s.taken_at = Some(ts("2026-10-28T08:00:00Z"));
-        let f = derive(&s, &cfg(), None, &["srv:docker-sock:*".into()]);
+        let f = derive(
+            &s,
+            &cfg(),
+            None,
+            &BaselineFile {
+                findings: vec!["srv:docker-sock:*".into()],
+                ..Default::default()
+            },
+        );
         let t = f
             .iter()
             .find(|f| f.id == "srv:timer-stale:backup.timer")
@@ -754,7 +948,9 @@ mod tests {
             .find(|c| c.name == "web")
             .unwrap()
             .restarts = 2;
-        assert!(ids(&derive(&s, &c, Some(&prev), &[])).contains(&"srv:container-restarted:web"));
-        assert!(!ids(&derive(&s, &c, Some(&s), &[])).contains(&"srv:container-restarted:web"));
+        assert!(
+            ids(&derive(&s, &c, Some(&prev), &none())).contains(&"srv:container-restarted:web")
+        );
+        assert!(!ids(&derive(&s, &c, Some(&s), &none())).contains(&"srv:container-restarted:web"));
     }
 }

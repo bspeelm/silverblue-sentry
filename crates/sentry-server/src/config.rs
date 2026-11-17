@@ -44,7 +44,7 @@ pub struct Server {
     pub thresholds: Thresholds,
     /// Your own maintenance commands, offered behind a confirm box.
     pub actions: Vec<CustomAction>,
-    /// What's pinned or held deliberately, and when to look at it again (the Maintenance tab).
+    /// What's pinned or held deliberately, and when to look at it again (Maintenance).
     pub maintenance: Maintenance,
 }
 
@@ -88,7 +88,7 @@ pub struct MaintItem {
     pub review_by: Option<jiff::civil::Date>,
     /// End of life from endoflife.date: `product` or `product/cycle`.
     pub eol: Option<String>,
-    /// The workflow that applies a change to it (`p` on the Maintenance tab).
+    /// The workflow that applies a change to it (`p` on Maintenance).
     pub workflow: Option<String>,
     /// Planned to be removed.
     pub retire: Option<Retire>,

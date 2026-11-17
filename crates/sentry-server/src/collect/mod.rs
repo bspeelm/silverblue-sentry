@@ -6,6 +6,8 @@ pub mod apt;
 pub mod docker;
 pub mod health;
 pub mod probe;
+pub mod procs;
+pub mod sockets;
 pub mod units;
 
 use jiff::Timestamp;
@@ -271,6 +273,10 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
     };
     match kind {
         "probe" => j(serde_json::to_value(probe::collect(r)?)),
+        // One sample: no CPU share yet (that takes two).
+        "procs" => j(serde_json::to_value(
+            procs::Rates::default().procs(&procs::collect(r)?),
+        )),
         "units" => j(serde_json::to_value(units::collect(r)?)),
         "docker" => j(serde_json::to_value(docker::collect(r)?)),
         "docker-stats" => j(serde_json::to_value(docker::stats(r)?)),
@@ -287,6 +293,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
         "fail2ban" => j(serde_json::to_value(health::fail2ban(r)?)),
         "disks" => j(serde_json::to_value(disks(r)?)),
         "listeners" => j(serde_json::to_value(listeners(r)?)),
+        "sockets" => j(serde_json::to_value(sockets::collect(r)?)),
         "journal" => j(serde_json::to_value(journal(r)?)),
         "snapshot" => j(serde_json::to_value(snapshot(r)?)),
         k => Err(SrvError::Failed(format!(
@@ -298,6 +305,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
 
 pub const KINDS: &[&str] = &[
     "probe",
+    "procs",
     "units",
     "docker",
     "docker-stats",
@@ -308,6 +316,7 @@ pub const KINDS: &[&str] = &[
     "fail2ban",
     "disks",
     "listeners",
+    "sockets",
     "journal",
     "snapshot",
 ];
