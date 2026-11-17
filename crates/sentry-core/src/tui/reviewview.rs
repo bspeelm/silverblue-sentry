@@ -39,6 +39,11 @@ pub enum Fx {
     Apply,
 }
 
+/// "1 change", "3 changes".
+pub fn changes_word(n: usize) -> String {
+    format!("{n} change{}", if n == 1 { "" } else { "s" })
+}
+
 impl ReviewView {
     /// The brief when there's nothing left to apply, else the review.
     pub fn open(doc: Option<&ReviewDoc>) -> Self {

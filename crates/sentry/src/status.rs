@@ -37,7 +37,9 @@ pub fn line(short: bool) -> String {
         }
         return parts.join(" · ");
     }
-    let fp = cache::load::<Vec<FpUpdate>>(cache::FLATPAK_UPDATES).map(|c| c.data.len());
+    let fp = cache::load::<Vec<FpUpdate>>(cache::FLATPAK_UPDATES)
+        .filter(|c| crate::maint::local::still_waiting(c.fetched_at, &log))
+        .map(|c| c.data.len());
     let checked =
         cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| fmt::ago(c.age_secs(now)));
     let names = &due;

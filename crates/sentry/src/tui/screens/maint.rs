@@ -277,11 +277,10 @@ pub fn recs_all(v: &View) -> Vec<Rec> {
         report: v.d.reports.get().and_then(|r| r.last()).map(|s| &s.report),
         baseline: &v.d.baseline,
         ostree: v.d.ostree.get(),
-        flatpak_updates: v.d.fp_updates.get().map(|c| c.data.len()),
+        flatpak_updates: v.d.fp_waiting().map(|c| c.data.len()),
         toolbox_updates: v
             .d
-            .tbx_updates
-            .get()
+            .tbx_waiting()
             .map(|c| crate::collectors::toolbox::total(&c.data)),
         reclaim,
         disk_tight,

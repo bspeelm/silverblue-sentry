@@ -114,6 +114,7 @@ pub fn cadence_tasks(cfg: &crate::config::Server, workflows: &[String]) -> Vec<T
             source: sentry_core::maint::tasks::Source::Config,
             review: None,
             after: None,
+            again: None,
         })
         .collect()
 }

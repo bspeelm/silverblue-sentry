@@ -159,7 +159,7 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
         }
         None => l.push(Line::styled("OS: no update known", t.dim())),
     }
-    if let Some(c) = v.d.fp_updates.get() {
+    if let Some(c) = v.d.fp_waiting() {
         l.push(Line::styled(
             format!(
                 "Flatpak: {} (checked {})",
@@ -178,7 +178,8 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
                 // OCI remotes (fedora) rebuild under the same version: the digest changed.
                 (Some(o), false) if o == u.version => format!("{o} (rebuild)"),
                 (_, false) => u.version.clone(),
-                (_, true) => "runtime".into(),
+                (Some(o), true) if !o.is_empty() => o,
+                (_, true) => u.branch.clone(),
             };
             l.push(Line::styled(format!("  {}  {ver}", u.id), t.dim()));
         }
@@ -189,7 +190,13 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
             ));
         }
     }
-    if let Some(c) = v.d.tbx_updates.get() {
+    if v.d.fp_updates.get().is_some() && v.d.fp_waiting().is_none() {
+        l.push(Line::styled(
+            "Flatpak: not checked since the last quick-update · c checks",
+            t.dim(),
+        ));
+    }
+    if let Some(c) = v.d.tbx_waiting() {
         for (name, b) in &c.data {
             if !b.updates.is_empty() {
                 l.push(Line::styled(
@@ -242,10 +249,10 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
             }
         }
     }
-    if let Some(c) = v.d.fp_updates.get() {
+    if let Some(c) = v.d.fp_waiting() {
         lines.push(format!("{} Flatpak updates:", c.data.len()));
         for u in c.data.iter().take(30) {
-            lines.push(format!("  {} {} ({})", u.id, u.version, u.origin));
+            lines.push(format!("  {} {} ({})", u.id, u.branch, u.origin));
         }
     }
     Ok(crate::claude::Ask::new(

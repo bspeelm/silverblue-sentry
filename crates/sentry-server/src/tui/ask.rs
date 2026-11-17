@@ -79,6 +79,27 @@ words unless asked for more.{sudo} Files on the laptop (the user's notes): {}",
     }
 }
 
+/// An apply session's profile: the chat's, plus the gateway that runs any command line as
+/// the login user (`sentry-server run`). What needs root it calls with sudo there, which is
+/// refused and shown to the user; allowed, sentry-server runs it with their password.
+pub fn session_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
+    let mut p = profile(r, os, kernel, sudo);
+    let name = &r.name;
+    p.system.push_str(&format!(
+        " In this apply session you also have `sentry-server run {name} -- '<shell command \
+         line>'` (the whole line in single quotes: pipes, redirects to /dev/null and several \
+         commands are fine): it runs anything on the server as the login user, so check \
+         whatever you need with it, nothing on that side is refused but turning the server \
+         off and files that may hold secrets. A command that needs root you call the same \
+         way with sudo in it: it's refused at first, the user is shown the exact line, and \
+         once they allow it sentry-server runs it with their password and sends you what it \
+         printed. Don't ask for a root read through `exec` here; call it with sudo through \
+         `run`."
+    ));
+    p.allowed.push(format!("Bash(sentry-server run {name}:*)"));
+    p
+}
+
 pub fn header(v: &View, r: &Remote) -> String {
     let (os, kernel) = v.s.host.value.clone().unwrap_or_default();
     let up = v.s.probe.value.as_ref().map_or(String::new(), |p| {

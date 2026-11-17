@@ -1,5 +1,5 @@
 //! Flatpak apps, remotes, permissions (metadata keyfiles + overrides, read live) and the
-//! GL.nvidia extension pair. `remote-ls --updates` is network-bound and cached by the caller.
+//! GL.nvidia extension pair. The update check (`flatpak update` answered `n`) is network-bound and cached by the caller.
 
 use std::path::{Path, PathBuf};
 
@@ -67,7 +67,11 @@ pub struct Remote {
 pub struct FpUpdate {
     pub id: String,
     pub origin: String,
+    /// Not known from the transaction table (old cache files have it).
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub branch: String,
 }
 
 pub fn collect(ctx: &Ctx) -> CResult<Flatpak> {
@@ -136,16 +140,68 @@ pub fn collect(ctx: &Ctx) -> CResult<Flatpak> {
     })
 }
 
+/// What `flatpak update` would do, per installation. `remote-ls --updates` can't be used: for an
+/// OCI remote (fedora) it lists every rebuilt image, also those `flatpak update` has nothing to
+/// do for. Flatpak has no dry-run, so the prompt is answered `n`: the transaction table is
+/// printed and nothing changes.
 pub fn collect_updates() -> CResult<Vec<FpUpdate>> {
-    let out = Cmd::host("flatpak")
-        .args([
-            "remote-ls",
-            "--updates",
-            "--columns=application,origin,version",
-        ])
-        .timeout(Some(std::time::Duration::from_secs(120)))
-        .output()?;
-    Ok(parse_updates(&out))
+    if !Cmd::host("flatpak").available() {
+        return Err(super::CollectError::Unavailable("flatpak".into()));
+    }
+    let mut out: Vec<FpUpdate> = Vec::new();
+    for inst in ["--system", "--user"] {
+        let o = Cmd::host("sh")
+            .args([
+                "-c",
+                &format!("printf 'n\\n' | LC_ALL=C flatpak update {inst}"),
+            ])
+            .timeout(Some(std::time::Duration::from_secs(120)))
+            .run()?;
+        for u in parse_update_plan(&o.stdout) {
+            if !out.contains(&u) {
+                out.push(u);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Rows of the transaction table whose op is an update or an install it brings along:
+/// ` 1.     org.gnome.Calculator     stable     u     fedora     < 4.1 MB`. Columns are found
+/// by the header, since flatpak adds one (Arch) when it has to.
+pub fn parse_update_plan(text: &str) -> Vec<FpUpdate> {
+    let mut cols: Option<(usize, Option<usize>, usize, Option<usize>)> = None;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.first() == Some(&"ID") {
+            let at = |name: &str| f.iter().position(|c| *c == name).map(|i| i + 1);
+            if let Some(op) = at("Op") {
+                cols = Some((1, at("Branch"), op, at("Remote")));
+            }
+            continue;
+        }
+        let Some((id, branch, op, remote)) = cols else {
+            continue;
+        };
+        if f.first()
+            .and_then(|n| n.strip_suffix('.'))
+            .is_none_or(|n| n.parse::<u32>().is_err())
+        {
+            continue;
+        }
+        if !matches!(f.get(op), Some(&"u") | Some(&"i")) {
+            continue;
+        }
+        let get = |i: Option<usize>| i.and_then(|i| f.get(i)).unwrap_or(&"").to_string();
+        out.push(FpUpdate {
+            id: get(Some(id)),
+            origin: get(remote),
+            version: String::new(),
+            branch: get(branch),
+        });
+    }
+    out
 }
 
 /// Refs `flatpak uninstall --unused` would remove, per installation. Flatpak has no dry-run, so
@@ -220,18 +276,6 @@ pub fn parse_remotes(text: &str) -> Vec<Remote> {
                 name: f.first()?.to_string(),
                 url: f.get(1).unwrap_or(&"").to_string(),
                 options: f.get(2).unwrap_or(&"").to_string(),
-            })
-        })
-        .collect()
-}
-
-pub fn parse_updates(text: &str) -> Vec<FpUpdate> {
-    tsv(text)
-        .filter_map(|f| {
-            Some(FpUpdate {
-                id: f.first()?.to_string(),
-                origin: f.get(1).unwrap_or(&"").to_string(),
-                version: f.get(2).unwrap_or(&"").to_string(),
             })
         })
         .collect()
@@ -426,10 +470,32 @@ mod tests {
     }
 
     #[test]
-    fn updates_tsv() {
-        let u =
-            parse_updates("org.mozilla.firefox\tflathub\t144.0.2\norg.gnome.Platform\tflathub\t\n");
-        assert_eq!(u.len(), 2);
-        assert_eq!(u[0].version, "144.0.2");
+    fn updates_are_what_flatpak_update_would_do() {
+        let u = parse_update_plan(include_str!(
+            "../../../../tests/fixtures/flatpak/update-plan.txt"
+        ));
+        let ids: Vec<_> = u.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "org.gnome.Platform.Locale",
+                "org.gnome.Platform",
+                "org.mozilla.firefox",
+                "org.freedesktop.Platform.codecs-extra"
+            ]
+        );
+        assert_eq!(
+            (u[2].origin.as_str(), u[2].branch.as_str()),
+            ("flathub", "stable")
+        );
+        // What the fedora remote answers when its images were only rebuilt.
+        assert!(parse_update_plan("Looking for updates…\n\nNothing to update.\n").is_empty());
+        // An uninstall table (no update ops) isn't one.
+        assert!(
+            parse_update_plan(include_str!(
+                "../../../../tests/fixtures/flatpak/uninstall-unused.txt"
+            ))
+            .is_empty()
+        );
     }
 }

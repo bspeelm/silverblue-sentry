@@ -491,7 +491,7 @@ Approve it and sentry does it.";
                     title: "e".into(),
                     kind: Kind::Edit {
                         file: "/etc/hosts".into(),
-                        old: "x".into(),
+                        old: "text no hosts file has".into(),
                         new: "y".into(),
                     },
                 },

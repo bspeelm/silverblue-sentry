@@ -1021,7 +1021,7 @@ fn fixing_a_finding_on_the_server_is_an_apply_session() {
         "{s}"
     );
     assert!(
-        s.contains("brief › investigate") && s.contains("through `sentry-server exec`"),
+        s.contains("brief › investigate") && s.contains("through `sentry-server run`"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
@@ -1061,6 +1061,21 @@ fn claude_gets_only_the_gateway() {
     assert!(
         p.system
             .contains("sentry-server exec myserver -- <command>")
+    );
+    // An apply session also gets the gateway that runs anything as the login user; ssh and
+    // a local sudo stay out.
+    let s = super::ask::session_profile(&r, "Debian 13", "6.12", None);
+    assert_eq!(
+        s.allowed,
+        [
+            "Bash(sentry-server exec myserver:*)",
+            "Bash(sentry-server run myserver:*)"
+        ]
+    );
+    assert_eq!(s.denied, p.denied);
+    assert!(
+        s.system
+            .contains("sentry-server run myserver -- '<shell command line>'")
     );
 }
 
@@ -1261,6 +1276,7 @@ fn one_input_line_for_every_prompt() {
         source: Default::default(),
         review: None,
         after: None,
+        again: None,
     });
     a.apply(
         vec![super::app::Effect::MaintFind("task:ups".into())],
@@ -1593,7 +1609,13 @@ fn workflow_vars_are_asked_before_it_starts() {
 
 /// A workflow a test can start: `apt-maintenance` from a real file (starting a run copies
 /// it), in the scratch config dir.
-fn startable(a: &mut App, file: &str) {
+///
+/// Only one run can be in progress on a server, and the tests share `myserver`'s scratch
+/// runs: they take turns (the guard), each starting with no run left by the other.
+fn startable(a: &mut App, file: &str) -> std::sync::MutexGuard<'static, ()> {
+    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_dir_all(crate::workflow::root("myserver"));
     let (name, text) = crate::workflow::SEEDS
         .iter()
         .find(|(n, _)| *n == "apt-maintenance")
@@ -1607,12 +1629,13 @@ fn startable(a: &mut App, file: &str) {
         wf: sentry_core::workflows::parse(text),
         issues: Vec::new(),
     }]);
+    turn
 }
 
 #[test]
 fn auto_steps_run_only_on_screen_0() {
     let mut a = app();
-    startable(&mut a, "auto-steps-test-apt-maintenance.toml");
+    let _turn = startable(&mut a, "auto-steps-test-apt-maintenance.toml");
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
@@ -1645,7 +1668,7 @@ fn auto_steps_run_only_on_screen_0() {
 #[test]
 fn a_run_shows_a_banner_off_screen_0() {
     let mut a = app();
-    startable(&mut a, "banner-test-apt-maintenance.toml");
+    let _turn = startable(&mut a, "banner-test-apt-maintenance.toml");
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     a.apply(
         vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
@@ -3345,7 +3368,7 @@ fn applying_on_a_server_is_one_session() {
     );
     let s = screen(&mut a);
     assert!(
-        s.contains("Sent to Claude") && s.contains("sentry-server exec"),
+        s.contains("Sent to Claude") && s.contains("sentry-server run"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
@@ -3460,6 +3483,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
         source: Default::default(),
         review: None,
         after: None,
+        again: None,
     });
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(

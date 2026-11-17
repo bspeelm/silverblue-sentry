@@ -38,7 +38,7 @@ pub fn hints() -> Hints {
 }
 
 fn box_updates<'a>(v: &View<'a>, name: &str) -> Option<&'a BoxUpdates> {
-    v.d.tbx_updates.get()?.data.get(name)
+    v.d.tbx_waiting()?.data.get(name)
 }
 
 /// Run spec that upgrades `targets` in order and re-checks afterwards.
@@ -403,7 +403,7 @@ impl Containers {
     fn render_updates(&self, f: &mut Frame, area: Rect, v: &View, c: &Ctr) {
         let t = v.t;
         let checking = v.d.loading(Fetch::ToolboxUpdates);
-        let cached = v.d.tbx_updates.get();
+        let cached = v.d.tbx_waiting();
         let b = cached.and_then(|x| x.data.get(&c.name));
         let detail = match (b, checking) {
             (_, true) => "checking…".to_string(),

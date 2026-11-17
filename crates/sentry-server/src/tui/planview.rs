@@ -46,6 +46,15 @@ pub fn review_request(context: &str, changes: &str) -> String {
     )
 }
 
+/// A review sentry-server starts by itself (`ask`: core's `review::run_ask` or `start_ask`).
+/// Its reads stay within what needs no root: nobody is there to type a password.
+pub fn auto_review_request(ask: &str, context: &str, changes: &str) -> String {
+    format!(
+        "{ask}\nDon't make reads that need root for this (none will be run): say what you \
+         couldn't check instead, and never answer `READS PENDING`.\n\n{context}\n\n{changes}"
+    )
+}
+
 /// Claude's instructions for writing a plan: not Ask Claude's (no length cap, no chat).
 pub fn profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
     let mut p = super::ask::writer_profile(r, os, kernel, sudo);

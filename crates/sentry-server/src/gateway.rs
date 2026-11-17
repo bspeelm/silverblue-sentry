@@ -202,6 +202,119 @@ pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
     }
 }
 
+/// Why an apply session's command line isn't simply run on the server.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Held {
+    /// It needs root: the user is shown it, and allows it or not.
+    Asks,
+    /// Never from a session, and why.
+    Never(String),
+}
+
+/// A shell command line from an apply session (`sentry-server run`): anything goes that the
+/// login user may do, so Claude can find out what it needs as you would over ssh. Held back:
+/// what needs root (it becomes a request), turning the server off (the Reboot action's, or
+/// a plan's) and files that may hold secrets.
+pub fn runnable(line: &str) -> Result<(), Held> {
+    let words: Vec<&str> = line
+        .split(|c: char| c.is_whitespace() || ";&|()`$'\"{}".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() {
+        return Err(Held::Never("no command".into()));
+    }
+    let lower = line.to_lowercase();
+    if let Some(s) = SECRET.iter().find(|s| lower.contains(**s)) {
+        return Err(Held::Never(format!(
+            "it names `{s}`, which may hold secrets: those never leave the server"
+        )));
+    }
+    let off = [
+        "reboot",
+        "poweroff",
+        "halt",
+        "shutdown",
+        "kexec",
+        "soft-reboot",
+    ];
+    let base = |w: &str| w.rsplit('/').next().unwrap_or(w).to_string();
+    // Each command of the line: its first word (past sudo and the like, and what `-c` runs).
+    for part in line.split([';', '&', '|', '\n', '(', ')', '`']) {
+        let w: Vec<String> = part
+            .split_whitespace()
+            .map(|w| base(w.trim_matches(|c| "'\"${}".contains(c))))
+            .collect();
+        let starts = |i: usize| {
+            w[..i]
+                .iter()
+                .all(|p| ["sudo", "-n", "exec", "nohup", "time", "env"].contains(&p.as_str()))
+                || w[i - 1] == "-c"
+        };
+        for (i, word) in w.iter().enumerate() {
+            let cmd = i == 0 || starts(i);
+            if (cmd && off.contains(&word.as_str()))
+                || (cmd
+                    && word == "systemctl"
+                    && w[i + 1..].iter().any(|n| off.contains(&n.as_str())))
+            {
+                return Err(Held::Never(
+                    "turning the server off or restarting it is the Reboot action's (or a \
+                     plan's step), never a session's command"
+                        .into(),
+                ));
+            }
+        }
+    }
+    if words
+        .iter()
+        .any(|w| ["sudo", "su", "pkexec", "doas", "run0"].contains(&base(w).as_str()))
+    {
+        return Err(Held::Asks);
+    }
+    Ok(())
+}
+
+/// Run it as the login user; output passes through.
+pub fn run_cli(r: &Remote, line: &str) -> u8 {
+    match runnable(line) {
+        // The words `claude::refused` knows: the session makes it a request for the user.
+        Err(Held::Asks) => {
+            eprintln!("sentry-server run: this needs root and requires approval: {line}");
+            return 126;
+        }
+        Err(Held::Never(why)) => {
+            eprintln!("sentry-server run: not run: {why}");
+            return 126;
+        }
+        Ok(()) => {}
+    }
+    match r
+        .sh(line)
+        .timeout(Some(std::time::Duration::from_secs(120)))
+        .run()
+    {
+        Ok(o) => {
+            print!("{}", o.stdout);
+            eprint!("{}", o.stderr);
+            if o.code != 0
+                && (o.stderr.contains("Permission denied")
+                    || o.stderr.contains("permission denied"))
+            {
+                eprintln!(
+                    "(if this needs root, call it again with sudo: the user is asked, and the \
+                     output comes back to you)"
+                );
+            }
+            o.code.clamp(0, 255) as u8
+        }
+        Err(e) => {
+            let e: SrvError = e.into();
+            eprintln!("sentry-server run: {e}");
+            125
+        }
+    }
+}
+
 /// Reads Claude asked for that need root, waiting for the user (one per line, as JSON).
 /// Under the runtime directory: the gateway runs as Claude's child, possibly elsewhere than the
 /// TUI's environment, and this is the same for both.
@@ -255,6 +368,47 @@ mod tests {
 
     fn ok(s: &str) -> bool {
         allowed(&s.split_whitespace().map(str::to_string).collect::<Vec<_>>()).is_ok()
+    }
+
+    #[test]
+    fn a_session_runs_anything_but_root_power_and_secrets() {
+        for good in [
+            "dmesg | tail -50",
+            "lspci -vv",
+            "ps aux | sort -k3 -r | head",
+            "docker ps -a --format '{{.Names}}' 2>/dev/null",
+            "journalctl -b -p err --no-pager | grep -c app",
+            "for u in app.service db.service; do systemctl is-active $u; done",
+            "cat /etc/fstab; df -h",
+            "systemctl --user restart app",
+            "grep -r reboot /etc/cron.d",
+        ] {
+            assert_eq!(runnable(good), Ok(()), "{good}");
+        }
+        for asks in [
+            "sudo smartctl -a /dev/sda",
+            "dmesg || sudo dmesg",
+            "echo x | sudo tee /etc/motd",
+            "sh -c 'sudo docker ps'",
+            "x=$(sudo cat /var/log/auth.log)",
+            "/usr/bin/sudo -n true",
+            "su - root -c id",
+        ] {
+            assert_eq!(runnable(asks), Err(Held::Asks), "{asks}");
+        }
+        for never in [
+            "reboot",
+            "sudo reboot",
+            "systemctl poweroff",
+            "true && /sbin/shutdown -h now",
+            "sudo systemctl reboot",
+            "cat /etc/shadow",
+            "sudo cat /srv/app/.env",
+            "cat ~/.ssh/id_ed25519",
+            "",
+        ] {
+            assert!(matches!(runnable(never), Err(Held::Never(_))), "{never}");
+        }
     }
 
     #[test]

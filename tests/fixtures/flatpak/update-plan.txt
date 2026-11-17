@@ -1,0 +1,10 @@
+Looking for updates…
+
+
+        ID                                         Branch         Op         Remote          Download
+ 1.     org.gnome.Platform.Locale                  49             u          flathub         < 398.6 MB (partial)
+ 2.     org.gnome.Platform                         49             u          flathub         < 410.2 MB
+ 3.     org.mozilla.firefox                        stable         u          flathub         < 141.9 MB
+ 4.     org.freedesktop.Platform.codecs-extra      25.08-extra    i          flathub           < 14.4 MB
+
+Proceed with these changes to the system installation? [Y/n]: n

@@ -407,6 +407,21 @@ pub fn maint(server: Option<&str>, refresh: bool) -> u8 {
     0
 }
 
+/// `run <server> [--] <shell line>`: an apply session's gateway.
+pub fn run(server: &str, line: &[String]) -> u8 {
+    let line = match line.first().map(String::as_str) {
+        Some("--") => line[1..].join(" "),
+        _ => line.join(" "),
+    };
+    match load(Some(server)) {
+        Ok((n, s)) => super::gateway::run_cli(&Remote::new(&n, &s), &line),
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
 /// `exec <server> [--] <argv…>`: the read-only gateway Claude uses.
 pub fn exec(server: &str, argv: &[String]) -> u8 {
     let argv: Vec<String> = match argv.first().map(String::as_str) {

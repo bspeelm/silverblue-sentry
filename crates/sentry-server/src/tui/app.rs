@@ -294,6 +294,12 @@ pub struct App {
     wf_change: Option<crate::maint::Change>,
     /// The run already written to the maintenance log.
     wf_logged: Option<std::path::PathBuf>,
+    /// The run that just ended well, until its tasks review is started.
+    review_run: Option<crate::maint::log::LogEntry>,
+    /// The review at start is still to begin (it waits for the first data).
+    start_check: bool,
+    /// `[review]` in config.toml: the reviews started without being asked.
+    auto_review: sentry_core::config::Review,
     /// When the last maintenance run ended (a read with sudo before it is out of date).
     last_change_at: Option<jiff::Timestamp>,
     /// After the log note: offer to read the server again (the run changed what was read).
@@ -375,6 +381,9 @@ impl App {
             inventory_at: None,
             wf_change: None,
             wf_logged: None,
+            review_run: None,
+            start_check: false,
+            auto_review: sentry_core::config::Review::default(),
             last_change_at: None,
             offer_reread: false,
             last_log: None,
@@ -409,7 +418,13 @@ impl App {
         self.fetch(Kind::Host);
         self.fetch(Kind::Sudo);
         if !self.offline {
-            let keep = sentry_core::config::Config::load().0.retention;
+            let cfg = sentry_core::config::Config::load().0;
+            self.auto_review = cfg.review;
+            if self.auto_review.at_start && claude::available() {
+                self.start_check = true;
+                self.fetch(Kind::Maint);
+            }
+            let keep = cfg.retention;
             sentry_core::maint::retention::purge(
                 &self.remote.name,
                 &crate::workflow::root(&self.remote.name),
@@ -577,6 +592,7 @@ impl App {
                     self.toast(&format!("audit failed: {e}"));
                 }
                 self.store.apply(k, *res);
+                self.review_at_start();
                 if k == Kind::Probe {
                     self.check_back();
                 }
@@ -1989,6 +2005,7 @@ impl App {
             self.fetch(Kind::Maint);
         }
         if done {
+            self.review_run = Some(entry.clone());
             self.last_change_at = Some(jiff::Timestamp::now());
             // What was read with sudo is from before this run: offer to read it again.
             self.offer_reread =
@@ -2502,7 +2519,10 @@ impl App {
                     None => self.wf_cmd(WfCmd::BeginWith(v.workflow, v.values)),
                 }
             }
-            Prompt::LogNote(e) => self.log_note_submit(*e, text, false),
+            Prompt::LogNote(e) => {
+                self.log_note_submit(*e, text, false);
+                self.review_after_run();
+            }
             Prompt::LogAddNote(e) => self.log_note_submit(*e, text, true),
             // The plan's note: an empty one is fine.
             Prompt::PlanNote(id, mut plan) => {
@@ -2564,7 +2584,10 @@ impl App {
             Prompt::WfVar(_) => self.toast("not started"),
             Prompt::PlanNote(..) => self.toast("not planned"),
             // No note: what the run changed may still want reading again.
-            Prompt::LogNote(_) => self.reread_box(),
+            Prompt::LogNote(_) => {
+                self.reread_box();
+                self.review_after_run();
+            }
             Prompt::LogAddNote(_) | Prompt::PlanRevise(_) | Prompt::TaskEvery(_) => {}
         }
     }
@@ -2811,14 +2834,27 @@ impl App {
 
     /// Claude writes (a plan or a review) in the background; its view opens.
     fn start_writer(&mut self, mut w: planview::Writer, prompt: String, resume: Option<String>) {
-        if self.writer.as_ref().is_some_and(|w| w.running()) {
-            return self.toast("Claude is already writing: wait for it, or C-c in its view");
+        match self.writer.as_ref().filter(|x| x.running()) {
+            // What you ask for takes the place of a review sentry-server started by itself.
+            Some(x) if x.quiet && !w.quiet => {
+                if let Some((_, pid)) = x.live.filter(|(_, pid)| *pid != 0) {
+                    let _ = kill(pid);
+                }
+                self.writer = None;
+            }
+            Some(_) if w.quiet => return,
+            Some(_) => {
+                return self.toast("Claude is already writing: wait for it, or C-c in its view");
+            }
+            None => {}
         }
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         let profile = if w.review.is_some() {
-            self.review_view
-                .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
-                .brief = false;
+            if !w.quiet {
+                self.review_view
+                    .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
+                    .brief = false;
+            }
             planview::review_profile(&self.remote, &os, &kernel, self.store.sudo.value)
         } else {
             self.plan_view = Some((w.item.clone(), 0));
@@ -2993,6 +3029,9 @@ impl App {
             later: Some(&self.store.later),
             items: &items,
             found: &found,
+            log: &self.store.log,
+            audited: None,
+            now: Some(jiff::Timestamp::now()),
         })
     }
 
@@ -3013,6 +3052,128 @@ impl App {
         let prompt = self.review_prompt();
         let doc = crate::maint::review::ReviewDoc::new(&self.remote.name);
         self.start_writer(planview::Writer::review(doc), prompt, None);
+    }
+
+    /// A review sentry-server starts by itself, in the background: after a run that ended
+    /// well (`run`), or at start. Nothing opens while Claude writes.
+    fn review_auto(&mut self, run: Option<crate::maint::log::LogEntry>) {
+        use sentry_core::maint::review;
+        if !claude::available() || self.writer.as_ref().is_some_and(|w| w.running()) {
+            return;
+        }
+        let changes = self.with_known(|k| sentry_core::maint::changes::request_section(k, true));
+        let ask = match &run {
+            Some(r) => review::run_ask(r),
+            None => review::start_ask(),
+        };
+        let prompt = planview::auto_review_request(
+            &ask,
+            &super::screens::maint::review_context(&self.view_all(), &self.remote),
+            &changes,
+        );
+        let mut doc = review::ReviewDoc::new(&self.remote.name);
+        doc.head.origin = if run.is_some() {
+            review::RUN
+        } else {
+            review::START
+        }
+        .into();
+        doc.head.run = run.map(|r| r.file_name());
+        let mut w = planview::Writer::review(doc);
+        w.quiet = true;
+        self.start_writer(w, prompt, None);
+    }
+
+    /// The run that just ended, once its note is given or skipped: Claude checks which
+    /// tasks it did. Not when none is due (the ones that run this workflow are done already).
+    fn review_after_run(&mut self) {
+        let Some(mut run) = self.review_run.take() else {
+            return;
+        };
+        if !self.auto_review.after_run {
+            return;
+        }
+        // With its note, when one was given.
+        if let Some(l) = self
+            .last_log
+            .as_ref()
+            .filter(|l| l.head.run == run.head.run)
+        {
+            run = l.clone();
+        }
+        let now = jiff::Timestamp::now();
+        let due = super::screens::maint::all_tasks(&self.view())
+            .iter()
+            .any(|t| sentry_core::maint::tasks::due(t, &self.store.log, None, now));
+        if due {
+            self.review_auto(Some(run));
+        }
+    }
+
+    /// The review at start, once what it's told about is read: the host and the items.
+    fn review_at_start(&mut self) {
+        if !self.start_check || self.store.host.value.is_none() || self.store.maint.value.is_none()
+        {
+            return;
+        }
+        self.start_check = false;
+        if self.review_run.is_some() || self.input.is_open() {
+            return;
+        }
+        self.review_auto(None);
+    }
+
+    /// A review sentry-server started by itself is written: kept only when it proposes
+    /// something. After a run it opens (if nothing else is); the one at start only says so.
+    fn auto_review_ended(
+        &mut self,
+        mut rd: sentry_core::maint::review::ReviewDoc,
+        answer: Option<&str>,
+    ) {
+        let after_run = rd.head.origin == sentry_core::maint::review::RUN;
+        self.writer = None;
+        let Some(a) = answer.filter(|a| !a.trim().is_empty() && !planview::waits_for_reads(a))
+        else {
+            if after_run {
+                self.toast(
+                    "no review of the tasks after the run: Claude gave no answer (R asks again)",
+                );
+            }
+            return;
+        };
+        let today = jiff::Zoned::now().date();
+        self.with_known(|k| rd.take_answer(a, k, today));
+        let n = rd.open().len();
+        if n == 0 {
+            if after_run {
+                self.toast("the run did none of the tasks still due");
+            }
+            return;
+        }
+        if !self.offline
+            && let Err(e) = crate::maint::review::save(&rd)
+        {
+            return self.toast(&format!("couldn't save the review: {e}"));
+        }
+        self.store.review = Some(rd);
+        let nothing_open = matches!(frame::layer(&self.open()), Layer::Screen);
+        if after_run && nothing_open {
+            self.review_view = Some(sentry_core::tui::reviewview::ReviewView::show());
+            self.toast(&format!(
+                "after the run: {} to the tasks (Enter applies)",
+                sentry_core::tui::reviewview::changes_word(n)
+            ));
+        } else if after_run {
+            self.toast(&format!(
+                "after the run: {} to the tasks (R shows them)",
+                sentry_core::tui::reviewview::changes_word(n)
+            ));
+        } else {
+            self.toast(&format!(
+                "since last time: {} to the tasks (R shows them)",
+                sentry_core::tui::reviewview::changes_word(n)
+            ));
+        }
     }
 
     /// Enter on a review's changes: those ticked are applied together, the rest skipped,
@@ -3042,10 +3203,29 @@ impl App {
         };
         let found = self.store.maint_found.candidates.clone();
         let now = jiff::Timestamp::now();
+        // The run a review after a run is about: it dates the tasks found done.
+        let by = rd
+            .head
+            .run
+            .as_ref()
+            .and_then(|f| self.store.log.iter().find(|e| &e.file_name() == f).cloned());
+        let all = tk::effective(&tasks, derived.clone());
+        let mut found_done = Vec::new();
         let (done, skipped, failed) = changes::settle(&mut rd.head.changes, |c| {
-            changes::apply(c, &mut tasks, &mut snoozes, &derived, now)
+            let r = changes::apply(c, &mut tasks, &mut snoozes, &derived, now)
                 .or_else(|| tracked::apply(&mut items, c, &yaml, &found))
-                .unwrap_or_else(|| Err("not something sentry-server can change".into()))
+                .unwrap_or_else(|| Err("not something sentry-server can change".into()));
+            if let (Ok(_), Some(id)) = (&r, c.done_task()) {
+                let title = all.iter().find(|t| t.id == id).map_or(id, |t| &t.title);
+                found_done.push(log::LogEntry::task_found_done(
+                    &name,
+                    id,
+                    title,
+                    &c.why,
+                    by.as_ref(),
+                ));
+            }
+            r
         });
         if !self.offline {
             let saved = tk::save(&name, &tasks)
@@ -3064,6 +3244,13 @@ impl App {
         }
         self.store.tasks = tasks;
         self.store.later = snoozes;
+        for e in found_done {
+            if self.offline {
+                self.store.log.insert(0, e);
+            } else if let Err(err) = log::write(&e) {
+                self.toast(&format!("couldn't write the maintenance log: {err}"));
+            }
+        }
         if done + failed > 0 {
             let entry = log::LogEntry::event(
                 &name,
@@ -3187,6 +3374,9 @@ impl App {
                 .map(|w| (w.answer.clone(), w.err.clone(), w.session.clone()))
                 .unwrap_or_default();
             rd.head.session = session.or(rd.head.session);
+            if self.writer.as_ref().is_some_and(|w| w.quiet) {
+                return self.auto_review_ended(rd, answer.as_deref());
+            }
             // Waiting for reads that need root: no review yet; ask for them.
             if answer.as_deref().is_some_and(planview::waits_for_reads) {
                 if let Some(w) = self.writer.as_mut() {
@@ -3732,6 +3922,16 @@ impl App {
         )
     }
 
+    /// The same for an apply session, which finds out whatever it needs.
+    fn session_privacy(&self) -> String {
+        format!(
+            "Claude may run any command on {} that needs no root (through `sentry-server \
+             run`, as your login). sudo, and every step of a plan, asks you first; it can't \
+             use ssh, turn the server off or read files that may hold secrets.",
+            self.remote.name
+        )
+    }
+
     /// Open the conversation, nothing sent yet: an apply session, or a chat, showing the
     /// brief; Enter sends it.
     fn open_ask(&mut self, ask: Ask) {
@@ -3744,7 +3944,7 @@ impl App {
                 let _ = kill(pid);
             }
             let mut sess = sentry_core::apply::session::Session::new(ask);
-            sess.chat.privacy = self.privacy();
+            sess.chat.privacy = self.session_privacy();
             self.apply = Some(sess);
             return;
         }
@@ -3774,7 +3974,7 @@ impl App {
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
         // An apply session may read release notes (as plans do): it may have to decide.
         let profile = super::ask::with_web(
-            super::ask::profile(&self.remote, &os, &kernel, self.store.sudo.value)
+            super::ask::session_profile(&self.remote, &os, &kernel, self.store.sudo.value)
                 .with_notes(&self.remote.cfg.maintenance.notes)
                 .with_log(&sentry_core::maint::log::dir(&self.remote.name))
                 .with_grants(grants),
@@ -3976,7 +4176,7 @@ impl App {
                     && let Some(apply) = c.apply_with.clone()
                 {
                     let mut sess = sentry_core::apply::session::Session::from_chat(c, apply);
-                    sess.chat.privacy = self.privacy();
+                    sess.chat.privacy = self.session_privacy();
                     self.apply = Some(sess);
                 }
             }

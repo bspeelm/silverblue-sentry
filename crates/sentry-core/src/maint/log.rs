@@ -221,6 +221,39 @@ impl LogEntry {
         e
     }
 
+    /// A task a review found done: `by` is the run that did it (the entry is dated at its
+    /// end, so the task's cadence counts from the run, not from the review).
+    pub fn task_found_done(
+        server: &str,
+        id: &str,
+        title: &str,
+        why: &str,
+        by: Option<&Self>,
+    ) -> Self {
+        let at = by
+            .and_then(|r| r.head.ended.or(r.head.started))
+            .unwrap_or_else(jiff::Timestamp::now);
+        let mut tags = vec![format!("task:{id}"), format!("item:{id}")];
+        let how = match by {
+            Some(r) => {
+                tags.push(format!("run:{}", r.file_name()));
+                format!("Done by the {} run (`{}`)", r.head.workflow, r.file_name())
+            }
+            None => "Found done by a review".to_string(),
+        };
+        let mut e = Self::event(
+            server,
+            "task",
+            "review",
+            true,
+            &format!("{title}: {}\n\n{how}; no separate run.", why.trim()),
+            &tags,
+            at,
+        );
+        e.head.item = Some(id.to_string());
+        e
+    }
+
     /// Something done outside a workflow and a plan: a job (`kind` "job"), a reboot, a command
     /// Claude proposed for a finding ("fix"), a toolbox upgrade ("toolbox"). `what` is what
     /// ran (the workflow column); `tags` add to the usual ones.

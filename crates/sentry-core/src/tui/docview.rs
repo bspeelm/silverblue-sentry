@@ -251,6 +251,9 @@ pub struct Writer {
     pub answer: Option<String>,
     pub err: Option<String>,
     pub session: Option<String>,
+    /// Started by sentry itself (after a run, at start): no window opens while it writes,
+    /// and what you ask Claude to write takes its place.
+    pub quiet: bool,
 }
 
 impl Writer {
@@ -270,6 +273,7 @@ impl Writer {
             answer: None,
             err: None,
             session,
+            quiet: false,
         }
     }
 
