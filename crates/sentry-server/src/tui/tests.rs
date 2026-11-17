@@ -2253,7 +2253,16 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     let s = screen(&mut a);
     assert!(s.contains("Recommended ·"), "{s}");
     assert!(s.contains("soon     os: end of life soon"), "{s}");
-    assert!(s.contains("tidy     Track cache"), "{s}");
+    // What nothing asks for waits: o lists it, o again hides it.
+    assert!(
+        !s.contains("Track cache") && s.contains("· 1 can wait (o) ·"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('o'));
+    let all = screen(&mut a);
+    assert!(all.contains("tidy     Track cache"), "{all}");
+    assert!(all.contains("o  needed only"), "{all}");
+    key(&mut a, KeyCode::Char('o'));
     // Security updates are 'now', first; Enter starts the workflow that applies them.
     assert!(s.contains("now      4 package update(s) waiting, 1"), "{s}");
     assert!(
@@ -2268,7 +2277,8 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("in 7 days ("));
     key(&mut a, KeyCode::Esc);
-    // A tidy one: Track.
+    // A tidy one: Track (with everything listed).
+    key(&mut a, KeyCode::Char('o'));
     let reached = (0..20).any(|_| {
         let here = screen(&mut a).contains("Enter: track it");
         if !here {
@@ -3193,6 +3203,7 @@ fn a_review_changes_tasks_and_items_with_one_enter() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    key(&mut a, KeyCode::Char('o'));
     let s = screen(&mut a);
     assert!(s.contains("Track cache") && s.contains("legacy"), "{s}");
     key(&mut a, KeyCode::Char('R'));

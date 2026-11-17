@@ -673,6 +673,7 @@ fn ask_claude_context_per_tab() {
         t: &t,
         filter: None,
         wf: None,
+        everything: false,
     };
     let s = Screens::default();
     let expect: &[(ScreenId, &str)] = &[

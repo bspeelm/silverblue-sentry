@@ -132,6 +132,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             ),
             action: Action::OpenRun,
             item: None,
+            can_wait: false,
         });
     }
     for (wf, p) in i.plans {
@@ -146,6 +147,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                 }),
                 action: Action::OpenPlan(wf.clone()),
                 item: None,
+                can_wait: false,
             });
         }
     }
@@ -183,6 +185,7 @@ fn findings(i: &Inputs, out: &mut Vec<Rec>) {
             },
             action: Action::Fix(f.id.clone()),
             item: None,
+            can_wait: false,
         });
     }
 }
@@ -212,6 +215,7 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
                 ),
                 action: Action::Reboot,
                 item: None,
+                can_wait: false,
             });
         }
     }
@@ -262,6 +266,7 @@ fn updates(i: &Inputs, out: &mut Vec<Rec>) {
         },
         action: Action::Run(UPDATE_WORKFLOW.into()),
         item: None,
+        can_wait: os.is_none(),
     });
 }
 
@@ -282,6 +287,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
                 why: format!("Last run: {}", r.summary),
                 action,
                 item: None,
+                can_wait: false,
             });
         }
     }
@@ -312,6 +318,7 @@ fn jobs(i: &Inputs, out: &mut Vec<Rec>) {
             .join(" "),
             action: Action::Cleanup,
             item: None,
+            can_wait: !i.disk_tight,
         });
     }
 }
@@ -501,7 +508,7 @@ mod tests {
         let now: Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
         let yesterday = now - jiff::SignedDuration::from_hours(24);
         // Everything ran yesterday, except the audit (never) and podman (failed).
-        let log: Vec<LogEntry> = crate::jobs::JobId::ALL
+        let mut log: Vec<LogEntry> = crate::jobs::JobId::ALL
             .into_iter()
             .filter(|j| j.name() != "audit")
             .map(|j| {
@@ -509,6 +516,24 @@ mod tests {
                 LogEntry::event("", "job", j.name(), ok, "podman: not found", &[], yesterday)
             })
             .collect();
+        let tasks = crate::jobs::state::tasks(&cfg);
+        let mut i = base(&cfg, &b, &s, &p);
+        i.log = &log;
+        i.tasks = &tasks;
+        // The log began yesterday: the audit's 30 days count from then.
+        let keys: Vec<String> = recommend(&i).into_iter().map(|r| r.key).collect();
+        assert_eq!(keys, ["job:cleanup-podman"]);
+        // … and two months ago: it's due.
+        let long_ago = now - jiff::SignedDuration::from_hours(24 * 60);
+        log.push(LogEntry::event(
+            "",
+            "reboot",
+            "reboot",
+            true,
+            "",
+            &[],
+            long_ago,
+        ));
         let tasks = crate::jobs::state::tasks(&cfg);
         let mut i = base(&cfg, &b, &s, &p);
         i.log = &log;

@@ -5,7 +5,7 @@ expression: body(&s)
  1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maintenance 8   0 Upgr
 ────────────────────────────────────────────────────────────────────────────────
 
-┌ Recommended · 11 · audited 1h ago ──────┐ ┌ Details ─────────────────────────┐
+┌ Recommended · 10 · 1 can wait (o) · audi┐ ┌ Details ─────────────────────────┐
 │          What         Why               │ │ now  4 package update(s)         │
 │ now      4 package up apt-maintenance a │ │ waiting, 1 for security          │
 │ now      backup.servi Whatever it provi │ │                                  │
@@ -24,4 +24,4 @@ expression: body(&s)
 │                                         │ │ remove packages): libfoo1        │
 └─────────────────────────────────────────┘ └──────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- Enter  start   z  later   A  claude   c  check   ?  help   q  quit
+ Enter  start   z  later   A  claude   o  everything   ?  help   q  quit

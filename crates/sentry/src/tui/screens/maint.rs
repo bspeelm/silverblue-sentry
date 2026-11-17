@@ -70,6 +70,10 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
     }
     let mut h = maintlist::hints(&m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default());
     // The screen's own few; F, C, w and the rest are in `?`.
+    // o only when something waits (or is shown because of it).
+    if v.everything || waiting(v) > 0 {
+        h.push(("o", maintlist::everything_word(v.everything)));
+    }
     h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
     h
 }
@@ -239,12 +243,19 @@ pub fn plan_apply_ask(v: &View, wf: &str) -> Option<crate::claude::Ask> {
     ))
 }
 
-/// The recommendations shown: those the `/` filter keeps.
+/// The recommendations shown: what's due or urgent (everything with `o`), of those the ones
+/// the `/` filter keeps.
 pub fn recs(v: &View) -> Vec<Rec> {
-    recs_all(v)
+    crate::maint::rec::needed(recs_all(v), v.everything)
+        .0
         .into_iter()
         .filter(|r| v.matches(&[&r.title, &r.why, r.level.word()]))
         .collect()
+}
+
+/// How many recommendations wait, not shown (`o` shows them).
+pub fn waiting(v: &View) -> usize {
+    crate::maint::rec::needed(recs_all(v), v.everything).1
 }
 
 /// The recommendations, from what's loaded.
@@ -405,6 +416,7 @@ impl Maint {
             Action::Char('w') => return vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             Action::Char('v') => return vec![Effect::LogOpen],
             Action::Char('R') => return vec![Effect::ReviewOpen],
+            Action::Char('o') => return vec![Effect::Everything],
             _ => {}
         }
         let Some(r) = recs.get(self.cur.sel) else {
@@ -602,21 +614,25 @@ impl Maint {
                     )
                 })
                 .unwrap_or_else(|| "no audit yet".into());
+        let waiting = waiting(v);
         let empty = if v.filter.is_some() {
-            maintlist::NO_MATCH
+            maintlist::NO_MATCH.to_string()
         } else if v.d.loading(Fetch::Reports) || v.d.loading(Fetch::Log) {
-            "reading…"
+            "reading…".to_string()
         } else {
-            maintlist::EMPTY
+            maintlist::empty(waiting)
         };
         self.cur.page = maintlist::draw(
             f,
             area,
             t,
-            format!("{} · {audited}", recs.len()),
+            format!(
+                "{} · {audited}",
+                crate::maint::rec::note(recs.len(), 0, waiting)
+            ),
             recs,
             Some(self.cur.sel),
-            (empty, t.dim()),
+            (&empty, t.dim()),
         );
     }
 

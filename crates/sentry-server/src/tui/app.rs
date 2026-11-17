@@ -72,6 +72,8 @@ pub enum Effect {
     LogOpen(Option<String>),
     /// The latest maintenance review (or the box to write one).
     ReviewOpen,
+    /// Maintenance: list what can wait too, or only what's needed (`o`).
+    Everything,
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(crate::config::MaintItem),
     /// Don't suggest it again: (discovery key, its id).
@@ -290,6 +292,8 @@ pub struct App {
     suspend_inventory: bool,
     /// When the last inventory was read.
     inventory_at: Option<jiff::Timestamp>,
+    /// Maintenance lists what can wait too (`o`).
+    everything: bool,
     /// The maintenance change the running workflow makes (logged when it ends).
     wf_change: Option<crate::maint::Change>,
     /// The run already written to the maintenance log.
@@ -379,6 +383,7 @@ impl App {
             suspend_reboot: false,
             suspend_inventory: false,
             inventory_at: None,
+            everything: false,
             wf_change: None,
             wf_logged: None,
             review_run: None,
@@ -855,6 +860,7 @@ impl App {
                 .zip(self.last_change_at)
                 .is_some_and(|(read, changed)| read < changed),
             upstream: self.store.upstream_at,
+            everything: self.everything,
             planning: self
                 .writer
                 .as_ref()
@@ -1161,6 +1167,7 @@ impl App {
                 Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
                 Effect::PlanApply(id) => self.apply_plan(&id, now),
                 Effect::PlanDoneByHand(id) => self.plan_done_by_hand(&id),
+                Effect::Everything => self.everything = !self.everything,
                 Effect::LogOpen(item) => {
                     self.open_records(sentry_core::tui::records::Section::Log, item)
                 }
@@ -2977,6 +2984,7 @@ impl App {
     fn view_all(&self) -> View<'_> {
         View {
             filter: None,
+            everything: true,
             ..self.view()
         }
     }

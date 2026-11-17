@@ -50,6 +50,8 @@ pub struct View<'a> {
     pub upstream: Option<jiff::Timestamp>,
     /// That read with sudo is from before the last maintenance run.
     pub inventory_stale: bool,
+    /// Maintenance lists what can wait too (`o`).
+    pub everything: bool,
     /// The maintenance item Claude is writing a plan for.
     pub planning: Option<String>,
     /// Open plans, by item.
@@ -261,6 +263,13 @@ impl Screens {
             ScreenId::Maint => {
                 let mut h = sentry_core::tui::maintlist::hints(&maint::verbs(v));
                 // The screen's own few; w, e and the rest are in `?`.
+                // o only when something waits (or is shown because of it).
+                if v.everything || maint::waiting(v) > 0 {
+                    h.push((
+                        "o",
+                        sentry_core::tui::maintlist::everything_word(v.everything),
+                    ));
+                }
                 h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
                 h
             }

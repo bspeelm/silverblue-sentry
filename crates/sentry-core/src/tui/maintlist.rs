@@ -117,6 +117,10 @@ pub const GRAMMAR: &[(&str, &str)] = &[
     ("B", "a finding: everything like it is expected"),
     ("z", "look again later: 7, 30 or 90 days"),
     (
+        "o",
+        "everything: what can wait too (newer versions, updates nothing asks for, things to tidy)",
+    ),
+    (
         "A",
         "Claude: help me apply it (it plans, you approve, sentry applies) or just ask",
     ),
@@ -124,6 +128,22 @@ pub const GRAMMAR: &[(&str, &str)] = &[
 
 /// The Recommended panel when there's nothing in it.
 pub const EMPTY: &str = "✓ nothing to maintain right now · c checks everything again";
+/// The Recommended panel with nothing needed, when `waiting` rows can wait.
+pub fn empty(waiting: usize) -> String {
+    match waiting {
+        0 => EMPTY.to_string(),
+        n => format!("✓ nothing to maintain right now · o shows {n} that can wait"),
+    }
+}
+
+/// What `o` does now, for the key bar.
+pub fn everything_word(everything: bool) -> &'static str {
+    if everything {
+        "needed only"
+    } else {
+        "everything"
+    }
+}
 /// … and when the `/` filter leaves nothing.
 pub const NO_MATCH: &str = "nothing matches the filter";
 /// `x` on a row that has nothing to dismiss.

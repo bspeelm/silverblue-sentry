@@ -61,6 +61,8 @@ pub enum Effect {
     StartWorkflow(String),
     /// The maintenance log (`v`, `:log`).
     LogOpen,
+    /// Maintenance: list what can wait too, or only what's needed (`o`).
+    Everything,
     /// Maintenance with the first recommendation whose key starts with this selected.
     MaintFind(String),
     /// Put a recommendation off for this many days (`z`).
@@ -283,6 +285,8 @@ pub struct App {
     review_run: Option<crate::maint::log::LogEntry>,
     /// The review at start is still to begin (it waits for the first data).
     start_check: bool,
+    /// Maintenance lists what can wait too (`o`).
+    everything: bool,
 }
 
 impl App {
@@ -343,6 +347,7 @@ impl App {
             wf_plan_path: None,
             review_run: None,
             start_check: false,
+            everything: false,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -588,6 +593,7 @@ impl App {
             wf_plan_path: None,
             review_run: None,
             start_check: false,
+            everything: false,
         }
     }
 
@@ -616,6 +622,7 @@ impl App {
                 .map(String::as_str)
                 .filter(|s| !s.is_empty()),
             wf: self.wf.as_ref(),
+            everything: self.everything,
         }
     }
 
@@ -1119,6 +1126,7 @@ impl App {
                         .map(String::as_str)
                         .filter(|s| !s.is_empty()),
                     wf: self.wf.as_ref(),
+                    everything: self.everything,
                 };
                 let effects = self.screens.handle(self.screen, a, &v);
                 self.apply(effects, now);
@@ -1166,6 +1174,7 @@ impl App {
                 .map(String::as_str)
                 .filter(|s| !s.is_empty()),
             wf: self.wf.as_ref(),
+            everything: self.everything,
         };
         let apply = (self.screen == ScreenId::Maint)
             .then(|| self.screens.maint.apply_ask(&v))
@@ -1435,6 +1444,7 @@ impl App {
             t: &self.theme,
             filter: None,
             wf: self.wf.as_ref(),
+            everything: self.everything,
         };
         let effects = self.screens.handle(ScreenId::Upgrade, Action::Enter, &v);
         self.apply(effects, now);
@@ -1763,6 +1773,7 @@ impl App {
                 Effect::Goto(id) => self.enter(id, now),
                 Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
                 Effect::LogOpen => self.open_records(super::records::Section::Log),
+                Effect::Everything => self.everything = !self.everything,
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
                     self.enter(ScreenId::Clean, now);
@@ -3592,6 +3603,7 @@ impl App {
                 .map(String::as_str)
                 .filter(|s| !s.is_empty()),
             wf: self.wf.as_ref(),
+            everything: self.everything,
         };
         self.screens.render(self.screen, f, body, &v);
         if let Some(r) = &self.rec_view {

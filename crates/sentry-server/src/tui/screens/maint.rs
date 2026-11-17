@@ -41,10 +41,22 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Status> {
         .collect()
 }
 
-/// What to maintain next (filtered like the items).
+/// What to maintain next: what's due or urgent (everything with `o`), filtered like the items.
 pub fn recs(v: &View) -> Vec<Rec> {
+    let mut r = sentry_core::maint::rec::needed(every_rec(v), v.everything).0;
+    r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
+    r
+}
+
+/// How many recommendations wait, not shown (`o` shows them).
+pub fn waiting(v: &View) -> usize {
+    sentry_core::maint::rec::needed(every_rec(v), v.everything).1
+}
+
+/// Every recommendation there is, whatever is shown.
+pub fn every_rec(v: &View) -> Vec<Rec> {
     let empty = Vec::new();
-    let mut r = recommend::recommend(&recommend::Inputs {
+    recommend::recommend(&recommend::Inputs {
         items: &v.cfg.maintenance.items,
         statuses: v.s.maint.value.as_ref().unwrap_or(&empty),
         plans: v.plans,
@@ -57,9 +69,7 @@ pub fn recs(v: &View) -> Vec<Rec> {
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
         tasks: &all_tasks(v),
-    });
-    r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
-    r
+    })
 }
 
 /// Every task that applies: `tasks.toml`'s and `maintenance.cadence`.
@@ -140,6 +150,7 @@ impl Maint {
             },
             A::Char('F') => self.open_report(),
             A::Char('R') => vec![Effect::ReviewOpen],
+            A::Char('o') => vec![Effect::Everything],
             A::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
             A::Char('v') => vec![Effect::LogOpen(selected(v).map(|(s, _)| s.id.clone()))],
             _ => Vec::new(),
@@ -651,7 +662,7 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
     } else {
         format!(
             "{} · {}",
-            recs.len(),
+            sentry_core::maint::rec::note(recs.len(), 0, waiting(v)),
             match report(v).and_then(|r| r.snapshot.taken_at) {
                 Some(at) => format!("audited {}", fmt::ago(v.secs_since(at))),
                 None => "no audit yet".into(),
@@ -659,13 +670,13 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
         )
     };
     let empty = if v.s.maint.value.is_none() {
-        "reading…"
+        "reading…".to_string()
     } else if v.filter.is_some() {
-        maintlist::NO_MATCH
+        maintlist::NO_MATCH.to_string()
     } else {
-        maintlist::EMPTY
+        maintlist::empty(waiting(v))
     };
-    let empty = (empty, t.dim());
+    let empty = (empty.as_str(), t.dim());
     maintlist::draw(
         f,
         area,

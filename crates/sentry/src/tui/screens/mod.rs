@@ -30,6 +30,8 @@ pub struct View<'a> {
     pub t: &'a Theme,
     pub filter: Option<&'a str>,
     pub wf: Option<&'a crate::tui::wf::Session>,
+    /// Maintenance lists what can wait too (`o`).
+    pub everything: bool,
 }
 
 impl View<'_> {

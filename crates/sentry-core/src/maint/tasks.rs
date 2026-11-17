@@ -250,10 +250,22 @@ pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestam
             (Some(l), Some(a)) => l < a,
             (Some(_), None) => false,
         },
-        Some(every) => {
-            last.is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64)
-        }
+        Some(every) => last
+            .or(counted_from(t, log))
+            .is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64),
     }
+}
+
+/// A recurring task that was never done. One from tasks.toml is due: someone (you, a review)
+/// put it there to be done. A derived one (a cadence, a job's) was never asked for, so its
+/// interval counts from when the log here began; with no log at all it's due too.
+pub fn counted_from(t: &Task, log: &[LogEntry]) -> Option<Timestamp> {
+    if t.source == Source::File {
+        return None;
+    }
+    log.iter()
+        .filter_map(|e| e.head.started.or(e.head.ended))
+        .min()
 }
 
 /// Why it's due again before its time, while it hasn't been done since.
@@ -340,7 +352,14 @@ pub fn recs(
                     t.why.trim(),
                     l.strftime("%Y-%m-%d")
                 ),
-                (Some(d), None) => format!("{} (every {d}; not done yet)", t.why.trim()),
+                (Some(d), None) => match counted_from(t, log) {
+                    Some(f) => format!(
+                        "{} (every {d}; not done yet, tracked since {})",
+                        t.why.trim(),
+                        f.strftime("%Y-%m-%d")
+                    ),
+                    None => format!("{} (every {d}; not done yet)", t.why.trim()),
+                },
                 (None, _) => t.why.trim().to_string(),
             };
             TaskRec {
@@ -707,6 +726,25 @@ mod tests {
         assert!(!due(&clean, &log, None, now));
         // Never done: due. Done 70 days ago with a 30-day cadence: due, and soon.
         assert!(due(&clean, &[], None, now));
+        // Never done, but nobody asked for it (a job's own cadence): its 30 days count from
+        // when the log here began. One you put in tasks.toml is due at once.
+        let began = |at| vec![job_run("update-check", true, at)];
+        assert!(!due(&clean, &began("2026-10-23T00:00:00Z"), None, now));
+        let long = began("2026-09-20T00:00:00Z");
+        assert!(due(&clean, &long, None, now));
+        let r = recs(std::slice::from_ref(&clean), &long, None, now);
+        assert!(
+            r[0].why
+                .ends_with("(every 30d; not done yet, tracked since 2026-09-20)"),
+            "{}",
+            r[0].why
+        );
+        assert_eq!(r[0].level, clean.level, "never done isn't late");
+        let mine = Task {
+            source: Source::File,
+            ..clean.clone()
+        };
+        assert!(due(&mine, &began("2026-10-23T00:00:00Z"), None, now));
         let old = vec![job_run("cleanup-ostree", true, "2026-08-24T00:00:00Z")];
         let r = recs(std::slice::from_ref(&clean), &old, None, now);
         assert_eq!(r[0].level, Level::Soon);
