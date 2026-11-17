@@ -37,7 +37,11 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     );
     let color = if s.busy() { t.cyan } else { t.mag };
     let c = &s.chat;
-    let inner = widgets::overlay(f, rect, t, &format!("Claude · {}", c.ask.subject), color);
+    let title = match s.series {
+        Some((i, n)) => format!("Claude · {i} of {n} · {}", c.ask.subject),
+        None => format!("Claude · {}", c.ask.subject),
+    };
+    let inner = widgets::overlay(f, rect, t, &title, color);
     let [head, log, rule, input, keyline] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),

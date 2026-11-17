@@ -9,6 +9,7 @@ pub mod plan;
 pub mod rec;
 pub mod retention;
 pub mod review;
+pub mod series;
 pub mod tasks;
 pub mod version;
 

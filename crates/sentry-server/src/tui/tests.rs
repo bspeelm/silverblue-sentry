@@ -4071,3 +4071,157 @@ fn pid_1_is_refused() {
     key(&mut a, KeyCode::Char('x'));
     assert!(render_to_string(&mut a, 158, 41).contains("process 52100 is gone"));
 }
+
+const SERIES_PLAN: &str = "On it.\n```sentry-apply\nsummary = \"start it\"\n[[step]]\ntitle = \"Start\"\n\
+                           run = \"sudo systemctl start backup.service\"\n```";
+const SERIES_DONE: &str = "```sentry-verdict\nstatus = \"done\"\nsummary = \"it's up\"\n```";
+
+/// One row of a series, from its plan to its verdict.
+fn series_row(a: &mut App, verdict: &str) {
+    a.apply_answer_for_test(SERIES_PLAN);
+    assert!(render_to_string(a, 158, 41).contains("Enter  apply the plan"));
+    key(a, KeyCode::Enter);
+    // sudo -n works here; then the step.
+    a.apply_exit_for_test(0);
+    a.apply_exit_for_test(0);
+    a.apply_answer_for_test(verdict);
+}
+
+#[test]
+fn ticked_rows_are_done_one_after_another() {
+    use sentry_core::apply::session::{Phase, Turn};
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    // The second and the fourth row: two findings.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("· 2 ticked ·") && s.contains("Enter  do the ticked") && s.contains("✓ now"),
+        "{s}"
+    );
+    // An item's own row isn't a recommendation: nothing to tick.
+    goto_item(&mut a, "os");
+    key(&mut a, KeyCode::Char(' '));
+    assert!(screen(&mut a).contains("it can't go in a series"));
+    // One Enter: the first is an apply session, already asking Claude.
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Claude · 1 of 2 ·") && s.contains("1 of 2 in the series"),
+        "{s}"
+    );
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
+    );
+    series_row(&mut a, SERIES_DONE);
+    // Done: the next opens by itself.
+    let s = screen(&mut a);
+    assert!(s.contains("Claude · 2 of 2 ·"), "{s}");
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
+    );
+    // It fails: it stays; Enter goes on, and with nothing left the series is through.
+    series_row(
+        &mut a,
+        "```sentry-verdict\nstatus = \"failed\"\nsummary = \"no image\"\n```",
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("Enter  go on with the next"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none());
+    let s = screen(&mut a);
+    assert!(s.contains("series: 1 of 2 done · 1 not: it failed"), "{s}");
+    // What failed is still ticked.
+    assert!(s.contains("· 1 ticked ·"), "{s}");
+}
+
+#[test]
+fn a_series_plans_an_item_then_applies_its_plan() {
+    use sentry_core::apply::session::{Phase, Turn};
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("web".into())],
+        Instant::now(),
+    );
+    let s = screen(&mut a);
+    assert!(s.contains("Enter: Claude writes a plan for web"), "{s}");
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    // No version to pick, no note, no box: Claude writes the plan, in its view.
+    let s = screen(&mut a);
+    assert!(a.writing() && s.contains("Claude is writing it"), "{s}");
+    assert!(s.contains("series 1 of 1 ·"), "the banner: {s}");
+    a.writer_answered("TARGET: v1.5.1\n# Plan: web 1.4.2 → 1.5.1\n\n## Before\n```sh\ntrue\n```");
+    // Ready: the same row is now an apply session with that plan, started.
+    let s = screen(&mut a);
+    assert!(s.contains("Claude · 1 of 1 ·"), "{s}");
+    let sess = a.apply_session().unwrap();
+    assert_eq!(sess.phase, Phase::Thinking(Turn::Investigate));
+    assert!(
+        sess.chat.ask.context.contains("Plan: web 1.4.2 → 1.5.1"),
+        "{}",
+        sess.chat.ask.context
+    );
+
+    // A plan that says wait: nothing to apply, and the series is through.
+    let mut a = app();
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(
+        vec![super::app::Effect::MaintFind("web".into())],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    a.writer_answered("TARGET: wait\n# Plan: web\nNot until 1.5.3.");
+    assert!(a.apply_session().is_none());
+    let s = screen(&mut a);
+    assert!(
+        s.contains("series: 0 of 1 done · 1 not: its plan says wait"),
+        "{s}"
+    );
+}
+
+#[test]
+fn a_series_starts_a_workflow_without_its_box_and_stops_when_it_is_abandoned() {
+    let mut a = app();
+    let _turn = startable(&mut a, "series-test-apt-maintenance.toml");
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    // The updates (apt-maintenance) and the finding under them.
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    // The run, on its screen: the series' Enter was the start.
+    let s = screen(&mut a);
+    assert!(
+        a.wf.is_some() && !s.contains("Start apt-maintenance"),
+        "{s}"
+    );
+    assert_eq!(a.screen, ScreenId::Upgrade);
+    // Elsewhere the workflow's banner has the row.
+    key(&mut a, KeyCode::Char('1'));
+    assert!(screen(&mut a).contains("↻ workflow apt-maintenance"));
+    key(&mut a, KeyCode::Char('0'));
+    // Abandoned: the series stops; both rows stay ticked.
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("series stopped at 1 of 2 · 2 still ticked"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    assert!(screen(&mut a).contains("· 2 ticked ·"));
+}

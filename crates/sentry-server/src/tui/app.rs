@@ -74,6 +74,8 @@ pub enum Effect {
     ReviewOpen,
     /// Maintenance: list what can wait too, or only what's needed (`o`).
     Everything,
+    /// Maintenance: do the ticked rows (key, title) one after another.
+    SeriesStart(Vec<(String, String)>),
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(crate::config::MaintItem),
     /// Don't suggest it again: (discovery key, its id).
@@ -139,6 +141,14 @@ pub struct VarInput {
     values: BTreeMap<String, String>,
     /// Why the last answer wasn't taken.
     note: Option<String>,
+}
+
+/// What the row a series is at needs.
+enum SeriesStep {
+    Session(Ask),
+    Plan(String, PlanDoc),
+    Workflow(String),
+    Audit,
 }
 
 /// What the one input line in the key bar asks for.
@@ -294,6 +304,10 @@ pub struct App {
     inventory_at: Option<jiff::Timestamp>,
     /// Maintenance lists what can wait too (`o`).
     everything: bool,
+    /// The ticked rows being done one after another.
+    series: Option<sentry_core::maint::series::Series>,
+    /// The item whose plan the series had written: it isn't written twice.
+    series_planned: Option<String>,
     /// The maintenance change the running workflow makes (logged when it ends).
     wf_change: Option<crate::maint::Change>,
     /// The run already written to the maintenance log.
@@ -384,6 +398,8 @@ impl App {
             suspend_inventory: false,
             inventory_at: None,
             everything: false,
+            series: None,
+            series_planned: None,
             wf_change: None,
             wf_logged: None,
             review_run: None,
@@ -596,7 +612,11 @@ impl App {
                 {
                     self.toast(&format!("audit failed: {e}"));
                 }
+                let ok = res.is_ok();
                 self.store.apply(k, *res);
+                if k == Kind::Audit {
+                    self.series_audit_ended(ok);
+                }
                 self.review_at_start();
                 if k == Kind::Probe {
                     self.check_back();
@@ -1168,6 +1188,7 @@ impl App {
                 Effect::PlanApply(id) => self.apply_plan(&id, now),
                 Effect::PlanDoneByHand(id) => self.plan_done_by_hand(&id),
                 Effect::Everything => self.everything = !self.everything,
+                Effect::SeriesStart(rows) => self.series_start(rows),
                 Effect::LogOpen(item) => {
                     self.open_records(sentry_core::tui::records::Section::Log, item)
                 }
@@ -1857,7 +1878,14 @@ impl App {
                     }
                     self.toast("it carries on · A brings it back");
                 }
-                Fx::Close => self.apply = None,
+                Fx::Close => {
+                    self.apply = None;
+                    // The series' row, closed without going on: the series stops there.
+                    if self.series_waits(&sentry_core::maint::series::Wait::Session) {
+                        self.series_stop();
+                    }
+                }
+                Fx::Next => self.series_next(),
             }
         }
     }
@@ -2018,8 +2046,271 @@ impl App {
             self.offer_reread =
                 self.store.sudo.value == Some(SudoMode::Password) && self.inventory_at.is_some();
         }
+        // In a series nothing is asked between its rows: the note can be added in Records;
+        // reading the server again and the one review come at its end.
+        if self.series_run_ended(&entry.head.workflow, done) {
+            return;
+        }
         // What to know next time: asked now, while it's fresh.
         self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
+    }
+
+    // ---------------------------------------------------------------- the series
+
+    /// The series waits for this.
+    fn series_waits(&self, w: &sentry_core::maint::series::Wait) -> bool {
+        self.series.as_ref().is_some_and(|s| &s.wait == w)
+    }
+
+    /// Enter with rows ticked: do them one after another.
+    fn series_start(&mut self, rows: Vec<(String, String)>) {
+        if let Some(sr) = &self.series {
+            let line = format!("{} · A shows it", sr.line());
+            return self.toast(&line);
+        }
+        if self.apply.is_some() {
+            return self.toast("an apply session is open: finish it first (A shows it)");
+        }
+        if self.wf.as_ref().is_some_and(|s| !s.done()) {
+            return self.toast("a workflow run is in progress: finish it first (0)");
+        }
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|w| w.running() && !w.quiet)
+        {
+            return self.toast("Claude is writing: wait for it, or C-c in its view");
+        }
+        self.series = Some(sentry_core::maint::series::Series::new(rows));
+        self.series_planned = None;
+        self.series_go();
+    }
+
+    /// What the row with this key needs now (None: it left the list).
+    fn series_resolve(&self, key: &str) -> Option<SeriesStep> {
+        use super::screens::maint::{self as m, SeriesKind};
+        let v = self.view_all();
+        let rec = m::every_rec(&v).into_iter().find(|r| r.key == key)?;
+        Some(match m::series_kind(&v, &rec)? {
+            SeriesKind::Finding(id) => SeriesStep::Session(super::ask::ask_finding(
+                &v,
+                &self.remote,
+                m::finding(&v, &id)?,
+            )),
+            SeriesKind::Apply => {
+                SeriesStep::Session(super::ask::apply_rec(&v, &self.remote, &rec, &|wf| {
+                    self.workflow_text(wf)
+                })?)
+            }
+            SeriesKind::Plan(item) => {
+                let (s, it) = m::status_of(&v, &item).zip(m::item_of(&v, &item))?;
+                let doc = m::plan_doc(&v, s, it, None);
+                SeriesStep::Plan(item, doc)
+            }
+            SeriesKind::Workflow(name) => SeriesStep::Workflow(name),
+            SeriesKind::Audit => SeriesStep::Audit,
+        })
+    }
+
+    /// Open what the row the series is at needs; rows that left the list are passed over.
+    fn series_go(&mut self) {
+        use sentry_core::maint::series::{Outcome, Wait};
+        if self.wf_entries.is_empty() && !self.offline {
+            self.load_wf_entries();
+        }
+        loop {
+            let Some(sr) = self.series.as_mut() else {
+                return;
+            };
+            let Some(cur) = sr.current().cloned() else {
+                return self.series_end();
+            };
+            let pos = sr.pos();
+            sr.wait = Wait::Nothing;
+            let step = self.series_resolve(&cur.key);
+            let Some(sr) = self.series.as_mut() else {
+                return;
+            };
+            match step {
+                None => {
+                    sr.ended(Outcome::Skipped("no longer on the list".into()));
+                }
+                Some(SeriesStep::Session(ask)) => {
+                    sr.wait = Wait::Session;
+                    let (secret, ok) = (std::mem::take(&mut sr.secret), sr.secret_ok);
+                    let mut sess = sentry_core::apply::session::Session::new(ask);
+                    sess.chat.privacy = self.session_privacy();
+                    let fx = sess.start_in_series(pos, secret, ok);
+                    self.plan_view = None;
+                    self.apply = Some(sess);
+                    self.apply_fx(fx);
+                    return;
+                }
+                // Its plan first (the version is Claude's to recommend); once it's ready the
+                // same row is an apply session.
+                Some(SeriesStep::Plan(item, _))
+                    if self.series_planned.as_deref() == Some(item.as_str()) =>
+                {
+                    return self.series_stop();
+                }
+                Some(SeriesStep::Plan(item, doc)) => {
+                    sr.wait = Wait::Plan(item.clone());
+                    self.series_planned = Some(item.clone());
+                    self.ask_for_plan(item.clone(), doc);
+                    self.series_answer_box();
+                    let writing = self
+                        .writer
+                        .as_ref()
+                        .is_some_and(|w| w.review.is_none() && w.item == item && w.running());
+                    if !writing {
+                        self.series_stop();
+                    }
+                    return;
+                }
+                Some(SeriesStep::Workflow(name)) => {
+                    sr.wait = Wait::Workflow(name.clone());
+                    self.wf_start(&name, Instant::now());
+                    self.series_answer_box();
+                    let asked = matches!(&self.input, Input::Prompt(Prompt::WfVar(_), _));
+                    let going = self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.wf.name == name && !s.done());
+                    if !asked && !going {
+                        self.series_stop();
+                    }
+                    return;
+                }
+                Some(SeriesStep::Audit) => {
+                    sr.wait = Wait::Audit;
+                    self.apply(vec![Effect::Fetch(Kind::Audit)], Instant::now());
+                    if self.offline {
+                        // Nothing is fetched offline (tests): the audit counts as run.
+                        self.series_audit_ended(true);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The series' Enter was the start: a box that only asks whether to start is answered.
+    /// One with nothing to confirm says why it can't, and stays.
+    fn series_answer_box(&mut self) {
+        if self.modal.as_ref().is_some_and(|m| m.yes.is_some())
+            && let Some((_, effects)) = self.modal.take().and_then(|m| m.yes)
+        {
+            self.apply(effects, Instant::now());
+        }
+    }
+
+    /// The series' session is over (done, or the user goes on): the next row.
+    fn series_next(&mut self) {
+        use sentry_core::apply::session::{End, Phase};
+        use sentry_core::maint::series::Outcome;
+        let Some(mut sess) = self.apply.take() else {
+            return;
+        };
+        let Some(sr) = self.series.as_mut() else {
+            return;
+        };
+        (sr.secret, sr.secret_ok) = sess.take_secret();
+        sr.ended(match sess.phase {
+            Phase::Settled(End::Done) => Outcome::Done,
+            Phase::Settled(End::Failed) => Outcome::Failed("it failed".into()),
+            Phase::Settled(End::Stopped) => Outcome::Failed("stopped".into()),
+            _ => Outcome::Failed("not verified".into()),
+        });
+        self.plan_view = None;
+        self.series_go();
+    }
+
+    /// A workflow run ended and was logged. True: a series is going on, so nothing is asked
+    /// about the run now (and if it was the series' row, the series went on or stopped).
+    fn series_run_ended(&mut self, workflow: &str, done: bool) -> bool {
+        use sentry_core::maint::series::{Outcome, Wait};
+        if self.series.is_none() {
+            return false;
+        }
+        if !self.series_waits(&Wait::Workflow(workflow.to_string())) {
+            // A run a session's plan started: the session carries on by itself.
+            return true;
+        }
+        if !done {
+            self.series_stop();
+            return false;
+        }
+        // Done: the run closes, and the next row opens over Maintenance.
+        self.wf = None;
+        if !self.offline {
+            self.load_wf_entries();
+        }
+        self.enter(ScreenId::Maint, Instant::now());
+        if let Some(sr) = self.series.as_mut() {
+            sr.ended(Outcome::Done);
+        }
+        self.series_go();
+        true
+    }
+
+    /// The series' plan was written: ready, its session; advising to wait, the next row.
+    fn series_plan_written(&mut self, item: &str) {
+        use sentry_core::maint::series::{Outcome, Wait};
+        if !self.series_waits(&Wait::Plan(item.to_string())) {
+            return;
+        }
+        match self.store.plans.get(item).map(|d| d.head.status) {
+            // The same row again: with its plan ready it's an apply session.
+            Some(PlanStatus::Ready) => self.series_go(),
+            Some(PlanStatus::Wait) => {
+                if let Some(sr) = self.series.as_mut() {
+                    sr.ended(Outcome::Skipped("its plan says wait".into()));
+                }
+                self.plan_view = None;
+                self.series_go();
+            }
+            _ => self.series_stop(),
+        }
+    }
+
+    /// The series' audit ended.
+    fn series_audit_ended(&mut self, ok: bool) {
+        use sentry_core::maint::series::{Outcome, Wait};
+        if !self.series_waits(&Wait::Audit) {
+            return;
+        }
+        if !ok {
+            return self.series_stop();
+        }
+        if let Some(sr) = self.series.as_mut() {
+            sr.ended(Outcome::Done);
+        }
+        self.series_go();
+    }
+
+    /// Through: what's done leaves the ticks, the rest is said; then what a run would have
+    /// asked for by itself (reading the server again, the review).
+    fn series_end(&mut self) {
+        let Some(mut sr) = self.series.take() else {
+            return;
+        };
+        sr.wipe();
+        self.screens.maint.ticks = sr.left().into_iter().collect();
+        self.toast(&sr.summary());
+        self.reread_box();
+        self.review_after_run();
+    }
+
+    /// Stopped before its end (a row closed or failed to start): what's left stays ticked.
+    fn series_stop(&mut self) {
+        let Some(mut sr) = self.series.take() else {
+            return;
+        };
+        sr.wipe();
+        self.screens.maint.ticks = sr.left().into_iter().collect();
+        self.toast(&sr.stopped());
+        self.reread_box();
+        self.review_after_run();
     }
 
     /// After a run that changed the server: what Maintenance and Containers show was read
@@ -2588,7 +2879,13 @@ impl App {
     /// Esc on a prompt.
     fn cancelled(&mut self, p: Prompt) {
         match p {
-            Prompt::WfVar(_) => self.toast("not started"),
+            Prompt::WfVar(v) => {
+                self.toast("not started");
+                // The series' workflow, its values dismissed: it never starts.
+                if self.series_waits(&sentry_core::maint::series::Wait::Workflow(v.workflow)) {
+                    self.series_stop();
+                }
+            }
             Prompt::PlanNote(..) => self.toast("not planned"),
             // No note: what the run changed may still want reading again.
             Prompt::LogNote(_) => {
@@ -3487,9 +3784,13 @@ impl App {
         {
             return self.toast(&format!("couldn't save the plan: {e}"));
         }
-        self.store.plans.insert(item, doc);
+        self.store.plans.insert(item.clone(), doc);
         self.toast(&msg);
         self.offer_reads(ReadsFor::Plan);
+        // Unless reads are being offered (the plan may still change), the series goes on.
+        if self.modal.is_none() {
+            self.series_plan_written(&item);
+        }
     }
 
     /// What Records shows, read now.
@@ -3948,6 +4249,13 @@ impl App {
             return;
         }
         if ask.applying().is_some() {
+            // A series has its own session open (hidden, perhaps): not replaced.
+            if self.apply.is_some()
+                && let Some(sr) = &self.series
+            {
+                let line = format!("{} · A shows it", sr.line());
+                return self.toast(&line);
+            }
             if let Some(pid) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.1)) {
                 let _ = kill(pid);
             }
@@ -4440,9 +4748,20 @@ impl App {
             .wf
             .as_ref()
             .filter(|_| self.screen != ScreenId::Upgrade);
-        let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
+        // A series in progress takes the row when no workflow's banner does, and its
+        // session isn't in front saying so itself.
+        let hidden = self.apply.as_ref().is_some_and(|a| a.chat.hidden);
+        let series = self
+            .series
+            .as_ref()
+            .filter(|_| banner.is_none() && (self.apply.is_none() || hidden))
+            .map(|s| (s.line(), if hidden { "A shows it" } else { "" }));
+        let Some(areas) = frame::layout(f, &t, banner.is_some() || series.is_some()) else {
             return;
         };
+        if let Some((line, hint)) = &series {
+            frame::draw_series(f, areas.banner, &t, line, hint);
+        }
         let body = areas.body;
         frame::draw_top(f, areas.top, &t, &self.top());
         self.draw_tabs(f, areas.tabs);

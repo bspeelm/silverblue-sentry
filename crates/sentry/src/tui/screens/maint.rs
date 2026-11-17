@@ -44,6 +44,52 @@ pub struct Maint {
     pub find: Option<String>,
     pub view: Option<Sub>,
     pub audit: audit::Audit,
+    /// The rows ticked for a series (Space), by key.
+    pub ticks: maintlist::Ticks,
+}
+
+/// How a series takes care of a row (None: Enter does it by itself, it can't be ticked).
+pub enum How {
+    /// An apply session with Claude.
+    Session(Box<crate::claude::Ask>),
+    /// A run of this workflow (with its plan, when one is ready).
+    Workflow(String),
+    Audit,
+}
+
+/// What a series does for this row.
+pub fn how(v: &View, r: &Rec) -> Option<How> {
+    let claude = crate::claude::available();
+    match &r.action {
+        Do::Fix(id) if claude => {
+            finding(v, id).map(|f| How::Session(Box::new(crate::audit::fix::ask(f))))
+        }
+        Do::Audit => Some(How::Audit),
+        Do::Run(wf) | Do::OpenPlan(wf) => Some(How::Workflow(wf.clone())),
+        Do::Task(id) => match task(v, id)?.action() {
+            TaskDo::Run(wf) => Some(How::Workflow(wf)),
+            TaskDo::Audit => Some(How::Audit),
+            TaskDo::ByHand | TaskDo::Plan(_) if claude => {
+                apply_ask(v, r).map(|a| How::Session(Box::new(a)))
+            }
+            _ => None,
+        },
+        // A reboot ends the TUI; cleanup has its own screen and ticks; the rest is one key.
+        _ => None,
+    }
+}
+
+/// The audit, as a run in the pane (a series' row).
+pub fn audit_run() -> Effect {
+    audit::audit_run()
+}
+
+/// The row a series is at, by its key, as it is now (None: it left the list).
+pub fn series_how(v: &View, key: &str) -> Option<How> {
+    recs_all(v)
+        .iter()
+        .find(|r| r.key == key)
+        .and_then(|r| how(v, r))
 }
 
 pub fn on_enter(v: &View) -> Vec<Effect> {
@@ -68,7 +114,10 @@ pub fn hints(v: &View, m: &Maint) -> Hints {
         h.insert(0, ("Esc", "back"));
         return h;
     }
-    let mut h = maintlist::hints(&m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default());
+    let mut h = maintlist::hints(
+        &m.selected(v).map(|r| verbs(v, &r)).unwrap_or_default(),
+        m.ticked(v),
+    );
     // The screen's own few; F, C, w and the rest are in `?`.
     // o only when something waits (or is shown because of it).
     if v.everything || waiting(v) > 0 {
@@ -101,6 +150,7 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
     };
     let base = Verbs {
         enter,
+        series: how(v, r).is_some(),
         ..Default::default()
     };
     match &r.action {
@@ -372,6 +422,17 @@ impl Maint {
         r.get(i.min(r.len().saturating_sub(1))).cloned()
     }
 
+    /// How many of the rows there are ticked.
+    pub fn ticked(&self, v: &View) -> usize {
+        if self.ticks.is_empty() {
+            return 0;
+        }
+        recs_all(v)
+            .iter()
+            .filter(|r| self.ticks.contains(&r.key))
+            .count()
+    }
+
     pub fn open(&mut self, s: Sub) {
         self.view = Some(s);
     }
@@ -417,12 +478,43 @@ impl Maint {
             Action::Char('v') => return vec![Effect::LogOpen],
             Action::Char('R') => return vec![Effect::ReviewOpen],
             Action::Char('o') => return vec![Effect::Everything],
+            // Ticks: Space the row, a every row that can be, Esc none.
+            Action::Char('a') => {
+                let can = recs
+                    .iter()
+                    .filter(|r| how(v, r).is_some())
+                    .map(|r| r.key.clone())
+                    .collect();
+                maintlist::tick_all(&mut self.ticks, can);
+                return Vec::new();
+            }
+            Action::Esc => {
+                self.ticks.clear();
+                return Vec::new();
+            }
+            // With rows ticked, Enter does those, one after another.
+            Action::Enter => {
+                let rows: Vec<(String, String)> = recs_all(v)
+                    .into_iter()
+                    .filter(|r| self.ticks.contains(&r.key))
+                    .map(|r| (r.key, r.title))
+                    .collect();
+                if !rows.is_empty() {
+                    return vec![Effect::SeriesStart(rows)];
+                }
+                self.ticks.clear();
+            }
             _ => {}
         }
         let Some(r) = recs.get(self.cur.sel) else {
             return Vec::new();
         };
         match a {
+            Action::Char(' ') if how(v, r).is_some() => {
+                maintlist::tick(&mut self.ticks, &r.key);
+                Vec::new()
+            }
+            Action::Char(' ') => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
             Action::Enter => self.act(v, r),
             Action::Char('p' | 'P') => match &r.action {
                 Do::Run(wf) | Do::OpenPlan(wf) => {
@@ -626,13 +718,16 @@ impl Maint {
             f,
             area,
             t,
-            format!(
-                "{} · {audited}",
-                crate::maint::rec::note(recs.len(), 0, waiting)
-            ),
             recs,
-            Some(self.cur.sel),
-            (&empty, t.dim()),
+            maintlist::List {
+                note: format!(
+                    "{} · {audited}",
+                    crate::maint::rec::note(recs.len(), self.ticked(v), waiting)
+                ),
+                selected: Some(self.cur.sel),
+                empty: (&empty, t.dim()),
+                ticks: &self.ticks,
+            },
         );
     }
 

@@ -261,7 +261,10 @@ impl Screens {
             // The selected row's keys, then the screen's.
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => {
-                let mut h = sentry_core::tui::maintlist::hints(&maint::verbs(v));
+                let mut h = sentry_core::tui::maintlist::hints(
+                    &maint::verbs(v),
+                    maint::ticked(v, &self.maint.ticks),
+                );
                 // The screen's own few; w, e and the rest are in `?`.
                 // o only when something waits (or is shown because of it).
                 if v.everything || maint::waiting(v) > 0 {

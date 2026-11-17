@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  with Claude   d  done   e  every   m  steps   x  remove   z  later   A  claude   c  check   ?  help   q  quit           review: 2 applied · 1 skipped
+ Enter  with Claude   Space  tick   d  done   e  every   m  steps   x  remove   z  later   A  claude   ?  help   q  quit        review: 2 applied · 1 skipped

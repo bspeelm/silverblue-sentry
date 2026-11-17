@@ -63,6 +63,8 @@ pub enum Effect {
     LogOpen,
     /// Maintenance: list what can wait too, or only what's needed (`o`).
     Everything,
+    /// Maintenance: do the ticked rows (key, title) one after another.
+    SeriesStart(Vec<(String, String)>),
     /// Maintenance with the first recommendation whose key starts with this selected.
     MaintFind(String),
     /// Put a recommendation off for this many days (`z`).
@@ -287,6 +289,8 @@ pub struct App {
     start_check: bool,
     /// Maintenance lists what can wait too (`o`).
     everything: bool,
+    /// The ticked rows being done one after another.
+    series: Option<crate::maint::series::Series>,
 }
 
 impl App {
@@ -348,6 +352,7 @@ impl App {
             review_run: None,
             start_check: false,
             everything: false,
+            series: None,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -594,6 +599,7 @@ impl App {
             review_run: None,
             start_check: false,
             everything: false,
+            series: None,
         }
     }
 
@@ -965,6 +971,7 @@ impl App {
                     self.log_event(e);
                 }
                 self.toast(msg);
+                self.series_audit_ended(code == 0);
             }
         }
         self.dirty = true;
@@ -1146,6 +1153,12 @@ impl App {
             Typed::Command(c) => self.command(c.trim(), now),
             Typed::Submit(p, text) => self.submit(p, text.trim(), now),
             Typed::Cancelled(Some(Prompt::LogNote(_))) => self.review_after_run(),
+            // The series' workflow, its values dismissed: it never starts.
+            Typed::Cancelled(Some(Prompt::WfVar { workflow, .. }))
+                if self.series_waits(&crate::maint::series::Wait::Workflow(workflow.clone())) =>
+            {
+                self.series_stop()
+            }
             Typed::Editing | Typed::FilterKept | Typed::Cancelled(_) => {}
         }
     }
@@ -1191,6 +1204,13 @@ impl App {
     /// brief; Enter sends it.
     fn ask_consent(&mut self, ask: crate::claude::Ask) {
         if ask.applying().is_some() {
+            // A series has its own session open (hidden, perhaps): not replaced.
+            if self.apply.is_some()
+                && let Some(sr) = &self.series
+            {
+                self.toast(format!("{} · A shows it", sr.line()));
+                return;
+            }
             if let Some(pid) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.1)) {
                 let _ = kill(pid);
             }
@@ -1774,6 +1794,7 @@ impl App {
                 Effect::StartWorkflow(name) => self.workflow_command(Some(&name), now),
                 Effect::LogOpen => self.open_records(super::records::Section::Log),
                 Effect::Everything => self.everything = !self.everything,
+                Effect::SeriesStart(rows) => self.series_start(rows, now),
                 Effect::CleanupFocus(job) => {
                     self.screens.focus_cleanup(job);
                     self.enter(ScreenId::Clean, now);
@@ -2116,8 +2137,190 @@ impl App {
         if done {
             self.review_run = Some(entry.clone());
         }
+        // In a series nothing is asked between its rows: the note can be added in Records,
+        // and the one review comes at its end.
+        if self.series_run_ended(&entry.head.workflow, done) {
+            return;
+        }
         // What to know next time: asked now, while it's fresh.
         self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
+    }
+
+    // ---------------------------------------------------------------- the series
+
+    /// The series waits for this.
+    fn series_waits(&self, w: &crate::maint::series::Wait) -> bool {
+        self.series.as_ref().is_some_and(|s| &s.wait == w)
+    }
+
+    /// Enter with rows ticked: do them one after another.
+    fn series_start(&mut self, rows: Vec<(String, String)>, now: Instant) {
+        if let Some(sr) = &self.series {
+            self.toast(format!("{} · A shows it", sr.line()));
+            return;
+        }
+        if self.apply.is_some() {
+            self.toast("an apply session is open: finish it first (A shows it)");
+            return;
+        }
+        if self.wf.as_ref().is_some_and(|s| !s.done()) {
+            self.toast("a workflow run is in progress: finish it first (0)");
+            return;
+        }
+        self.series = Some(crate::maint::series::Series::new(rows));
+        self.series_go(now);
+    }
+
+    /// Open what the row the series is at needs; rows that left the list are passed over.
+    fn series_go(&mut self, now: Instant) {
+        use super::screens::maint::How;
+        use crate::maint::series::{Outcome, Wait};
+        loop {
+            let Some(sr) = self.series.as_mut() else {
+                return;
+            };
+            let Some(cur) = sr.current().cloned() else {
+                return self.series_end();
+            };
+            let pos = sr.pos();
+            sr.wait = Wait::Nothing;
+            let v = View {
+                d: &self.data,
+                cfg: &self.cfg,
+                t: &self.theme,
+                filter: None,
+                wf: self.wf.as_ref(),
+                everything: true,
+            };
+            let how = super::screens::maint::series_how(&v, &cur.key);
+            let Some(sr) = self.series.as_mut() else {
+                return;
+            };
+            match how {
+                None => {
+                    sr.ended(Outcome::Skipped("no longer on the list".into()));
+                }
+                Some(How::Session(ask)) => {
+                    sr.wait = Wait::Session;
+                    let (secret, ok) = (std::mem::take(&mut sr.secret), sr.secret_ok);
+                    let mut sess = crate::apply::session::Session::new(*ask);
+                    let fx = sess.start_in_series(pos, secret, ok);
+                    self.apply = Some(sess);
+                    self.apply_fx(fx, now);
+                    return;
+                }
+                Some(How::Workflow(name)) => {
+                    sr.wait = Wait::Workflow(name.clone());
+                    self.workflow_command(Some(&name), now);
+                    // The series' Enter was the start: the start box is answered. A box
+                    // with nothing to confirm says why it can't start, and stays.
+                    if self.modal.as_ref().is_some_and(|m| m.yes.is_some())
+                        && let Some((_, effects)) = self.modal.take().and_then(|m| m.yes)
+                    {
+                        self.apply(effects, now);
+                    }
+                    let asked = matches!(self.input, Input::Prompt(Prompt::WfVar { .. }, _));
+                    let going = self
+                        .wf
+                        .as_ref()
+                        .is_some_and(|s| s.wf.name == name && !s.done());
+                    if !asked && !going {
+                        self.series_stop();
+                    }
+                    return;
+                }
+                Some(How::Audit) => {
+                    sr.wait = Wait::Audit;
+                    self.apply(vec![super::screens::maint::audit_run()], now);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The series' session is over (done, or the user goes on): the next row.
+    fn series_next(&mut self, now: Instant) {
+        use crate::apply::session::{End, Phase};
+        use crate::maint::series::Outcome;
+        let Some(mut sess) = self.apply.take() else {
+            return;
+        };
+        let Some(sr) = self.series.as_mut() else {
+            return;
+        };
+        (sr.secret, sr.secret_ok) = sess.take_secret();
+        sr.ended(match sess.phase {
+            Phase::Settled(End::Done) => Outcome::Done,
+            Phase::Settled(End::Failed) => Outcome::Failed("it failed".into()),
+            Phase::Settled(End::Stopped) => Outcome::Failed("stopped".into()),
+            _ => Outcome::Failed("not verified".into()),
+        });
+        self.series_go(now);
+    }
+
+    /// A workflow run ended and was logged. True: a series is going on, so nothing is asked
+    /// about the run now (and if it was the series' row, the series went on or stopped).
+    fn series_run_ended(&mut self, workflow: &str, done: bool) -> bool {
+        use crate::maint::series::{Outcome, Wait};
+        if self.series.is_none() {
+            return false;
+        }
+        if !self.series_waits(&Wait::Workflow(workflow.to_string())) {
+            // A run a session's plan started: the session carries on by itself.
+            return true;
+        }
+        if !done {
+            self.series_stop();
+            return false;
+        }
+        // Done: the run closes, and the next row opens over Maintenance.
+        let now = Instant::now();
+        self.wf = None;
+        self.data.fetch(Fetch::Workflows, &self.cfg, &self.tx);
+        self.enter(ScreenId::Maint, now);
+        if let Some(sr) = self.series.as_mut() {
+            sr.ended(Outcome::Done);
+        }
+        self.series_go(now);
+        true
+    }
+
+    /// The series' audit ended.
+    fn series_audit_ended(&mut self, ok: bool) {
+        use crate::maint::series::{Outcome, Wait};
+        if !self.series_waits(&Wait::Audit) {
+            return;
+        }
+        if !ok {
+            return self.series_stop();
+        }
+        self.run = None;
+        if let Some(sr) = self.series.as_mut() {
+            sr.ended(Outcome::Done);
+        }
+        self.series_go(Instant::now());
+    }
+
+    /// Through: what's done leaves the ticks, the rest is said, and the one review follows.
+    fn series_end(&mut self) {
+        let Some(mut sr) = self.series.take() else {
+            return;
+        };
+        sr.wipe();
+        self.screens.maint.ticks = sr.left().into_iter().collect();
+        self.toast(sr.summary());
+        self.review_after_run();
+    }
+
+    /// Stopped before its end (a row closed or failed to start): what's left stays ticked.
+    fn series_stop(&mut self) {
+        let Some(mut sr) = self.series.take() else {
+            return;
+        };
+        sr.wipe();
+        self.screens.maint.ticks = sr.left().into_iter().collect();
+        self.toast(sr.stopped());
+        self.review_after_run();
     }
 
     /// Tests write nothing, but what's done is still read from the log: the entry goes in
@@ -2980,6 +3183,7 @@ impl App {
     /// Carry out what the apply session asks for.
     fn apply_fx(&mut self, fx: Vec<crate::apply::session::Fx>, now: Instant) {
         use crate::apply::session::Fx;
+        use crate::maint::series::Wait;
         for f in fx {
             match f {
                 Fx::Turn { prompt, shown } => {
@@ -3201,7 +3405,14 @@ impl App {
                     }
                     self.toast("it carries on · A brings it back");
                 }
-                Fx::Close => self.apply = None,
+                Fx::Close => {
+                    self.apply = None;
+                    // The series' row, closed without going on: the series stops there.
+                    if self.series_waits(&Wait::Session) {
+                        self.series_stop();
+                    }
+                }
+                Fx::Next => self.series_next(now),
             }
         }
     }
@@ -3565,9 +3776,20 @@ impl App {
             .wf
             .as_ref()
             .filter(|_| self.screen != ScreenId::Upgrade);
-        let Some(areas) = frame::layout(f, &t, banner.is_some()) else {
+        // A series in progress takes the row when no workflow's banner does, and its
+        // session isn't in front saying so itself.
+        let hidden = self.apply.as_ref().is_some_and(|a| a.chat.hidden);
+        let series = self
+            .series
+            .as_ref()
+            .filter(|_| banner.is_none() && (self.apply.is_none() || hidden))
+            .map(|s| (s.line(), if hidden { "A shows it" } else { "" }));
+        let Some(areas) = frame::layout(f, &t, banner.is_some() || series.is_some()) else {
             return;
         };
+        if let Some((line, hint)) = &series {
+            frame::draw_series(f, areas.banner, &t, line, hint);
+        }
         let body = areas.body;
         frame::draw_top(f, areas.top, &t, &self.top());
         let tabs: Vec<frame::Tab> = self

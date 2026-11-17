@@ -113,6 +113,98 @@ pub struct Maint {
     pub find: Option<String>,
     pub view: Option<Sub>,
     pub report: ReportView,
+    /// The rows ticked for a series (Space), by key.
+    pub ticks: maintlist::Ticks,
+}
+
+/// How a series takes care of a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeriesKind {
+    /// An apply session for this finding.
+    Finding(String),
+    /// An apply session for the row (a task done by hand, an item whose plan is ready).
+    Apply,
+    /// Claude writes this item's plan first; its session follows.
+    Plan(String),
+    /// A run of this workflow.
+    Workflow(String),
+    Audit,
+}
+
+/// What a series does for this row (None: Enter does it by itself, it can't be ticked).
+pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
+    use sentry_core::maint::tasks::Do;
+    let claude = sentry_core::claude::available();
+    let ready = |id: &str| {
+        v.plans
+            .get(id)
+            .is_some_and(|p| p.head.status == PlanStatus::Ready)
+    };
+    let item = |id: &str| {
+        if !claude {
+            None
+        } else if ready(id) {
+            Some(SeriesKind::Apply)
+        } else {
+            Some(SeriesKind::Plan(id.to_string()))
+        }
+    };
+    match &x.action {
+        Action::Fix(id) if claude => Some(SeriesKind::Finding(id.clone())),
+        Action::Plan(id) | Action::OpenPlan(id) => item(id),
+        Action::Run(wf) => Some(SeriesKind::Workflow(wf.clone())),
+        Action::Audit => Some(SeriesKind::Audit),
+        Action::Task(id) => match all_tasks(v).into_iter().find(|t| &t.id == id)?.action() {
+            Do::Run(wf) => Some(SeriesKind::Workflow(wf)),
+            Do::Plan(it) => item(&it),
+            Do::Audit => Some(SeriesKind::Audit),
+            Do::ByHand if claude => Some(SeriesKind::Apply),
+            _ => None,
+        },
+        // Tracking, untracking and looking are one key each.
+        _ => None,
+    }
+}
+
+/// How many of the rows there are ticked.
+pub fn ticked(v: &View, ticks: &maintlist::Ticks) -> usize {
+    if ticks.is_empty() {
+        return 0;
+    }
+    every_rec(v)
+        .iter()
+        .filter(|r| ticks.contains(&r.key))
+        .count()
+}
+
+/// A plan to be written for an item: to `target`, or (None) the version Claude recommends.
+pub fn plan_doc(v: &View, s: &Status, it: &MaintItem, target: Option<&str>) -> PlanDoc {
+    // No workflow: a plan done by hand (every step a command the user runs).
+    let wf = workflow_of(it).unwrap_or("");
+    let l = local::Local {
+        pinned: s.pinned.clone(),
+        repo: v
+            .s
+            .maint_local
+            .as_ref()
+            .and_then(|m| m.get(&s.id))
+            .and_then(|x| x.repo.clone()),
+        ..Default::default()
+    };
+    PlanDoc {
+        head: Head {
+            item: s.id.clone(),
+            server: v.name.to_string(),
+            from: s.pinned.clone(),
+            to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
+            workflow: wf.to_string(),
+            vars: local::vars_for(it, &l, target),
+            created: Some(jiff::Timestamp::now()),
+            repo: l.repo.clone(),
+            ..Default::default()
+        },
+        body: String::new(),
+    }
 }
 
 impl Maint {
@@ -141,7 +233,41 @@ impl Maint {
                 Effect::Fetch(Kind::Upstream),
                 Effect::Toast("auditing the server and looking up newer versions…".into()),
             ],
-            A::Enter => key('\n', v),
+            // Ticks: Space the row, a every row that can be, Esc none.
+            A::Char(' ') => match pick(v) {
+                Some(Sel::Rec(r)) if series_kind(v, &r).is_some() => {
+                    maintlist::tick(&mut self.ticks, &r.key);
+                    Vec::new()
+                }
+                _ => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
+            },
+            A::Char('a') => {
+                let can = recs(v)
+                    .iter()
+                    .filter(|r| series_kind(v, r).is_some())
+                    .map(|r| r.key.clone())
+                    .collect();
+                maintlist::tick_all(&mut self.ticks, can);
+                Vec::new()
+            }
+            A::Esc => {
+                self.ticks.clear();
+                Vec::new()
+            }
+            // With rows ticked, Enter does those, one after another.
+            A::Enter => {
+                let rows: Vec<(String, String)> = every_rec(v)
+                    .into_iter()
+                    .filter(|r| self.ticks.contains(&r.key))
+                    .map(|r| (r.key, r.title))
+                    .collect();
+                if rows.is_empty() {
+                    self.ticks.clear();
+                    key('\n', v)
+                } else {
+                    vec![Effect::SeriesStart(rows)]
+                }
+            }
             A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm' | 'B')) => key(c, v),
             // A task: how often it recurs; anything else: the config, where items are.
             A::Char('e') => match key('e', v) {
@@ -166,7 +292,7 @@ impl Maint {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
         let Some(s) = self.view else {
-            return draw(f, area, v);
+            return draw(f, area, v, &self.ticks);
         };
         let t = v.t;
         let [head, body] =
@@ -276,6 +402,14 @@ pub fn row_of(v: &View, id: &str) -> Option<usize> {
 
 /// The keys the selected row takes besides Enter (the key bar shows only these).
 pub fn verbs(v: &View) -> Verbs {
+    let mut vb = row_verbs(v);
+    if let Some(Sel::Rec(r)) = pick(v) {
+        vb.series = series_kind(v, &r).is_some();
+    }
+    vb
+}
+
+fn row_verbs(v: &View) -> Verbs {
     let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
     let item = |id: &str, enter: &'static str| Verbs {
         enter,
@@ -475,7 +609,7 @@ pub fn badge(v: &View) -> Option<(String, Color)> {
     }
 }
 
-pub fn draw(f: &mut Frame, area: Rect, v: &View) {
+pub fn draw(f: &mut Frame, area: Rect, v: &View, ticks: &maintlist::Ticks) {
     let t = v.t;
     // What to maintain next, on top; everything tracked below. The panels are sentry's.
     let recs = if v.s.maint.value.is_some() {
@@ -484,7 +618,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
         Vec::new()
     };
     let (rec_a, list_a, detail_a) = maintlist::split(area, recs.len());
-    draw_recs(f, rec_a, v, &recs);
+    draw_recs(f, rec_a, v, &recs, ticks);
     draw_details(f, detail_a, v);
     let up = v
         .upstream
@@ -655,14 +789,14 @@ fn draw_details(f: &mut Frame, detail_a: Rect, v: &View) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
 }
 
-fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
+fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec], ticks: &maintlist::Ticks) {
     let t = v.t;
     let note = if v.s.maint.value.is_none() {
         String::new()
     } else {
         format!(
             "{} · {}",
-            sentry_core::maint::rec::note(recs.len(), 0, waiting(v)),
+            sentry_core::maint::rec::note(recs.len(), ticked(v, ticks), waiting(v)),
             match report(v).and_then(|r| r.snapshot.taken_at) {
                 Some(at) => format!("audited {}", fmt::ago(v.secs_since(at))),
                 None => "no audit yet".into(),
@@ -681,10 +815,13 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
         f,
         area,
         t,
-        note,
         recs,
-        (v.cur < recs.len()).then_some(v.cur),
-        empty,
+        maintlist::List {
+            note,
+            selected: (v.cur < recs.len()).then_some(v.cur),
+            empty,
+            ticks,
+        },
     );
 }
 
@@ -1025,36 +1162,8 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
             ))]
         }
         'p' | 'P' => {
-            // No workflow: a plan done by hand (every step a command the user runs).
-            let wf = workflow_of(it).unwrap_or("");
-            let l = local::Local {
-                pinned: s.pinned.clone(),
-                repo: v
-                    .s
-                    .maint_local
-                    .as_ref()
-                    .and_then(|m| m.get(&s.id))
-                    .and_then(|x| x.repo.clone()),
-                ..Default::default()
-            };
             let plan = |target: Option<&str>| {
-                vec![Effect::PlanNote(
-                    s.id.clone(),
-                    PlanDoc {
-                        head: Head {
-                            item: s.id.clone(),
-                            server: v.name.to_string(),
-                            from: s.pinned.clone(),
-                            to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
-                            workflow: wf.to_string(),
-                            vars: local::vars_for(it, &l, target),
-                            created: Some(jiff::Timestamp::now()),
-                            repo: l.repo.clone(),
-                            ..Default::default()
-                        },
-                        body: String::new(),
-                    },
-                )]
+                vec![Effect::PlanNote(s.id.clone(), plan_doc(v, s, it, target))]
             };
             if it.retire.is_some() || s.newer.is_empty() {
                 return plan(None);

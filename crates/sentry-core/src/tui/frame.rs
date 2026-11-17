@@ -254,6 +254,22 @@ pub fn draw_banner(f: &mut Frame, area: Rect, t: &Theme, b: &Banner) {
     );
 }
 
+/// A series in progress, in the banner row (when no workflow's banner is there).
+pub fn draw_series(f: &mut Frame, area: Rect, t: &Theme, line: &str, hint: &str) {
+    let room = (area.width as usize).saturating_sub(hint.chars().count() + 8);
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" ▸ {}   ", widgets::trunc(line, room)),
+            t.s(t.yellow),
+        ),
+        Span::styled(hint.to_string(), t.dim()),
+    ]);
+    f.render_widget(
+        Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
+        area,
+    );
+}
+
 pub type Hints<'a> = Vec<(&'a str, &'a str)>;
 
 /// What the key bar shows: the line being typed, or the keys that act now.

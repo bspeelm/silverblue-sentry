@@ -1966,3 +1966,176 @@ fn the_review_at_start_shows_only_when_something_changed() {
     a.review_written_for_test(REVIEW_LATER);
     assert!(a.auto_review_for_test().is_none());
 }
+
+const SERIES_PLAN: &str = "On it.\n```sentry-apply\nsummary = \"do it\"\nrollback = \"nothing to undo\"\n\
+                           [[step]]\ntitle = \"Check\"\ncheck = \"true\"\n```";
+
+/// Maintenance with two tasks done by hand due, both ticked (the updates row is first).
+fn two_ticked() -> App {
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(by_hand_task("firmware", "Update the firmware"));
+    a.add_task_for_test(by_hand_task("ups", "Check the UPS battery"));
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    a
+}
+
+#[test]
+fn ticked_rows_are_done_one_after_another() {
+    use crate::apply::session::{Phase, Turn};
+    let mut a = two_ticked();
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("· 2 ticked ·") && s.contains("Enter  do the ticked") && s.contains("✓ routine"),
+        "{s}"
+    );
+    // Space again unticks; a ticks every row that can be, a again none; Esc none.
+    key(&mut a, KeyCode::Char(' '));
+    assert!(render_to_string(&mut a, 158, 41).contains("· 1 ticked ·"));
+    key(&mut a, KeyCode::Char('a'));
+    assert!(render_to_string(&mut a, 158, 41).contains("· 3 ticked ·"));
+    key(&mut a, KeyCode::Esc);
+    assert!(!render_to_string(&mut a, 158, 41).contains("ticked"));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('k'));
+    key(&mut a, KeyCode::Char(' '));
+    // One Enter starts the series: the first row's session, already asking Claude.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Claude · 1 of 2 · apply · Update the firmware")
+            && s.contains("1 of 2 in the series · it starts by itself"),
+        "{s}"
+    );
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
+    );
+    // Its plan is the one thing to press Enter for.
+    a.apply_answer_for_test(SERIES_PLAN);
+    assert!(render_to_string(&mut a, 158, 41).contains("Enter  apply the plan"));
+    key(&mut a, KeyCode::Enter);
+    a.apply_step_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"flashed\"\n```");
+    // Done: the next row opens by itself, already started.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Claude · 2 of 2 · apply · Check the UPS battery"),
+        "{s}"
+    );
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
+    );
+    assert!(!a.tasks_due_for_test().contains(&"firmware".to_string()));
+    a.apply_answer_for_test(SERIES_PLAN);
+    key(&mut a, KeyCode::Enter);
+    a.apply_step_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"fine\"\n```");
+    // Through: no window left, both done, nothing ticked.
+    assert!(a.apply_session().is_none());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("series: 2 of 2 done"), "{s}");
+    assert!(!s.contains("ticked") && !s.contains("series 2 of 2"), "{s}");
+    assert!(a.tasks_due_for_test().is_empty());
+}
+
+#[test]
+fn a_row_that_fails_waits_and_esc_stops_the_series() {
+    let mut a = two_ticked();
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(SERIES_PLAN);
+    key(&mut a, KeyCode::Enter);
+    a.apply_step_exit_for_test(0);
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"failed\"\nsummary = \"no firmware found\"\n```",
+    );
+    // It didn't end well: it stays open; Enter goes on with the next.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Claude · 1 of 2") && s.contains("Enter  go on with the next"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Claude · 2 of 2 · apply · Check the UPS battery"),
+        "{s}"
+    );
+    // Esc on its plan closes it: the series stops, and what isn't done stays ticked.
+    a.apply_answer_for_test(SERIES_PLAN);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.apply_session().is_none());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("series stopped at 2 of 2 · 2 still ticked") && s.contains("· 2 ticked ·"),
+        "{s}"
+    );
+    // A row Enter does by itself can't be ticked.
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(crate::maint::tasks::Task {
+        act: "job cleanup".into(),
+        every: None,
+        added: Some(jiff::Timestamp::now()),
+        ..by_hand_task("tidy", "Tidy up")
+    });
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("it can't go in a series") && !s.contains("ticked"),
+        "{s}"
+    );
+}
+
+#[test]
+fn a_series_runs_a_workflow_and_goes_on_when_it_ends_well() {
+    // A workflow of the test's own, in the scratch config dir; its one step waits for Enter,
+    // so starting it runs nothing.
+    let name = "series-fw";
+    let dir = crate::workflows::dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{name}.toml"));
+    std::fs::write(
+        &file,
+        format!(
+            "name = \"{name}\"\ndescription = \"test\"\n[[steps]]\nid = \"firmware\"\n\
+             title = \"Update the firmware\"\nrun = \"fwupdmgr update\"\ngate = \"confirm\"\n"
+        ),
+    )
+    .unwrap();
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(crate::maint::tasks::Task {
+        act: format!("run {name}"),
+        ..by_hand_task("fw", "Update the firmware")
+    });
+    a.add_task_for_test(by_hand_task("ups", "Check the UPS battery"));
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    // The run, on its screen, with no start box: the series' Enter was the start.
+    let s = render_to_string(&mut a, 158, 41);
+    assert_eq!(a.screen, ScreenId::Upgrade, "{s}");
+    assert!(
+        s.contains("Update the firmware") && !s.contains(&format!("Start {name}")),
+        "{s}"
+    );
+    // It ends well: no note is asked, the run closes, and the next row's session opens.
+    ended_run(&mut a, name);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Claude · 2 of 2 · apply · Check the UPS battery"),
+        "{s}"
+    );
+    assert!(!s.contains("what to know next time"), "{s}");
+    assert_eq!(a.screen, ScreenId::Maint);
+    assert!(!a.tasks_due_for_test().contains(&"fw".to_string()));
+    let _ = std::fs::remove_file(&file);
+}

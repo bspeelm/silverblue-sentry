@@ -379,12 +379,25 @@ fn ask_step(h: &str, r: &Remote, s: &Session) -> Ask {
 /// workflow (the app has the files).
 pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option<Ask> {
     use super::screens::maint::{self as m, Sel};
+    match m::pick(v)? {
+        Sel::Item(s, _) => apply_item(v, r, &s.id, s.id.clone(), steps),
+        Sel::Rec(x) => apply_rec(v, r, &x, steps),
+    }
+}
+
+/// Applying a recommendation with Claude (None: it isn't something to apply).
+pub fn apply_rec(
+    v: &View,
+    r: &Remote,
+    x: &crate::maint::recommend::Rec,
+    steps: &dyn Fn(&str) -> String,
+) -> Option<Ask> {
+    use super::screens::maint as m;
     use crate::maint::recommend::Action;
     use sentry_core::claude::Apply;
     let item = |id: &str, key: String| apply_item(v, r, id, key, steps);
-    match m::pick(v)? {
-        Sel::Item(s, _) => item(&s.id, s.id.clone()),
-        Sel::Rec(x) => match &x.action {
+    {
+        match &x.action {
             Action::Plan(id) | Action::OpenPlan(id) => item(id, x.key.clone()),
             Action::Look(id) if !id.is_empty() => item(id, x.key.clone()),
             Action::Run(wf) => {
@@ -450,7 +463,7 @@ pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option
             }
             Action::Fix(_) | Action::Track(_) | Action::Remove(_) | Action::Audit => None,
             Action::Look(_) => None,
-        },
+        }
     }
 }
 

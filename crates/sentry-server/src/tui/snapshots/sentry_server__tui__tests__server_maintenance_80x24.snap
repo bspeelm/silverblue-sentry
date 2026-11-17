@@ -24,4 +24,4 @@ expression: body(&s)
 │                                         │ │ remove packages): libfoo1        │
 └─────────────────────────────────────────┘ └──────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- Enter  start   z  later   A  claude   o  everything   ?  help   q  quit
+ Enter  start   Space  tick   z  later   A  claude   ?  help   q  quit
