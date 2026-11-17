@@ -2255,7 +2255,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
     assert!(s.contains("soon     os: end of life soon"), "{s}");
     // What nothing asks for waits: o lists it, o again hides it.
     assert!(
-        !s.contains("Track cache") && s.contains("· 1 can wait (o) ·"),
+        !s.contains("Track cache") && s.contains("· 2 can wait (o) ·"),
         "{s}"
     );
     key(&mut a, KeyCode::Char('o'));

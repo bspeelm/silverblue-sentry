@@ -103,13 +103,15 @@ pub fn finish<A: Act>(mut rules: Vec<Rec<A>>, t: &Tail) -> Vec<Rec<A>> {
     rules
 }
 
-/// What the list shows: everything, or only what's due or urgent. With it, how many wait.
+/// What the list shows: everything, or only what needs doing. With it, how many wait.
+/// A tidy row never needs doing (a low finding, a tidy task), so it waits whatever made it.
 pub fn needed<A>(recs: Vec<Rec<A>>, everything: bool) -> (Vec<Rec<A>>, usize) {
-    let waiting = recs.iter().filter(|r| r.can_wait).count();
+    let waits = |r: &Rec<A>| r.can_wait || r.level == Level::Tidy;
+    let waiting = recs.iter().filter(|r| waits(r)).count();
     if everything {
         return (recs, 0);
     }
-    (recs.into_iter().filter(|r| !r.can_wait).collect(), waiting)
+    (recs.into_iter().filter(|r| !waits(r)).collect(), waiting)
 }
 
 /// The Recommended panel's note: how many rows, how many ticked, how many wait.
