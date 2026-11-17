@@ -260,12 +260,18 @@ pub fn apply_question(a: &Apply) -> String {
         None => String::new(),
     };
     let how = if a.remote {
-        "Changes on the server go in a plan, so for any change"
+        "Checks you simply run on the server, through the gateway: any command that only looks, \
+         pipes and all. One that needs root you call with sudo: sentry-server shows me that exact \
+         call, and once I allow it (and give my password) it runs it on the server and tells you \
+         what it printed; end your turn there, saying in one line what you asked for and why. \
+         A single command that changes something and needs root you may ask for the same way. \
+         For every other change on the server"
     } else {
-        "One command, a check or a change, you simply call (sudo where needed): sentry shows me \
-         the exact call when it's refused, and once I allow it sentry carries it out and tells \
-         you what happened; end your turn there, saying in one line what you asked for and why. \
-         For a change of several dependent steps, or one that needs a way back,"
+        "Checks you simply run: any command that only looks, pipes and all, nothing is refused. \
+         One that needs root you call with sudo: sentry shows me that exact call, and once I \
+         allow it (and give my password) sentry runs it and tells you what it printed; end your \
+         turn there, saying in one line what you asked for and why. A single command that \
+         changes something and needs root you may ask for the same way. For every other change"
     };
     format!(
         "Do this for me. If nothing needs changing, say so and send no plan. Run every check \
@@ -330,7 +336,7 @@ pub fn apply_ran(report: &str) -> String {
 pub fn apply_verify(report: &str) -> String {
     format!(
         "{report}\n\n{}",
-        verify_tail("Verify the result with your read-only commands. Then")
+        verify_tail("Verify the result yourself (any command that only looks). Then")
     )
 }
 
@@ -365,6 +371,30 @@ pub fn touches_deployment(cmd: &str) -> bool {
             ["rpm-ostree", "status", ..] | ["rpm-ostree", "db", ..] => false,
             ["rpm-ostree", ..] | ["ostree", "admin", ..] | ["akmods", ..] => true,
             ["systemctl", "reboot", ..] | ["reboot", ..] => true,
+            _ => false,
+        }
+    })
+}
+
+/// Commands that are a workflow's to run, never a session's own: upgrading, rebasing or
+/// rolling back the system, and turning it off. (Checking for an upgrade only looks.)
+pub fn workflow_only(cmd: &str) -> bool {
+    cmd.split(['\n', ';', '&', '|']).any(|part| {
+        let w: Vec<&str> = part
+            .split_whitespace()
+            .filter(|w| *w != "sudo" && *w != "-n")
+            .collect();
+        match w.as_slice() {
+            ["rpm-ostree", "upgrade" | "update", rest @ ..] => {
+                !rest.iter().any(|a| *a == "--check" || *a == "--preview")
+            }
+            ["rpm-ostree", "rebase" | "rollback" | "deploy" | "reset", ..] => true,
+            [
+                "systemctl",
+                "reboot" | "poweroff" | "halt" | "kexec" | "soft-reboot",
+                ..,
+            ] => true,
+            ["reboot" | "poweroff" | "halt" | "shutdown", ..] => true,
             _ => false,
         }
     })
@@ -502,6 +532,64 @@ const DENIED: &[&str] = &[
     // Claude Code can't type a password: refused, so it comes to the user and sentry runs it.
     "Bash(sudo:*)",
 ];
+
+/// What an apply session's Claude may not simply run: Claude Code refuses these, which makes
+/// each a request the user sees. Enter then has sentry run it (root's with the password),
+/// except what [`workflow_only`] names. Deny beats allow, so they hold under the bare `Bash`.
+const ASKS_FIRST: &[&str] = &[
+    "Bash(sudo:*)",
+    "Bash(su:*)",
+    "Bash(pkexec:*)",
+    "Bash(doas:*)",
+    "Bash(run0:*)",
+    "Bash(rpm-ostree upgrade:*)",
+    "Bash(rpm-ostree update:*)",
+    "Bash(rpm-ostree rebase:*)",
+    "Bash(rpm-ostree rollback:*)",
+    "Bash(rpm-ostree deploy:*)",
+    "Bash(rpm-ostree reset:*)",
+    "Bash(rpm-ostree install:*)",
+    "Bash(rpm-ostree uninstall:*)",
+    "Bash(rpm-ostree override:*)",
+    "Bash(rpm-ostree kargs:*)",
+    "Bash(rpm-ostree cleanup:*)",
+    "Bash(rpm-ostree initramfs:*)",
+    "Bash(ostree admin:*)",
+    "Bash(systemctl reboot:*)",
+    "Bash(systemctl poweroff:*)",
+    "Bash(systemctl halt:*)",
+    "Bash(systemctl kexec:*)",
+    "Bash(systemctl soft-reboot:*)",
+    "Bash(reboot:*)",
+    "Bash(poweroff:*)",
+    "Bash(halt:*)",
+    "Bash(shutdown:*)",
+    "Bash(podman rm:*)",
+    "Bash(podman stop:*)",
+    "Bash(podman kill:*)",
+    "Bash(podman system:*)",
+    "Bash(ssh:*)",
+    "Bash(scp:*)",
+    "Bash(sftp:*)",
+    "Bash(rsync:*)",
+    // Where keys and passwords live: never read, whoever asks.
+    "Bash(*.ssh/*)",
+    "Bash(*.gnupg*)",
+    "Bash(*share/keyrings*)",
+    "Bash(*.password-store*)",
+    "Read(~/.ssh/**)",
+    "Read(~/.gnupg/**)",
+    "Read(~/.local/share/keyrings/**)",
+    "Read(~/.password-store/**)",
+];
+
+/// The consent line of an apply session on this machine.
+pub fn acting_summary() -> String {
+    "Claude may run any command here that needs no root, and read any file but your keys and \
+     passwords. sudo, upgrades, reboots, removing containers and every step of a plan ask you \
+     first; your files change only when you allow it."
+        .into()
+}
 
 /// One line for the consent modal.
 pub fn allowlist_summary() -> String {
@@ -724,9 +812,10 @@ fn reads(cmd: &str) -> bool {
 pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     // A command: the part Claude Code wants approved, else the whole command.
     if name == "Bash" && !refusal.contains("permissions to read") && !refusal.contains("to write") {
+        // (A server's gateway says the same of a command that needs root: one line.)
         let cmd = refusal
             .split_once("requires approval: ")
-            .map_or(input, |(_, part)| part)
+            .map_or(input, |(_, part)| part.lines().next().unwrap_or(part))
             .trim();
         return (!cmd.is_empty()).then(|| Grant {
             access: Access::Run,
@@ -882,6 +971,18 @@ impl Profile {
             denied: chat_denied(DENIED),
             dirs: Vec::new(),
         }
+    }
+
+    /// An apply session on this machine: Claude finds out what it needs with any command,
+    /// as you would in a terminal. What needs root, and what [`ASKS_FIRST`] names, is refused
+    /// by Claude Code and so comes to the user; Edit and Write stay as in a chat.
+    pub fn acting() -> Self {
+        let mut p = Self::local();
+        p.allowed = ["Bash", "Read", "Grep", "Glob", "Read(//**)"]
+            .map(String::from)
+            .to_vec();
+        p.denied.extend(ASKS_FIRST.iter().map(|s| s.to_string()));
+        p
     }
 
     /// No edits at all (plans and reviews: nobody is there to grant one).
@@ -1232,6 +1333,75 @@ mod tests {
         assert!(
             matches!(&e[0], Event::Done { is_error: true, result, .. } if result.contains("run `claude` once"))
         );
+    }
+
+    #[test]
+    fn a_session_runs_what_it_likes_but_root_and_upgrades_ask() {
+        let p = Profile::acting();
+        // Any command, any file: nothing to allow one by one.
+        assert!(p.allowed.contains(&"Bash".to_string()) && p.allowed.contains(&"Read".to_string()));
+        assert!(!p.allowed.iter().any(|a| a.starts_with("Bash(")));
+        // Deny beats allow: these are refused, so they come to the user.
+        for d in [
+            "Bash(sudo:*)",
+            "Bash(rpm-ostree upgrade:*)",
+            "Bash(rpm-ostree rebase:*)",
+            "Bash(systemctl reboot:*)",
+            "Bash(podman rm:*)",
+            "Bash(podman stop:*)",
+            "Bash(ssh:*)",
+            "Bash(*.ssh/*)",
+            "Read(~/.ssh/**)",
+            "Read(~/.gnupg/**)",
+            "NotebookEdit",
+        ] {
+            assert!(p.denied.contains(&d.to_string()), "{d}");
+        }
+        // Edit and Write as in a chat: there to be asked for, refused until granted.
+        assert!(p.tools.contains(&"Edit".to_string()) && !p.allowed.iter().any(|a| a == "Edit"));
+        // A chat, a plan and a review keep the read-only list.
+        assert!(
+            Profile::local()
+                .allowed
+                .contains(&"Bash(journalctl:*)".to_string())
+        );
+        assert!(!Profile::local().allowed.contains(&"Bash".to_string()));
+
+        // What only a workflow runs; looking for an upgrade isn't one.
+        for w in [
+            "rpm-ostree upgrade",
+            "sudo rpm-ostree rebase fedora:fedora/46/x86_64/silverblue",
+            "rpm-ostree rollback",
+            "systemctl reboot",
+            "true && sudo reboot",
+            "shutdown -h now",
+        ] {
+            assert!(workflow_only(w), "{w}");
+        }
+        for w in [
+            "rpm-ostree upgrade --preview",
+            "rpm-ostree upgrade --check",
+            "rpm-ostree status",
+            "sudo rpm-ostree install htop",
+            "rpm-ostree kargs",
+            "podman stop box",
+            "systemctl restart sshd",
+        ] {
+            assert!(!workflow_only(w), "{w}");
+        }
+        // A server's gateway asks the same way: the line after the words is the request.
+        let g = requested(
+            "Bash",
+            "sentry-server run myserver -- 'sudo smartctl -a /dev/sda'",
+            "sentry-server run: this needs root and requires approval: sudo smartctl -a /dev/sda\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (g.access, g.path.as_str()),
+            (Access::Run, "sudo smartctl -a /dev/sda")
+        );
+        assert!(refused("this needs root and requires approval: sudo x"));
+        assert!(!refused("sentry-server run: not run: it names `shadow`"));
     }
 
     #[test]

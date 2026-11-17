@@ -67,6 +67,20 @@ impl super::rec::Act for Action {
     }
 }
 
+/// When quick-update last ran to its end.
+pub fn last_update_run(log: &[LogEntry]) -> Option<Timestamp> {
+    log.iter()
+        .filter(|e| e.head.workflow == UPDATE_WORKFLOW && e.head.result == "done")
+        .filter_map(|e| e.head.ended.or(e.head.started))
+        .max()
+}
+
+/// A count of waiting updates still says something: it was taken after the last quick-update.
+/// One from before it counts what that run installed.
+pub fn still_waiting(fetched_at: Timestamp, log: &[LogEntry]) -> bool {
+    last_update_run(log).is_none_or(|ran| fetched_at >= ran)
+}
+
 /// The workflow run on screen, if any.
 pub struct RunInfo<'a> {
     pub workflow: &'a str,
@@ -357,6 +371,7 @@ mod tests {
             added: None,
             review: None,
             after: None,
+            again: None,
             off: false,
             source: Default::default(),
         };
@@ -449,6 +464,30 @@ mod tests {
         let recs = recommend(&i);
         assert_eq!(recs[0].key, "reboot");
         assert_eq!(recs[0].level, Level::Now);
+    }
+
+    #[test]
+    fn a_count_from_before_the_last_quick_update_says_nothing() {
+        let now: Timestamp = "2026-10-27T12:00:00Z".parse().unwrap();
+        let ago = |h: i64| now - jiff::SignedDuration::from_hours(h);
+        // No run yet: whatever was counted stands.
+        assert!(still_waiting(ago(96), &[]));
+        let ran =
+            |wf: &str, ok: bool, h: i64| LogEntry::event("", "os-update", wf, ok, "", &[], ago(h));
+        let log = [
+            ran(UPDATE_WORKFLOW, true, 30),
+            ran(UPDATE_WORKFLOW, true, 2),
+        ];
+        assert_eq!(last_update_run(&log), Some(ago(2)));
+        assert!(!still_waiting(ago(96), &log), "counted before the run");
+        assert!(!still_waiting(ago(3), &log), "the newest run decides");
+        assert!(still_waiting(ago(1), &log), "checked again since");
+        // A run that failed or another workflow installed nothing.
+        let log = [
+            ran(UPDATE_WORKFLOW, false, 2),
+            ran("release-rebase", true, 2),
+        ];
+        assert!(still_waiting(ago(96), &log));
     }
 
     #[test]

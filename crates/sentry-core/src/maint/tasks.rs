@@ -54,6 +54,18 @@ pub struct Task {
     /// follow-up check), or a wait from when it was added (`7d`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
+    /// Due again whatever its cadence says, since something changed: a review found so.
+    /// It holds until the task is next done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub again: Option<Again>,
+}
+
+/// Why a task is due before its time, and since when.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Again {
+    pub at: Timestamp,
+    #[serde(default)]
+    pub why: String,
 }
 
 /// Where a task comes from.
@@ -229,6 +241,9 @@ pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestam
         return false;
     }
     let last = last_done(t, log, audited);
+    if again(t, last).is_some() {
+        return true;
+    }
     match t.every {
         None => match (last, t.added) {
             (None, _) => true,
@@ -239,6 +254,11 @@ pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestam
             last.is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64)
         }
     }
+}
+
+/// Why it's due again before its time, while it hasn't been done since.
+pub fn again(t: &Task, last: Option<Timestamp>) -> Option<&Again> {
+    t.again.as_ref().filter(|a| last.is_none_or(|l| l < a.at))
 }
 
 /// What a task waits for (`after`) has happened: the workflow ran well since it was added,
@@ -304,6 +324,17 @@ pub fn recs(
                 .zip(last)
                 .is_some_and(|(e, l)| now.as_second() - l.as_second() >= 2 * e.0.as_secs() as i64);
             let why = match (t.every, last) {
+                _ if again(t, last).is_some_and(|a| !a.why.trim().is_empty()) => {
+                    let a = again(t, last).expect("checked");
+                    match last {
+                        Some(l) => format!(
+                            "{} (due again; last done {})",
+                            a.why.trim(),
+                            l.strftime("%Y-%m-%d")
+                        ),
+                        None => a.why.trim().to_string(),
+                    }
+                }
                 (Some(d), Some(l)) => format!(
                     "{} (every {d}; last done {})",
                     t.why.trim(),
@@ -313,7 +344,7 @@ pub fn recs(
                 (None, _) => t.why.trim().to_string(),
             };
             TaskRec {
-                level: if late {
+                level: if late && again(t, last).is_none() {
                     t.level.min(Level::Soon)
                 } else {
                     t.level
@@ -490,6 +521,7 @@ mod tests {
             added: Some(ts(added)),
             review: None,
             after: None,
+            again: None,
             off: false,
             source: Default::default(),
         }
@@ -646,6 +678,7 @@ mod tests {
             source: Source::Default,
             review: None,
             after: None,
+            again: None,
         }
     }
 

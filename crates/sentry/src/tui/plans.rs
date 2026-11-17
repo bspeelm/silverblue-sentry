@@ -148,6 +148,20 @@ pub fn review_request(cfg: &Config, recs: &str, context: &str, tasks: &str) -> S
     )
 }
 
+/// A review sentry starts by itself (`ask`: `review::run_ask` or `review::start_ask`).
+pub fn auto_review_request(
+    cfg: &Config,
+    ask: &str,
+    recs: &str,
+    context: &str,
+    tasks: &str,
+) -> String {
+    format!(
+        "{}\n\n{ask}\n\nWhat sentry recommends now, ranked:\n{recs}\n\n{context}\n\n{tasks}",
+        records(cfg)
+    )
+}
+
 pub fn revise(what: &str) -> String {
     format!(
         "Revise the plan: {what}\nAnswer with the complete revised plan document in the same \

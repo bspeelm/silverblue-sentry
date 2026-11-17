@@ -28,6 +28,12 @@ pub struct ReviewHead {
     /// Proposals that couldn't be used, and why.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<String>,
+    /// Why it was written: empty (asked for with `R`), [`RUN`] or [`START`].
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+    /// After a run: its log entry (file name), which dates the tasks it found done.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
     /// Reviews written before changes: the tasks they suggested (read, never written).
     #[serde(skip_serializing)]
     suggest: Vec<Suggested>,
@@ -48,6 +54,48 @@ pub struct ReviewDoc {
 }
 
 const FENCE: &str = "+++";
+
+/// A review sentry started by itself when a workflow run ended well.
+pub const RUN: &str = "run";
+/// The quick one at each start of the TUI.
+pub const START: &str = "start";
+
+/// What a review after a run is asked: which tasks the run did.
+pub fn run_ask(run: &super::log::LogEntry) -> String {
+    format!(
+        "The {} workflow just ran to its end. Its log entry ({}):\n\n{}\n\n\
+         Go through every task listed below against this run. A task the run did (its steps \
+         carried out what the task asks for, or made it moot) gets a `[[done]]`; a task it \
+         did not do stays as it is, and one that matters more because of what the run changed \
+         (a new kernel, driver or release) gets an `[[again]]`. Tasks whose `do` is this \
+         workflow are already marked done: leave them out. Be quick: the entry above, the \
+         ledger and the machine are enough; use the web only if a task can't be judged \
+         without it.\n\
+         Sections:\n\
+         ## Summary: two lines on what the run did.\n\
+         ## Done by this run: one bullet per task, and what in the run did it.\n\
+         ## Still to do: the tasks left, most pressing first, with why.",
+        run.head.workflow,
+        run.file_name(),
+        run.body.trim()
+    )
+}
+
+/// What the review at start is asked: what changed since the tasks were last done.
+pub fn start_ask() -> String {
+    "sentry was just started. Check quickly whether anything changed since the tasks below \
+     were last done that makes one due before its time or more urgent: a new deployment, \
+     kernel or driver booted, packages layered or removed, a new finding, a failed unit, \
+     something in the ledger. Such a task gets an `[[again]]` (with `level` when it should \
+     rise) whose `why` names what changed; a task the ledger shows was done gets a \
+     `[[done]]`. Propose nothing else, and nothing at all when nothing changed: an empty \
+     block is the usual answer. Be quick: the state given here, the ledger and a few \
+     read-only commands; no web.\n\
+     Sections:\n\
+     ## Changed: what is different since the tasks were last done (or `Nothing`).\n\
+     ## Tasks: the ones that are due again or done, one bullet each."
+        .to_string()
+}
 
 impl ReviewDoc {
     pub fn new(server: &str) -> Self {

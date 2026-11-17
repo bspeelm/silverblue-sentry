@@ -91,7 +91,7 @@ pub fn plan(job: JobId, ctx: &Ctx) -> Plan {
                 p.items.push(Item {
                     job,
                     key: "check".into(),
-                    label: "rpm-ostree upgrade --preview · flatpak remote-ls --updates".into(),
+                    label: "rpm-ostree upgrade --preview · what flatpak update would do".into(),
                     bytes: None,
                     preview: vec!["network; refreshes the cached update lists (no apply)".into()],
                     act: Act::Builtin,

@@ -189,10 +189,19 @@ impl Session {
         .acting()
     }
 
-    /// On this machine sentry carries out what's allowed; on a server, plans do.
+    /// A session carries out what's allowed: here, or on its server.
     fn acting(mut self) -> Self {
-        self.chat.acts = self.chat.ask.applying().is_some_and(|a| !a.remote);
+        let a = self.chat.ask.applying();
+        self.chat.acts = a.is_some();
+        if a.is_some_and(|a| !a.remote) {
+            self.chat.privacy = crate::claude::acting_summary();
+        }
         self
+    }
+
+    /// The session is about a server (its commands run there; files here aren't its to edit).
+    fn remote(&self) -> bool {
+        self.chat.ask.applying().is_some_and(|a| a.remote)
     }
 
     /// From a chat about the same thing (`a`): the conversation so far, Claude's session
@@ -447,7 +456,8 @@ impl Session {
     }
 
     fn grants_here(&self, g: &crate::claude::Grant) -> bool {
-        self.chat.allowed(g).is_ok() && (self.chat.acts || g.access != crate::claude::Access::Write)
+        self.chat.allowed(g).is_ok()
+            && ((self.chat.acts && !self.remote()) || g.access != crate::claude::Access::Write)
     }
 
     /// What Claude asked for is allowed. Reads, read-only commands and your own files become
@@ -466,7 +476,15 @@ impl Session {
                     .err()
                     .unwrap_or("not in a server's session");
                 not.push(format!("{} {}: {why}", g.word(), g.path));
-            } else if g.access == Access::Run && g.changes() {
+            } else if g.access == Access::Run && crate::claude::workflow_only(&g.path) {
+                not.push(format!(
+                    "run {}: upgrades, rebases, rollbacks and reboots are run by sentry's \
+                     workflows (a `workflow` step in your plan), never as a command",
+                    g.path
+                ));
+            } else if g.access == Access::Run && (g.changes() || self.chat.acts) {
+                // In a session whatever was refused is run here: a grant couldn't lift the
+                // rule that refused it.
                 run.push(g.path);
             } else if g.access == Access::Write {
                 match crate::claude::backup(&g.path) {
@@ -1114,6 +1132,7 @@ impl Session {
             source: Default::default(),
             review: None,
             after,
+            again: None,
         }
     }
 
@@ -1586,15 +1605,70 @@ mod tests {
             access: Access::Run,
             path: c.into(),
         };
-        // A read-only command: a grant, and Claude runs it.
+        // A session's Claude runs what it likes, so what was refused is under a rule no
+        // grant lifts: sentry runs it, read-only or not, and tells Claude what it printed.
         let mut s = session();
+        assert!(
+            s.chat
+                .privacy
+                .contains("any command here that needs no root")
+        );
         let fx = key(&mut s, KeyCode::Enter);
         answer(&mut s, &fx, "It's refused; I asked.");
-        s.chat.requests = vec![run("rpm -V a")];
+        s.sudo_free = true;
+        s.chat.requests = vec![run("rpm-ostree upgrade --preview")];
         assert_eq!(s.enter_word(), Some("allow it"));
         let fx = key(&mut s, KeyCode::Enter);
-        assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("run rpm -V a")));
-        assert_eq!(s.chat.grants, vec![run("rpm -V a")]);
+        assert_eq!(
+            fx,
+            vec![Fx::Command {
+                cmd: "rpm-ostree upgrade --preview".into(),
+                sudo: false
+            }]
+        );
+        assert!(s.chat.grants.is_empty());
+
+        // Upgrading and rebooting are a workflow's: Claude is told, nothing runs.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "Asked.");
+        s.chat.requests = vec![run("sudo rpm-ostree upgrade"), run("systemctl reboot")];
+        let fx = key(&mut s, KeyCode::Enter);
+        let Some(Fx::Turn { prompt, .. }) = fx.first() else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            prompt.contains("run sudo rpm-ostree upgrade: upgrades, rebases")
+                && prompt.contains("run systemctl reboot:"),
+            "{prompt}"
+        );
+        assert!(s.runs.is_empty());
+
+        // On a server too: what needs root is asked for, then run there with the password.
+        let mut s = Session::new(Ask::apply(
+            "the disk",
+            "ctx",
+            Apply {
+                key: "task:disk".into(),
+                task: Some("disk".into()),
+                remote: true,
+                ..Default::default()
+            },
+        ));
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "It needs root; I asked.");
+        s.chat.requests = vec![run("sudo smartctl -a /dev/sda")];
+        assert!(s.can_grant());
+        assert_eq!(key(&mut s, KeyCode::Enter), vec![Fx::CheckSudo]);
+        // A file on the laptop still isn't a server session's to edit.
+        let mut s2 = Session::new(s.chat.ask.clone());
+        let fx = key(&mut s2, KeyCode::Enter);
+        answer(&mut s2, &fx, "Asked.");
+        s2.chat.requests = vec![Grant {
+            access: Access::Write,
+            path: crate::paths::home().join("notes.md").display().to_string(),
+        }];
+        assert!(!s2.can_grant());
 
         // A root command: sentry asks for the password, runs it, tells Claude, logs it.
         let mut s = session();
@@ -1647,7 +1721,7 @@ mod tests {
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
         answer(&mut s, &fx, &plan(CHECKS));
-        s.chat.requests = vec![run("rpm -V a")];
+        s.chat.requests = vec![run("sudo dmesg")];
         assert_eq!(s.enter_word(), Some("apply the plan"));
     }
 

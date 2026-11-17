@@ -1193,7 +1193,7 @@ gate = "confirm"
     key(&mut a, KeyCode::Char('v'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Records") && s.contains("Maintenance log   3 run(s)"),
+        s.contains("Records") && s.contains("Maintenance log   4 run(s)"),
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
@@ -1812,4 +1812,156 @@ fn applying_a_task_is_one_session_start_to_done() {
     key(&mut a, KeyCode::Esc);
     assert!(a.apply_session().is_none());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A task done by hand, due since it was added.
+fn by_hand_task(id: &str, title: &str) -> crate::maint::tasks::Task {
+    crate::maint::tasks::Task {
+        id: id.into(),
+        title: title.into(),
+        why: "It matters.".into(),
+        level: crate::maint::Level::Routine,
+        every: Some("90d".parse().unwrap()),
+        act: "by-hand".into(),
+        item: None,
+        steps: "Look at it.".into(),
+        added: "2026-10-01T12:00:00Z".parse().ok(),
+        off: false,
+        source: crate::maint::tasks::Source::File,
+        review: None,
+        after: None,
+        again: None,
+    }
+}
+
+/// A one-step workflow whose run has just ended well.
+fn ended_run(a: &mut App, name: &str) {
+    use crate::tui::wf::Session;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::{RunState, RunStatus};
+    let wf = crate::workflows::parse(&format!(
+        "name = \"{name}\"\ndescription = \"test\"\n[[steps]]\nid = \"firmware\"\n\
+         title = \"Update the firmware\"\nrun = \"fwupdmgr update\"\ngate = \"confirm\"\n"
+    ))
+    .unwrap();
+    let mut st = RunState::new(name, &["firmware".to_string()], Default::default());
+    runner::finish(&mut st, 0, 0, None);
+    st.status = RunStatus::Done;
+    st.ended = Some(jiff::Timestamp::now());
+    a.set_wf(Session::for_test(wf, st, Next::Done));
+    a.run_logged_for_test();
+}
+
+#[test]
+fn after_a_run_claude_says_which_tasks_it_did() {
+    let mut a = app(ScreenId::Upgrade);
+    a.add_task_for_test(by_hand_task("firmware", "Update the firmware"));
+    a.add_task_for_test(by_hand_task("ups", "Check the UPS battery"));
+    let due = a.tasks_due_for_test();
+    assert!(due.contains(&"firmware".to_string()) && due.contains(&"ups".to_string()));
+    ended_run(&mut a, "fw-update");
+    // The note first; nothing is started while it's asked.
+    assert!(render_to_string(&mut a, 158, 41).contains("for the log, what to know next time"));
+    assert!(a.auto_review_for_test().is_none());
+    key(&mut a, KeyCode::Esc);
+    // No note: the review starts by itself, about that run, with no window.
+    let (origin, run) = a.auto_review_for_test().expect("a review is being written");
+    assert_eq!(origin, "run");
+    assert!(
+        run.as_deref().is_some_and(|f| f.ends_with("-fw-update.md")),
+        "{run:?}"
+    );
+    assert!(!render_to_string(&mut a, 158, 41).contains("Claude is writing"));
+    a.writer_answered_for_test(
+        "# Maintenance review\n\n## Done by this run\n- firmware\n\n```sentry-changes\n\
+         [[done]]\ntask = \"firmware\"\nwhy = \"The run updated the firmware.\"\n\n\
+         [[again]]\ntask = \"ups\"\nlevel = \"soon\"\nwhy = \"The new firmware resets its settings.\"\n```\n",
+    );
+    // It opens with what it found, ticked; Enter applies both.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("2 changes · Enter applies the 2 ticked"), "{s}");
+    assert!(
+        s.contains("Update the firmware") && s.contains("due again"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(render_to_string(&mut a, 158, 41).contains("2 applied"));
+    // Done as of the run, in the log; the other is due and says why.
+    assert_eq!(a.tasks_due_for_test(), ["ups"]);
+    let log = a.log_for_test();
+    let done = log
+        .iter()
+        .find(|e| e.head.tags.contains(&"task:firmware".to_string()))
+        .expect("an entry for the task");
+    assert!(
+        done.body.contains("Done by the fw-update run"),
+        "{}",
+        done.body
+    );
+    assert!(done.head.tags.iter().any(|t| t.starts_with("run:")));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('6'));
+    a.apply_for_test(vec![crate::tui::app::Effect::MaintFind("task:ups".into())]);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("The new firmware resets its settings."), "{s}");
+}
+
+#[test]
+fn a_run_with_no_task_left_due_asks_claude_nothing() {
+    let mut a = app(ScreenId::Upgrade);
+    // Turn the built-in cadences off: nothing is due.
+    let due = a.tasks_due_for_test();
+    for id in due {
+        let mut t = by_hand_task(&id, "off");
+        t.off = true;
+        a.add_task_for_test(t);
+    }
+    assert!(a.tasks_due_for_test().is_empty());
+    ended_run(&mut a, "fw-update");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.auto_review_for_test().is_none());
+}
+
+#[test]
+fn the_review_at_start_shows_only_when_something_changed() {
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(by_hand_task("ups", "Check the UPS battery"));
+    a.start_check_for_test();
+    assert_eq!(
+        a.auto_review_for_test().map(|(o, _)| o).as_deref(),
+        Some("start")
+    );
+    // Nothing changed: nothing is shown or kept.
+    a.writer_answered_for_test(
+        "# Maintenance review\n\n## Changed\nNothing\n\n```sentry-changes\n```\n",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        !s.contains("changes to the tasks") && !s.contains("Enter applies"),
+        "{s}"
+    );
+    // Something did: a line says so, and R shows it.
+    a.start_check_for_test();
+    a.writer_answered_for_test(
+        "# Maintenance review\n\n## Changed\n- kernel\n\n```sentry-changes\n\
+         [[again]]\ntask = \"job-audit\"\nlevel = \"soon\"\nwhy = \"A new kernel was booted.\"\n```\n",
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("since last time: 1 change to the tasks (R shows them)"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("Enter applies"),
+        "it doesn't open by itself: {s}"
+    );
+    key(&mut a, KeyCode::Char('R'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("1 change · Enter applies the 1 ticked"), "{s}");
+    // Asking for a review yourself takes the place of one sentry started.
+    key(&mut a, KeyCode::Esc);
+    a.start_check_for_test();
+    assert!(a.auto_review_for_test().is_some());
+    a.review_written_for_test(REVIEW_LATER);
+    assert!(a.auto_review_for_test().is_none());
 }

@@ -550,10 +550,9 @@ fn draw_status(
             .as_ref()
             .map_or(0, |u| u.upgraded.len() + u.added.len())
     });
-    let fp = v.d.fp_updates.get().map(|c| c.data.len());
+    let fp = v.d.fp_waiting().map(|c| c.data.len());
     let tb =
-        v.d.tbx_updates
-            .get()
+        v.d.tbx_waiting()
             .map(|c| crate::collectors::toolbox::total(&c.data));
     let checking = v.d.loading(Fetch::OstreeCheck)
         || v.d.loading(Fetch::FlatpakUpdates)
@@ -744,10 +743,10 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
             None => lines.push("no rpm-ostree update known".into()),
         }
     }
-    if let Some(c) = d.fp_updates.get() {
+    if let Some(c) = d.fp_waiting() {
         lines.push(format!("{} Flatpak updates", c.data.len()));
     }
-    if let Some(c) = d.tbx_updates.get() {
+    if let Some(c) = d.tbx_waiting() {
         lines.push(format!(
             "{} package updates inside toolboxes",
             crate::collectors::toolbox::total(&c.data)

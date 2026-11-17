@@ -23,6 +23,27 @@ pub struct Config {
     pub keys: BTreeMap<String, String>,
     pub retention: Retention,
     pub maintenance: Maintenance,
+    pub review: Review,
+}
+
+/// The reviews sentry starts by itself (both programs). Each is one Claude turn in the
+/// background; nothing changes until you apply what it proposes.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Review {
+    /// At each start of the TUI: which tasks are due again because something changed.
+    pub at_start: bool,
+    /// When a workflow run ends well: which tasks it did.
+    pub after_run: bool,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Self {
+            at_start: true,
+            after_run: true,
+        }
+    }
 }
 
 /// How long maintenance records are kept (both programs). Pruned when the TUI starts and

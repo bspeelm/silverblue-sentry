@@ -64,6 +64,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,
     },
+    /// Run one shell command line on a server as the login user (the gateway an apply
+    /// session's Claude uses): anything that needs no root. sudo, turning the server off and
+    /// files that may hold secrets are refused.
+    Run {
+        server: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        line: Vec<String>,
+    },
     /// Each maintenance item's standing: pinned, running, newest upstream, what needs a look.
     Maint {
         name: Option<String>,
@@ -98,6 +106,7 @@ fn main() -> ExitCode {
         Some(Command::Record { name }) => cli::record(name.as_deref()),
         Some(Command::Workflow { what, server }) => cli::workflow(&what, server.as_deref()),
         Some(Command::Exec { server, argv }) => cli::exec(&server, &argv),
+        Some(Command::Run { server, line }) => cli::run(&server, &line),
         None => cli::tui(cli.server.as_deref()),
     })
 }

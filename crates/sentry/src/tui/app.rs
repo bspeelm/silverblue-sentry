@@ -279,6 +279,10 @@ pub struct App {
     review: Option<crate::maint::review::ReviewDoc>,
     wf_plan: Option<String>,
     wf_plan_path: Option<std::path::PathBuf>,
+    /// The run that just ended well, until its tasks review is started.
+    review_run: Option<crate::maint::log::LogEntry>,
+    /// The review at start is still to begin (it waits for the first data).
+    start_check: bool,
 }
 
 impl App {
@@ -337,6 +341,8 @@ impl App {
             review: crate::maint::review::latest(crate::maint::LOCAL),
             wf_plan: None,
             wf_plan_path: None,
+            review_run: None,
+            start_check: false,
         };
         if let Some(w) = warnings.first() {
             app.toast(w.clone());
@@ -402,6 +408,57 @@ impl App {
                 elapsed: Duration::ZERO,
             },
         );
+    }
+
+    /// Tests: the session's run has ended; it's logged as the event loop would.
+    #[cfg(test)]
+    pub fn run_logged_for_test(&mut self) {
+        self.after_wf_change();
+    }
+
+    /// Tests: a task in tasks.toml (nothing is written).
+    #[cfg(test)]
+    pub fn add_task_for_test(&mut self, t: crate::maint::tasks::Task) {
+        self.data.tasks.push(t);
+    }
+
+    /// Tests: the review sentry started by itself and is still writing: why, and its run.
+    #[cfg(test)]
+    pub fn auto_review_for_test(&self) -> Option<(String, Option<String>)> {
+        let w = self.writer.as_ref().filter(|w| w.quiet && w.running())?;
+        let h = &w.review.as_ref()?.head;
+        Some((h.origin.clone(), h.run.clone()))
+    }
+
+    /// Tests: the review at start begins (nothing is sent).
+    #[cfg(test)]
+    pub fn start_check_for_test(&mut self) {
+        self.review_auto(None);
+    }
+
+    /// Tests: Claude answered whatever is being written.
+    #[cfg(test)]
+    pub fn writer_answered_for_test(&mut self, answer: &str) {
+        if let Some(w) = self.writer.as_mut() {
+            w.live = None;
+            w.answer = Some(answer.into());
+        }
+        self.writer_turn_ended();
+    }
+
+    /// Tests: the tasks due now.
+    #[cfg(test)]
+    pub fn tasks_due_for_test(&self) -> Vec<String> {
+        let v = self.view();
+        crate::maint::tasks::recs(
+            &super::screens::maint::all_tasks(&v),
+            &self.data.maint_log,
+            None,
+            jiff::Timestamp::now(),
+        )
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
     }
 
     /// Tests: a workflow run ended with this log entry.
@@ -529,6 +586,8 @@ impl App {
             review: None,
             wf_plan: None,
             wf_plan_path: None,
+            review_run: None,
+            start_check: false,
         }
     }
 
@@ -537,6 +596,13 @@ impl App {
         self.data.fetch(Fetch::Reports, &self.cfg, &self.tx);
         self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
         self.enter(self.screen, now);
+        // A run that ended with the reboot (or while sentry was closed) is logged now, not
+        // when the Upgrade screen is next opened.
+        self.after_wf_change();
+        if self.records && self.cfg.review.at_start && crate::claude::available() {
+            self.start_check = true;
+            self.data.fetch(Fetch::Ostree, &self.cfg, &self.tx);
+        }
     }
 
     fn view(&self) -> View<'_> {
@@ -730,6 +796,7 @@ impl App {
                     self.toast(e.text());
                 }
                 self.data.apply(f, r);
+                self.review_at_start();
                 // An update check is the update-check job: its run is in the log now.
                 if f == Fetch::OstreeCheck {
                     self.data.fetch(Fetch::Log, &self.cfg, &self.tx);
@@ -1070,6 +1137,7 @@ impl App {
             }
             Typed::Command(c) => self.command(c.trim(), now),
             Typed::Submit(p, text) => self.submit(p, text.trim(), now),
+            Typed::Cancelled(Some(Prompt::LogNote(_))) => self.review_after_run(),
             Typed::Editing | Typed::FilterKept | Typed::Cancelled(_) => {}
         }
     }
@@ -1239,7 +1307,7 @@ impl App {
         let Some(c) = self.chat.as_ref() else { return };
         let session = c.session.clone().filter(|_| resume);
         let grants = c.grants.clone();
-        let r = self.spawn_turn(&prompt, session.as_deref(), &grants);
+        let r = self.spawn_turn(&prompt, session.as_deref(), &grants, false);
         let Some(c) = self.chat.as_mut() else { return };
         match r {
             Ok((id, pid)) => c.begin_turn(&shown, id, pid),
@@ -1257,13 +1325,20 @@ impl App {
         prompt: &str,
         resume: Option<&str>,
         grants: &[crate::claude::Grant],
+        acting: bool,
     ) -> Result<(u64, u32), String> {
         self.run_seq += 1;
         let id = self.run_seq;
         if !self.records {
             return Ok((id, 0));
         }
-        let profile = crate::claude::Profile::local()
+        // A chat explains (read-only commands); a session finds out whatever it needs.
+        let base = if acting {
+            crate::claude::Profile::acting()
+        } else {
+            crate::claude::Profile::local()
+        };
+        let profile = base
             .with_notes(&self.cfg.maintenance.notes)
             .with_log(&crate::maint::log::dir(crate::maint::LOCAL))
             .with_grants(grants);
@@ -1447,7 +1522,7 @@ impl App {
                 }
                 self.toast("noted in the maintenance log (v opens it)");
             }
-            Prompt::LogNote(_) if text.is_empty() => {}
+            Prompt::LogNote(_) if text.is_empty() => self.review_after_run(),
             Prompt::LogNote(_) => {
                 if self.wf.is_none() {
                     return;
@@ -1461,8 +1536,15 @@ impl App {
                 }
                 if self.records {
                     self.data.maint_log = crate::maint::log::list(crate::maint::LOCAL);
+                } else {
+                    self.log_put(e.clone());
                 }
                 self.toast("noted in the maintenance log (v opens it)");
+                // The review reads the entry with its note.
+                if self.review_run.is_some() {
+                    self.review_run = Some(e);
+                }
+                self.review_after_run();
             }
             Prompt::TaskEvery(id) => {
                 let every = match crate::maint::tasks::parse_every(text) {
@@ -1961,6 +2043,20 @@ impl App {
         }
     }
 
+    /// What quick-update changed shows at once: what's still waiting is checked again, since
+    /// the counts on disk are from before the run.
+    fn recheck_updates(&mut self) {
+        for f in [
+            Fetch::Ostree,
+            Fetch::Flatpak,
+            Fetch::OstreeCheck,
+            Fetch::FlatpakUpdates,
+            Fetch::ToolboxUpdates,
+        ] {
+            self.data.fetch(f, &self.cfg, &self.tx);
+        }
+    }
+
     fn booted_version(&self) -> Option<String> {
         let o = self.data.ostree.value.as_ref()?;
         o.booted().map(|d| d.version.clone())
@@ -1988,6 +2084,12 @@ impl App {
         }
         let entry = self.log_entry(None);
         self.apply_run_ended(&entry);
+        if done && entry.head.workflow == crate::maint::local::UPDATE_WORKFLOW && self.records {
+            self.recheck_updates();
+        }
+        if !self.records {
+            self.log_put(entry.clone());
+        }
         if self.records {
             if let Err(e) = crate::maint::log::write(&entry) {
                 self.toast(format!("couldn't write the maintenance log: {e}"));
@@ -2000,8 +2102,20 @@ impl App {
                 jiff::Timestamp::now(),
             );
         }
+        if done {
+            self.review_run = Some(entry.clone());
+        }
         // What to know next time: asked now, while it's fresh.
         self.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
+    }
+
+    /// Tests write nothing, but what's done is still read from the log: the entry goes in
+    /// as `log::write` would put it (one per run, newest first).
+    fn log_put(&mut self, entry: crate::maint::log::LogEntry) {
+        self.data
+            .maint_log
+            .retain(|e| e.head.run.is_none() || e.head.run != entry.head.run);
+        self.data.maint_log.insert(0, entry);
     }
 
     /// The current run as a log entry: an OS change says from → to (the booted versions).
@@ -2209,6 +2323,14 @@ impl App {
             later: Some(&self.data.snoozes),
             items: &[],
             found: &[],
+            log: &self.data.maint_log,
+            audited: v
+                .d
+                .reports
+                .get()
+                .and_then(|r| r.last())
+                .map(|s| s.report.taken_at),
+            now: Some(jiff::Timestamp::now()),
         })
     }
 
@@ -2229,6 +2351,81 @@ impl App {
         self.start_writer(super::docview::Writer::review(doc), prompt, None);
     }
 
+    /// A review sentry starts by itself, in the background: after a run that ended well
+    /// (`run`), or at start. Nothing opens while Claude writes.
+    fn review_auto(&mut self, run: Option<crate::maint::log::LogEntry>) {
+        use crate::maint::review;
+        if !crate::claude::available() || self.writer.as_ref().is_some_and(|w| w.running()) {
+            return;
+        }
+        let v = self.view();
+        let changes = self.with_known(|k| crate::maint::changes::request_section(k, false));
+        let ask = match &run {
+            Some(r) => review::run_ask(r),
+            None => review::start_ask(),
+        };
+        let prompt = super::plans::auto_review_request(
+            &self.cfg,
+            &ask,
+            &super::screens::maint::recs_text(&v),
+            &super::screens::maint::context(&v),
+            &changes,
+        );
+        let mut doc = review::ReviewDoc::new(crate::maint::LOCAL);
+        doc.head.origin = if run.is_some() {
+            review::RUN
+        } else {
+            review::START
+        }
+        .into();
+        doc.head.run = run.map(|r| r.file_name());
+        let mut w = super::docview::Writer::review(doc);
+        w.quiet = true;
+        self.start_writer(w, prompt, None);
+    }
+
+    /// The run that just ended, once its note is given or skipped: Claude checks which
+    /// tasks it did. Not when none is due (the ones that run this workflow are done already).
+    fn review_after_run(&mut self) {
+        let Some(run) = self.review_run.take() else {
+            return;
+        };
+        if !self.cfg.review.after_run {
+            return;
+        }
+        let v = self.view();
+        let now = jiff::Timestamp::now();
+        let audited =
+            v.d.reports
+                .get()
+                .and_then(|r| r.last())
+                .map(|s| s.report.taken_at);
+        let due = super::screens::maint::all_tasks(&v)
+            .iter()
+            .any(|t| crate::maint::tasks::due(t, &self.data.maint_log, audited, now));
+        if due {
+            self.review_auto(Some(run));
+        }
+    }
+
+    /// The review at start, once what it's told about is read: the deployments and the
+    /// audit reports.
+    fn review_at_start(&mut self) {
+        if !self.start_check
+            || self.data.ostree.get().is_none()
+            || self.data.reports.get().is_none()
+            || self.data.loading(Fetch::Log)
+        {
+            return;
+        }
+        self.start_check = false;
+        // A run that ended while sentry was closed gets its own review, which says the same.
+        if self.review_run.is_some() || self.input.is_open() {
+            return;
+        }
+        self.review_auto(None);
+    }
+
     /// Enter on a review's changes: those ticked are applied together, the rest skipped,
     /// and the log says what was done.
     fn review_apply(&mut self) {
@@ -2239,9 +2436,30 @@ impl App {
         let mut tasks = self.data.tasks.clone();
         let mut later = self.data.snoozes.clone();
         let now = jiff::Timestamp::now();
+        // The run a review after a run is about: it dates the tasks found done.
+        let by = rd.head.run.as_ref().and_then(|f| {
+            self.data
+                .maint_log
+                .iter()
+                .find(|e| &e.file_name() == f)
+                .cloned()
+        });
+        let all = crate::maint::tasks::effective(&tasks, derived.clone());
+        let mut found_done = Vec::new();
         let (done, skipped, failed) = crate::maint::changes::settle(&mut rd.head.changes, |c| {
-            crate::maint::changes::apply(c, &mut tasks, &mut later, &derived, now)
-                .unwrap_or_else(|| Err("only on a server".into()))
+            let r = crate::maint::changes::apply(c, &mut tasks, &mut later, &derived, now)
+                .unwrap_or_else(|| Err("only on a server".into()));
+            if let (Ok(_), Some(id)) = (&r, c.done_task()) {
+                let title = all.iter().find(|t| t.id == id).map_or(id, |t| &t.title);
+                found_done.push(crate::maint::log::LogEntry::task_found_done(
+                    crate::maint::LOCAL,
+                    id,
+                    title,
+                    &c.why,
+                    by.as_ref(),
+                ));
+            }
+            r
         });
         if self.records {
             let saved = crate::maint::tasks::save(crate::maint::LOCAL, &tasks)
@@ -2253,6 +2471,9 @@ impl App {
         }
         self.data.tasks = tasks;
         self.data.snoozes = later;
+        for e in found_done {
+            self.log_event(e);
+        }
         if done + failed > 0 {
             self.log_event(crate::maint::log::LogEntry::event(
                 crate::maint::LOCAL,
@@ -2271,6 +2492,54 @@ impl App {
         ));
     }
 
+    /// A review sentry started by itself is written: kept only when it proposes something.
+    /// After a run it opens (if nothing else is); the one at start only says so.
+    fn auto_review_ended(&mut self, mut rd: crate::maint::review::ReviewDoc, answer: Option<&str>) {
+        let after_run = rd.head.origin == crate::maint::review::RUN;
+        self.writer = None;
+        let Some(a) = answer.filter(|a| !a.trim().is_empty()) else {
+            if after_run {
+                self.toast(
+                    "no review of the tasks after the run: Claude gave no answer (R asks again)",
+                );
+            }
+            return;
+        };
+        let today = jiff::Zoned::now().date();
+        self.with_known(|k| rd.take_answer(a, k, today));
+        let n = rd.open().len();
+        if n == 0 {
+            if after_run {
+                self.toast("the run did none of the tasks still due");
+            }
+            return;
+        }
+        if self.records
+            && let Err(e) = crate::maint::review::save(&rd)
+        {
+            return self.toast(format!("couldn't save the review: {e}"));
+        }
+        self.review = Some(rd);
+        let nothing_open = matches!(frame::layer(&self.open()), Layer::Screen);
+        if after_run && nothing_open {
+            self.review_view = Some(super::reviewview::ReviewView::show());
+            self.toast(format!(
+                "after the run: {} to the tasks (Enter applies)",
+                super::reviewview::changes_word(n)
+            ));
+        } else if after_run {
+            self.toast(format!(
+                "after the run: {} to the tasks (R shows them)",
+                super::reviewview::changes_word(n)
+            ));
+        } else {
+            self.toast(format!(
+                "since last time: {} to the tasks (R shows them)",
+                super::reviewview::changes_word(n)
+            ));
+        }
+    }
+
     /// Claude writes (a plan or a review) in the background; its view opens.
     fn start_writer(
         &mut self,
@@ -2278,14 +2547,27 @@ impl App {
         prompt: String,
         resume: Option<String>,
     ) {
-        if self.writer.as_ref().is_some_and(|w| w.running()) {
-            return self.toast("Claude is already writing: wait for it, or C-c in its view");
+        match self.writer.as_ref().filter(|x| x.running()) {
+            // What you ask for takes the place of a review sentry started by itself.
+            Some(x) if x.quiet && !w.quiet => {
+                if let Some((_, pid)) = x.live.filter(|(_, pid)| *pid != 0) {
+                    let _ = kill(pid);
+                }
+                self.writer = None;
+            }
+            Some(_) if w.quiet => return,
+            Some(_) => {
+                return self.toast("Claude is already writing: wait for it, or C-c in its view");
+            }
+            None => {}
         }
         w.place = "machine";
         let profile = if w.review.is_some() {
-            self.review_view
-                .get_or_insert_with(super::reviewview::ReviewView::show)
-                .brief = false;
+            if !w.quiet {
+                self.review_view
+                    .get_or_insert_with(super::reviewview::ReviewView::show)
+                    .brief = false;
+            }
             super::plans::review_profile(&self.cfg)
         } else {
             self.plan_view = Some((w.item.clone(), 0));
@@ -2322,6 +2604,10 @@ impl App {
                 .map(|w| (w.answer.clone(), w.err.clone(), w.session.clone()))
                 .unwrap_or_default();
             rd.head.session = session.or(rd.head.session);
+            let quiet = self.writer.as_ref().is_some_and(|w| w.quiet);
+            if quiet {
+                return self.auto_review_ended(rd, answer.as_deref());
+            }
             let msg = match (&answer, &err) {
                 (Some(a), _) if !a.trim().is_empty() => {
                     let today = jiff::Zoned::now().date();
@@ -2691,7 +2977,7 @@ impl App {
                     };
                     let resume = sess.chat.session.clone();
                     let grants = sess.chat.grants.clone();
-                    let r = self.spawn_turn(&prompt, resume.as_deref(), &grants);
+                    let r = self.spawn_turn(&prompt, resume.as_deref(), &grants, true);
                     let Some(sess) = self.apply.as_mut() else {
                         return;
                     };
@@ -3412,7 +3698,7 @@ impl App {
                 ))
             }
             ScreenId::Cont => {
-                let n = crate::collectors::toolbox::total(&self.data.tbx_updates.get()?.data);
+                let n = crate::collectors::toolbox::total(&self.data.tbx_waiting()?.data);
                 (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
             ScreenId::Net => {

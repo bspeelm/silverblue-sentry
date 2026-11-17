@@ -71,6 +71,16 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         level: Option<Level>,
     },
+    /// The task is done: the log shows it (a run that just ended did what it asks).
+    DoneTask {
+        id: String,
+    },
+    /// The task is due again now, whatever its cadence says: something changed.
+    AgainTask {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<Level>,
+    },
     Later {
         key: String,
         until: Date,
@@ -111,6 +121,7 @@ pub enum State {
 /// The headings the window lists them under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
+    Done,
     Remove,
     Add,
     Change,
@@ -120,6 +131,7 @@ pub enum Group {
 impl Group {
     pub fn word(self) -> &'static str {
         match self {
+            Group::Done => "Done",
             Group::Remove => "Remove",
             Group::Add => "Add",
             Group::Change => "Change",
@@ -152,6 +164,14 @@ pub struct Change {
 }
 
 impl Change {
+    /// The task a `[[done]]` marks done.
+    pub fn done_task(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::DoneTask { id } => Some(id),
+            _ => None,
+        }
+    }
+
     fn new(kind: Kind, why: &str, label: String) -> Self {
         Self {
             why: why.trim().to_string(),
@@ -165,9 +185,10 @@ impl Change {
 
     pub fn group(&self) -> Group {
         match self.kind {
+            Kind::DoneTask { .. } => Group::Done,
             Kind::RemoveTask { .. } | Kind::Untrack { .. } | Kind::Ignore { .. } => Group::Remove,
             Kind::AddTask { .. } | Kind::Track { .. } => Group::Add,
-            Kind::SetTask { .. } | Kind::SetItem { .. } => Group::Change,
+            Kind::SetTask { .. } | Kind::AgainTask { .. } | Kind::SetItem { .. } => Group::Change,
             Kind::Later { .. } | Kind::Back { .. } => Group::PutOff,
         }
     }
@@ -176,6 +197,8 @@ impl Change {
     pub fn word(&self) -> &'static str {
         match self.kind {
             Kind::AddTask { .. } | Kind::RemoveTask { .. } | Kind::SetTask { .. } => "task",
+            Kind::DoneTask { .. } => "done",
+            Kind::AgainTask { .. } => "again",
             Kind::Untrack { .. } | Kind::SetItem { .. } => "item",
             Kind::Track { .. } => "track",
             Kind::Ignore { .. } => "ignore",
@@ -189,6 +212,8 @@ impl Change {
         match &self.kind {
             Kind::AddTask { task } => &task.id,
             Kind::RemoveTask { id }
+            | Kind::DoneTask { id }
+            | Kind::AgainTask { id, .. }
             | Kind::SetTask { id, .. }
             | Kind::Untrack { id }
             | Kind::SetItem { id, .. } => id,
@@ -214,11 +239,33 @@ pub struct Known<'a> {
     pub items: &'a [(String, String)],
     /// A server: what discovery found and nothing tracks (key, what).
     pub found: &'a [(String, String)],
+    /// The maintenance log and the time, to say when each task was last done and which are
+    /// due (`now` None: not said).
+    pub log: &'a [super::log::LogEntry],
+    pub audited: Option<Timestamp>,
+    pub now: Option<Timestamp>,
 }
 
 impl Known<'_> {
     fn item_ids(&self) -> Vec<String> {
         self.items.iter().map(|(i, _)| i.clone()).collect()
+    }
+
+    /// "; last done 2026-11-01; due now".
+    fn standing(&self, t: &Task) -> String {
+        let Some(now) = self.now else {
+            return String::new();
+        };
+        let last = super::tasks::last_done(t, self.log, self.audited)
+            .map_or("never done".to_string(), |l| {
+                format!("last done {}", l.strftime("%Y-%m-%d"))
+            });
+        let due = if super::tasks::due(t, self.log, self.audited, now) {
+            "due now"
+        } else {
+            "not due"
+        };
+        format!("; {last}; {due}")
     }
 
     fn put_off(&self, key: &str) -> Option<Date> {
@@ -292,7 +339,8 @@ pub fn take(answer: &str, k: &Known, today: Date) -> (String, Vec<Change>, Vec<S
     let mut dropped = Vec::new();
     // In the order the window shows them.
     for table in [
-        "remove", "untrack", "ignore", "add", "track", "change", "item", "later", "back",
+        "done", "remove", "untrack", "ignore", "add", "track", "again", "change", "item", "later",
+        "back",
     ] {
         for v in tables.get(table).into_iter().flatten() {
             match one(table, v.clone(), k, today) {
@@ -310,7 +358,8 @@ pub fn take(answer: &str, k: &Known, today: Date) -> (String, Vec<Change>, Vec<S
     }
     for t in tables.keys() {
         if ![
-            "remove", "untrack", "ignore", "add", "track", "change", "item", "later", "back",
+            "done", "remove", "untrack", "ignore", "add", "track", "again", "change", "item",
+            "later", "back",
         ]
         .contains(&t.as_str())
         {
@@ -357,6 +406,31 @@ fn one(table: &str, v: toml::Value, k: &Known, today: Date) -> Result<Change, St
                 .filter(|t| !t.off)
                 .ok_or_else(|| bad("no such task"))?;
             (Kind::RemoveTask { id: name.clone() }, t.title.clone())
+        }
+        "done" => {
+            let t = task(&name)
+                .filter(|t| !t.off)
+                .ok_or_else(|| bad("no such task"))?;
+            (Kind::DoneTask { id: name.clone() }, t.title.clone())
+        }
+        "again" => {
+            let t = task(&name)
+                .filter(|t| !t.off)
+                .ok_or_else(|| bad("no such task"))?;
+            if r.why.trim().is_empty() {
+                return Err(bad("no `why`: what changed?"));
+            }
+            let level = r.level.filter(|l| *l != t.level);
+            (
+                Kind::AgainTask {
+                    id: name.clone(),
+                    level,
+                },
+                match level {
+                    Some(l) => format!("due again · {} → {}", t.level.word(), l.word()),
+                    None => "due again".into(),
+                },
+            )
         }
         "change" => {
             let t = task(&name).ok_or_else(|| bad("no such task"))?;
@@ -509,7 +583,7 @@ pub fn request_section(k: &Known, server: bool) -> String {
             .iter()
             .map(|t| {
                 format!(
-                    "- {}: {} ({}; {}; {}{})",
+                    "- {}: {} ({}; {}; {}{}{})",
                     t.id,
                     t.title,
                     if t.off { "off".into() } else { t.when() },
@@ -517,7 +591,8 @@ pub fn request_section(k: &Known, server: bool) -> String {
                     t.source.word(),
                     t.item
                         .as_ref()
-                        .map_or(String::new(), |i| format!("; item {i}"))
+                        .map_or(String::new(), |i| format!("; item {i}")),
+                    if t.off { String::new() } else { k.standing(t) }
                 )
             })
             .collect(),
@@ -576,6 +651,10 @@ pub fn request_section(k: &Known, server: bool) -> String {
          # every = \"90d\" only for work that recurs; leave it out for once\n\
          # item = \"<item id>\" when it's about one\n\
          steps = \"\"\"\nFor by-hand tasks: the exact steps and commands, in Markdown.\n\"\"\"\n\n\
+         [[done]]              # a task the log shows was done (a run did what it asks)\n\
+         task = \"<task id>\"\nwhy = \"…\"\n\n\
+         [[again]]             # a task due again now, before its time, because something changed\n\
+         task = \"<task id>\"\nwhy = \"What changed, in one sentence\"\n# level = \"soon\" to raise it\n\n\
          [[change]]            # a task's cadence (`every = \"off\"` turns it off) or level\n\
          task = \"<task id>\"\nevery = \"30d\"\nwhy = \"…\"\n\n\
          [[later]]             # a row (or item) that can wait until a date\n\
@@ -678,6 +757,22 @@ pub fn apply(
             }
             Err(e) => Err(e),
         },
+        // The log is what says a task is done: the program writes its entry.
+        Kind::DoneTask { id } => find(tasks, id).map(|_| "marked done in the log".into()),
+        Kind::AgainTask { id, level } => match find(tasks, id) {
+            Ok(mut t) => {
+                t.again = Some(super::tasks::Again {
+                    at: now,
+                    why: c.why.clone(),
+                });
+                if let Some(l) = level {
+                    t.level = *l;
+                }
+                put(tasks, t);
+                Ok("due again (tasks.toml)".into())
+            }
+            Err(e) => Err(e),
+        },
         Kind::Later { key, until } => {
             later.insert(key.clone(), *until);
             Ok(format!("put off until {until} (later.toml)"))
@@ -731,6 +826,7 @@ pub fn summary(changes: &[Change]) -> String {
     };
     let mut head = Vec::new();
     for (g, word) in [
+        (Group::Done, "done"),
         (Group::Add, "added"),
         (Group::Remove, "removed"),
         (Group::Change, "changed"),
@@ -794,6 +890,7 @@ mod tests {
             source: Source::File,
             review: None,
             after: None,
+            again: None,
         }
     }
 
@@ -834,6 +931,7 @@ mod tests {
                 later: Some(&self.later),
                 items: &self.items,
                 found: &self.found,
+                ..Default::default()
             }
         }
     }
@@ -958,6 +1056,74 @@ mod tests {
         // A block that isn't TOML: nothing, and it says so.
         let (_, c, dr) = take("```sentry-changes\n[[add\n```", &w.known(), d("2026-11-16"));
         assert!(c.is_empty() && dr[0].starts_with("the changes block isn't TOML"));
+    }
+
+    #[test]
+    fn a_review_marks_tasks_done_or_due_again() {
+        use crate::maint::log::LogEntry;
+        let w = World::new();
+        let answer = "# Maintenance review\n\n```sentry-changes\n\
+            [[again]]\ntask = \"audit\"\nlevel = \"soon\"\nwhy = \"A new kernel was booted.\"\n\n\
+            [[done]]\ntask = \"ups\"\nwhy = \"The run replaced the battery.\"\n\n\
+            [[again]]\ntask = \"ups\"\n\n\
+            [[done]]\ntask = \"nope\"\nwhy = \"x\"\n```\n";
+        let (_, mut changes, dropped) = take(answer, &w.known(), d("2026-11-16"));
+        let got: Vec<_> = changes.iter().map(|c| (c.name(), c.word())).collect();
+        assert_eq!(got, [("ups", "done"), ("audit", "again")]);
+        assert_eq!(changes[1].label, "due again · routine → soon");
+        assert_eq!(
+            dropped,
+            [
+                "done nope: no such task",
+                "again ups: no `why`: what changed?"
+            ]
+        );
+        let mut file = vec![w.tasks[0].clone()];
+        let derived = vec![w.tasks[1].clone()];
+        let mut later = w.later.clone();
+        let now: Timestamp = "2026-11-16T12:00:00Z".parse().unwrap();
+        let hours = jiff::SignedDuration::from_hours;
+        let out = settle(&mut changes, |c| {
+            apply(c, &mut file, &mut later, &derived, now).unwrap()
+        });
+        assert_eq!(out, (2, 0, 0));
+        // Done is the log's to say: the program writes the entry.
+        assert_eq!(changes[0].done_task(), Some("ups"));
+        assert_eq!(changes[0].note, "marked done in the log");
+        // Audited yesterday, every 30d: not due, but it is again since the review.
+        let audit = file.iter().find(|t| t.id == "audit").unwrap();
+        assert_eq!(audit.level, Level::Soon);
+        let ran = |at| LogEntry::event("", "job", "audit", true, "", &[], at);
+        let log = [ran(now - hours(24))];
+        assert!(!crate::maint::tasks::due(&derived[0], &log, None, now));
+        assert!(crate::maint::tasks::due(audit, &log, None, now));
+        let recs = crate::maint::tasks::recs(std::slice::from_ref(audit), &log, None, now);
+        assert_eq!(
+            recs[0].why,
+            "A new kernel was booted. (due again; last done 2026-11-15)"
+        );
+        // Until it's next done.
+        let log = [ran(now + hours(1)), ran(now - hours(24))];
+        assert!(!crate::maint::tasks::due(audit, &log, None, now + hours(2)));
+        assert!(summary(&changes).starts_with("Review applied: 1 done, 1 changed\n"));
+        // It survives the file.
+        let text = audit.to_toml();
+        assert!(
+            text.contains("[task.again]") && text.contains("A new kernel"),
+            "{text}"
+        );
+
+        // The request says how each task stands, when it's told the time.
+        let mut k = w.known();
+        k.log = &log;
+        k.now = Some(now + hours(2));
+        let req = request_section(&k, false);
+        assert!(
+            req.contains("- ups: T ups (every 90d; by-hand; tasks.toml; never done; due now)"),
+            "{req}"
+        );
+        assert!(req.contains("last done 2026-11-16; not due)"), "{req}");
+        assert!(req.contains("[[done]]") && req.contains("[[again]]"));
     }
 
     #[test]

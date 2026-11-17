@@ -238,8 +238,8 @@ fn run_plan(
     Ok(Some(summary))
 }
 
-/// `rpm-ostree upgrade --preview` (refreshes cached-update) and `flatpak remote-ls --updates`
-/// (cached). Also what the TUI's `c` does.
+/// `rpm-ostree upgrade --preview` (refreshes cached-update) and what `flatpak update` would do
+/// (answered `n`; cached). Also what the TUI's `c` does.
 fn update_check(ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<Option<String>> {
     writeln!(out, "$ rpm-ostree upgrade --preview")?;
     out.flush()?;
@@ -263,7 +263,7 @@ fn update_check(ctx: &Ctx, out: &mut dyn Write) -> anyhow::Result<Option<String>
             ),
         }
     )?;
-    writeln!(out, "$ flatpak remote-ls --updates")?;
+    writeln!(out, "$ flatpak update (answered n: only what it would do)")?;
     out.flush()?;
     let fp = check_flatpak()?;
     writeln!(out, "flatpak: {} update(s)", fp.data.len())?;

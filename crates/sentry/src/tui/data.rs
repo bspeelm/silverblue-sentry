@@ -238,6 +238,20 @@ impl DataStore {
         d
     }
 
+    /// Flatpak updates waiting, unless the count is from before the last quick-update.
+    pub fn fp_waiting(&self) -> Option<&Cached<Vec<FpUpdate>>> {
+        self.fp_updates
+            .get()
+            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, &self.maint_log))
+    }
+
+    /// The same for the toolboxes' packages.
+    pub fn tbx_waiting(&self) -> Option<&Cached<ToolboxUpdates>> {
+        self.tbx_updates
+            .get()
+            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, &self.maint_log))
+    }
+
     /// No disk access: used by `new` and by render tests.
     pub fn blank(os_version: String, kernel: String) -> Self {
         Self {

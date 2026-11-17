@@ -25,7 +25,7 @@ Decided 2026-10-23 during build prep, after probing the target machine. Where th
 `rpm-ostree status --json` → `cached-update.rpm-diff` is the structured source for available updates and kernel-change detection. "Check now" runs `rpm-ostree upgrade --preview`, which refreshes it. Sentry stores only the check time (`~/.cache/sentry/ostree-check.json`).
 
 ## A5. Flatpak permissions are read live
-Permissions are computed by parsing the app `metadata` keyfiles and applying override keyfiles (system/user, global/per-app, with `!` negation) in Flatpak's order. This is cheap (no subprocess per app), so it runs on screen entry and is **not cached**. Only `flatpak remote-ls --updates` (network) is cached.
+Permissions are computed by parsing the app `metadata` keyfiles and applying override keyfiles (system/user, global/per-app, with `!` negation) in Flatpak's order. This is cheap (no subprocess per app), so it runs on screen entry and is **not cached**. Only the update check (network) is cached: what `flatpak update` would do, its prompt answered `n` (`remote-ls --updates` also lists the fedora remote's rebuilt images that `flatpak update` has nothing to do for).
 
 ## A6. Baseline storage
 - `config.toml [baseline]` is user-authored and never written by sentry.
