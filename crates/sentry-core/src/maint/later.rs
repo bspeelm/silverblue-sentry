@@ -25,13 +25,7 @@ fn path(server: &str) -> PathBuf {
 
 /// Where they were before.
 fn old_path(server: &str) -> PathBuf {
-    if server.is_empty() {
-        paths::config_dir().join("maint.toml")
-    } else {
-        paths::config_dir()
-            .join("servers")
-            .join(format!("{server}.maint.toml"))
-    }
+    super::beside(server, ".maint.toml").unwrap_or_else(|| paths::config_dir().join("maint.toml"))
 }
 
 fn read(p: &std::path::Path) -> Snoozes {

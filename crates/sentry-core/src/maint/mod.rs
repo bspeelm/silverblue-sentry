@@ -1,6 +1,7 @@
 //! Maintenance records both programs keep: the log and its ledger, Claude's plans and
 //! reviews, the tasks you took from reviews, and how long they're kept. This machine's live under `~/.config/sentry/`, a
-//! server's under `~/.config/sentry/servers/<name>/`. Local only, never in git.
+//! server's under `~/.config/sentry/servers/<name>/`, a network's (scope `net:<name>`) under
+//! `~/.config/sentry/networks/<name>/`. Local only, never in git.
 
 pub mod changes;
 pub mod later;
@@ -20,13 +21,42 @@ use crate::paths;
 /// The `server` that means this machine.
 pub const LOCAL: &str = "";
 
-/// Where a server's records live (`LOCAL`: this machine's).
-pub fn root(server: &str) -> PathBuf {
-    if server.is_empty() {
-        paths::config_dir()
-    } else {
-        paths::config_dir().join("servers").join(server)
+/// What starts a network's scope (`net:<name>`); a plain name is a server's.
+pub const NET: &str = "net:";
+
+/// A scope's directory under the config or the data dir: `servers/<name>`, or
+/// `networks/<name>` for `net:<name>`. None for this machine, whose files lie at the top.
+fn dir_of(scope: &str) -> Option<PathBuf> {
+    match scope.strip_prefix(NET) {
+        _ if scope.is_empty() => None,
+        Some(name) => Some(PathBuf::from("networks").join(name)),
+        None => Some(PathBuf::from("servers").join(scope)),
     }
+}
+
+fn under(base: PathBuf, scope: &str) -> PathBuf {
+    match dir_of(scope) {
+        Some(d) => base.join(d),
+        None => base,
+    }
+}
+
+/// Where a server's or a network's records live (`LOCAL`: this machine's).
+pub fn root(server: &str) -> PathBuf {
+    under(paths::config_dir(), server)
+}
+
+/// Where its data lives (reports, workflow runs, metrics).
+pub fn data_root(server: &str) -> PathBuf {
+    under(paths::data_dir(), server)
+}
+
+/// A file from before a server had a directory of its own: `servers/<name><suffix>`, beside
+/// where that directory is now. None for this machine.
+pub fn beside(server: &str, suffix: &str) -> Option<PathBuf> {
+    let root = root(server);
+    let name = dir_of(server)?.file_name()?.to_string_lossy().to_string();
+    Some(root.with_file_name(format!("{name}{suffix}")))
 }
 
 /// How records name it.
@@ -34,7 +64,7 @@ pub fn label(server: &str) -> &str {
     if server.is_empty() {
         "this machine"
     } else {
-        server
+        server.strip_prefix(NET).unwrap_or(server)
     }
 }
 
@@ -136,5 +166,46 @@ impl Level {
             Level::Routine => "routine",
             Level::Tidy => "tidy",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::{config_dir, data_dir};
+
+    #[test]
+    fn a_scope_has_one_directory_for_its_records_and_its_data() {
+        // This machine: the top of each.
+        assert_eq!(root(LOCAL), config_dir());
+        assert_eq!(data_root(LOCAL), data_dir());
+        assert_eq!(beside(LOCAL, ".maint.toml"), None);
+        // A plain name is a server, where it always was.
+        assert_eq!(root("myserver"), config_dir().join("servers/myserver"));
+        assert_eq!(data_root("myserver"), data_dir().join("servers/myserver"));
+        assert_eq!(
+            beside("my.server", ".baseline.toml"),
+            Some(config_dir().join("servers/my.server.baseline.toml"))
+        );
+        // `net:<name>` is a network.
+        assert_eq!(root("net:home"), config_dir().join("networks/home"));
+        assert_eq!(data_root("net:home"), data_dir().join("networks/home"));
+        assert_eq!(
+            crate::recorder::ring::path("net:home"),
+            data_dir().join("networks/home/metrics/ring.bin")
+        );
+        assert_eq!(
+            crate::baseline::path("net:home"),
+            config_dir().join("networks/home/baseline.toml")
+        );
+        // A server and a network of one name don't share anything.
+        assert_ne!(root("home"), root("net:home"));
+    }
+
+    #[test]
+    fn a_label_is_the_name_without_its_kind() {
+        assert_eq!(label(LOCAL), "this machine");
+        assert_eq!(label("myserver"), "myserver");
+        assert_eq!(label("net:home"), "home");
     }
 }

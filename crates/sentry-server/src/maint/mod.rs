@@ -50,9 +50,8 @@ pub struct Plan {
 }
 
 fn state_path(server: &str) -> PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(format!("{server}.maint.toml"))
+    sentry_core::maint::beside(server, ".maint.toml")
+        .unwrap_or_else(|| paths::config_dir().join("maint.toml"))
 }
 
 pub fn load_state(server: &str) -> State {

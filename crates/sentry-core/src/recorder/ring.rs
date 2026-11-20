@@ -152,16 +152,9 @@ impl Header {
     }
 }
 
-/// Where the metrics live: this machine's (`""`), or a server's.
+/// Where the metrics live: this machine's (`""`), a server's or a network's (`net:<name>`).
 pub fn dir(server: &str) -> PathBuf {
-    if server.is_empty() {
-        crate::paths::data_dir().join("metrics")
-    } else {
-        crate::paths::data_dir()
-            .join("servers")
-            .join(server)
-            .join("metrics")
-    }
+    crate::maint::data_root(server).join("metrics")
 }
 
 pub fn path(server: &str) -> PathBuf {
