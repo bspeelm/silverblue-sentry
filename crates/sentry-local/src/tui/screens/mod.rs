@@ -104,8 +104,8 @@ impl Screens {
             ScreenId::Clean => self.clean.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, v),
             ScreenId::Hist => self.hist.handle(a, v),
-            // sentry-server's.
-            ScreenId::Svc => Vec::new(),
+            // Another target's.
+            ScreenId::Svc | ScreenId::Clients => Vec::new(),
         }
     }
 
@@ -120,7 +120,7 @@ impl Screens {
             ScreenId::Clean => self.clean.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
-            ScreenId::Svc => {}
+            ScreenId::Svc | ScreenId::Clients => {}
         }
     }
 
@@ -135,7 +135,7 @@ impl Screens {
             ScreenId::Clean => cleanup::hints(),
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Hist => history::hints(),
-            ScreenId::Svc => Vec::new(),
+            ScreenId::Svc | ScreenId::Clients => Vec::new(),
         }
     }
 
@@ -151,7 +151,7 @@ impl Screens {
             ScreenId::Clean => self.clean.ask(v),
             ScreenId::Upgrade => self.upgrade.ask(v),
             ScreenId::Hist => self.hist.ask(v),
-            ScreenId::Svc => Err("nothing to ask about here".into()),
+            ScreenId::Svc | ScreenId::Clients => Err("nothing to ask about here".into()),
         }
     }
 

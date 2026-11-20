@@ -69,6 +69,8 @@ pub trait Ui {
 pub enum ScreenId {
     Dash,
     Proc,
+    /// A network's clients (`2` in sentry-network, where the others have Processes).
+    Clients,
     Net,
     Cont,
     /// This machine's Flatpaks (`5` in sentry).
@@ -82,9 +84,10 @@ pub enum ScreenId {
 }
 
 impl ScreenId {
-    pub const ALL: [ScreenId; 10] = [
+    pub const ALL: [ScreenId; 11] = [
         ScreenId::Dash,
         ScreenId::Proc,
+        ScreenId::Clients,
         ScreenId::Net,
         ScreenId::Cont,
         ScreenId::Flat,
@@ -98,7 +101,7 @@ impl ScreenId {
     pub fn key(self) -> char {
         match self {
             ScreenId::Dash => '1',
-            ScreenId::Proc => '2',
+            ScreenId::Proc | ScreenId::Clients => '2',
             ScreenId::Net => '3',
             ScreenId::Cont => '4',
             ScreenId::Flat | ScreenId::Svc => '5',
@@ -113,6 +116,7 @@ impl ScreenId {
         match self {
             ScreenId::Dash => "Dashboard",
             ScreenId::Proc => "Processes",
+            ScreenId::Clients => "Clients",
             ScreenId::Net => "Network",
             ScreenId::Cont => "Containers",
             ScreenId::Flat => "Flatpaks",
@@ -128,6 +132,7 @@ impl ScreenId {
         match self {
             ScreenId::Dash => "Dash",
             ScreenId::Proc => "Proc",
+            ScreenId::Clients => "Clnt",
             ScreenId::Net => "Net",
             ScreenId::Cont => "Cont",
             ScreenId::Flat => "Flat",
@@ -144,6 +149,7 @@ impl ScreenId {
         match self {
             ScreenId::Dash => "dashboard",
             ScreenId::Proc => "processes",
+            ScreenId::Clients => "clients",
             ScreenId::Net => "network",
             ScreenId::Cont => "containers",
             ScreenId::Flat => "flatpaks",
@@ -412,5 +418,9 @@ mod tests {
         assert_eq!(both.from_name("cle"), Some(Clean));
         assert!(set.contains(Svc) && !set.contains(Flat));
         assert_eq!((Svc.key(), Flat.key()), ('5', '5'));
+        // A network's Clients has Processes' key, in no set that has Processes.
+        assert_eq!((Clients.key(), Proc.key()), ('2', '2'));
+        assert_eq!(set.from_name("clients"), None);
+        assert_eq!(ScreenId::ALL.len(), 11);
     }
 }

@@ -36,6 +36,8 @@ pub struct Cmd {
     input: Option<Input>,
     /// A streamed command reads `input` only once it has printed this line (`input_after`).
     ready: Option<String>,
+    /// Streamed over ssh, its stdin is a pipe held open until it exits (`hold_stdin`).
+    hold_stdin: bool,
 }
 
 /// What a command reads on stdin (a sudo password among it): never shown, never logged.
@@ -127,7 +129,7 @@ pub fn control_dir() -> PathBuf {
 
 /// How a remote command gets a terminal: none (captured), forced (`-tt`: streamed, so killing
 /// the local ssh hangs up the remote command too), or the user's own (`-t`: interactive).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Tty {
     No,
     Forced,
@@ -143,6 +145,7 @@ impl Cmd {
             dir: None,
             input: None,
             ready: None,
+            hold_stdin: false,
         }
     }
 
@@ -155,6 +158,7 @@ impl Cmd {
             dir: None,
             input: None,
             ready: None,
+            hold_stdin: false,
         }
     }
 
@@ -171,6 +175,7 @@ impl Cmd {
             dir: None,
             input: None,
             ready: None,
+            hold_stdin: false,
         }
     }
 
@@ -209,6 +214,37 @@ impl Cmd {
         self.input = Some(Input(bytes.into()));
         self.ready = Some(marker.to_string());
         self
+    }
+
+    /// Streamed over ssh, keep the local stdin open (a pipe nothing is written to) for as long
+    /// as the command runs. For an ssh server that hangs the session up when a forced
+    /// terminal's stdin is at its end (dropbear, on a router): there `ssh -tt </dev/null`
+    /// prints nothing and fails, while with the pipe held the command runs, and stopping the
+    /// local ssh still ends it. Nothing changes for captured commands, nor off ssh.
+    pub fn hold_stdin(mut self) -> Self {
+        self.hold_stdin = true;
+        self
+    }
+
+    /// Whether it was told to (`hold_stdin`).
+    pub fn holds_stdin(&self) -> bool {
+        self.hold_stdin
+    }
+
+    /// How `stream` starts the command: with which terminal, and whether its stdin is a pipe
+    /// kept open (and not fed at once) until it exits.
+    fn streamed(&self) -> (Tty, bool) {
+        let ssh = matches!(self.site, Site::Ssh(_));
+        let waits = self.ready.is_some();
+        let tty = if ssh && (self.input.is_none() || waits) {
+            Tty::Forced
+        } else {
+            Tty::No
+        };
+        (
+            tty,
+            waits || (self.hold_stdin && ssh && self.input.is_none()),
+        )
     }
 
     /// Feed `input` (if any) to the child's stdin from a thread, then close it.
@@ -414,23 +450,22 @@ impl Cmd {
         sink: impl Fn(StreamMsg) + Send + Sync + 'static,
     ) -> Result<u32, ExecError> {
         self.check()?;
-        let waits = self.ready.is_some();
+        let (tty, held_open) = self.streamed();
         let mut child = self
-            .command_tty(
-                if matches!(self.site, Site::Ssh(_)) && (self.input.is_none() || waits) {
-                    Tty::Forced
-                } else {
-                    Tty::No
-                },
-            )
-            .stdin(self.stdin())
+            .command_tty(tty)
+            .stdin(if held_open {
+                Stdio::piped()
+            } else {
+                self.stdin()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        // Written when the command says it's ready; its stdin stays open until it exits.
+        // Written when the command says it's ready (if anything is); its stdin stays open
+        // until it exits.
         let held = Arc::new(Mutex::new(None));
         let mut ready = None;
-        if waits {
+        if held_open {
             *held.lock().expect("stdin") = child.stdin.take();
             ready = self.ready.clone().zip(self.input.clone());
         } else {
@@ -690,6 +725,75 @@ mod tests {
         );
         assert_eq!(c.site(), Site::Ssh("myserver"));
         assert!(c.detach().is_err());
+    }
+
+    /// The whole local command line of a streamed command.
+    fn stream_argv(c: &Cmd) -> (Vec<String>, bool) {
+        let (tty, held) = c.streamed();
+        let cmd = c.command_tty(tty);
+        let argv = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        (argv, held)
+    }
+
+    /// A router's dropbear hangs up `ssh -tt` when stdin is at its end: such a host's
+    /// streamed commands keep a stdin pipe open. Everything else is as it was.
+    #[test]
+    fn a_streamed_ssh_command_can_hold_its_stdin_open() {
+        let plain = Cmd::ssh("myserver", "sh").args(["-c", "sleep 5"]);
+        let (argv, held) = stream_argv(&plain);
+        assert!(!held, "the default: stdin is /dev/null");
+        let tail = &argv[argv.len() - 4..];
+        assert_eq!(
+            tail,
+            ["-tt", "--", "myserver", "env LC_ALL=C sh -c 'sleep 5'"]
+        );
+        assert!(argv.contains(&"ControlPath=none".to_string()));
+        // Held open: the same command line, to the letter.
+        let (held_argv, held) = stream_argv(&plain.clone().hold_stdin());
+        assert!(held);
+        assert_eq!(held_argv, argv);
+        // Captured commands don't differ at all, and still share the connection.
+        let args = |c: &Cmd| -> Vec<String> {
+            c.command()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(args(&plain.clone().hold_stdin()), args(&plain));
+        assert!(!args(&plain).contains(&"-tt".to_string()));
+        // What's written at once goes without a terminal, as ever; what waits for its
+        // marker already held its stdin.
+        let fed = plain.clone().hold_stdin().input("x\n");
+        assert_eq!(fed.streamed(), (Tty::No, false));
+        let waits = plain.clone().input_after("@@ready", "x\n");
+        assert_eq!(waits.streamed(), (Tty::Forced, true));
+        // Off ssh nothing is held.
+        assert_eq!(Cmd::local("sh").hold_stdin().streamed(), (Tty::No, false));
+    }
+
+    /// A held stdin is open, with nothing on it, until the command ends: what reads it
+    /// waits (it sees no end of input), and stopping the command from here ends the stream.
+    #[test]
+    fn a_held_stdin_stays_open_until_the_command_ends() {
+        let c = Cmd::local("sh")
+            .args(["-c", "echo out; exec cat"])
+            .input_after("@@never", "");
+        assert_eq!(c.streamed(), (Tty::No, true));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        let pid = c
+            .stream(move |m| tx.lock().unwrap().send(m).unwrap())
+            .unwrap();
+        let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(first, StreamMsg::Line { ref text, .. } if text == "out"));
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        let pid = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+        let last = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(last, StreamMsg::Exit { .. }));
     }
 
     #[test]

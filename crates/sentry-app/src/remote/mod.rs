@@ -107,6 +107,9 @@ pub struct Remote {
     /// `net:<name>`.
     pub scope: String,
     pub privilege: Privilege,
+    /// Its streamed commands keep their stdin open (`Cmd::hold_stdin`): the host's ssh
+    /// server is dropbear (a router), which hangs up `ssh -tt` when stdin is at its end.
+    pub hold_stdin: bool,
 }
 
 impl Remote {
@@ -117,12 +120,21 @@ impl Remote {
             host: host(target),
             scope: scope.to_string(),
             privilege,
+            hold_stdin: false,
         }
+    }
+
+    /// The host's ssh server is dropbear: every command built here, when streamed, holds
+    /// its stdin open for as long as it runs. Captured commands are as ever.
+    pub fn dropbear(mut self) -> Self {
+        self.hold_stdin = true;
+        self
     }
 
     /// A command as the login user (never sudo).
     pub fn cmd(&self, bin: &str) -> Cmd {
-        Cmd::ssh(self.host, bin)
+        let c = Cmd::ssh(self.host, bin);
+        if self.hold_stdin { c.hold_stdin() } else { c }
     }
 
     /// A shell snippet run by the host's `sh`.
@@ -266,10 +278,71 @@ mod tests {
         assert_eq!(r.sudo_mode(), Ok(SudoMode::Root));
         assert!(SudoMode::Root.unattended() && SudoMode::NoPasswd.unattended());
         assert!(!SudoMode::Password.unattended() && !SudoMode::Absent.unattended());
+        // Streamed, its commands are as a server's unless it's said to run dropbear.
+        assert!(!c.holds_stdin() && !r.sh("true").holds_stdin());
+        let r = r.dropbear();
+        assert!(r.sh("sleep 5").holds_stdin());
+        assert!(r.privileged(&["logread", "-f"]).unwrap().holds_stdin());
+        assert_eq!(r.sh("true").remote_line(), "env LC_ALL=C sh -c true");
         // Its records and metrics are a network's.
         assert_eq!(
             sentry_core::maint::root(&r.scope),
             sentry_core::paths::config_dir().join("networks/home")
         );
+    }
+
+    /// Against a real dropbear host (a router), by its ssh alias:
+    /// `SENTRY_DROPBEAR_LIVE=<alias> cargo test -p sentry-app live_dropbear_stream -- --ignored`.
+    /// Streams a `sleep`, stops the local ssh, and looks over the shared connection that the
+    /// remote `sleep` went with it. Nothing is left on the host.
+    #[test]
+    #[ignore]
+    fn live_dropbear_stream() {
+        use sentry_core::exec::StreamMsg;
+        use std::time::{Duration, Instant};
+        let Ok(alias) = std::env::var("SENTRY_DROPBEAR_LIVE") else {
+            return;
+        };
+        let r = Remote::new("live", &alias, "net:live", Privilege::Root).dropbear();
+        let count = || {
+            r.output(&r.sh("ps w | grep -c '[s]leep 137' || true"))
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(count(), "0", "a sleep from an earlier run is still there");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let pid = r
+            .sh("echo started; exec sleep 137 </dev/null")
+            .timeout(None)
+            .stream(move |m| {
+                let _ = tx.lock().unwrap().send(m);
+            })
+            .unwrap();
+        let first = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            matches!(first, StreamMsg::Line { ref text, .. } if text == "started"),
+            "{first:?}"
+        );
+        assert_eq!(count(), "1", "the remote command runs");
+        let pid = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+        let killed = Instant::now();
+        while count() != "0" {
+            assert!(
+                killed.elapsed() < Duration::from_secs(8),
+                "the remote sleep outlived the local ssh"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        eprintln!(
+            "remote command gone {:?} after the local kill",
+            killed.elapsed()
+        );
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            StreamMsg::Exit { .. }
+        ));
     }
 }
