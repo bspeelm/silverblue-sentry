@@ -10,6 +10,7 @@
 //! the ticked rows; `review` the writer, reviews and tasks; `records` Records and plans;
 //! `draw` the frame.
 
+pub mod auto;
 mod core;
 mod draw;
 mod effects;
@@ -195,6 +196,17 @@ pub struct Slot {
     reads: HashMap<u64, crate::effect::Own>,
     /// Tests (nothing is sent): what the last turn of a session would have sent Claude.
     pub last_prompt: Option<String>,
+    /// Auto mode (`slot/auto.rs`): routine questions on this target are answered without a
+    /// key. Off at start, never saved.
+    pub auto: bool,
+    /// `auto_step` is at work (what it starts comes back to it: once round more, `again`).
+    auto_busy: bool,
+    auto_again: bool,
+    /// The run's step auto has dealt with as it stands (the run, the step, its dry run,
+    /// when it last started): left to the user, or tried and not started.
+    auto_held: Option<(PathBuf, usize, bool, Option<jiff::Timestamp>)>,
+    /// The run about to begin got its values from auto (noted in its state once it exists).
+    auto_took_values: bool,
 }
 
 impl Slot {
@@ -246,6 +258,11 @@ impl Slot {
             unlock: None,
             reads: HashMap::new(),
             last_prompt: None,
+            auto: false,
+            auto_busy: false,
+            auto_again: false,
+            auto_held: None,
+            auto_took_values: false,
         }
     }
 

@@ -58,6 +58,11 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
         Some((i, n)) => format!("Claude · {i} of {n} · {}", c.ask.subject),
         None => format!("Claude · {}", c.ask.subject),
     };
+    let title = if s.auto {
+        format!("{title} · auto")
+    } else {
+        title
+    };
     let inner = widgets::overlay(f, rect, t, &title, color);
     let [head, log, rule, input, keyline] = Layout::vertical([
         Constraint::Length(2),
@@ -267,6 +272,7 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
         }
     }
     k.push(("↑↓ PgUp/Dn", "scroll"));
+    k.push(("C-a", if s.auto { "auto off" } else { "auto" }));
     k
 }
 

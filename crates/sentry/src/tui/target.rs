@@ -104,7 +104,7 @@ fn lift(e: local::Effect) -> Effect {
         L::Prompt(local::Prompt::TaskEvery(id), init) => {
             Effect::Prompt(effect::Prompt::TaskEvery(id), init)
         }
-        L::Prompt(p, init) => Effect::Prompt(own_prompt(p), init),
+        L::Prompt(p, init) => Effect::Prompt(own_prompt(p, &init), init),
         L::Run(spec) => run_spec(spec, None),
         L::RunRoot(spec, line) => run_spec(spec, Some(line)),
         L::Suspend(cmd) => suspend(cmd, Vec::new()),
@@ -149,13 +149,20 @@ fn run_spec(spec: local::RunSpec, root: Option<String>) -> Effect {
 }
 
 /// One of this machine's prompts, as the app holds it.
-fn own_prompt(p: local::Prompt) -> effect::Prompt {
+/// `init`: what the line starts with (a value's default).
+fn own_prompt(p: local::Prompt, init: &str) -> effect::Prompt {
     effect::Prompt::Own(OwnPrompt {
         label: p.label(),
         enter: "save",
         workflow: match &p {
             local::Prompt::WfVar { workflow, .. } => Some(workflow.clone()),
             _ => None,
+        },
+        defaults: match &p {
+            local::Prompt::WfVar { rest, .. } => {
+                !init.is_empty() && rest.iter().all(|(_, _, d)| !d.is_empty())
+            }
+            _ => false,
         },
         own: effect::Own(Rc::new(p)),
     })
@@ -949,13 +956,16 @@ impl Target for LocalTarget {
                     return vec![
                         Effect::Toast(format!("{key} can't be empty")),
                         Effect::Prompt(
-                            own_prompt(local::Prompt::WfVar {
-                                workflow,
-                                key,
-                                prompt,
-                                rest,
-                                vars,
-                            }),
+                            own_prompt(
+                                local::Prompt::WfVar {
+                                    workflow,
+                                    key,
+                                    prompt,
+                                    rest,
+                                    vars,
+                                },
+                                "",
+                            ),
                             String::new(),
                         ),
                     ];
@@ -966,13 +976,16 @@ impl Target for LocalTarget {
                 }
                 let (key, prompt, default) = rest.remove(0);
                 vec![Effect::Prompt(
-                    own_prompt(local::Prompt::WfVar {
-                        workflow,
-                        key,
-                        prompt,
-                        rest,
-                        vars,
-                    }),
+                    own_prompt(
+                        local::Prompt::WfVar {
+                            workflow,
+                            key,
+                            prompt,
+                            rest,
+                            vars,
+                        },
+                        &default,
+                    ),
                     default,
                 )]
             }
@@ -1312,11 +1325,14 @@ impl Host for LocalTarget {
     /// This machine's reboot: the command is run here and now (it ends the TUI with the
     /// session; with `SENTRY_NO_REBOOT` it only says what it would do).
     fn reboot(&mut self, cmd: Cmd, _old_boot: String, cx: &Cx) -> Vec<Effect> {
-        let msg = match cmd.run() {
-            // Tests never reboot the machine they run on.
-            _ if cx.offline => "offline: not rebooting".to_string(),
-            Ok(o) => format!("{}{}", o.stdout.trim(), o.stderr.trim()),
-            Err(e) => e.to_string(),
+        // Tests never reboot the machine they run on: decided before the command, not after.
+        let msg = if cx.offline {
+            "offline: not rebooting".to_string()
+        } else {
+            match cmd.run() {
+                Ok(o) => format!("{}{}", o.stdout.trim(), o.stderr.trim()),
+                Err(e) => e.to_string(),
+            }
         };
         let mut fx = vec![
             Effect::RunNote(msg.clone(), LogKind::Info),

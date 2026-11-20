@@ -104,6 +104,15 @@ impl Slot {
         }
         use sentry_core::workflows::state::RunStatus;
         let done = s.run().state.status == RunStatus::Done;
+        // Auto asks for no note after a run (in a series nobody is asked anyway): the entry
+        // says so.
+        let no_note = self.auto_skips_note();
+        if no_note
+            && self.series.is_none()
+            && let Some(s) = self.run.as_mut()
+        {
+            s.auto_answered("note");
+        }
         // What the run changed shows at once: the target reads again what a run can change.
         self.refresh(w, Why::Run);
         let Some(s) = self.run.as_ref() else { return };
@@ -157,6 +166,10 @@ impl Slot {
         // what the target offers after a run and the one review come at its end.
         if self.series_run_ended(w, &entry.head.workflow, done) {
             return;
+        }
+        if no_note {
+            self.settled(w);
+            return self.review_after_run(w);
         }
         // What to know next time: asked now, while it's fresh.
         w.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
@@ -328,6 +341,10 @@ impl Slot {
                 if asks.is_empty() {
                     return self.wf_cmd(w, WfCmd::BeginWith(name, BTreeMap::new()));
                 }
+                // Auto: a default for each, and it starts with them.
+                if let Some(values) = self.auto_values(&asks) {
+                    return self.wf_cmd(w, WfCmd::BeginWith(name, values));
+                }
                 let buf = asks[0].2.clone().unwrap_or_default();
                 w.input = Input::Prompt(
                     Prompt::WfVar(VarInput {
@@ -377,6 +394,9 @@ impl Slot {
                 if asks.is_empty() {
                     return self.wf_cmd(w, WfCmd::BeginWith(name, BTreeMap::new()));
                 }
+                if let Some(values) = self.auto_values(&asks) {
+                    return self.wf_cmd(w, WfCmd::BeginWith(name, values));
+                }
                 let buf = asks[0].2.clone().unwrap_or_default();
                 w.input = Input::Prompt(
                     Prompt::WfVar(VarInput {
@@ -400,7 +420,15 @@ impl Slot {
                 });
                 match entry {
                     Some(e) => match self.target.begin_run(&e, vars, &self.shared) {
-                        Ok(s) => {
+                        Ok(mut s) => {
+                            if std::mem::take(&mut self.auto_took_values) {
+                                s.auto_answered("values");
+                                s.push(
+                                    "auto: started with the default values".into(),
+                                    LogKind::Info,
+                                );
+                            }
+                            self.auto_held = None;
                             self.run = Some(s);
                             // Its screen: the run is followed there, and its auto steps start.
                             self.enter(w, ScreenId::Upgrade, w.at);
@@ -449,6 +477,8 @@ impl Slot {
         } else {
             self.wf_log_change(w);
         }
+        // Auto mode: the step that now waits for its confirm.
+        self.auto_step(w);
         w.dirty = true;
     }
 
@@ -460,6 +490,8 @@ impl Slot {
             return;
         }
         self.wf_auto_now(w);
+        // Auto mode: the step that waits for its confirm.
+        self.auto_step(w);
     }
 
     /// The next auto step, if the run is armed and idle.

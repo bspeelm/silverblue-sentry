@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A disposable sshd container for sentry-server's mutating live tests (`#[ignore]`):
-#   nopasswd  live_actions, live_workflow, live_sudo_stop   (sudo -n works)
-#   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop
+#   nopasswd  live_actions, live_workflow, live_sudo_stop, live_auto_series   (sudo -n works)
+#   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop,
+#             live_auto_series
 #             (sudo asks; the tests type the password into the TUI's own prompt)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
@@ -39,8 +40,8 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow live_sudo_stop" ;;
-    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series" ;;
+    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
@@ -153,6 +154,65 @@ id = "long"
 title = "A long step, to abandon"
 run = "sudo sleep 600"
 gate = "confirm"
+EOF
+  # live_auto_series: two tasks, each a workflow of its own (a value with a default, a sudo
+  # step and a plain one that wait for a confirm; the second ends at a reboot step).
+  cat >"$x/config/sentry/server-workflows/auto-one.toml" <<'EOF'
+name = "auto-one"
+description = "A value with a default, a sudo step and a plain step, each waiting for a confirm"
+
+[vars.word]
+prompt = "What to say"
+default = "hello"
+
+[[steps]]
+id = "look"
+title = "Look"
+run = "echo look-ok"
+gate = "auto"
+
+[[steps]]
+id = "root"
+title = "As root"
+run = "sudo sh -c 'id -un; echo {{ word }}-from-root'"
+gate = "confirm"
+
+[[steps]]
+id = "plain"
+title = "Without root"
+run = "echo {{ word }}-plain"
+gate = "confirm"
+EOF
+  cat >"$x/config/sentry/server-workflows/auto-two.toml" <<'EOF'
+name = "auto-two"
+description = "A sudo step, then a reboot nobody should start"
+
+[[steps]]
+id = "root"
+title = "As root again"
+run = "sudo id -un | sed 's/$/-two/'"
+gate = "confirm"
+
+[[steps]]
+id = "boot"
+title = "Reboot"
+kind = "reboot"
+EOF
+  mkdir -p "$x/config/sentry/servers/$SERVER"
+  cat >"$x/config/sentry/servers/$SERVER/tasks.toml" <<'EOF'
+[[task]]
+id = "one"
+title = "Say hello as root"
+why = "The live test's first row."
+level = "routine"
+do = "run auto-one"
+
+[[task]]
+id = "two"
+title = "Root again, then a reboot"
+why = "The live test's second row."
+level = "routine"
+do = "run auto-two"
 EOF
 }
 

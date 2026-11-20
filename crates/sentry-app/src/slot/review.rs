@@ -404,6 +404,14 @@ impl Slot {
             self.shared.log.insert(0, entry.clone());
         }
         self.last_change_at = Some(jiff::Timestamp::now());
+        // Auto asks for no note (Records adds one any time).
+        if self.auto_skips_note() {
+            if !self.ways.task_note {
+                self.settled(w);
+                self.review_after_run(w);
+            }
+            return w.toast(&format!("{title}: done, logged"));
+        }
         // It's done whatever happens next; Esc only skips the note.
         w.input = if self.ways.task_note {
             Input::Prompt(Prompt::TaskNote(Box::new(entry), title), String::new())

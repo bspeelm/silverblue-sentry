@@ -94,4 +94,10 @@ pub trait WfRun: Any {
     fn after_reboot(&mut self);
     /// The current step's log: (title, text).
     fn step_log(&self) -> Option<(String, String)>;
+    /// The step's command as it would run now, its values filled in (None: it has none, or
+    /// they can't be). What auto mode decides on.
+    fn command(&mut self, idx: usize) -> Option<String>;
+    /// Auto mode answered something for this run (`values`, `step:<id>`, `note`): kept with
+    /// the run's state, for its log entry.
+    fn auto_answered(&mut self, what: &str);
 }

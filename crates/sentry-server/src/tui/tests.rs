@@ -1817,18 +1817,23 @@ fn workflow_vars_are_asked_before_it_starts() {
 /// Only one run can be in progress on a server, and the tests share `myserver`'s scratch
 /// runs: they take turns (the guard), each starting with no run left by the other.
 fn startable(a: &mut App, file: &str) -> std::sync::MutexGuard<'static, ()> {
-    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = std::fs::remove_dir_all(crate::workflow::root("myserver"));
-    let (name, text) = crate::workflow::SEEDS
+    let (_, text) = crate::workflow::SEEDS
         .iter()
         .find(|(n, _)| *n == "apt-maintenance")
         .unwrap();
+    startable_as(a, file, text)
+}
+
+/// The same, with the test's own steps under that name (`text`).
+fn startable_as(a: &mut App, file: &str, text: &str) -> std::sync::MutexGuard<'static, ()> {
+    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_dir_all(crate::workflow::root("myserver"));
     let path = sentry_core::paths::config_dir().join(file);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, text).unwrap();
     a.set_wf_entries(vec![sentry_core::workflows::Entry {
-        name: name.to_string(),
+        name: "apt-maintenance".to_string(),
         path,
         wf: sentry_core::workflows::parse(text),
         issues: Vec::new(),
@@ -2277,6 +2282,154 @@ fn live_sudo_stop() {
         }
     }
     assert_eq!(count(&r, "root"), 0);
+    println!("ok");
+}
+
+/// Against a disposable sshd (either sudo variant, never the real server): two ticked rows,
+/// each a workflow, done in auto. One key turns it on (where sudo asks, the password is
+/// asked at once, typed once); Enter starts the series; then nothing is pressed: the first
+/// workflow's value takes its default, its sudo step and its plain step are confirmed and
+/// run for real, no note is asked, the second starts, its sudo step runs, and its reboot
+/// step is left alone. The log entries say which answers were auto's.
+/// `scripts/live-container.sh test nopasswd|password live_auto_series`
+#[test]
+#[ignore]
+fn live_auto_series() {
+    use sentry_core::workflows::runner::Next;
+    sentry_core::paths::use_real_dirs();
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    let pw = std::env::var_os("SENTRY_SERVER_SCRATCH_PASSWORD").map(|_| live_password());
+    let (file, _) = crate::config::load().unwrap();
+    let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = super::app(Remote::new(n, s), tx);
+    a.start(Instant::now());
+    a.slot_mut().auto_review.after_run = false;
+    a.slot_mut().auto_review.at_start = false;
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    pump_for(&mut a, &rx, 3);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    pump_for(&mut a, &rx, 3);
+    // Auto: the one prompt, where sudo wants a password.
+    ctrl(&mut a, 'a');
+    match &pw {
+        Some(pw) => {
+            let (what, ..) = a.unlock_for_test().expect("the password, at once");
+            assert_eq!(what, "for auto mode");
+            type_line(&mut a, pw);
+            pump_for(&mut a, &rx, 6);
+            assert!(a.holds_password_for_test(), "{}", screen(&mut a));
+        }
+        None => assert!(
+            a.unlock_for_test().is_none(),
+            "sudo -n works: nothing asked"
+        ),
+    }
+    assert!(a.slot().auto);
+    for id in ["task:one", "task:two"] {
+        a.apply(vec![Own::maint_find(id.into())], Instant::now());
+        key(&mut a, KeyCode::Char(' '));
+    }
+    let s = screen(&mut a);
+    assert!(s.contains("· 2 ticked ·"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    // No key from here. It ends when the second run stands at its reboot.
+    let until = Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        pump_for(&mut a, &rx, 1);
+        assert!(
+            a.unlock_for_test().is_none(),
+            "no second prompt: {}",
+            screen(&mut a)
+        );
+        assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
+        let at_reboot = wf(&a).is_some_and(|w| {
+            w.wf.name == "auto-two" && w.live.is_none() && matches!(w.next, Next::Reboot { .. })
+        });
+        if at_reboot {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "it never got there: {}",
+            screen(&mut a)
+        );
+    }
+    pump_for(&mut a, &rx, 2);
+    let s = screen(&mut a);
+    println!("{s}");
+    let w = wf(&a).unwrap();
+    assert!(
+        matches!(
+            w.next,
+            Next::Reboot {
+                requested: false,
+                ..
+            }
+        ),
+        "the reboot wasn't started: {:?}",
+        w.next
+    );
+    assert!(
+        w.log
+            .iter()
+            .any(|(l, _)| l.contains("auto leaves step 2 to you: a reboot is yours to start")),
+        "{s}"
+    );
+    let two = std::fs::read_to_string(w.run.log_path("root")).unwrap();
+    assert!(
+        two.contains("root-two"),
+        "the second run's sudo step ran: {two}"
+    );
+    assert_eq!(w.run.state.auto, ["step:root"]);
+    // The first run: done, its steps run for real, logged without a note, marked as auto's.
+    let log = crate::maint::log::list(&srv(&a).remote.name);
+    let e = log
+        .iter()
+        .find(|e| e.head.workflow == "auto-one")
+        .expect("the first run's entry");
+    println!("{}", e.to_md());
+    assert_eq!(e.head.result, "done");
+    assert!(
+        e.head.tags.contains(&"auto".to_string()),
+        "{:?}",
+        e.head.tags
+    );
+    assert!(
+        e.body
+            .contains("- its values: the defaults, taken without asking")
+            && e.body.contains("- confirmed: `root`, `plain`")
+            && e.body.contains("`word` = `hello`"),
+        "{}",
+        e.body
+    );
+    let run_dir = std::path::PathBuf::from(e.head.run.clone().unwrap());
+    let root = std::fs::read_to_string(run_dir.join("steps/root.log")).unwrap();
+    assert!(
+        root.contains("root") && root.contains("hello-from-root"),
+        "{root}"
+    );
+    let plain = std::fs::read_to_string(run_dir.join("steps/plain.log")).unwrap();
+    assert!(plain.contains("hello-plain"), "{plain}");
+    if let Some(pw) = &pw {
+        for text in [&s, &root, &plain, &two, &e.to_md()] {
+            assert!(!text.contains(pw.as_str()), "the password is nowhere");
+        }
+    }
+    let ledger =
+        std::fs::read_to_string(crate::maint::log::dir(&srv(&a).remote.name).join("LOG.md"))
+            .unwrap();
+    assert!(
+        ledger.contains("auto-one") && ledger.contains("auto"),
+        "{ledger}"
+    );
+    // The reboot is the user's: abandon the run, so nothing is left in progress.
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Char('y'));
+    pump_for(&mut a, &rx, 2);
     println!("ok");
 }
 
@@ -4533,4 +4686,419 @@ fn a_series_starts_a_workflow_without_its_box_and_stops_when_it_is_abandoned() {
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     assert!(screen(&mut a).contains("· 2 ticked ·"));
+}
+
+// ── Auto mode ──────────────────────────────────────────────────────────────────────────
+
+fn ctrl(a: &mut App, c: char) {
+    a.on_event(
+        Ev::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+        Instant::now(),
+    );
+}
+
+/// The run's step that is running ends.
+fn step_exits(a: &mut App, code: i32) {
+    let live = wf(a).unwrap().live.expect("a step is running");
+    run_msg(
+        a,
+        live.id,
+        sentry_core::exec::StreamMsg::Exit {
+            code,
+            elapsed: std::time::Duration::ZERO,
+        },
+    );
+}
+
+/// What the world does next, with no key pressed: a running step ends well, Claude answers
+/// (a plan, then "done"). False: nothing is under way, so something waits for the user or
+/// everything is through.
+fn world_moves(a: &mut App) -> bool {
+    use sentry_core::apply::session::{Phase, Turn};
+    if wf(a).is_some_and(|w| w.live.is_some()) {
+        step_exits(a, 0);
+        return true;
+    }
+    let Some(sess) = a.apply_session() else {
+        return false;
+    };
+    match sess.phase {
+        Phase::Thinking(Turn::Verify) => a.apply_answer_for_test(SERIES_DONE),
+        Phase::Thinking(_) => a.apply_answer_for_test(SERIES_PLAN),
+        Phase::Applying if sess.job.is_some() => a.apply_exit_for_test(0),
+        _ => return false,
+    }
+    true
+}
+
+/// A workflow under the updates row's name, for auto: a value with a default, a step that
+/// runs by itself, two that wait for a confirm (one with sudo).
+const AUTO_WF: &str = "name = \"apt-maintenance\"\ndescription = \"test\"\n\
+    [vars.keep]\nprompt = \"Kernels to keep\"\ndefault = \"2\"\n\
+    [[steps]]\nid = \"preview\"\ntitle = \"Preview\"\nrun = \"echo preview\"\ngate = \"auto\"\n\
+    [[steps]]\nid = \"upgrade\"\ntitle = \"Install the updates\"\n\
+    run = \"sudo apt-get -y dist-upgrade\"\ngate = \"confirm\"\n\
+    [[steps]]\nid = \"tidy\"\ntitle = \"Keep {{ keep }} kernels\"\nrun = \"echo keep {{ keep }}\"\n\
+    gate = \"confirm\"\n";
+
+fn ups_task() -> sentry_core::maint::tasks::Task {
+    sentry_core::maint::tasks::Task {
+        id: "ups".into(),
+        title: "Check the UPS battery".into(),
+        why: "It is old.".into(),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: "by-hand".into(),
+        item: None,
+        steps: "Run `upsc ups`.".into(),
+        added: None,
+        off: false,
+        source: Default::default(),
+        review: None,
+        after: None,
+        again: None,
+    }
+}
+
+/// Auto on, with the password it asks for at once typed and accepted.
+fn auto_on(a: &mut App) {
+    data(
+        a,
+        Kind::Sudo,
+        Payload::Sudo(crate::remote::SudoMode::Password),
+    );
+    ctrl(a, 'a');
+    let (what, ..) = a.unlock_for_test().expect("the password, at once");
+    assert_eq!(what, "for auto mode");
+    type_line(a, "hunter2");
+    a.unlock_exit_for_test(0);
+    assert!(a.slot().auto && a.holds_password_for_test());
+}
+
+#[test]
+fn auto_is_off_until_its_key_and_says_so_while_on() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    assert!(!a.slot().auto);
+    let s = screen(&mut a);
+    assert!(s.contains("C-a  auto ") && !s.contains("· auto"), "{s}");
+    // Where sudo needs no password, the key is all there is to it.
+    ctrl(&mut a, 'a');
+    assert!(a.slot().auto && a.unlock_for_test().is_none());
+    let s = screen(&mut a);
+    let top = s.lines().next().unwrap();
+    assert!(top.contains("myserver · auto"), "{top}");
+    assert!(
+        s.contains("▸ auto · routine steps and questions go by themselves")
+            && s.contains("C-a turns it off"),
+        "the banner row: {s}"
+    );
+    key(&mut a, KeyCode::Char('?'));
+    assert!(screen(&mut a).contains("C-a  auto mode: routine steps need no key"));
+    key(&mut a, KeyCode::Esc);
+    ctrl(&mut a, 'a');
+    assert!(!a.slot().auto);
+    assert!(!screen(&mut a).contains("· auto"));
+
+    // Where it asks: the password at once; Esc leaves auto off, and nothing is held.
+    data(
+        &mut a,
+        Kind::Sudo,
+        Payload::Sudo(crate::remote::SudoMode::Password),
+    );
+    ctrl(&mut a, 'a');
+    assert!(a.unlock_for_test().is_some());
+    assert!(screen(&mut a).contains("sudo password (for auto mode) › ▏"));
+    key(&mut a, KeyCode::Esc);
+    assert!(!a.slot().auto && !a.holds_password_for_test());
+    assert!(screen(&mut a).contains("auto is off: it needs the sudo password"));
+    // Given: held; off again doesn't forget it (C-f does), and on again asks nothing.
+    auto_on(&mut a);
+    ctrl(&mut a, 'a');
+    assert!(!a.slot().auto && a.holds_password_for_test());
+    ctrl(&mut a, 'a');
+    assert!(a.slot().auto && a.unlock_for_test().is_none());
+    ctrl(&mut a, 'f');
+    assert!(!a.holds_password_for_test() && a.slot().auto);
+}
+
+#[test]
+fn auto_does_a_series_with_one_password_and_no_other_key() {
+    let mut a = app();
+    let _turn = startable_as(&mut a, "auto-series-apt-maintenance.toml", AUTO_WF);
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    a.add_task_for_test(ups_task());
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    auto_on(&mut a);
+    // Three rows: the updates (a workflow), a finding (a session), a task done by hand.
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    a.apply(vec![Own::maint_find("task:ups".into())], Instant::now());
+    key(&mut a, KeyCode::Char(' '));
+    assert!(screen(&mut a).contains("· 3 ticked ·"));
+    key(&mut a, KeyCode::Enter);
+    // From here no key: steps end, Claude answers, and auto gives every Enter.
+    let mut seen = Vec::new();
+    for _ in 0..40 {
+        let s = screen(&mut a);
+        if let Some(w) = wf(&a) {
+            seen.push(format!("run step {:?}", w.live.map(|l| l.idx)));
+        } else if s.contains("Claude · ") {
+            let title = s.lines().find(|l| l.contains("Claude · ")).unwrap();
+            seen.push(title.trim_matches(|c| "┌─┐ ".contains(c)).to_string());
+        }
+        assert!(a.unlock_for_test().is_none(), "no second prompt: {s}");
+        assert!(a.box_yes_for_test().is_none(), "no box: {s}");
+        if !world_moves(&mut a) {
+            break;
+        }
+    }
+    let s = screen(&mut a);
+    assert!(
+        a.apply_session().is_none() && wf(&a).is_none(),
+        "{s}\n{seen:?}"
+    );
+    assert!(s.contains("series: 3 of 3 done"), "{s}\n{seen:?}");
+    assert!(!s.contains("ticked"), "{s}");
+    assert!(
+        !s.contains("what to know next time"),
+        "no note is asked: {s}"
+    );
+    // All three were what they should be: the run's three steps, then two sessions.
+    let seen = seen.join(" | ");
+    for want in [
+        "run step Some(0)",
+        "run step Some(1)",
+        "run step Some(2)",
+        "2 of 3",
+        "3 of 3 · apply · Check the UPS battery · auto",
+    ] {
+        assert!(seen.contains(want), "{want}: {seen}");
+    }
+    // The sessions' entries say which answers were auto's.
+    let log = &a.slot().shared.log;
+    let applied: Vec<_> = log.iter().filter(|e| e.head.kind == "apply").collect();
+    assert_eq!(applied.len(), 2);
+    for e in applied {
+        assert!(
+            e.head.tags.contains(&"auto".to_string()),
+            "{:?}",
+            e.head.tags
+        );
+        assert!(
+            e.body
+                .contains("Answered by auto: approved the plan (start it)"),
+            "{}",
+            e.body
+        );
+    }
+    assert!(a.slot().auto, "auto stays on");
+}
+
+#[test]
+fn auto_confirms_a_run_and_says_so_in_its_state() {
+    let mut a = app();
+    let _turn = startable_as(&mut a, "auto-run-apt-maintenance.toml", AUTO_WF);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    auto_on(&mut a);
+    // Enter on the updates row: no values asked (the default is taken), no confirm.
+    key(&mut a, KeyCode::Enter);
+    let mut n = 0;
+    while world_moves(&mut a) {
+        n += 1;
+        assert!(n < 10);
+    }
+    assert_eq!(n, 3, "three steps ran");
+    let w = wf(&a).expect("the run stays, done");
+    assert!(w.done());
+    assert_eq!(w.run.state.vars.get("keep").map(String::as_str), Some("2"));
+    assert_eq!(
+        w.run.state.auto,
+        ["values", "step:upgrade", "step:tidy", "note"]
+    );
+    let log: Vec<&str> = w.log.iter().map(|(l, _)| l.as_str()).collect();
+    assert!(log.contains(&"auto: confirmed upgrade"), "{log:?}");
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("what to know next time"), "{s}");
+    // Off again: the next run asks as it always did.
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Enter);
+    let _ = std::fs::remove_dir_all(crate::workflow::root("myserver"));
+    a.apply(
+        vec![Effect::Wf(WfCmd::Begin("apt-maintenance".into()))],
+        Instant::now(),
+    );
+    assert!(
+        render_to_string(&mut a, 158, 41).contains("Kernels to keep (keep): 2▏"),
+        "its value is asked"
+    );
+}
+
+#[test]
+fn auto_stops_and_asks_for_what_is_never_its_to_answer() {
+    use sentry_core::workflows::runner::Next;
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    // A value without a default, a step marked risky, a reboot.
+    let text = "name = \"apt-maintenance\"\ndescription = \"test\"\n\
+        [vars.target]\nprompt = \"Which release\"\n\
+        [[steps]]\nid = \"prep\"\ntitle = \"Prepare\"\nrun = \"sudo true\"\ngate = \"confirm\"\n\
+        [[steps]]\nid = \"array\"\ntitle = \"Rebuild the array\"\nrun = \"echo {{ target }}\"\n\
+        gate = \"confirm\"\nrisky = true\n\
+        [[steps]]\nid = \"fw\"\ntitle = \"Flash\"\nrun = \"sudo fwupdmgr update -y\"\ngate = \"confirm\"\n\
+        [[steps]]\nid = \"boot\"\ntitle = \"Reboot\"\nkind = \"reboot\"\n";
+    let _turn = startable_as(&mut a, "auto-asks-apt-maintenance.toml", text);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    auto_on(&mut a);
+    key(&mut a, KeyCode::Enter);
+    // The value has no default: that is a decision, and it's asked.
+    let s = screen(&mut a);
+    assert!(s.contains("Which release (target): ▏"), "{s}");
+    assert!(wf(&a).is_none());
+    type_line(&mut a, "13");
+    // The first confirm is auto's (the password is held: nothing asked).
+    let w = wf(&a).expect("started");
+    assert_eq!(w.live.map(|l| l.idx), Some(0), "prep runs by itself");
+    assert!(a.unlock_for_test().is_none());
+    step_exits(&mut a, 0);
+    // The risky step waits, and says why; Enter runs it, as with auto off.
+    let w = wf(&a).unwrap();
+    assert!(w.live.is_none() && matches!(w.next, Next::Confirm(1)));
+    let log: Vec<&str> = w.log.iter().map(|(l, _)| l.as_str()).collect();
+    assert!(
+        log.contains(&"auto leaves step 2 to you: it is marked risky"),
+        "{log:?}"
+    );
+    a.tick(Instant::now());
+    assert!(wf(&a).unwrap().live.is_none(), "still waiting");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(wf(&a).unwrap().live.map(|l| l.idx), Some(1));
+    step_exits(&mut a, 0);
+    // A firmware update: never auto's, whatever the step says.
+    let w = wf(&a).unwrap();
+    assert!(w.live.is_none() && matches!(w.next, Next::Confirm(2)));
+    assert!(
+        w.log
+            .iter()
+            .any(|(l, _)| l == "auto leaves step 3 to you: it flashes firmware")
+    );
+    key(&mut a, KeyCode::Enter);
+    step_exits(&mut a, 0);
+    // The reboot: never.
+    let w = wf(&a).unwrap();
+    assert!(
+        matches!(
+            w.next,
+            Next::Reboot {
+                requested: false,
+                ..
+            }
+        ),
+        "{:?}",
+        w.next
+    );
+    assert!(
+        w.log
+            .iter()
+            .any(|(l, _)| l == "auto leaves step 4 to you: a reboot is yours to start")
+    );
+    assert_eq!(w.run.state.auto, ["step:prep"], "only what auto did");
+    a.tick(Instant::now());
+    assert!(matches!(
+        wf(&a).unwrap().next,
+        Next::Reboot {
+            requested: false,
+            ..
+        }
+    ));
+
+    // The server's own boxes: a risky action and a kill are asked, whatever the mode.
+    let mut a = app();
+    auto_on(&mut a);
+    key(&mut a, KeyCode::Char('B'));
+    let s = screen(&mut a);
+    assert!(
+        a.box_yes_for_test().is_some() && a.pane_for_test().is_none(),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    procs_on(&mut a, "tail -f");
+    key(&mut a, KeyCode::Char('x'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Kill process") && a.box_yes_for_test().is_some(),
+        "{s}"
+    );
+    assert!(a.pane_for_test().is_none(), "nothing ran");
+    key(&mut a, KeyCode::Esc);
+
+    // A password sudo refuses is forgotten; the next step that needs it asks again.
+    let mut a = app();
+    let _ = std::fs::remove_dir_all(crate::workflow::root("myserver"));
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: "apt-maintenance".to_string(),
+        path: sentry_core::paths::config_dir().join("auto-asks-apt-maintenance.toml"),
+        wf: sentry_core::workflows::parse(AUTO_WF),
+        issues: Vec::new(),
+    }]);
+    std::fs::write(
+        sentry_core::paths::config_dir().join("auto-asks-apt-maintenance.toml"),
+        AUTO_WF,
+    )
+    .unwrap();
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    auto_on(&mut a);
+    key(&mut a, KeyCode::Enter);
+    step_exits(&mut a, 0);
+    let live = wf(&a).unwrap().live.expect("upgrade, confirmed by auto");
+    run_msg(
+        &mut a,
+        live.id,
+        sentry_core::exec::StreamMsg::Line {
+            stderr: true,
+            text: "sudo: 1 incorrect password attempt".into(),
+        },
+    );
+    assert!(!a.holds_password_for_test());
+    step_exits(&mut a, 1);
+    // The step failed: that isn't auto's to retry.
+    assert!(wf(&a).unwrap().live.is_none());
+    key(&mut a, KeyCode::Char('r'));
+    let (what, ..) = a.unlock_for_test().expect("asked again");
+    assert!(what.contains("apt-maintenance"), "{what}");
+}
+
+#[test]
+fn auto_stops_a_series_at_a_row_that_is_not_done() {
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    auto_on(&mut a);
+    // Two findings, as in the series' own test.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    // The first: its plan is approved by auto, its step runs, and Claude says it failed.
+    a.apply_answer_for_test(SERIES_PLAN);
+    a.apply_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"failed\"\nsummary = \"no image\"\n```");
+    // The series stops there: the session stays to look at, both rows stay ticked.
+    let s = screen(&mut a);
+    assert!(a.apply_session().is_some(), "{s}");
+    assert!(s.contains("✗ Not done · no image"), "{s}");
+    assert!(
+        s.contains("auto: this one isn't done, so the series stops here"),
+        "{s}"
+    );
+    assert!(!s.contains("go on with the next"), "{s}");
+    assert!(!world_moves(&mut a), "nothing goes on by itself");
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(s.contains("· 2 ticked ·"), "{s}");
+    assert!(a.apply_session().is_none());
 }

@@ -23,6 +23,15 @@ impl Slot {
                     .filter(|a| a.chat.hidden && banner.is_none())
                     .map(|a| (sentry_core::tui::applyview::banner(a), "A shows it"))
             });
+        // Auto mode says so in the row, with whatever else is there (or by itself).
+        let series = match series {
+            Some((line, hint)) if self.auto => Some((format!("{line} · auto"), hint)),
+            None if self.auto && banner.is_none() => Some((
+                "auto · routine steps and questions go by themselves".to_string(),
+                "C-a turns it off",
+            )),
+            s => s,
+        };
         let Some(areas) = frame::layout(f, &t, banner.is_some() || series.is_some()) else {
             return;
         };
@@ -42,6 +51,7 @@ impl Slot {
                     workflow: &s.wf().name,
                     step: s.next().idx().map(|i| (i + 1, n, s.title(i).to_string())),
                     state: s.state_word(),
+                    auto: self.auto,
                 },
             );
         }
@@ -147,6 +157,7 @@ impl Slot {
         frame::Top {
             app: self.app,
             subject: self.title.clone(),
+            auto: self.auto,
             facts,
             state,
             clock: frame::clock(&now),
@@ -230,7 +241,11 @@ impl Slot {
             // Records, a plan or a review (an info box over one leaves its keys named).
             _ if self.open(w).docs => self.doc_hints(),
             _ => {
-                let h = self.target.hints(false, &self.shared, &cx!(self, w));
+                let mut h = self.target.hints(false, &self.shared, &cx!(self, w));
+                // Where work is started and followed: auto mode's key.
+                if matches!(self.screen, ScreenId::Maint | ScreenId::Upgrade) {
+                    h.push(self.auto_hint());
+                }
                 // A hidden conversation waiting takes `A` over.
                 let hidden = self
                     .apply

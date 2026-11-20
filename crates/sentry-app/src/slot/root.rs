@@ -36,6 +36,15 @@ pub(crate) enum Waiting {
     },
     /// The workflow run's reboot (the boot id it had).
     Reboot(String, String),
+    /// Nothing yet: auto mode went on, and asks now so that nothing asks later.
+    Auto,
+}
+
+impl Unlock {
+    /// It's the prompt auto mode opened when it went on.
+    pub(crate) fn for_auto(&self) -> bool {
+        matches!(self.wait, Waiting::Auto)
+    }
 }
 
 impl Slot {
@@ -116,6 +125,7 @@ impl Slot {
                 let e = self.target.reboot(cmd, old, &cx!(self, w));
                 self.apply(w, e, w.at);
             }
+            Waiting::Auto => self.auto_step(w),
         }
     }
 
@@ -136,6 +146,11 @@ impl Slot {
                 if let Some(s) = self.run.as_mut() {
                     s.push(format!("✗ the reboot didn't start: {WHY}"), LogKind::Err);
                 }
+            }
+            // Without the password auto would only stop at the first sudo: it stays off.
+            Waiting::Auto => {
+                self.auto_set(false);
+                w.toast("auto is off: it needs the sudo password");
             }
         }
         w.dirty = true;

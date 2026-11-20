@@ -538,4 +538,14 @@ impl sentry_app::run::WfRun for Session {
     fn step_log(&self) -> Option<(String, String)> {
         None
     }
+    fn command(&mut self, idx: usize) -> Option<String> {
+        self.wf.steps[idx].run.as_ref()?;
+        self.rendered(idx).ok()
+    }
+    fn auto_answered(&mut self, what: &str) {
+        if !self.run.state.auto.iter().any(|a| a == what) {
+            self.run.state.auto.push(what.to_string());
+            self.save();
+        }
+    }
 }

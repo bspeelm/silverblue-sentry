@@ -188,6 +188,13 @@ pub struct Session {
     /// It opened on a plan saved earlier (its document): Claude hasn't seen the brief yet,
     /// so the first turn carries it.
     seed: Option<String>,
+    /// Auto mode is on for the target (the program says so): `auto_go` answers what
+    /// `auto::answers` lets it.
+    pub auto: bool,
+    /// What auto answered since the last log entry, in words (they go in the next one).
+    auto_log: Vec<String>,
+    /// Answers auto gave in a row, with no key from the user between.
+    auto_run: u8,
 }
 
 impl Session {
@@ -216,6 +223,9 @@ impl Session {
             timed_out: false,
             series: None,
             seed: None,
+            auto: false,
+            auto_log: Vec::new(),
+            auto_run: 0,
         }
         .acting()
     }
@@ -627,6 +637,7 @@ impl Session {
         let text = text.trim().to_string();
         // The user decided something: sentry may go back to Claude again by itself.
         self.fixes = 0;
+        self.auto_run = 0;
         match self.phase {
             Phase::Brief => self.begin(text),
             Phase::Review if text.is_empty() => match self.enter_word() {
@@ -662,6 +673,115 @@ impl Session {
             _ if text.is_empty() => Vec::new(),
             _ => self.turn(Turn::Investigate, text.clone(), Some(text)),
         }
+    }
+
+    /// Answers auto gives in a row before it waits for a key (a plan that keeps coming back
+    /// with "more", a request after every answer): the user looks before it goes on.
+    pub const AUTO_LIMIT: u8 = 12;
+
+    /// Auto mode: what Enter would do now is done without it, where auto may answer
+    /// (`auto::answers`): the brief is sent, a plan approved, what Claude asks for allowed.
+    /// Nothing while the user is typing, and nothing auto never answers: that waits for the
+    /// key as with auto off, with a line saying why. Empty: nothing was answered.
+    pub fn auto_go(&mut self) -> Vec<Fx> {
+        use crate::auto::{Asked, answers};
+        if !self.auto || !self.chat.input.is_empty() || self.busy() {
+            return Vec::new();
+        }
+        let waits = |s: &mut Self, why: String| {
+            let line = format!("auto leaves this to you: {why}");
+            if s.chat.entries.last().is_none_or(|(_, l)| *l != line) {
+                s.chat.push(Kind::Info, line);
+            }
+            Vec::new()
+        };
+        enum Do {
+            Start,
+            Approve,
+            Allow,
+        }
+        let what = match self.phase {
+            Phase::Brief => Do::Start,
+            Phase::Review if self.can_approve() => Do::Approve,
+            Phase::Review | Phase::Settled(_) if self.can_grant() => Do::Allow,
+            _ => return Vec::new(),
+        };
+        if self.auto_run >= Self::AUTO_LIMIT {
+            return waits(
+                self,
+                format!("it answered {} times in a row here", Self::AUTO_LIMIT),
+            );
+        }
+        match what {
+            Do::Start if !answers(true, &Asked::Start) => Vec::new(),
+            Do::Start => {
+                self.auto_did("started it");
+                self.begin(String::new())
+            }
+            Do::Approve => {
+                let steps = self.run().map(|r| r.plan.steps.clone()).unwrap_or_default();
+                for (i, st) in steps.iter().enumerate() {
+                    if let StepKind::Run(c) | StepKind::Check(c) = &st.kind
+                        && !answers(true, &Asked::Plan(&[c.as_str()]))
+                    {
+                        let why = crate::auto::never(c).unwrap_or("it is yours to decide");
+                        return waits(
+                            self,
+                            format!(
+                                "step {} ({}): {why} · Enter applies the plan",
+                                i + 1,
+                                st.title
+                            ),
+                        );
+                    }
+                }
+                let summary = self
+                    .run()
+                    .map(|r| r.plan.summary.clone())
+                    .unwrap_or_default();
+                self.auto_did(&format!("approved the plan ({summary})"));
+                self.approve()
+            }
+            Do::Allow => {
+                let reqs = self.chat.requests.clone();
+                for g in &reqs {
+                    let ok = self.grants_here(g);
+                    if !answers(
+                        true,
+                        &Asked::Request {
+                            grant: g,
+                            grantable: ok,
+                        },
+                    ) {
+                        let why = match self.chat.allowed(g) {
+                            Err(why) => why,
+                            Ok(()) if g.access == crate::claude::Access::Run => {
+                                crate::auto::never(g.line()).unwrap_or("it is yours to decide")
+                            }
+                            Ok(()) => "not in a server's session",
+                        };
+                        return waits(self, format!("{} {}: {why}", g.word(), g.path));
+                    }
+                }
+                let list: Vec<String> = reqs
+                    .iter()
+                    .map(|g| format!("{} {}", g.word(), g.path))
+                    .collect();
+                self.auto_did(&format!("allowed: {}", list.join("; ")));
+                // The fix rounds are the user's to renew, not auto's.
+                let fixes = self.fixes;
+                let fx = self.grant();
+                self.fixes = fixes;
+                fx
+            }
+        }
+    }
+
+    /// Auto answered something: in the transcript, and kept for the log entry.
+    fn auto_did(&mut self, what: &str) {
+        self.auto_run += 1;
+        self.auto_log.push(what.to_string());
+        self.chat.push(Kind::Info, format!("auto: {what}"));
     }
 
     /// The first turn: the brief, and what the user added to it.
@@ -1398,6 +1518,14 @@ impl Session {
         if let Some(v) = verdict {
             body.push(format!("Claude: {v}"));
         }
+        // What nobody pressed a key for.
+        if !self.auto_log.is_empty() {
+            body.push(format!(
+                "Answered by auto: {}",
+                std::mem::take(&mut self.auto_log).join("; ")
+            ));
+            tags.push("auto".into());
+        }
         self.logged = self.runs.len();
         vec![Fx::Log {
             ok,
@@ -1462,6 +1590,156 @@ mod tests {
     }
 
     const CHECKS: &str = "[[step]]\ntitle = \"one\"\ncheck = \"true\"\n\n[[step]]\ntitle = \"two\"\nrun = \"echo hi\"\n";
+
+    #[test]
+    fn auto_answers_the_routine_and_leaves_the_rest_to_you() {
+        use crate::claude::{Access, Grant};
+        let run = |c: &str| Grant {
+            access: Access::Run,
+            path: c.into(),
+            ..Default::default()
+        };
+        // Off (as every session starts): nothing is answered.
+        let mut s = session();
+        assert!(s.auto_go().is_empty());
+        assert_eq!(s.phase, Phase::Brief);
+        // On: the brief is sent, the plan approved as it arrives, and the rest follows.
+        s.auto = true;
+        let fx = s.auto_go();
+        assert_eq!(s.phase, Phase::Thinking(Turn::Investigate));
+        assert!(s.auto_go().is_empty(), "nothing while Claude answers");
+        answer(&mut s, &fx, &plan(CHECKS));
+        assert!(s.can_approve());
+        let fx = s.auto_go();
+        assert_eq!(s.phase, Phase::Applying);
+        assert_eq!(
+            fx,
+            vec![Fx::Command {
+                cmd: "true".into(),
+                sudo: false
+            }]
+        );
+        s.step_started(1, 2);
+        let fx = s.step_ended(0);
+        assert!(matches!(fx[0], Fx::Command { .. }), "{fx:?}");
+        s.step_started(1, 2);
+        let fx = s.step_ended(0);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"done\"\nsummary = \"fine\"\n```",
+        );
+        // The log entry says which answers were auto's.
+        let Some(Fx::Log { body, tags, .. }) = fx.iter().find(|f| matches!(f, Fx::Log { .. }))
+        else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            body.contains("Answered by auto: started it; approved the plan (fix it)"),
+            "{body}"
+        );
+        assert!(tags.contains(&"auto".to_string()), "{tags:?}");
+        assert!(s.auto_go().is_empty(), "settled: nothing left to answer");
+
+        // A request Claude may have: allowed, and sentry runs it. The user's fix rounds
+        // aren't renewed by it.
+        let mut s = session();
+        s.auto = true;
+        let fx = s.auto_go();
+        answer(&mut s, &fx, "It's refused; I asked.");
+        s.sudo_free = true;
+        s.fixes = 1;
+        s.chat.requests = vec![run("systemctl --user restart foo.service")];
+        let fx = s.auto_go();
+        assert_eq!(
+            fx,
+            vec![Fx::Command {
+                cmd: "systemctl --user restart foo.service".into(),
+                sudo: false
+            }]
+        );
+        assert_eq!(s.fixes, 1);
+
+        // What auto never allows waits for Enter, exactly as with auto off, and says why:
+        // a reboot, an upgrade, where keys live.
+        for (req, why) in [
+            (run("sudo systemctl reboot"), "restarts the system"),
+            (run("rpm-ostree rollback"), "rolls back"),
+            (
+                run("cat ~/.ssh/id_ed25519"),
+                "keys and passwords live there",
+            ),
+        ] {
+            let mut s = session();
+            s.auto = true;
+            let fx = s.auto_go();
+            answer(&mut s, &fx, "Asked.");
+            s.chat.requests = vec![run("uname -a"), req.clone()];
+            assert!(s.auto_go().is_empty(), "{req:?}");
+            assert_eq!(s.phase, Phase::Review);
+            assert_eq!(s.chat.requests.len(), 2, "nothing was allowed");
+            let last = &s.chat.entries.last().unwrap().1;
+            assert!(
+                last.starts_with("auto leaves this to you") && last.contains(why),
+                "{last}"
+            );
+            // Said once, not at every look.
+            let n = s.chat.entries.len();
+            assert!(s.auto_go().is_empty());
+            assert_eq!(s.chat.entries.len(), n);
+            // The key still does what it did.
+            assert_eq!(s.enter_word(), Some("allow it"));
+        }
+
+        // A plan with a step auto never runs isn't approved by it.
+        let mut s = session();
+        s.auto = true;
+        let fx = s.auto_go();
+        answer(
+            &mut s,
+            &fx,
+            &plan("[[step]]\ntitle = \"flash\"\nrun = \"sudo fwupdmgr update -y\"\n"),
+        );
+        assert!(s.can_approve());
+        assert!(s.auto_go().is_empty());
+        assert_eq!(s.phase, Phase::Review);
+        assert!(
+            s.chat
+                .entries
+                .last()
+                .unwrap()
+                .1
+                .contains("step 1 (flash): it flashes firmware"),
+            "{:?}",
+            s.chat.entries.last()
+        );
+        // While the user types, auto doesn't act under them.
+        let mut s = session();
+        s.auto = true;
+        s.chat.input.push('x');
+        assert!(s.auto_go().is_empty());
+        assert_eq!(s.phase, Phase::Brief);
+
+        // A verdict that isn't "done" is the user's: nothing is marked or carried on.
+        let mut s = session();
+        s.auto = true;
+        s.series = Some((1, 2));
+        let fx = s.auto_go();
+        answer(&mut s, &fx, &plan(CHECKS));
+        let _ = s.auto_go();
+        s.step_started(1, 2);
+        let _ = s.step_ended(0);
+        s.step_started(1, 2);
+        let fx = s.step_ended(0);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"failed\"\nsummary = \"no\"\n```",
+        );
+        assert!(!fx.contains(&Fx::Next), "{fx:?}");
+        assert_eq!(s.phase, Phase::Settled(End::Failed));
+        assert!(s.auto_go().is_empty());
+    }
 
     #[test]
     fn two_decisions_and_the_rest_follows() {

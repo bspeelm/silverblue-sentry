@@ -85,6 +85,8 @@ pub struct Top<'a> {
     /// The chip: `sentry`, `sentry-server`.
     pub app: &'a str,
     pub subject: String,
+    /// Auto mode is on for it: said beside its name.
+    pub auto: bool,
     /// Dim, in order; the first go first when it's narrow.
     pub facts: Vec<String>,
     pub state: (String, Color),
@@ -107,6 +109,12 @@ fn top_lines(t: &Theme, top: &Top, width: u16) -> (Line<'static>, Line<'static>)
             ),
             Span::styled(format!("  {}", top.subject), t.fg()),
         ];
+        if top.auto {
+            left.push(Span::styled(
+                " · auto",
+                t.s(t.yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
         left.extend(
             facts
                 .iter()
@@ -230,20 +238,27 @@ pub struct Banner<'a> {
     /// The step it's at: (number, of how many, its title).
     pub step: Option<(usize, usize, String)>,
     pub state: &'a str,
+    /// Auto mode is on.
+    pub auto: bool,
 }
 
 pub fn draw_banner(f: &mut Frame, area: Rect, t: &Theme, b: &Banner) {
     let hint = "press 0 to continue";
     let n = b.step.as_ref().map_or(0, |s| s.1);
+    let state = if b.auto {
+        format!("{} · auto", b.state)
+    } else {
+        b.state.to_string()
+    };
     // The step's title gets what the rest leaves.
-    let fixed = format!(" ↻ workflow {} · step 99/{n}  · {}   ", b.workflow, b.state);
+    let fixed = format!(" ↻ workflow {} · step 99/{n}  · {state}   ", b.workflow);
     let room = (area.width as usize).saturating_sub(fixed.chars().count() + hint.len());
     let step = b.step.as_ref().map_or(String::new(), |(i, n, title)| {
         format!("step {i}/{n} {}", widgets::trunc(title, room))
     });
     let line = Line::from(vec![
         Span::styled(
-            format!(" ↻ workflow {} · {step} · {}   ", b.workflow, b.state),
+            format!(" ↻ workflow {} · {step} · {state}   ", b.workflow),
             t.s(t.yellow),
         ),
         Span::styled(hint, t.dim()),
@@ -514,7 +529,7 @@ pub fn help_modal<E>(t: &Theme, h: &Help) -> Modal<E> {
         ));
     }
     lines.push(l(
-        "C-f       forget the sudo password (asked once, held while this is open)",
+        "C-f       forget the sudo password    C-a  auto mode: routine steps need no key",
     ));
     lines.push(l(h.commands));
     let mut grid = |title: &str, hints: &[(&str, &str)]| {
@@ -705,6 +720,7 @@ mod tests {
         Top {
             app: "sentry",
             subject: "silverblue 44.1".into(),
+            auto: false,
             facts: vec!["kernel 7.2.8-200.fc44.x86_64".into(), "up 3d 04:12".into()],
             state: ("○ idle".into(), Color::Reset),
             clock: "Mon 16 Nov 20:46".into(),
@@ -901,6 +917,7 @@ mod tests {
         let text: Vec<String> = help.lines.iter().map(|l| l.to_string()).collect();
         // The screen has its own A, so the general line is left out.
         assert!(text[5].starts_with("C-f       forget the sudo password"));
+        assert!(text[5].contains("C-a  auto mode"));
         assert_eq!(text[6], ":q  :<screen>");
         assert_eq!(text[8], "Maintenance:");
         assert_eq!(text[11], "sentry-server:");

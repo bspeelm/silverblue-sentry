@@ -125,6 +125,7 @@ impl Slot {
     pub(crate) fn on_data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
         let e = self.target.on_data(data, &mut self.shared, &cx!(self, w));
         self.apply(w, e, w.at);
+        self.auto_step(w);
         self.settle(w, Settle::Lists);
         w.dirty = true;
     }
@@ -334,6 +335,7 @@ impl Slot {
     pub(crate) fn on_key(&mut self, w: &mut Win, k: KeyEvent, now: Instant) {
         w.dirty = true;
         self.on_key_inner(w, k, now);
+        self.auto_step(w);
         self.settle(w, Settle::Key);
     }
 
@@ -353,6 +355,10 @@ impl Slot {
                 u.typed.clear();
             }
             return self.apply(w, vec![Effect::Forget], now);
+        }
+        // Wherever the keys are: auto mode, on or off.
+        if k.code == KeyCode::Char('a') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.auto_toggle(w);
         }
         match frame::layer(&self.open(w)) {
             Layer::Unlock => return self.unlock_key(w, k),

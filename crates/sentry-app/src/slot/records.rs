@@ -313,6 +313,10 @@ impl Slot {
             self.refresh(w, Why::Lists);
         }
         self.last_change_at = Some(jiff::Timestamp::now());
+        if self.auto_skips_note() {
+            self.settled(w);
+            return self.review_after_run(w);
+        }
         w.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 

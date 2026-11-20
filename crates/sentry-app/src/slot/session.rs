@@ -433,6 +433,7 @@ impl Slot {
                 Fx::Next => self.series_next(w),
             }
         }
+        self.auto_step(w);
     }
 
     /// What a task done in a session is logged as: its title, or (the app's own way) its id.
@@ -466,6 +467,8 @@ impl Slot {
             }
             let sess = self.session_for(w, ask);
             self.apply = Some(sess);
+            // Auto: it starts by itself.
+            self.auto_step(w);
             return;
         }
         if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
@@ -522,6 +525,7 @@ impl Slot {
         let mut sess = seeded.unwrap_or_else(|| Session::new(ask));
         sess.chat.privacy = self.target.ident().session_privacy.clone();
         sess.secret_ok = self.secret_ok;
+        sess.auto = self.auto;
         sess
     }
 
@@ -644,7 +648,9 @@ impl Slot {
                     let mut sess = sentry_core::apply::session::Session::from_chat(c, apply);
                     sess.chat.privacy = self.target.ident().session_privacy.clone();
                     sess.secret_ok = self.secret_ok;
+                    sess.auto = self.auto;
                     self.apply = Some(sess);
+                    self.auto_step(w);
                 }
             }
             // What Claude was refused: Enter allows it, for this conversation.

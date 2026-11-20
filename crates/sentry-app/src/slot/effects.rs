@@ -10,6 +10,19 @@ impl Slot {
                 }
                 Effect::Key(k) => self.on_key(w, k, now),
                 Effect::Help => self.show_help(w),
+                // Auto: a workflow's values, each with a default, are taken as they are.
+                Effect::Prompt(Prompt::Own(o), init)
+                    if o.workflow.is_some()
+                        && sentry_core::auto::answers(
+                            self.auto,
+                            &sentry_core::auto::Asked::Values {
+                                defaults: o.defaults,
+                            },
+                        ) =>
+                {
+                    self.auto_took_values = true;
+                    self.submit(w, Prompt::Own(o), init.trim());
+                }
                 Effect::Prompt(p, init) => w.input = Input::Prompt(p, init),
                 Effect::LogEvent(e) => self.log_event(w, *e),
                 Effect::PlanClose => self.plan_view = None,

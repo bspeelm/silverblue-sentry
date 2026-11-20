@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  start   Space  tick   z  later   A  claude   o  everything   c  check   v  records   R  review   ?  help   q  quit
+ Enter  start   Space  tick   z  later   A  claude   o  everything   c  check   v  records   R  review   C-a  auto   ?  help   q  quit

@@ -372,6 +372,28 @@ impl App {
             Instant::now(),
         );
     }
+    /// The workflow run's running step ends (nothing ran).
+    pub fn run_step_exit_for_test(&mut self, code: i32) {
+        let s = self.slot();
+        let id = s
+            .run
+            .as_ref()
+            .and_then(|r| r.live())
+            .map(|l| l.id)
+            .expect("no step running");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
     /// The sudo password is being asked for in the key bar: (what for, characters typed,
     /// times refused).
     pub fn unlock_for_test(&self) -> Option<(String, usize, u8)> {

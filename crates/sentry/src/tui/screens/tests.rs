@@ -224,6 +224,8 @@ fn navigation_and_modals() {
 
 #[test]
 fn updates_are_applied_by_quick_update() {
+    // (It starts a run for real, in the scratch data dir: one at a time.)
+    let _turn = runs_turn();
     let mut a = app(ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -467,6 +469,13 @@ fn jobs_and_cleanup_screens() {
         s.contains("Confirm cleanup") && s.contains("run 2 job(s)"),
         "{s}"
     );
+    // Auto mode never answers this box: with it on, cleanup asks all the same.
+    key(&mut a, KeyCode::Esc);
+    auto_on(&mut a);
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Confirm cleanup"), "{s}");
+    assert!(a.box_yes_for_test().is_some() && a.pane_for_test().is_none());
 }
 
 #[test]
@@ -1660,6 +1669,8 @@ fn a_long_plan_keeps_its_running_step_in_view() {
 
 #[test]
 fn a_plans_workflow_step_waits_for_its_run() {
+    // (It starts a run for real, in the scratch data dir: one at a time.)
+    let _turn = runs_turn();
     use crate::apply::session::{Phase, Turn};
     use crate::claude::{Apply, Ask};
     let mut a = app(ScreenId::Maint);
@@ -2114,8 +2125,19 @@ fn a_row_that_fails_waits_and_esc_stops_the_series() {
     );
 }
 
+/// Tests that start a run for real (in the scratch data dir, where only one can be in
+/// progress and others leave quick-update started): they take turns, each beginning with
+/// no run left there.
+fn runs_turn() -> std::sync::MutexGuard<'static, ()> {
+    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_dir_all(crate::workflows::state::root());
+    turn
+}
+
 #[test]
 fn a_series_runs_a_workflow_and_goes_on_when_it_ends_well() {
+    let _turn = runs_turn();
     // A workflow of the test's own, in the scratch config dir; its one step waits for Enter,
     // so starting it runs nothing.
     let name = "series-fw";
@@ -2212,4 +2234,305 @@ fn a_sudo_step_asks_for_the_password_in_the_key_bar_never_the_terminal() {
         s.contains("sudo needs your password, which wasn't given"),
         "{s}"
     );
+}
+
+// ── Auto mode ──────────────────────────────────────────────────────────────────────────
+
+fn ctrl(a: &mut App, c: char) {
+    a.on_event(
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+        Instant::now(),
+    );
+}
+
+/// Auto on: this machine's sudo asks (in tests it always does), so the password is asked
+/// for at once; typed and accepted.
+fn auto_on(a: &mut App) {
+    ctrl(a, 'a');
+    let (what, ..) = a.unlock_for_test().expect("the password, at once");
+    assert_eq!(what, "for auto mode");
+    for c in "s3cret-pw".chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+    a.unlock_exit_for_test(0);
+    assert!(a.slot().auto && a.holds_password_for_test());
+}
+
+#[test]
+fn auto_does_a_series_with_one_password_and_no_other_key() {
+    use crate::apply::session::{Phase, Turn};
+    let _turn = runs_turn();
+    // A workflow of the test's own: a value with a default, a step that waits for a confirm.
+    let name = "series-auto";
+    let dir = crate::workflows::dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{name}.toml"));
+    std::fs::write(
+        &file,
+        format!(
+            "name = \"{name}\"\ndescription = \"test\"\n[vars.level]\nprompt = \"How far\"\n\
+             default = \"all\"\n[[steps]]\nid = \"tidy\"\ntitle = \"Tidy {{{{ level }}}}\"\n\
+             run = \"echo tidy {{{{ level }}}}\"\ngate = \"confirm\"\n"
+        ),
+    )
+    .unwrap();
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(crate::maint::tasks::Task {
+        act: format!("run {name}"),
+        ..by_hand_task("tidy", "Tidy up")
+    });
+    a.add_task_for_test(by_hand_task("firmware", "Update the firmware"));
+    a.add_task_for_test(by_hand_task("ups", "Check the UPS battery"));
+    render_to_string(&mut a, 158, 41);
+    auto_on(&mut a);
+    // The three tasks (never the updates row above them, which is the real quick-update):
+    // the workflow's and the two done by hand.
+    for _ in 0..3 {
+        key(&mut a, KeyCode::Char('j'));
+        key(&mut a, KeyCode::Char(' '));
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("· 3 ticked ·"), "{s}");
+    for row in [
+        "✓ routine  Tidy up",
+        "✓ routine  Update the firmware",
+        "✓ routine  Check the UPS",
+    ] {
+        assert!(s.contains(row), "{row}: {s}");
+    }
+    let ticked = 3;
+    key(&mut a, KeyCode::Enter);
+    // From here no key: steps end, Claude answers, auto gives every Enter.
+    let mut seen = Vec::new();
+    for _ in 0..60 {
+        assert!(a.unlock_for_test().is_none(), "no second prompt");
+        assert!(a.box_yes_for_test().is_none(), "no box");
+        if let Some(r) = a.slot().run.as_ref() {
+            assert_eq!(r.wf().name, name, "only the test's own workflow");
+        }
+        if a.slot().run.as_ref().is_some_and(|r| r.live().is_some()) {
+            seen.push("a step".to_string());
+            a.run_step_exit_for_test(0);
+            continue;
+        }
+        let Some(sess) = a.apply_session() else { break };
+        seen.push(sess.chat.ask.subject.clone());
+        match sess.phase {
+            Phase::Thinking(Turn::Verify) => a.apply_answer_for_test(
+                "```sentry-verdict\nstatus = \"done\"\nsummary = \"fine\"\n```",
+            ),
+            Phase::Thinking(_) => a.apply_answer_for_test(SERIES_PLAN),
+            Phase::Applying if sess.job.is_some() => a.apply_step_exit_for_test(0),
+            p => panic!(
+                "it waits for a key at {p:?}: {}",
+                render_to_string(&mut a, 158, 41)
+            ),
+        }
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    let seen = seen.join(" | ");
+    assert!(a.apply_session().is_none(), "{s}\n{seen}");
+    assert!(
+        s.contains(&format!("series: {ticked} of {ticked} done")),
+        "{s}\n{seen}"
+    );
+    assert!(
+        !s.contains("ticked ·") && !s.contains("what to know next time"),
+        "{s}"
+    );
+    for want in ["a step", "Update the firmware", "Check the UPS battery"] {
+        assert!(seen.contains(want), "{want}: {seen}");
+    }
+    assert!(a.tasks_due_for_test().is_empty());
+    // The log marks auto's answers: the run's values and its step, each session's plan.
+    let log = a.log_for_test();
+    let run = log
+        .iter()
+        .find(|e| e.head.workflow == name)
+        .expect("the run's entry");
+    assert!(
+        run.head.tags.contains(&"auto".to_string()),
+        "{:?}",
+        run.head.tags
+    );
+    assert!(
+        run.body.contains("(`tidy`) | ok | 0 |")
+            && run.body.contains("| confirmed by auto |")
+            && run
+                .body
+                .contains("- its values: the defaults, taken without asking")
+            && run.body.contains("- confirmed: `tidy`"),
+        "{}",
+        run.body
+    );
+    let applied: Vec<_> = log.iter().filter(|e| e.head.kind == "apply").collect();
+    assert!(applied.len() >= 2);
+    for e in applied {
+        assert!(
+            e.head.tags.contains(&"auto".to_string()),
+            "{:?}",
+            e.head.tags
+        );
+        assert!(
+            e.body
+                .contains("Answered by auto: approved the plan (do it)"),
+            "{}",
+            e.body
+        );
+    }
+    let _ = std::fs::remove_file(&file);
+}
+
+#[test]
+fn auto_stages_the_upgrade_and_stops_at_the_reboot() {
+    use crate::tui::wf::Session;
+    use crate::workflows::runner::{self, Next};
+    use crate::workflows::state::{RunState, StepStatus};
+    // The shipped quick-update, at its staging step: an update is waiting, same kernel.
+    let text = crate::workflows::SEEDS
+        .iter()
+        .find(|(n, _)| *n == "quick-update")
+        .unwrap()
+        .1;
+    let wf = crate::workflows::parse(text).unwrap();
+    let at = |id: &str| wf.steps.iter().position(|s| s.id == id).unwrap();
+    let (stage, reboot) = (at("upgrade-routine"), at("reboot-routine"));
+    assert!(wf.steps[stage].stage && wf.steps[at("upgrade-ritual")].stage);
+    assert_eq!(
+        wf.steps.iter().filter(|s| s.stage).count(),
+        2,
+        "only the two steps that stage an upgrade"
+    );
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let mut st = RunState::new("quick-update", &ids, Default::default());
+    for (c, v) in [
+        ("routine_update", true),
+        ("kernel_changed", false),
+        ("flatpak_gl_nvidia", true),
+        ("master_repo_present", false),
+    ] {
+        st.conds.insert(c.into(), v);
+    }
+    for i in 0..stage {
+        runner::finish(&mut st, i, 0, None);
+    }
+    let mut run = Session::for_test(wf, st, Next::Confirm(stage));
+    // (A real directory: the run's state and step logs are written as it goes.)
+    run.run.dir = std::env::temp_dir().join(format!("sentry-auto-stage-{}", std::process::id()));
+    std::fs::create_dir_all(run.run.dir.join("steps")).unwrap();
+    let dir = run.run.dir.clone();
+    let mut a = app(ScreenId::Upgrade);
+    a.set_wf(run);
+    // Auto off: the staging step waits for Enter, as ever.
+    a.tick(Instant::now());
+    let live = |a: &App| a.slot().run.as_ref().unwrap().live().copied();
+    assert!(live(&a).is_none());
+    auto_on(&mut a);
+    // On: its dry run (the preview), then the step itself, with no key.
+    let l = live(&a).expect("the dry run");
+    assert!(l.dry && l.idx == stage);
+    a.run_step_exit_for_test(0);
+    let l = live(&a).expect("the upgrade is staged");
+    assert!(!l.dry && l.idx == stage);
+    a.run_step_exit_for_test(0);
+    // The reboot is never auto's: it waits, no box is open, nothing was asked of root.
+    let r = a.slot().run.as_ref().unwrap();
+    assert!(live(&a).is_none());
+    assert!(
+        matches!(*r.next(), Next::Reboot { idx, requested: false } if idx == reboot),
+        "{:?}",
+        r.next()
+    );
+    assert_eq!(r.run().state.steps[stage].status, StepStatus::Ok);
+    assert_eq!(r.run().state.auto, [format!("step:{}", ids[stage])]);
+    assert!(a.box_yes_for_test().is_none());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("auto leaves step") && s.contains("a reboot is yours to start"),
+        "{s}"
+    );
+    a.tick(Instant::now());
+    assert!(matches!(
+        *a.slot().run.as_ref().unwrap().next(),
+        Next::Reboot {
+            requested: false,
+            ..
+        }
+    ));
+    // Enter asks first, as with auto off.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Reboot") && s.contains("reboot now"), "{s}");
+    assert!(a.box_yes_for_test().is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // The same command where the workflow doesn't mark it: asked.
+    let wf = crate::workflows::parse(
+        "name = \"other\"\ndescription = \"test\"\n[[steps]]\nid = \"up\"\ntitle = \"Upgrade\"\n\
+         run = \"rpm-ostree upgrade\"\ngate = \"confirm\"\n",
+    )
+    .unwrap();
+    let st = RunState::new("other", &["up".to_string()], Default::default());
+    let mut b = app(ScreenId::Upgrade);
+    b.set_wf(Session::for_test(wf, st, Next::Confirm(0)));
+    auto_on(&mut b);
+    assert!(b.slot().run.as_ref().unwrap().live().is_none());
+    let s = render_to_string(&mut b, 158, 41);
+    assert!(s.contains("auto leaves step 1 to you"), "{s}");
+    // And a mark on anything but a staging upgrade is a lint error.
+    let bad = crate::workflows::parse(
+        "name = \"bad\"\ndescription = \"test\"\n[[steps]]\nid = \"x\"\ntitle = \"x\"\n\
+         run = \"rpm-ostree rebase y\"\nstage = true\n",
+    )
+    .unwrap();
+    let issues = crate::workflows::lint_with(&bad, &crate::workflows::LOCAL);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.error && i.msg.contains("stage = true is only for")),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn auto_takes_a_workflows_default_values() {
+    let _turn = runs_turn();
+    let name = "auto-taken";
+    let dir = crate::workflows::dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{name}.toml"));
+    std::fs::write(
+        &file,
+        format!(
+            "name = \"{name}\"\ndescription = \"test\"\n[vars.target]\nprompt = \"Which\"\n\
+             default = \"44\"\n[[steps]]\nid = \"go\"\ntitle = \"Go\"\nkind = \"manual\"\n\
+             manual = \"do it\"\n"
+        ),
+    )
+    .unwrap();
+    // (Here a value always has a default: a workflow with one that hasn't can't start.)
+    let mut a = app(ScreenId::Upgrade);
+    // Auto off: the value is asked, its default filled in.
+    a.apply_for_test(vec![crate::tui::app::Effect::StartWorkflow(name.into())]);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Which") && s.contains("44▏"), "{s}");
+    assert!(a.slot().run.is_none());
+    key(&mut a, KeyCode::Esc);
+    // On: taken, and the run says so. Its manual step is never auto's.
+    auto_on(&mut a);
+    a.apply_for_test(vec![crate::tui::app::Effect::StartWorkflow(name.into())]);
+    let r = a.slot().run.as_ref().expect("started");
+    assert_eq!(
+        r.run().state.vars.get("target").map(String::as_str),
+        Some("44")
+    );
+    assert_eq!(r.run().state.auto, ["values"]);
+    assert!(r.live().is_none() && !r.done());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("auto leaves step 1 to you: it is done by hand"),
+        "{s}"
+    );
+    let _ = std::fs::remove_file(file);
 }

@@ -188,6 +188,9 @@ pub struct OwnPrompt {
     pub enter: &'static str,
     /// The workflow whose values it asks for, if that's what it is.
     pub workflow: Option<String>,
+    /// A workflow's value, and it and every one still to come has a default: auto mode
+    /// takes them without asking.
+    pub defaults: bool,
     pub own: Own,
 }
 
