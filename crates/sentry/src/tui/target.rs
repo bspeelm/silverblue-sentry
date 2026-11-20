@@ -95,6 +95,8 @@ fn lift(e: local::Effect) -> Effect {
         L::Everything => Effect::Everything,
         L::SeriesStart(rows) => Effect::SeriesStart(rows),
         L::PlanOpen(wf) => Effect::PlanOpen(wf),
+        L::PlanApply(wf) => Effect::PlanApply(wf),
+        L::PlanAgain(wf) => Effect::PlanAgain(wf),
         L::ReviewOpen => Effect::ReviewOpen,
         L::TaskRemove(id) => Effect::TaskRemove(id),
         L::TaskDone(id) => Effect::TaskDone(id),
@@ -191,7 +193,6 @@ fn label(p: &effect::Prompt) -> Option<(String, &'static str)> {
             "{} {} · for the log, what to know next time (optional): ",
             e.head.workflow, e.head.result
         ),
-        P::PlanRevise(wf) => format!("revise the plan for {wf}: "),
         P::LogAddNote(e) => format!("a note for {}: ", e.file_name()),
         _ => return None,
     };
@@ -279,18 +280,19 @@ impl LocalTarget {
                     review_over_plan: false,
                     label,
                     not_started: None,
-                    not_planned: None,
                     noted: "noted in the maintenance log (v opens it)",
                     task_note: true,
                     log_task_title: true,
                     plans_by_hand: false,
                     log_item_tag: false,
                     plan_done_says: false,
-                    no_plan: Some(|wf| format!("no plan for {wf} yet: p writes one")),
+                    no_plan: Some(|wf| {
+                        format!("no plan saved for {wf} yet: A → 1 works it out with Claude")
+                    }),
                     plan_hints: &[
-                        ("Enter", "apply (start its workflow)"),
+                        ("Enter", "apply"),
                         ("A", "claude"),
-                        ("r", "revise"),
+                        ("P", "start over"),
                         ("x", "drop"),
                         ("j/k", "scroll"),
                         ("Esc", "back"),
@@ -444,12 +446,6 @@ impl LocalTarget {
         }
     }
 
-    /// Claude is writing the plan for `wf`.
-    fn writing_plan(cx: &Cx, wf: &str) -> bool {
-        cx.writer
-            .is_some_and(|w| w.review.is_none() && w.item == wf && w.running())
-    }
-
     /// `:workflow <name>` and whatever else starts one by name: Upgrade's Enter on it.
     fn start_wf(&mut self, name: &str, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         if cx.run.is_some_and(|s| !s.done()) {
@@ -599,41 +595,6 @@ impl LocalTarget {
                     sh.later.insert(key.clone(), until);
                     toast(format!("put off until {until} (Records › Later)"))
                 }
-            }
-            L::PlanAsk(wf, again) => {
-                if !again && (sh.plans.contains_key(wf) || Self::writing_plan(cx, wf)) {
-                    vec![Effect::PlanOpen(wf.clone())]
-                } else if !crate::claude::available() {
-                    toast("plans are written by Claude Code, which isn't installed".into())
-                } else {
-                    vec![Effect::Prompt(
-                        own_prompt(local::Prompt::PlanNote(wf.clone())),
-                        String::new(),
-                    )]
-                }
-            }
-            L::PlanWrite(wf, note) => {
-                if !cx.offline {
-                    let _ = crate::maint::plan::retire(crate::maint::LOCAL, wf);
-                }
-                self.plan_write(wf, note.clone(), sh, cx)
-            }
-            L::PlanApply(wf) => match sh.plans.get(wf) {
-                // Starting the workflow picks up its ready plan (Upgrade's Enter).
-                Some(_) => vec![Effect::PlanClose, Effect::StartWorkflow(wf.clone())],
-                None => toast(format!("no plan for {wf}")),
-            },
-            L::PlanDrop(wf) => {
-                if let Some(doc) = sh.plans.remove(wf)
-                    && !cx.offline
-                {
-                    let _ =
-                        crate::maint::plan::close(&doc, crate::maint::plan::PlanStatus::Dropped);
-                }
-                vec![
-                    Effect::PlanClose,
-                    Effect::Toast(format!("the plan for {wf} is dropped (plans/done/)")),
-                ]
             }
             // Only a run that's over is closed.
             L::Wf(local::WfCmd::Close) => {
@@ -970,7 +931,7 @@ impl Target for LocalTarget {
         own: &effect::Own,
         answer: Option<&str>,
         _sh: &mut Shared,
-        cx: &Cx,
+        _cx: &Cx,
     ) -> Vec<Effect> {
         let (Some(p), Some(text)) = (own.0.downcast_ref::<local::Prompt>(), answer) else {
             return Vec::new();
@@ -1014,9 +975,6 @@ impl Target for LocalTarget {
                     }),
                     default,
                 )]
-            }
-            local::Prompt::PlanNote(wf) => {
-                self.plan_box(&wf, (!text.is_empty()).then(|| text.to_string()), cx)
             }
             local::Prompt::TaskEvery(_) => Vec::new(),
         }

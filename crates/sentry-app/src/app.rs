@@ -285,17 +285,14 @@ impl App {
         s.shared.wf_entries = e;
         s.settle(w, crate::target::Settle::Lists);
     }
-    /// The request waiting in a box (a plan's), what the review window on its brief would
-    /// send, or the brief of a conversation just opened.
+    /// What the review window on its brief would send, or the brief of a conversation just
+    /// opened.
     pub fn consent_text_any(&self) -> Option<String> {
         let s = self.slot();
-        match s.modal.as_ref().and_then(|m| m.yes.as_ref()?.1.first()) {
-            Some(Effect::PlanWrite(_, _, p)) => Some(p.clone()),
-            _ if s.review_view.as_ref().is_some_and(|v| v.brief) => {
-                Some(s.review_prompt(&self.win))
-            }
-            _ => self.consent_text(),
+        if s.review_view.as_ref().is_some_and(|v| v.brief) {
+            return Some(s.review_prompt(&self.win));
         }
+        self.consent_text()
     }
     /// What the conversation just opened would send (nothing sent yet).
     pub fn consent_text(&self) -> Option<String> {
@@ -426,7 +423,7 @@ impl App {
     pub fn root_reads_for_test(&self) -> usize {
         self.slot().reads_for_test().len()
     }
-    /// The plan writer answered.
+    /// The review writer answered.
     pub fn writer_answered(&mut self, answer: &str) {
         let (s, w) = self.parts();
         if let Some(wr) = s.writer.as_mut() {
@@ -435,7 +432,7 @@ impl App {
         }
         s.writer_turn_ended(w);
     }
-    /// Whether Claude is still writing a plan.
+    /// Whether Claude is still writing a review.
     pub fn writing(&self) -> bool {
         self.slot().writer.as_ref().is_some_and(|w| w.running())
     }

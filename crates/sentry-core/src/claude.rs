@@ -43,7 +43,8 @@ pub struct Apply {
     pub item: Option<String>,
     /// A task: `d` in the chat marks it done.
     pub task: Option<String>,
-    /// There's a plan for it (by item, or by workflow on this machine).
+    /// What its plan is kept under in plans/ (the item; on this machine, the workflow): the
+    /// session researches first, its plan is saved there, and closed when it's done.
     pub plan: Option<String>,
     /// It's on a server (sentry-server): its files change through `run` steps there; only
     /// files on this machine (the notes) are `edit` steps.
@@ -228,11 +229,22 @@ impl Ask {
 /// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
     let files = files_rule(a);
+    // What a plan document used to be written for, done here: the research, and the
+    // answer that it should wait.
     let planned = if a.plan.is_some() {
-        " The brief has the plan written earlier for this, with its research: carry it out. \
-         Its Before checks become `check` steps, its Change the workflow step with the plan's \
-         values (or, when no workflow applies it, `run` and `edit` steps), its Verify `check` \
-         steps. Check first that it still fits (versions, what's running), and say if it doesn't."
+        " This one is worth researching before anything moves: start from the maintenance \
+         ledger named in the brief and read the entries that bear on it (the same item or \
+         workflow, what failed or was done by hand), read the release notes and advisories \
+         (WebFetch, WebSearch; never curl) and my notes files named in the brief, then check \
+         the host. When it moves to a version, begin your answer with a line `TARGET: <exact \
+         upstream tag>`. Keep the assessment to what I need to decide: what changes, how risky \
+         it is, what the log says, how to roll back. sentry keeps your answer with the plan \
+         (plans/), to read later. If the brief has a plan written earlier, carry it out \
+         (its checks as `check` steps, its change as the workflow step with its values, or \
+         `run` and `edit` steps when no workflow applies it) after checking it still fits. If \
+         it shouldn't be done now, send no plan: say why in a few lines and end with a \
+         ```sentry-verdict block with status = \"wait\", the reason as its summary, and \
+         `again = \"30d\"` for when I should look again; sentry puts it off until then."
     } else {
         ""
     };

@@ -96,8 +96,6 @@ pub struct Ways {
     pub label: fn(&Prompt) -> Option<(String, &'static str)>,
     /// Esc on a workflow's values says this.
     pub not_started: Option<&'static str>,
-    /// Esc on a plan's note says this.
-    pub not_planned: Option<&'static str>,
     /// A run's note was saved.
     pub noted: &'static str,
     /// A task marked done asks for its note in words of its own, and no review follows it.
@@ -116,7 +114,7 @@ pub struct Ways {
     pub plan_hints: &'static [(&'static str, &'static str)],
     /// C-c in the Plan view.
     pub plan_stopped: &'static str,
-    /// A series doesn't start while Claude writes something asked for.
+    /// A series doesn't start while Claude writes a review that was asked for.
     pub series_waits_writer: bool,
     /// A series' next row closes a plan left open.
     pub series_closes_plan: bool,
@@ -167,7 +165,6 @@ impl Default for Ways {
             review_over_plan: true,
             label: |_| None,
             not_started: Some("not started"),
-            not_planned: Some("not planned"),
             noted: "noted in the maintenance log",
             task_note: false,
             log_task_title: false,
@@ -178,7 +175,7 @@ impl Default for Ways {
             plan_hints: &[
                 ("Enter", "apply"),
                 ("A", "claude"),
-                ("r", "revise"),
+                ("P", "start over"),
                 ("x", "drop"),
                 ("j/k PgUp/Dn", "scroll"),
                 ("Esc", "back"),
@@ -344,14 +341,12 @@ pub struct TabInfo {
 pub enum ProfileFor {
     Chat,
     Session,
-    Plan,
     Review,
 }
 
 /// What the row a series is at needs.
 pub enum SeriesStep {
-    Session(Ask),
-    Plan(String, PlanDoc),
+    Session(Box<Ask>),
     Workflow(String),
     Audit,
 }
@@ -509,20 +504,23 @@ pub trait Asks {
     fn apply_ask(&self, sh: &Shared, cx: &Cx) -> Option<Ask>;
     /// Carrying out an item's plan (`key`: the session's).
     fn plan_ask(&self, item: &str, key: String, sh: &Shared, cx: &Cx) -> Option<Ask>;
-    /// Before Claude plans an item: what the box says, and the request.
-    fn plan_brief(
+    /// The header of a plan kept for the first time under `key` (an item's, a workflow's):
+    /// what it's for, its workflow and values. None: the app's plain one.
+    fn plan_head(
         &self,
-        item: &str,
-        doc: &PlanDoc,
-        sh: &Shared,
-        cx: &Cx,
-    ) -> Result<(Vec<Line<'static>>, String), String>;
+        _key: &str,
+        _sh: &Shared,
+        _cx: &Cx,
+    ) -> Option<sentry_core::maint::plan::Head> {
+        None
+    }
+    /// A session's plan is about to be kept: anything of the target's to put in its header
+    /// (the version it moves to, into the workflow's values).
+    fn plan_kept(&self, _doc: &mut PlanDoc, _answer: &str) {}
     /// What a review reads and does, shown before one is started.
     fn review_brief(&self, cx: &Cx) -> Vec<Line<'static>>;
     /// What a review is sent; `auto`: one the app starts by itself, and what it's about.
     fn review_request(&self, auto: Option<&str>, changes: &str, sh: &Shared, cx: &Cx) -> String;
-    /// What Claude is sent to revise an item's plan.
-    fn plan_revise(&self, what: &str) -> String;
     /// Claude's profile for one of its roles; `grants`: what the user allowed in this
     /// conversation (a chat's, a session's).
     fn profile(&self, f: ProfileFor, grants: &[Grant]) -> Profile;
@@ -535,15 +533,6 @@ pub trait Asks {
         _sh: &Shared,
         _cx: &Cx,
     ) -> Option<Vec<Effect>> {
-        None
-    }
-    /// Claude's turn on a plan ended (its answer, or why there's none): the plan as it is
-    /// kept, and what to say. None: the app's own way.
-    fn plan_written(
-        &self,
-        _doc: &mut PlanDoc,
-        _answer: Result<&str, Option<&str>>,
-    ) -> Option<String> {
         None
     }
     /// `C` in an idle chat: carry the conversation on somewhere else (its Claude session).

@@ -21,7 +21,6 @@ use super::SCREENS;
 use super::data::{Data, Kind, Store};
 use super::planview;
 use super::screens::{Screens, View};
-use crate::maint::plan::PlanDoc;
 use crate::maint::tracked::{self, Tracked};
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Session};
@@ -76,7 +75,7 @@ pub enum Own {
     },
     /// Read what needs root (`I`), with the server's password when sudo wants one.
     Inventory,
-    /// The user skipped the reads a plan waits for: Claude writes it without them.
+    /// The user skipped the reads a review waits for: Claude writes it without them.
     ReadsSkipped,
     /// Track what discovery found (written to servers/<name>/items.toml).
     Track(Box<crate::config::MaintItem>),
@@ -597,7 +596,6 @@ impl ServerTarget {
         reads: &[Vec<String>],
         to: ReadsFor,
         out: Result<String, String>,
-        cx: &Cx,
     ) -> Vec<Effect> {
         let toast = |s: String| vec![Effect::Toast(s)];
         let inv = match out {
@@ -633,10 +631,7 @@ impl ServerTarget {
         }
         text.push_str("\nContinue from here.");
         match to {
-            ReadsFor::Plan => {
-                let review = cx.writer.is_some_and(|w| w.review.is_some());
-                vec![Effect::WriterFollow(planview::reads_back(&text, review))]
-            }
+            ReadsFor::Plan => vec![Effect::WriterFollow(planview::reads_back(&text))],
             // Said by the app if the conversation was closed meanwhile.
             ReadsFor::Chat => vec![Effect::ChatTurn(text)],
         }
@@ -684,7 +679,6 @@ fn view_of<'a>(
             .is_some_and(|(read, changed)| read < changed),
         upstream: store.upstream_at,
         everything: cx.everything,
-        planning: cx.writer.filter(|w| w.running()).map(|w| w.item.clone()),
         plans: &sh.plans,
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         wf_list: &sh.wf_list,
@@ -885,10 +879,7 @@ impl Target for ServerTarget {
                 skipped: Vec::new(),
                 own: effect::Own(std::rc::Rc::new(Own::AfterInventory)),
             })],
-            Own::ReadsSkipped => {
-                let review = cx.writer.is_some_and(|w| w.review.is_some());
-                vec![Effect::WriterFollow(planview::reads_skipped(review))]
-            }
+            Own::ReadsSkipped => vec![Effect::WriterFollow(planview::reads_skipped())],
             Own::Track(item) => {
                 let id = item.id.clone();
                 match tracked::track(&name, (**item).clone()) {
@@ -990,7 +981,7 @@ impl Target for ServerTarget {
         cx: &Cx,
     ) -> Vec<Effect> {
         match own.0.downcast_ref::<Own>() {
-            Some(Own::AfterReads(reads, to)) => self.after_reads(reads, *to, out, cx),
+            Some(Own::AfterReads(reads, to)) => self.after_reads(reads, *to, out),
             Some(Own::AfterInventory) => self.after_inventory(out, cx),
             _ => Vec::new(),
         }

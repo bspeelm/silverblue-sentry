@@ -156,8 +156,6 @@ pub struct Slot {
     pub(crate) ways: crate::target::Ways,
     /// The ticked rows being done one after another.
     series: Option<sentry_core::maint::series::Series>,
-    /// The item whose plan the series had written: it isn't written twice.
-    series_planned: Option<String>,
     /// The maintenance change the running workflow makes (logged when it ends).
     wf_change: Option<ItemChange>,
     /// The run already written to the maintenance log.
@@ -172,7 +170,7 @@ pub struct Slot {
     pub(crate) last_change_at: Option<jiff::Timestamp>,
     /// Tests: the last entry written with a note.
     pub last_log: Option<sentry_core::maint::log::LogEntry>,
-    /// Claude writing a plan or a review, in the background.
+    /// Claude writing a review, in the background.
     pub(crate) writer: Option<Writer>,
     /// The Plan view: the item shown, and lines scrolled from the top.
     plan_view: Option<(String, usize)>,
@@ -228,7 +226,6 @@ impl Slot {
             suspend_shell: None,
             ways,
             series: None,
-            series_planned: None,
             wf_change: None,
             wf_logged: None,
             review_run: None,

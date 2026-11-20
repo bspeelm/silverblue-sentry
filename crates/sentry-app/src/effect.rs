@@ -13,7 +13,6 @@ use crate::run::LogKind;
 use sentry_core::claude::Ask;
 use sentry_core::exec::Cmd;
 use sentry_core::maint::log::LogEntry;
-use sentry_core::maint::plan::PlanDoc;
 use sentry_core::tui::ScreenId;
 use sentry_core::tui::input::PromptLine;
 use sentry_core::tui::modal;
@@ -57,10 +56,14 @@ pub enum Effect {
     Choose(Choice),
     /// Workflow actions.
     Wf(WfCmd),
-    /// Open an item's plan in the Plan view.
+    /// Open the plan saved for an item, to read (`p`).
     PlanOpen(String),
-    /// Carry out an item's ready plan (an apply session seeded with it).
+    /// The session for an item: opened on its saved plan when one is ready (straight at
+    /// the plan, to approve), else from the start (it researches, then shows its plan).
     PlanApply(String),
+    /// Start over (`P`): the saved plan is set aside (plans/done/) and the session begins
+    /// from its research.
+    PlanAgain(String),
     /// Open the maintenance log, marking this item's entries.
     LogOpen(Option<String>),
     /// The latest maintenance review (or the box to write one).
@@ -78,12 +81,8 @@ pub enum Effect {
     Edit(PathBuf),
     /// The current step's log, in the pane.
     StepLog,
-    /// Claude writes the plan (after the confirm box): item, the new plan, the request.
-    PlanWrite(String, PlanDoc, String),
     /// Look at a maintenance row again later (`z`).
     Snooze(String, jiff::civil::Date),
-    /// Ask for an optional note, then save the plan (`p`).
-    PlanNote(String, PlanDoc),
     /// Drop an item's plan (`x`, after a confirm).
     PlanDrop(String),
     /// A plan without a workflow, carried out by hand: close it and log the change.
@@ -144,6 +143,7 @@ impl Effect {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReadsFor {
     Chat,
+    /// What Claude writes in the background (a review).
     Plan,
 }
 
@@ -173,10 +173,6 @@ pub enum Prompt {
     LogNote(Box<LogEntry>),
     /// A note added to an entry from Records.
     LogAddNote(Box<LogEntry>),
-    /// A note for Claude before it plans an item (optional).
-    PlanNote(String, Box<PlanDoc>),
-    /// What to change in an item's plan.
-    PlanRevise(String),
     /// A task's cadence (its id): `30d`, `off`.
     TaskEvery(String),
     /// A task just logged as done (its entry, its title): a note for the entry (optional).
@@ -212,11 +208,6 @@ impl PromptLine for Prompt {
                 e.head.item.as_deref().unwrap_or(&e.head.workflow),
                 e.head.result
             ),
-            Prompt::PlanNote(id, plan) => format!(
-                "plan {id} → {} · a note (optional): ",
-                plan.head.to.as_deref().unwrap_or("retire")
-            ),
-            Prompt::PlanRevise(_) => "revise the plan: ".into(),
             Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
             Prompt::TaskNote(_, title) => {
                 format!("{title}: done, logged · how it went, for the log (optional): ")
@@ -228,7 +219,6 @@ impl PromptLine for Prompt {
     fn enter_word(&self) -> &'static str {
         match self {
             Prompt::WfVar(_) => "next",
-            Prompt::PlanRevise(_) => "send",
             Prompt::Own(o) => o.enter,
             _ => "save",
         }

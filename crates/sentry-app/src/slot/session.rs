@@ -281,6 +281,59 @@ impl Slot {
                         }
                     }
                 }
+                Fx::PlanSave { key, body } => self.plan_keep(w, &key, &body, PlanStatus::Ready),
+                // Nothing changed: what Claude wrote is kept as the plan's document (when
+                // the session has one), the row is put off, and the log says why.
+                Fx::Wait {
+                    key,
+                    why,
+                    again,
+                    body,
+                } => {
+                    let plan = self
+                        .apply
+                        .as_ref()
+                        .and_then(|s| s.chat.ask.applying())
+                        .and_then(|a| a.plan.clone());
+                    if let Some(pk) = plan {
+                        let doc = format!("{body}\n\nClaude advises waiting: {why}");
+                        self.plan_keep(w, &pk, &doc, PlanStatus::Wait);
+                    }
+                    let days = again
+                        .as_deref()
+                        .and_then(|a| a.parse::<sentry_core::config::Dur>().ok())
+                        .map_or(30, |d| (d.0.as_secs() / 86_400).max(1) as i64);
+                    let today = jiff::Zoned::now().date();
+                    let until = today
+                        .checked_add(jiff::Span::new().days(days))
+                        .unwrap_or(today);
+                    if !w.offline
+                        && let Err(e) =
+                            sentry_core::maint::later::set(&self.scope, &key, until, today)
+                    {
+                        w.toast(&format!("couldn't save it: {e}"));
+                        continue;
+                    }
+                    self.shared.later.insert(key.clone(), until);
+                    let e = sentry_core::maint::log::LogEntry::event(
+                        &self.scope,
+                        "wait",
+                        "wait",
+                        true,
+                        &format!("Claude advises waiting with {key} until {until}: {why}"),
+                        &[format!("apply:{key}"), "wait".into()],
+                        jiff::Timestamp::now(),
+                    );
+                    if w.offline {
+                        self.shared.log.insert(0, e);
+                    } else if sentry_core::maint::log::write(&e).is_ok() {
+                        self.shared.log = sentry_core::maint::log::list(&self.scope);
+                    }
+                    self.refresh(w, Why::Lists);
+                    w.toast(&format!(
+                        "{key}: it can wait · look again {until} (Records › Later)"
+                    ));
+                }
                 Fx::OpenRun(wf, vars) if !self.ways.run_checks => {
                     let running = self
                         .run
@@ -407,9 +460,7 @@ impl Slot {
             if let Some(pid) = self.apply.as_ref().and_then(|s| s.chat.live.map(|l| l.1)) {
                 let _ = kill(pid);
             }
-            let mut sess = sentry_core::apply::session::Session::new(ask);
-            sess.chat.privacy = self.target.ident().session_privacy.clone();
-            sess.secret_ok = self.secret_ok;
+            let sess = self.session_for(w, ask);
             self.apply = Some(sess);
             return;
         }
@@ -420,6 +471,54 @@ impl Slot {
         c.pending = true;
         c.privacy = self.target.ident().privacy.clone();
         self.chat = Some(c);
+    }
+
+    /// The session for `ask`. When a plan is saved and ready for what it's about, it opens
+    /// on that plan, to approve (nothing is sent first); one written before plans were a
+    /// session's, for a workflow, is that workflow with the plan's values.
+    pub(crate) fn session_for(
+        &mut self,
+        w: &mut Win,
+        ask: Ask,
+    ) -> sentry_core::apply::session::Session {
+        use sentry_core::apply::plan::{self, Kind, Plan, Step};
+        use sentry_core::apply::session::Session;
+        if self.shared.wf_entries.is_empty() && !w.offline {
+            self.load_wf_entries();
+        }
+        let infos = self.wf_infos();
+        let saved = ask
+            .applying()
+            .and_then(|a| a.plan.as_ref())
+            .and_then(|k| self.shared.plans.get(k))
+            .filter(|d| d.head.status == PlanStatus::Ready);
+        let seeded = saved.and_then(|d| {
+            Session::seeded(ask.clone(), &d.body, &infos).or_else(|| {
+                let h = &d.head;
+                if h.workflow.is_empty() {
+                    return None;
+                }
+                let block = plan::to_block(&Plan {
+                    summary: match &h.to {
+                        Some(to) => format!("{} → {to}", h.item),
+                        None => h.item.clone(),
+                    },
+                    rollback: String::new(),
+                    steps: vec![Step {
+                        title: format!("Run {}", h.workflow),
+                        kind: Kind::Workflow {
+                            name: h.workflow.clone(),
+                            vars: h.vars.clone(),
+                        },
+                    }],
+                });
+                Session::seeded(ask.clone(), &format!("{}\n\n{block}", d.body), &infos)
+            })
+        });
+        let mut sess = seeded.unwrap_or_else(|| Session::new(ask));
+        sess.chat.privacy = self.target.ident().session_privacy.clone();
+        sess.secret_ok = self.secret_ok;
+        sess
     }
 
     /// A follow-up in the open chat, as typed (or what sentry offered to send).

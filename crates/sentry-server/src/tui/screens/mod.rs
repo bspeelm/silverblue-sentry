@@ -54,8 +54,6 @@ pub struct View<'a> {
     pub inventory_stale: bool,
     /// Maintenance lists what can wait too (`o`).
     pub everything: bool,
-    /// The maintenance item Claude is writing a plan for.
-    pub planning: Option<String>,
     /// Open plans, by item.
     pub plans: &'a std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
     /// The workflow run in progress (or just ended).

@@ -46,9 +46,9 @@ impl Dismiss {
 pub struct Verbs {
     /// What Enter does, in a word or two ("install", "fix", "open plan"); empty: "do it".
     pub enter: &'static str,
-    /// `p` plans it.
+    /// Its session keeps a plan (an item, a workflow): `p` reads it once there is one.
     pub plan: bool,
-    /// It has a plan (or one is being written): `p` opens it, `P` plans again.
+    /// It has a plan saved: `p` opens it, `P` starts the session over.
     pub planned: bool,
     /// `t` tracks it (discovery).
     pub track: bool,
@@ -75,9 +75,7 @@ pub fn hints(v: &Verbs, ticked: usize) -> Vec<(&'static str, &'static str)> {
         h.push(("Space", "tick"));
     }
     if v.planned {
-        h.extend([("p", "open plan"), ("P", "plan again")]);
-    } else if v.plan {
-        h.push(("p", "plan"));
+        h.extend([("p", "read plan"), ("P", "start over")]);
     }
     if v.track {
         h.push(("t", "track"));
@@ -105,7 +103,7 @@ pub fn hints(v: &Verbs, ticked: usize) -> Vec<(&'static str, &'static str)> {
 /// Every row key, for `?`.
 pub const GRAMMAR: &[(&str, &str)] = &[
     ("Enter", "do what the row says (the key bar names it)"),
-    ("p / P", "plan it (Claude writes the plan) / plan again"),
+    ("p / P", "read its saved plan / start its session over"),
     ("t", "track it (something discovery found)"),
     (
         "d",

@@ -1046,7 +1046,6 @@ fn live_workflow() {
         Instant::now(),
     );
     assert!(screen(&mut a).contains("Start apt-maintenance"));
-    key(&mut a, KeyCode::Char('y'));
     // Drive it: Enter on confirm steps, skip the optional one, mark what can't pass in a
     // container (its kernel is the host's) done by hand.
     for _ in 0..30 {
@@ -1198,7 +1197,6 @@ fn one_password_serves_a_session_a_workflow_step_and_the_reads() {
         vec![Effect::StartWorkflow("apt-maintenance".into())],
         Instant::now(),
     );
-    start_box_yes(&mut a);
     // The preview (auto, no sudo) ends; the update step waits for its confirm.
     let live = wf(&a).unwrap().live.expect("the preview runs");
     run_msg(
@@ -1227,13 +1225,6 @@ fn one_password_serves_a_session_a_workflow_step_and_the_reads() {
     key(&mut a, KeyCode::Char('I'));
     assert!(a.unlock_for_test().is_none());
     assert_eq!(a.root_reads_for_test(), 1);
-}
-
-/// A workflow's start box, where there still is one: yes.
-fn start_box_yes(a: &mut App) {
-    if a.box_yes_for_test().is_some() {
-        key(a, KeyCode::Char('y'));
-    }
 }
 
 #[test]
@@ -1435,21 +1426,24 @@ fn one_input_line_for_every_prompt() {
     assert!(bar(&mut a).starts_with(":▏"));
     key(&mut a, KeyCode::Backspace);
     assert!(bar(&mut a).contains("?  help"));
-    // A plan's note: Esc says it wasn't planned; a box over the line gets the keys first.
+    // A prompt (how often a task recurs): one Backspace too many loses nothing.
     key(&mut a, KeyCode::Char('6'));
-    goto_item(&mut a, "engine");
-    key(&mut a, KeyCode::Char('p'));
-    key(&mut a, KeyCode::Char('1'));
+    a.apply(
+        vec![Effect::Prompt(
+            sentry_app::effect::Prompt::TaskEvery("ups".into()),
+            String::new(),
+        )],
+        Instant::now(),
+    );
     let b = bar(&mut a);
     assert!(
-        b.contains("plan engine →") && b.contains("a note (optional): ▏   Enter save · Esc cancel"),
+        b.contains("ups · every (e.g. 30d, 90d, off): ▏   Enter save · Esc cancel"),
         "{b}"
     );
-    // One Backspace too many loses nothing.
     key(&mut a, KeyCode::Backspace);
-    assert!(bar(&mut a).contains("a note (optional)"));
+    assert!(bar(&mut a).contains("ups · every"));
     key(&mut a, KeyCode::Esc);
-    assert!(bar(&mut a).ends_with("not planned"));
+    assert!(bar(&mut a).contains("?  help"));
     // A task done: the note for the log; Esc leaves none.
     a.add_task_for_test(sentry_core::maint::tasks::Task {
         id: "ups".into(),
@@ -1546,18 +1540,22 @@ fn a_paste_goes_to_the_open_prompt() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.slot().screen, ScreenId::Maint);
     // A box in front of a prompt: the paste isn't for the prompt.
-    goto_item(&mut a, "engine");
-    key(&mut a, KeyCode::Char('p'));
-    key(&mut a, KeyCode::Char('1'));
+    a.apply(
+        vec![Effect::Prompt(
+            sentry_app::effect::Prompt::TaskEvery("ups".into()),
+            String::new(),
+        )],
+        Instant::now(),
+    );
     paste(&mut a, "first");
-    assert!(render_to_string(&mut a, 158, 41).contains("a note (optional): first▏"));
+    assert!(render_to_string(&mut a, 158, 41).contains("off): first▏"));
     a.apply(
         vec![Effect::Info("Note".into(), Vec::new())],
         Instant::now(),
     );
     paste(&mut a, " second");
     key(&mut a, KeyCode::Esc);
-    assert!(render_to_string(&mut a, 158, 41).contains("a note (optional): first▏"));
+    assert!(render_to_string(&mut a, 158, 41).contains("off): first▏"));
 }
 
 #[test]
@@ -1643,7 +1641,10 @@ fn quit_asks_and_colon_commands() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(render_to_string(&mut a, 158, 41).contains("Start compose-update on myserver"));
+    // Its values are asked in the key bar: no box that only says "start".
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Start compose-update"), "{s}");
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     key(&mut a, KeyCode::Esc);
     for c in ":xyz".chars() {
         key(&mut a, KeyCode::Char(c));
@@ -1889,7 +1890,7 @@ fn a_run_shows_a_banner_off_screen_0() {
 }
 
 #[test]
-fn enter_on_a_workflow_asks_its_vars_or_shows_the_start_box() {
+fn enter_on_a_workflow_starts_it_or_asks_its_values() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char('0'));
@@ -1905,21 +1906,16 @@ fn enter_on_a_workflow_asks_its_vars_or_shows_the_start_box() {
         bar.contains("Enter  start") && bar.contains("e  edit toml") && bar.contains("r  reload"),
         "{bar}"
     );
-    // No values to ask: the box that says what starting does. Esc: nothing started.
-    let names: Vec<String> = crate::workflow::SEEDS
-        .iter()
-        .map(|(n, _)| n.to_string())
-        .collect();
-    let at = |name: &str| names.iter().position(|n| n == name).unwrap();
-    for _ in 0..at("apt-maintenance") {
-        key(&mut a, KeyCode::Char('j'));
-    }
+    // No values to ask: Enter starts it, with no box that only repeats that. Its first
+    // step (auto, a preview) runs; the steps that change something wait for their confirm.
+    let _turn = startable(&mut a, "enter-starts-apt-maintenance.toml");
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
-    assert!(s.contains("Start apt-maintenance on myserver"), "{s}");
-    assert!(s.contains("Auto steps run right away"), "{s}");
-    key(&mut a, KeyCode::Esc);
-    assert!(wf(&a).is_none());
+    assert!(!s.contains("Start apt-maintenance on myserver"), "{s}");
+    let w = wf(&a).expect("started");
+    assert!(w.live.is_some_and(|l| l.idx == 0), "the preview runs");
+    assert!(s.contains("Refresh package lists  confirm"), "{s}");
+    drop(_turn);
     // One that takes values: they're asked first, in the key bar, with no box before.
     let mut a = app();
     a.set_wf_entries(vec![sentry_core::workflows::Entry {
@@ -2039,7 +2035,7 @@ fn live_password_step() {
         vec![Effect::StartWorkflow("pw-check".into())],
         Instant::now(),
     );
-    key(&mut a, KeyCode::Char('y'));
+    // Started by that (no box); Enter is the sudo step's own confirm.
     key(&mut a, KeyCode::Enter);
     assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
     let (what, ..) = a.unlock_for_test().expect("the password is asked for");
@@ -2264,7 +2260,9 @@ fn live_inventory() {
 }
 
 #[test]
-fn maintenance_tab_plans_one_item_at_a_time() {
+fn an_item_is_one_session_and_its_plan_is_kept_and_seeds_the_next() {
+    use crate::maint::plan::PlanStatus;
+    use sentry_core::apply::session::Phase;
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
@@ -2274,91 +2272,10 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         s.contains("security · 2 newer") && s.contains("⚠ v1.5.2"),
         "{s}"
     );
-    assert!(s.contains("eol soon") && s.contains("to retire"), "{s}");
     assert!(
         s.contains("Held because") && s.contains("1.5 migrates the database"),
         "{s}"
     );
-    // p: pick the version, then the workflow asks its vars with the item's values filled in.
-    a.set_wf_entries(vec![sentry_core::workflows::Entry {
-        name: "compose-bump".into(),
-        path: "compose-bump.toml".into(),
-        wf: sentry_core::workflows::parse(
-            "name = \"compose-bump\"\ndescription = \"x\"\ndraft = true\n\
-             [vars.service]\nprompt = \"Service\"\n[vars.image]\nprompt = \"Image\"\n\
-             [[steps]]\nid = \"a\"\ntitle = \"a\"\nrun = \"echo {{ service }} {{ image }}\"\n",
-        ),
-        issues: Vec::new(),
-    }]);
-    key(&mut a, KeyCode::Char('p'));
-    let s = screen(&mut a);
-    assert!(
-        s.contains("Plan: move web from 1.4.2 to")
-            && s.contains("1  let Claude recommend a version"),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Char('2'));
-    assert!(screen(&mut a).contains("plan web → 1.5.2 · a note (optional): ▏"));
-    for c in "after Saturday's backup".chars() {
-        key(&mut a, KeyCode::Char(c));
-    }
-    key(&mut a, KeyCode::Enter);
-    // A plan of its own, not Ask Claude: the box says what Claude will do and where it's saved.
-    let s = screen(&mut a);
-    assert!(
-        s.contains("Plan web with Claude") && s.contains("plans/web.md"),
-        "{s}"
-    );
-    assert!(!s.contains("Ask Claude"), "{s}");
-    key(&mut a, KeyCode::Char('y'));
-    // The Plan view opens while Claude writes; no chat.
-    assert!(a.chat_mut().is_none());
-    let s = screen(&mut a);
-    assert!(
-        s.contains(" Plan ") && s.contains("Claude is writing it"),
-        "{s}"
-    );
-    assert!(
-        s.contains("1.4.2 → 1.5.2") && s.contains("compose-bump"),
-        "{s}"
-    );
-    a.writer_answered(
-        "I'll read the notes first.\nTARGET: v1.5.1\n# Plan: web 1.4.2 → 1.5.1\n\n## Assessment\n1.5.2 regresses the export; 1.5.1 has the fix.\n\n## Before\n```sh\nsudo true\n```",
-    );
-    let s = screen(&mut a);
-    assert!(
-        s.contains("ready to apply") && s.contains("1.4.2 → 1.5.1"),
-        "Claude's TARGET wins: {s}"
-    );
-    assert!(
-        s.contains("Assessment") && s.contains("│ sudo true"),
-        "rendered as a document: {s}"
-    );
-    assert!(
-        !s.contains("I'll read the notes first") && !s.contains("TARGET"),
-        "{s}"
-    );
-    assert!(s.contains("note: after Saturday's backup"), "{s}");
-    // Back to the list: the item says planned; p says a plan exists, P plans again.
-    key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char('p'));
-    let s = screen(&mut a);
-    assert!(
-        s.contains("web already has a plan (→ 1.5.1 · ready): Enter opens it · P plans again"),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Char('P'));
-    assert!(screen(&mut a).contains("Plan: move web from 1.4.2 to"));
-    key(&mut a, KeyCode::Esc);
-    let s = screen(&mut a);
-    assert!(
-        s.contains("planned → 1.5.1")
-            && s.contains("Plan: 1.4.2 → 1.5.1 with compose-bump · ready"),
-        "{s}"
-    );
-    key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("ready to apply"));
-    // A draft is for planning, not applying: the reviewed workflow, ready to start.
     a.set_wf_entries(vec![sentry_core::workflows::Entry {
         name: "compose-bump".into(),
         path: "compose-bump.toml".into(),
@@ -2369,26 +2286,79 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         ),
         issues: Vec::new(),
     }]);
-    // Enter in the plan applies it: an apply session, told the plan and its values.
+    // Enter: its session. No version chooser, no note, no "write it" box, no plan writer:
+    // the brief says what a plan document was written from, and that it may say wait.
     key(&mut a, KeyCode::Enter);
+    assert!(a.writer_for_test().is_none() && a.chat_mut().is_none());
     let p = a.consent_text().expect("a session");
     assert!(
-        p.contains("Claude's plan for it, written earlier (target 1.5.1")
-            && p.contains("image = \"example/web:1.5.1\"")
-            && p.contains("carry it out"),
+        p.contains("start from the maintenance")
+            && p.contains("WebFetch")
+            && p.contains("TARGET: <exact upstream tag>")
+            && p.contains("status = \"wait\"")
+            && p.contains("workflow = \"compose-bump\""),
         "{p}"
     );
     key(&mut a, KeyCode::Enter);
-    // Claude's plan: the workflow, with the plan's values, which it asks with them filled in.
+    // Its research and its plan come as one answer, shown once, to approve.
     a.apply_answer_for_test(
-        "```sentry-apply\nsummary = \"bump web\"\n[[step]]\ntitle = \"Bump\"\n\
+        "TARGET: v1.5.1\n## Assessment\n1.5.2 regresses the export; 1.5.1 has the fix.\n\n\
+         ```sentry-apply\nsummary = \"bump web\"\n[[step]]\ntitle = \"Bump\"\n\
          workflow = \"compose-bump\"\nvars = { image = \"example/web:1.5.1\" }\n```",
     );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Review);
     let s = screen(&mut a);
     assert!(
-        s.contains("workflow compose-bump (image=example/web:1.5.1)"),
+        s.contains("workflow compose-bump (image=example/web:1.5.1)")
+            && s.contains("Enter  apply the plan"),
         "{s}"
     );
+    // The plan is kept under the item: Claude's TARGET, its assessment, the plan's block.
+    let doc = a.slot().shared.plans.get("web").cloned().expect("kept");
+    assert_eq!(doc.head.status, PlanStatus::Ready);
+    assert_eq!(doc.head.to.as_deref(), Some("1.5.1"));
+    assert_eq!(doc.head.vars["image"], "example/web:1.5.1");
+    assert!(
+        doc.body.starts_with("## Assessment")
+            && doc.body.contains("```sentry-apply")
+            && !doc.body.contains("TARGET"),
+        "{}",
+        doc.body
+    );
+    // Left for another day: the list says planned, and p opens the plan to read.
+    key(&mut a, KeyCode::Esc);
+    assert!(a.apply_session().is_none());
+    let s = screen(&mut a);
+    assert!(
+        s.contains("planned → 1.5.1")
+            && s.contains("Plan: 1.4.2 → 1.5.1 with compose-bump · ready"),
+        "{s}"
+    );
+    assert!(
+        s.contains("p  read plan") && s.contains("P  start over"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('p'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("ready to apply") && s.contains("1.5.2 regresses the export"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("revise") && a.writer_for_test().is_none(),
+        "{s}"
+    );
+    // Enter (there, or on the row): the session opens on that plan, nothing sent first.
+    key(&mut a, KeyCode::Enter);
+    let sess = a.apply_session().expect("a session");
+    assert_eq!(sess.phase, Phase::Review);
+    assert!(sess.can_approve() && sess.chat.live.is_none());
+    let s = screen(&mut a);
+    assert!(
+        s.contains("the plan saved earlier") && s.contains("Enter  apply the plan"),
+        "{s}"
+    );
+    // Approved: its workflow, with the plan's values filled in.
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
@@ -2399,55 +2369,58 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     let s = screen(&mut a);
     assert!(s.contains("Service (service): web▏"), "{s}");
     key(&mut a, KeyCode::Esc);
-    // Its values dismissed, it never started: back in the session, Enter starts it again
-    // (not an empty Run view that drops back to Maintenance).
+    // Its values dismissed, it never started: back in the session, Enter starts it again.
     a.apply_session().unwrap().chat.hidden = false;
     let s = screen(&mut a);
     assert!(s.contains("compose-bump: waiting to start"), "{s}");
     key(&mut a, KeyCode::Enter);
-    let s = screen(&mut a);
-    assert!(
-        s.contains("compose-bump 1/2 · Image (image): example/web:1.5.1▏"),
-        "{s}"
-    );
+    assert!(screen(&mut a).contains("compose-bump 1/2 · Image (image): example/web:1.5.1▏"));
     key(&mut a, KeyCode::Esc);
-    // The session waits for the run; close it for now.
     a.apply_session().unwrap().chat.hidden = false;
     a.apply_session().unwrap().phase =
         sentry_core::apply::session::Phase::Settled(sentry_core::apply::session::End::Stopped);
     key(&mut a, KeyCode::Esc);
-    // The plan stays until it's applied or dropped.
+    // P starts over: the saved plan is set aside, and the session begins from its research.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    assert!(screen(&mut a).contains("planned → 1.5.1"));
-    key(&mut a, KeyCode::Char('x'));
-    key(&mut a, KeyCode::Char('y'));
-    assert!(!screen(&mut a).contains("planned →"));
-    // A plan Claude says to wait on can't be applied.
+    goto_item(&mut a, "web");
+    key(&mut a, KeyCode::Char('P'));
+    assert!(!a.slot().shared.plans.contains_key("web"));
+    assert_eq!(a.apply_session().expect("a session").phase, Phase::Brief);
+    key(&mut a, KeyCode::Esc);
+    // A plan from before plans were a session's (a document, its workflow and values):
+    // Enter goes straight to it, as that workflow with those values.
     a.slot_mut().shared.plans.insert(
         "web".into(),
         crate::maint::plan::PlanDoc {
             head: crate::maint::plan::Head {
                 item: "web".into(),
                 workflow: "compose-bump".into(),
-                status: crate::maint::plan::PlanStatus::Wait,
+                status: PlanStatus::Ready,
+                to: Some("1.5.1".into()),
+                vars: [("image".to_string(), "example/web:1.5.1".to_string())].into(),
                 ..Default::default()
             },
-            body: "# Plan\nNot until 1.5.3.".into(),
+            body: "# Plan: web 1.4.2 → 1.5.1\n\n## Before\nBack up the volume.".into(),
         },
     );
-    assert!(screen(&mut a).contains("plan: wait"));
     goto_item(&mut a, "web");
     key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("Claude advises waiting: r revises it"));
+    assert_eq!(a.apply_session().expect("a session").phase, Phase::Review);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Back up the volume.")
+            && s.contains("workflow compose-bump (image=example/web:1.5.1)"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Esc);
-    // z offers later dates; A asks about the item among everything recommended.
-    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    // x drops it.
+    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Char('y'));
+    assert!(!screen(&mut a).contains("planned →"));
+    // z offers later dates; A: 2 asks about the item among everything recommended.
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("in 30 days ("));
     key(&mut a, KeyCode::Esc);
-    // A: 2 asks about the item among everything recommended; 1 applies it with Claude, told
-    // its standing and its workflow.
     key(&mut a, KeyCode::Char('A'));
     key(&mut a, KeyCode::Char('2'));
     let prompt = a.consent_text().expect("consent");
@@ -2455,16 +2428,42 @@ fn maintenance_tab_plans_one_item_at_a_time() {
         prompt.contains("recommends maintaining") && prompt.contains("About \"web\""),
         "{prompt}"
     );
-    key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char('A'));
-    key(&mut a, KeyCode::Char('1'));
-    let prompt = a.consent_text().expect("consent");
-    assert!(
-        prompt.contains("Do this for me") && prompt.contains("compose-bump"),
-        "{prompt}"
-    );
 }
 
+#[test]
+fn claude_saying_wait_changes_nothing_and_puts_the_row_off() {
+    use crate::maint::plan::PlanStatus;
+    use sentry_core::apply::session::{End, Phase};
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    goto_item(&mut a, "web");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "1.5.2 has an open data-loss bug.\n```sentry-verdict\nstatus = \"wait\"\n\
+         summary = \"wait for 1.5.3\"\nagain = \"14d\"\n```",
+    );
+    let sess = a.apply_session().unwrap();
+    assert_eq!(sess.phase, Phase::Settled(End::Waited));
+    assert!(sess.runs.is_empty(), "nothing ran");
+    let s = screen(&mut a);
+    assert!(s.contains("Claude advises waiting · wait for 1.5.3"), "{s}");
+    assert!(s.contains("it can wait · look again"), "{s}");
+    // Put off for the 14 days it said (Records › Later), the reason kept with the plan and
+    // in the log.
+    let until = a.slot().shared.later.get("web").copied().expect("put off");
+    let today = jiff::Zoned::now().date();
+    assert_eq!((until - today).get_days(), 14);
+    let doc = &a.slot().shared.plans["web"];
+    assert_eq!(doc.head.status, PlanStatus::Wait);
+    assert!(doc.body.contains("data-loss bug") && doc.body.contains("wait for 1.5.3"));
+    let log = a.slot().shared.log.first().expect("logged").to_md();
+    assert!(log.contains("Claude advises waiting with web") && log.contains("wait for 1.5.3"));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none());
+    assert!(screen(&mut a).contains("plan: wait"));
+}
 #[test]
 fn recommendations_come_first_and_enter_does_what_they_say() {
     let mut a = app();
@@ -2490,8 +2489,9 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
         "the first row is selected: {s}"
     );
     key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
-    key(&mut a, KeyCode::Esc);
+    // Enter was the approval: its screen, and no box that only says "start".
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
+    assert!(!screen(&mut a).contains("Start apt-maintenance on myserver"));
     // z puts one off.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('z'));
@@ -2673,7 +2673,8 @@ fn capital_b_expects_everything_like_it() {
 }
 
 #[test]
-fn enter_on_an_item_plans_it_or_opens_its_log() {
+fn enter_on_an_item_is_its_session_or_opens_its_log() {
+    use sentry_core::apply::session::Phase;
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
@@ -2681,10 +2682,11 @@ fn enter_on_an_item_plans_it_or_opens_its_log() {
     goto_item(&mut a, "os");
     let s = screen(&mut a);
     assert!(s.contains("Enter  its log"), "{s}");
-    assert!(
-        s.contains("Enter opens its log · p: Claude plans it"),
-        "{s}"
-    );
+    assert!(s.contains("Enter opens its log"), "{s}");
+    // p reads a saved plan; there is none, and nothing is written for it.
+    key(&mut a, KeyCode::Char('p'));
+    assert!(screen(&mut a).contains("no plan saved for os yet"));
+    assert!(a.writer_for_test().is_none());
     // x has nothing to dismiss here, and says so as sentry does.
     key(&mut a, KeyCode::Char('x'));
     assert!(screen(&mut a).contains("only findings can be marked expected"));
@@ -2695,19 +2697,18 @@ fn enter_on_an_item_plans_it_or_opens_its_log() {
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
-    // Newer versions: Enter plans it (what p does).
+    // Newer versions: Enter is its session (no version chooser, no note, no box).
     goto_item(&mut a, "web");
     let s = screen(&mut a);
-    assert!(s.contains("Enter  plan"), "{s}");
-    assert!(s.contains("Enter: Claude plans it"), "{s}");
+    assert!(s.contains("Enter  with Claude"), "{s}");
+    assert!(s.contains("Enter: with Claude (it looks into it"), "{s}");
     key(&mut a, KeyCode::Enter);
-    let s = screen(&mut a);
-    assert!(s.contains("Plan: move web from 1.4.2 to"), "{s}");
+    assert_eq!(a.apply_session().expect("a session").phase, Phase::Brief);
     key(&mut a, KeyCode::Esc);
-    // To retire: planned too.
+    // To retire: its session too.
     goto_item(&mut a, "legacy");
     key(&mut a, KeyCode::Enter);
-    assert!(screen(&mut a).contains("plan legacy → retire · a note"));
+    assert!(a.apply_session().is_some());
 }
 
 /// The report on screen with one before it: a finding since gone, and one that's new.
@@ -2915,95 +2916,6 @@ fn claude_target_lines() {
     );
     assert_eq!(target("## TARGET: wait"), Some(None));
     assert_eq!(target("no target here"), None);
-}
-
-/// Read-only against the real server: `p` on an item with Claude choosing the version; prints
-/// the saved plan. Use a scratch XDG_CONFIG_HOME (a copy of the config) so the plan isn't
-/// written to the real state file.
-/// `SENTRY_SERVER_LIVE=<name> SENTRY_ITEM=<id> XDG_CONFIG_HOME=<copy> cargo test live_plan -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn live_plan() {
-    sentry_core::paths::use_real_dirs();
-    let (Ok(name), Ok(item)) = (
-        std::env::var("SENTRY_SERVER_LIVE"),
-        std::env::var("SENTRY_ITEM"),
-    ) else {
-        return;
-    };
-    let (file, _) = crate::config::load().unwrap();
-    let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
-    let pos = s
-        .maintenance
-        .items
-        .iter()
-        .position(|i| i.id == item)
-        .expect("item");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = super::app(Remote::new(n, s), tx);
-    a.start(Instant::now());
-    let pump = |a: &mut App, secs: u64| {
-        let until = Instant::now() + std::time::Duration::from_secs(secs);
-        while Instant::now() < until {
-            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                a.on_event(ev, Instant::now());
-            }
-            a.tick(Instant::now());
-        }
-    };
-    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    pump(&mut a, 10);
-    for _ in 0..pos {
-        key(&mut a, KeyCode::Char('j'));
-    }
-    key(&mut a, KeyCode::Char('p'));
-    key(&mut a, KeyCode::Char('1'));
-    key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Char('y'));
-    assert!(
-        a.chat_mut().is_none(),
-        "written in the background, nothing opens"
-    );
-    // Leave the Plan view and move about meanwhile: it's still written and saved.
-    key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char(ScreenId::Dash.key()));
-    let mut asked = false;
-    for _ in 0..300 {
-        pump(&mut a, 3);
-        // Claude stopped for reads that need root: skip them here (no password in a test);
-        // it then writes the plan without them.
-        if let Some((what, ..)) = a.unlock_for_test() {
-            println!("Claude asked to read with sudo first: {what}");
-            asked = true;
-            key(&mut a, KeyCode::Esc);
-            continue;
-        }
-        if !a.writing() && a.slot().shared.plans.contains_key(&item) {
-            break;
-        }
-    }
-    println!("asked for reads before writing: {asked}");
-    pump(&mut a, 1);
-    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    key(&mut a, KeyCode::Enter);
-    println!("{}", render_to_string(&mut a, 158, 41));
-    let plan = a
-        .slot()
-        .shared
-        .plans
-        .get(&item)
-        .cloned()
-        .expect("a saved plan");
-    let path = crate::maint::plan::path(&name, &item);
-    println!(
-        "{}\n{}",
-        path.display(),
-        std::fs::read_to_string(&path).expect("the .md")
-    );
-    assert!(
-        plan.body.starts_with('#'),
-        "the document, not Claude's narration"
-    );
 }
 
 /// Against a disposable sshd whose sudo asks for a password: a read Claude makes that needs
@@ -3307,11 +3219,10 @@ fn a_review_that_needs_root_reads_is_not_saved_until_they_are_back() {
     a.writer_answered("# Maintenance review · myserver\n\n## Now\n- web");
     assert!(a.review_for_test().is_some());
     assert!(screen(&mut a).contains("- web"));
-    // Asked again for a review, not a plan.
-    let back = super::planview::reads_back("$ sudo smartctl", true);
+    // Asked again for a review.
+    let back = super::planview::reads_back("$ sudo smartctl");
     assert!(back.contains("review document") && !back.contains("TARGET"));
-    assert!(super::planview::reads_skipped(true).contains("review document"));
-    assert!(super::planview::reads_back("x", false).contains("TARGET"));
+    assert!(super::planview::reads_skipped().contains("review document"));
 }
 
 /// Read-only against the real server: every recommendation and what discovery found.
@@ -3386,10 +3297,15 @@ fn w_goes_to_screen_0() {
     );
     // :wf <name> goes there, selects it and does what Enter does.
     key(&mut a, KeyCode::Char('1'));
+    let _turn = startable(&mut a, "colon-wf-apt-maintenance.toml");
     colon(&mut a, "wf apt-maintenance");
     assert_eq!(a.slot().screen, ScreenId::Upgrade);
-    assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
+    assert!(wf(&a).is_some(), "started: Enter on it was the approval");
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Esc);
+    drop(_turn);
     // :wf alone, and the old names for the run, open the screen.
     for cmd in ["wf", "run", "workflows", "upgrade"] {
         key(&mut a, KeyCode::Char('1'));
@@ -3401,52 +3317,47 @@ fn w_goes_to_screen_0() {
 }
 
 #[test]
-fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
+fn an_item_without_a_workflow_is_researched_approved_applied_and_its_plan_closed() {
+    use sentry_core::apply::session::{End, Phase};
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     goto_item(&mut a, "engine");
     assert!(
-        screen(&mut a).contains("Enter: Claude plans it (no workflow: you run its steps)"),
+        screen(&mut a).contains("Enter: with Claude (no workflow: its plan is the steps"),
         "{}",
         screen(&mut a)
     );
-    key(&mut a, KeyCode::Char('p'));
-    // No newer releases known in the fixture, or a choice of them: either way a note next.
-    let s = screen(&mut a);
-    if s.contains("let Claude recommend a version") {
-        key(&mut a, KeyCode::Char('1'));
-    }
-    let s = screen(&mut a);
-    assert!(s.contains("plan engine"), "{s}");
+    // What used to be p, a version, a note, a box, a wait, Enter, Enter: Enter, Enter.
     key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Char('y'));
-    a.writer_answered(
-        "TARGET: 29.9.2\n# Plan: engine\n\n## Change\n```sh\nsudo apt-get install docker-ce\n```",
-    );
-    let s = screen(&mut a);
-    assert!(s.contains("ready to apply"), "{s}");
-    // Enter: no workflow applies it, so an apply session carries the plan out (you don't
-    // run its steps yourself); done, the plan is closed.
-    key(&mut a, KeyCode::Enter);
-    let p = a.consent_text().expect("a session");
-    assert!(
-        p.contains("Claude's plan for it, written earlier") && p.contains("carry it out"),
-        "{p}"
-    );
     key(&mut a, KeyCode::Enter);
     a.apply_answer_for_test(
-        "```sentry-apply\nsummary = \"engine\"\n[[step]]\ntitle = \"Install\"\n\
-         run = \"sudo apt-get install docker-ce\"\n```",
+        "TARGET: 29.9.2\nThe log has nothing against it.\n\n```sentry-apply\nsummary = \"engine\"\n\
+         [[step]]\ntitle = \"Install\"\nrun = \"sudo apt-get install docker-ce\"\n```",
     );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Review);
+    assert!(a.slot().shared.plans.contains_key("engine"), "saved");
+    // One approval; then it runs, is verified, and its plan is done with.
     key(&mut a, KeyCode::Enter);
     a.apply_exit_for_test(0); // sudo -n works
     a.apply_exit_for_test(0); // the step
     assert!(wf(&a).is_none(), "no workflow started");
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"29.9.2\"\n```");
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
     assert!(
         !a.slot().shared.plans.contains_key("engine"),
-        "the plan is closed"
+        "the plan is closed (plans/done/)"
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("the plan for engine is done (plans/done/)"),
+        "{s}"
+    );
+    let entry = a.slot().shared.log.first().expect("logged");
+    assert!(
+        entry.head.tags.iter().any(|t| t == "item:engine"),
+        "{:?}",
+        entry.head.tags
     );
 }
 
@@ -4399,47 +4310,39 @@ fn ticked_rows_are_done_one_after_another() {
 }
 
 #[test]
-fn a_series_plans_an_item_then_applies_its_plan() {
+fn in_a_series_an_item_is_just_a_session() {
     use sentry_core::apply::session::{Phase, Turn};
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(vec![Own::maint_find("web".into())], Instant::now());
     let s = screen(&mut a);
-    assert!(s.contains("Enter: Claude writes a plan for web"), "{s}");
+    assert!(
+        s.contains("Enter: Claude looks into web, then shows its plan"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Char(' '));
     key(&mut a, KeyCode::Enter);
-    // No version to pick, no note, no box: Claude writes the plan, in its view.
-    let s = screen(&mut a);
-    assert!(a.writing() && s.contains("Claude is writing it"), "{s}");
-    assert!(s.contains("series 1 of 1 ·"), "the banner: {s}");
-    a.writer_answered("TARGET: v1.5.1\n# Plan: web 1.4.2 → 1.5.1\n\n## Before\n```sh\ntrue\n```");
-    // Ready: the same row is now an apply session with that plan, started.
+    // No plan written first, no box: the row's session, started.
+    assert!(a.writer_for_test().is_none());
     let s = screen(&mut a);
     assert!(s.contains("Claude · 1 of 1 ·"), "{s}");
-    let sess = a.apply_session().unwrap();
-    assert_eq!(sess.phase, Phase::Thinking(Turn::Investigate));
-    assert!(
-        sess.chat.ask.context.contains("Plan: web 1.4.2 → 1.5.1"),
-        "{}",
-        sess.chat.ask.context
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
     );
-
-    // A plan that says wait: nothing to apply, and the series is through.
-    let mut a = app();
-    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    a.apply(vec![Own::maint_find("web".into())], Instant::now());
-    key(&mut a, KeyCode::Char(' '));
-    key(&mut a, KeyCode::Enter);
-    a.writer_answered("TARGET: wait\n# Plan: web\nNot until 1.5.3.");
+    // It says wait: nothing to apply, the row is put off, and the series is through.
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"wait\"\nsummary = \"not until 1.5.3\"\n```",
+    );
     assert!(a.apply_session().is_none());
+    assert!(a.slot().shared.later.contains_key("web") || !a.slot().shared.later.is_empty());
     let s = screen(&mut a);
     assert!(
-        s.contains("series: 0 of 1 done · 1 not: its plan says wait"),
+        s.contains("series: 0 of 1 done · 1 not: it can wait"),
         "{s}"
     );
 }
-
 #[test]
 fn a_series_starts_a_workflow_without_its_box_and_stops_when_it_is_abandoned() {
     let mut a = app();

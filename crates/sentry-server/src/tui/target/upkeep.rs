@@ -118,22 +118,15 @@ impl Upkeep for ServerTarget {
         let v = self.view_all(sh, cx);
         let rec = m::every_rec(&v).into_iter().find(|r| r.key == key)?;
         Some(match m::series_kind(&v, &rec)? {
-            SeriesKind::Finding(id) => SeriesStep::Session(super::super::ask::ask_finding(
-                &v,
-                &self.remote,
-                m::finding(&v, &id)?,
+            SeriesKind::Finding(id) => SeriesStep::Session(Box::new(
+                super::super::ask::ask_finding(&v, &self.remote, m::finding(&v, &id)?),
             )),
-            SeriesKind::Apply => SeriesStep::Session(super::super::ask::apply_rec(
+            SeriesKind::Apply => SeriesStep::Session(Box::new(super::super::ask::apply_rec(
                 &v,
                 &self.remote,
                 &rec,
                 &Self::steps_text(sh),
-            )?),
-            SeriesKind::Plan(item) => {
-                let (s, it) = m::status_of(&v, &item).zip(m::item_of(&v, &item))?;
-                let doc = m::plan_doc(&v, s, it, None);
-                SeriesStep::Plan(item, doc)
-            }
+            )?)),
             SeriesKind::Workflow(name) => SeriesStep::Workflow(name),
             SeriesKind::Audit => SeriesStep::Audit,
         })
@@ -231,95 +224,13 @@ impl Asks for ServerTarget {
         )
     }
 
-    /// `p`, after the note: what Claude is asked, in a confirm box; yes starts the writer.
-    fn plan_brief(
-        &self,
-        id: &str,
-        doc: &PlanDoc,
-        sh: &Shared,
-        cx: &Cx,
-    ) -> Result<(Vec<Line<'static>>, String), String> {
-        let steps = sh
-            .wf_entries
-            .iter()
-            .find(|e| !doc.head.workflow.is_empty() && e.name == doc.head.workflow)
-            .and_then(|e| e.wf.as_ref().ok())
-            .map(|w| {
-                w.steps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, st)| {
-                        format!(
-                            "{}. {} [{}]{}",
-                            i + 1,
-                            st.title,
-                            st.tag(),
-                            st.run.as_deref().map_or(String::new(), |c| format!(
-                                "\n   $ {}",
-                                c.replace('\n', "\n     ")
-                            ))
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_else(|| format!("(workflow {} not found)", doc.head.workflow));
+    /// The header of an item's plan, kept for the first time: what it moves from, its
+    /// workflow and that workflow's values.
+    fn plan_head(&self, key: &str, sh: &Shared, cx: &Cx) -> Option<crate::maint::plan::Head> {
+        use super::super::screens::maint as m;
         let v = self.view(sh, cx);
-        let Some((s, it)) =
-            v.s.maint
-                .value
-                .as_ref()
-                .and_then(|st| st.iter().find(|s| s.id == id))
-                .zip(v.cfg.maintenance.items.iter().find(|i| i.id == id))
-        else {
-            return Err("that item is gone".into());
-        };
-        let goal = match (&doc.head.to, it.retire.is_some()) {
-            (_, true) => format!("retiring {id}"),
-            (Some(t), _) => format!(
-                "moving {id} from {} to {t}",
-                s.pinned.as_deref().unwrap_or("?")
-            ),
-            (None, _) => format!(
-                "moving {id} from {} to the version you recommend",
-                s.pinned.as_deref().unwrap_or("?")
-            ),
-        };
-        let prompt = planview::request(
-            &super::super::screens::maint::context(&v, &self.remote, s, it),
-            &doc.head.workflow,
-            &steps,
-            &goal,
-            doc.head.note.as_deref(),
-        );
-        let t = cx.theme;
-        let notes = &self.remote.cfg.maintenance.notes;
-        let lines = vec![
-            Line::styled(format!("Claude writes the plan for {goal}."), t.fg()),
-            Line::raw(""),
-            Line::styled(
-                format!(
-                    "It reads the release notes on the web, your notes ({}), and {} read-only \
-                     through the gateway; reads that need root are asked for first. Its answer \
-                     is saved as {}.",
-                    if notes.is_empty() {
-                        "none".to_string()
-                    } else {
-                        notes.join(", ")
-                    },
-                    self.remote.name,
-                    crate::maint::plan::path(&self.remote.name, id).display()
-                ),
-                t.dim(),
-            ),
-            Line::raw(""),
-            Line::styled(
-                "Sent to Claude through your Claude Code login (Anthropic). Nothing on the \
-                 server changes.",
-                t.s(t.yellow),
-            ),
-        ];
-        Ok((lines, prompt))
+        let (s, it) = m::status_of(&v, key).zip(m::item_of(&v, key))?;
+        Some(m::plan_doc(&v, s, it, None).head)
     }
 
     fn review_brief(&self, cx: &Cx) -> Vec<Line<'static>> {
@@ -389,10 +300,6 @@ impl Asks for ServerTarget {
         }
     }
 
-    fn plan_revise(&self, what: &str) -> String {
-        planview::revise(what)
-    }
-
     fn profile(&self, f: ProfileFor, grants: &[Grant]) -> Profile {
         let r = &self.remote;
         let (os, kernel) = self.store.host.value.clone().unwrap_or_default();
@@ -403,14 +310,14 @@ impl Asks for ServerTarget {
                 .with_notes(&r.cfg.maintenance.notes)
                 .with_log(&sentry_core::maint::log::dir(&r.name))
                 .with_grants(grants),
-            // An apply session may read release notes (as plans do): it may have to decide.
+            // An apply session researches what a plan document was written for: release
+            // notes on the web, the notes files, the maintenance log.
             ProfileFor::Session => super::super::ask::with_web(
                 super::super::ask::session_profile(r, &os, &kernel, sudo)
                     .with_notes(&r.cfg.maintenance.notes)
                     .with_log(&sentry_core::maint::log::dir(&r.name))
                     .with_grants(grants),
             ),
-            ProfileFor::Plan => planview::profile(r, &os, &kernel, sudo),
             ProfileFor::Review => planview::review_profile(r, &os, &kernel, sudo),
         }
     }
@@ -430,8 +337,7 @@ impl Asks for ServerTarget {
         }
         if waiting {
             // Nothing queued after all: have it write what it was writing.
-            let review = cx.writer.is_some_and(|w| w.review.is_some());
-            return vec![Effect::WriterFollow(planview::reads_skipped(review))];
+            return vec![Effect::WriterFollow(planview::reads_skipped())];
         }
         Vec::new()
     }

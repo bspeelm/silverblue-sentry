@@ -560,9 +560,9 @@ impl Slot {
         w.dirty = true;
     }
 
-    /// The start box for a workflow: what it does, then `start`.
-    /// Enter on a workflow (screen 0, `:wf <name>`): its values are asked when it takes any,
-    /// otherwise the box that says what starting it does.
+    /// Enter on a workflow (screen 0, a row, `:wf <name>`): it starts. Enter was the approval:
+    /// its auto steps run, and every step that changes something still waits for its own
+    /// confirm. Values it takes are asked first; one that can't start says why.
     pub(crate) fn wf_start(&mut self, w: &mut Win, name: &str, now: Instant) {
         // The target's own way of starting one (its screen's Enter).
         if let Some(e) = self.target.wf_start(name, &self.shared, &cx!(self, w)) {
@@ -598,46 +598,7 @@ impl Slot {
             });
             return;
         }
-        if e.wf.as_ref().is_ok_and(|w| !w.vars.is_empty()) {
-            return self.wf_cmd(w, WfCmd::Begin(name.to_string()));
-        }
-        self.start_box(w, name);
-    }
-
-    pub(crate) fn start_box(&mut self, w: &mut Win, name: &str) {
-        let t = w.theme;
-        let Some(e) = self.shared.wf_entries.iter().find(|e| e.name == name) else {
-            return w.toast(&format!("no workflow {name}"));
-        };
-        let steps: Vec<String> = match &e.wf {
-            Ok(w) => w.steps.iter().map(|s| s.id.clone()).collect(),
-            Err(_) => Vec::new(),
-        };
-        let mut lines = vec![
-            Line::styled(
-                e.wf.as_ref()
-                    .map(|w| w.description.clone())
-                    .unwrap_or_default(),
-                t.fg(),
-            ),
-            Line::styled(steps.join(" → "), t.dim()),
-            Line::styled(
-                "Auto steps run right away; every other step waits for Enter.",
-                t.dim(),
-            ),
-        ];
-        if let Some(why) = e.blocked() {
-            lines.push(Line::styled(why, t.s(t.yellow)));
-        }
-        self.modal = Some(Modal {
-            title: format!("Start {} on {}", e.name, self.title),
-            color: t.yellow,
-            lines,
-            yes: Some((
-                "start".into(),
-                vec![Effect::Wf(WfCmd::Begin(e.name.clone()))],
-            )),
-        });
+        self.wf_cmd(w, WfCmd::Begin(name.to_string()));
     }
 
     /// The workflows the target has, with their values, for checking a plan's steps.

@@ -59,13 +59,10 @@ pub enum Effect {
     Snooze(String, i64),
     /// A saved plan (`plans/<workflow>.md`), in the Plan view.
     PlanOpen(String),
-    /// `p` on a workflow: its plan if there is one (or `again`: a new one), else a note
-    /// for Claude, then what it'll do, then Claude writes it.
-    PlanAsk(String, bool),
-    PlanWrite(String, Option<String>),
-    /// Start the plan's workflow with its values.
+    /// The session for a workflow's plan: on the saved plan when one is ready (to approve).
     PlanApply(String),
-    PlanDrop(String),
+    /// Start over (`P`): the saved plan is set aside, the session begins from its research.
+    PlanAgain(String),
     /// `R`: the latest review, or what writing one means.
     ReviewOpen,
     TaskRemove(String),
@@ -90,8 +87,6 @@ pub enum Prompt {
         rest: Vec<(String, String, String)>,
         vars: BTreeMap<String, String>,
     },
-    /// A note for Claude before it plans this workflow (optional).
-    PlanNote(String),
 }
 
 impl Prompt {
@@ -99,7 +94,6 @@ impl Prompt {
         match self {
             Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
             Prompt::WfVar { prompt, .. } => format!("{prompt}: "),
-            Prompt::PlanNote(wf) => format!("plan {wf} · a note for Claude (optional): "),
         }
     }
 }
@@ -338,9 +332,10 @@ impl App {
             },
             body: String::new(),
         };
-        self.0
-            .start_writer_for_test(super::docview::Writer::new(wf, doc));
-        self.writer_answered(answer);
+        // A plan on disk from before plans were a session's (its document, no plan block).
+        let mut doc = doc;
+        doc.take_answer(answer);
+        self.0.slot_mut().shared.plans.insert(wf.to_string(), doc);
     }
 
     /// Claude wrote this review (nothing is sent or saved).

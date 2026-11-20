@@ -29,8 +29,6 @@ pub enum Wait {
     Session,
     /// A run of this workflow.
     Workflow(String),
-    /// Claude writing this item's plan (sentry-server); its session follows.
-    Plan(String),
     /// An audit.
     Audit,
 }

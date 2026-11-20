@@ -159,7 +159,50 @@ fn parse(block: &str) -> Result<Plan, String> {
     })
 }
 
-/// What stops the plan from being approved: (step index, why).
+/// The plan as the block it came in (what's saved with a plan's document, and read back
+/// by `take` when the plan seeds a session later).
+pub fn to_block(p: &Plan) -> String {
+    let mut t = toml::Table::new();
+    t.insert("summary".into(), p.summary.clone().into());
+    if !p.rollback.trim().is_empty() {
+        t.insert("rollback".into(), p.rollback.clone().into());
+    }
+    let steps: Vec<toml::Value> = p
+        .steps
+        .iter()
+        .map(|s| {
+            let mut st = toml::Table::new();
+            st.insert("title".into(), s.title.clone().into());
+            match &s.kind {
+                Kind::Edit { file, old, new } => {
+                    st.insert("edit".into(), file.clone().into());
+                    st.insert("old".into(), old.clone().into());
+                    st.insert("new".into(), new.clone().into());
+                }
+                Kind::Run(c) => {
+                    st.insert("run".into(), c.clone().into());
+                }
+                Kind::Check(c) => {
+                    st.insert("check".into(), c.clone().into());
+                }
+                Kind::Workflow { name, vars } => {
+                    st.insert("workflow".into(), name.clone().into());
+                    if !vars.is_empty() {
+                        let v: toml::Table = vars
+                            .iter()
+                            .map(|(k, v)| (k.clone(), toml::Value::from(v.clone())))
+                            .collect();
+                        st.insert("vars".into(), v.into());
+                    }
+                }
+            }
+            toml::Value::Table(st)
+        })
+        .collect();
+    t.insert("step".into(), steps.into());
+    format!("{FENCE}\n{}```", toml::to_string(&t).unwrap_or_default())
+}
+
 /// A workflow sentry knows: its name and, when its file reads, its `[vars]` (name, whether
 /// it has a default).
 #[derive(Debug, Clone, PartialEq)]
@@ -404,6 +447,28 @@ rollback = \"sentry restores the backup\"\n\n[[step]]\ntitle = \"Line 5\"\nedit 
 old = \"\"\"old line\"\"\"\nnew = \"\"\"new line\nwith a fence:\n```\nok\n```\"\"\"\n\n\
 [[step]]\ntitle = \"Check\"\ncheck = \"grep -q new /tmp/x.md\"\n\n[[step]]\nworkflow = \"quick-update\"\n```\n\
 Approve it and sentry does it.";
+
+    #[test]
+    fn a_plan_written_back_reads_the_same() {
+        let (_, plan) = take(ANSWER);
+        let plan = plan.unwrap().unwrap();
+        let block = to_block(&plan);
+        let (body, back) = take(&format!("# Plan: x\n\nWhy.\n\n{block}\n"));
+        assert_eq!(body, "# Plan: x\n\nWhy.");
+        assert_eq!(back.unwrap().unwrap(), plan, "{block}");
+        let wf = Plan {
+            summary: "bump web".into(),
+            rollback: String::new(),
+            steps: vec![Step {
+                title: "Run it".into(),
+                kind: Kind::Workflow {
+                    name: "compose-bump".into(),
+                    vars: [("image".to_string(), "example/web:1.5.2".to_string())].into(),
+                },
+            }],
+        };
+        assert_eq!(take(&to_block(&wf)).1.unwrap().unwrap(), wf);
+    }
 
     #[test]
     fn the_plan_is_taken_out_of_the_answer() {

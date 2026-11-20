@@ -200,32 +200,28 @@ impl Slot {
         }
     }
 
-    /// Keys in the Plan view: scroll, apply (Enter), revise (r), drop (x), back (Esc).
+    /// Keys in the Plan view: scroll, apply (Enter: its session), drop (x), back (Esc).
     pub(crate) fn plan_view_key(&mut self, w: &mut Win, k: KeyEvent, now: Instant) {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        use ratatui::crossterm::event::KeyCode;
         let Some((id, scroll)) = self.plan_view.clone() else {
             return;
         };
         w.dirty = true;
         let set = |me: &mut Self, s: usize| me.plan_view = Some((id.clone(), s));
-        let writing = self
-            .writer
-            .as_ref()
-            .is_some_and(|w| w.item == id && w.running());
         if matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
             self.plan_view = None;
             return;
         }
-        // The keys the target takes itself (what applying, revising and dropping mean there).
+        // The keys the target takes itself.
         let own = self
             .target
-            .plan_key(&id, k, writing, &self.shared, &cx!(self, w));
+            .plan_key(&id, k, false, &self.shared, &cx!(self, w));
         if let Some(e) = own {
             return self.apply(w, e, now);
         }
         match k.code {
             // Claude alongside: apply this plan, or ask about it.
-            KeyCode::Char('A') if !writing => {
+            KeyCode::Char('A') => {
                 if !claude::available() {
                     return w.toast(self.ways.no_claude);
                 }
@@ -239,7 +235,11 @@ impl Slot {
                     Some(apply) => {
                         let ask = sentry_core::claude::Ask::new(
                             format!("{} · the plan for {id}", self.title),
-                            apply.context.clone(),
+                            format!(
+                                "{}\n\nThe plan for it, written earlier:\n{}",
+                                apply.context,
+                                self.shared.plans.get(&id).map_or("", |d| d.body.as_str())
+                            ),
                             format!(
                                 "Is this plan still right for {} as it is now? What would you \
                                  check or change first?",
@@ -251,32 +251,15 @@ impl Slot {
                     None => w.toast(&format!("{id} isn't tracked any more")),
                 }
             }
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(pid) = self
-                    .writer
-                    .as_ref()
-                    .filter(|w| w.item == id)
-                    .and_then(|w| w.live.map(|(_, p)| p))
-                {
-                    let _ = kill(pid);
-                    w.toast(self.ways.plan_stopped);
-                }
-            }
             KeyCode::Down | KeyCode::Char('j') => set(self, scroll + 1),
             KeyCode::Up | KeyCode::Char('k') => set(self, scroll.saturating_sub(1)),
             KeyCode::PageDown | KeyCode::Char(' ') => set(self, scroll + 20),
             KeyCode::PageUp => set(self, scroll.saturating_sub(20)),
             KeyCode::Home | KeyCode::Char('g') => set(self, 0),
             KeyCode::End | KeyCode::Char('G') => set(self, usize::MAX / 2),
-            _ if writing => w.toast("Claude is writing it · C-c stops · Esc goes back"),
             KeyCode::Enter => self.apply_plan(w, &id, now),
-            KeyCode::Char('r') => match self.shared.plans.get(&id) {
-                Some(d) if d.head.session.is_some() => {
-                    w.input = Input::Prompt(Prompt::PlanRevise(id.clone()), String::new())
-                }
-                Some(_) => w.toast("no Claude session for this plan: p writes a new one"),
-                None => {}
-            },
+            // Start over: the session, from its research.
+            KeyCode::Char('P') => self.apply(w, vec![Effect::PlanAgain(id.clone())], now),
             KeyCode::Char('x') if self.shared.plans.contains_key(&id) => {
                 let t = w.theme;
                 self.modal = Some(Modal {
@@ -333,20 +316,10 @@ impl Slot {
         w.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
     }
 
-    /// Enter in the Plan view: the item's workflow, with the plan's values filled in.
-    /// Enter on a ready plan (in the Plan view, or its recommendation): carried out in an
-    /// apply session seeded with the plan (its checks, its workflow with the plan's values).
+    /// The session for what a plan is kept for (an item; on this machine, a workflow):
+    /// Enter on its row, on its ready plan, or in the Plan view. With a ready plan saved it
+    /// opens on that plan, to approve; without, it starts from its research.
     pub(crate) fn apply_plan(&mut self, w: &mut Win, id: &str, _now: Instant) {
-        let Some(d) = self.shared.plans.get(id) else {
-            return;
-        };
-        match d.head.status {
-            PlanStatus::Ready => {}
-            PlanStatus::Wait => {
-                return w.toast("Claude advises waiting: r revises it, or p plans again");
-            }
-            s => return w.toast(&format!("this plan is {}: p plans again", s.word())),
-        }
         if self.shared.wf_entries.is_empty() && !w.offline {
             self.load_wf_entries();
         }
@@ -362,37 +335,34 @@ impl Slot {
         }
     }
 
-    /// `p`, after the note: what Claude is asked, in a confirm box; yes starts the writer.
-    pub(crate) fn ask_for_plan(&mut self, w: &mut Win, id: String, doc: PlanDoc) {
-        if self.shared.wf_entries.is_empty() && !w.offline {
-            self.load_wf_entries();
-        }
-        // What the box says and what's sent are the target's: its item, its notes, its reads.
-        let brief = self
-            .target
-            .plan_brief(&id, &doc, &self.shared, &cx!(self, w));
-        let (lines, prompt) = match brief {
-            Ok(b) => b,
-            Err(why) => return w.toast(&why),
+    /// Keep what a session's Claude wrote with its plan (or with its advice to wait) as the
+    /// plan's document under `key`: Records, reviews and `p` read it there.
+    pub(crate) fn plan_keep(&mut self, w: &mut Win, key: &str, body: &str, status: PlanStatus) {
+        use sentry_core::maint::plan::{self, Head};
+        let fresh = || {
+            let head = self
+                .target
+                .plan_head(key, &self.shared, &cx!(self, w))
+                .unwrap_or_default();
+            PlanDoc {
+                head: Head {
+                    item: key.to_string(),
+                    server: self.scope.clone(),
+                    created: Some(jiff::Timestamp::now()),
+                    ..head
+                },
+                body: String::new(),
+            }
         };
-        let t = w.theme;
-        self.modal = Some(Modal {
-            title: format!("Plan {id} with Claude"),
-            color: t.mag,
-            lines,
-            yes: Some(("write it".into(), vec![Effect::PlanWrite(id, doc, prompt)])),
-        });
-    }
-
-    /// Start (or continue) Claude writing a plan in the background; the Plan view shows it.
-    pub(crate) fn write_plan(
-        &mut self,
-        w: &mut Win,
-        id: String,
-        doc: PlanDoc,
-        prompt: String,
-        resume: Option<String>,
-    ) {
-        self.start_writer(w, Writer::new(&id, doc), prompt, resume);
+        let mut doc = self.shared.plans.get(key).cloned().unwrap_or_else(fresh);
+        doc.take_session(body);
+        doc.head.status = status;
+        self.target.plan_kept(&mut doc, body);
+        if !w.offline
+            && let Err(e) = plan::save(&doc)
+        {
+            return w.toast(&format!("couldn't save the plan: {e}"));
+        }
+        self.shared.plans.insert(key.to_string(), doc);
     }
 }

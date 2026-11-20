@@ -29,7 +29,6 @@ impl Slot {
             return w.toast("Claude is writing: wait for it, or C-c in its view");
         }
         self.series = Some(sentry_core::maint::series::Series::new(rows));
-        self.series_planned = None;
         self.series_go(w);
     }
 
@@ -60,36 +59,14 @@ impl Slot {
                 }
                 Some(SeriesStep::Session(ask)) => {
                     sr.wait = Wait::Session;
-                    let mut sess = sentry_core::apply::session::Session::new(ask);
-                    sess.chat.privacy = self.target.ident().session_privacy.clone();
-                    sess.secret_ok = self.secret_ok;
+                    // With a plan saved and ready, it opens on that plan (to approve).
+                    let mut sess = self.session_for(w, *ask);
                     let fx = sess.start_in_series(pos);
                     if self.ways.series_closes_plan {
                         self.plan_view = None;
                     }
                     self.apply = Some(sess);
                     self.apply_fx(w, fx);
-                    return;
-                }
-                // Its plan first (the version is Claude's to recommend); once it's ready the
-                // same row is an apply session.
-                Some(SeriesStep::Plan(item, _))
-                    if self.series_planned.as_deref() == Some(item.as_str()) =>
-                {
-                    return self.series_stop(w);
-                }
-                Some(SeriesStep::Plan(item, doc)) => {
-                    sr.wait = Wait::Plan(item.clone());
-                    self.series_planned = Some(item.clone());
-                    self.ask_for_plan(w, item.clone(), doc);
-                    self.series_answer_box(w);
-                    let writing = self
-                        .writer
-                        .as_ref()
-                        .is_some_and(|w| w.review.is_none() && w.item == item && w.running());
-                    if !writing {
-                        self.series_stop(w);
-                    }
                     return;
                 }
                 Some(SeriesStep::Workflow(name)) => {
@@ -143,6 +120,7 @@ impl Slot {
             Phase::Settled(End::Done) => Outcome::Done,
             Phase::Settled(End::Failed) => Outcome::Failed("it failed".into()),
             Phase::Settled(End::Stopped) => Outcome::Failed("stopped".into()),
+            Phase::Settled(End::Waited) => Outcome::Skipped("it can wait".into()),
             _ => Outcome::Failed("not verified".into()),
         });
         if self.ways.series_closes_plan {
@@ -177,26 +155,6 @@ impl Slot {
         }
         self.series_go(w);
         true
-    }
-
-    /// The series' plan was written: ready, its session; advising to wait, the next row.
-    pub(crate) fn series_plan_written(&mut self, w: &mut Win, item: &str) {
-        use sentry_core::maint::series::{Outcome, Wait};
-        if !self.series_waits(&Wait::Plan(item.to_string())) {
-            return;
-        }
-        match self.shared.plans.get(item).map(|d| d.head.status) {
-            // The same row again: with its plan ready it's an apply session.
-            Some(PlanStatus::Ready) => self.series_go(w),
-            Some(PlanStatus::Wait) => {
-                if let Some(sr) = self.series.as_mut() {
-                    sr.ended(Outcome::Skipped("its plan says wait".into()));
-                }
-                self.plan_view = None;
-                self.series_go(w);
-            }
-            _ => self.series_stop(w),
-        }
     }
 
     /// The series' audit ended.

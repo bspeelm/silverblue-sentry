@@ -138,7 +138,7 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
         Do::Reboot => "reboot",
         Do::Cleanup => "clean up",
         Do::OpenRun => "open run",
-        Do::OpenPlan(_) => "open plan",
+        Do::OpenPlan(_) => "apply the plan",
         Do::Task(id) => match task(v, id).map(|t| t.action()) {
             Some(TaskDo::Run(_)) => "start",
             Some(TaskDo::Audit) => "audit",
@@ -196,17 +196,9 @@ fn workflow_text(wf: &str) -> String {
     }
 }
 
-/// Claude's plan for a workflow, when there's one ready.
-fn plan_text(v: &View, wf: &str) -> Option<String> {
-    let p =
-        v.sh.plans
-            .get(wf)
-            .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)?;
-    Some(format!(
-        "Claude's plan for it, written earlier (plans/{wf}.md), target {}:\n{}",
-        p.head.to.as_deref().unwrap_or("-"),
-        p.body
-    ))
+/// Where the ledger and the notes are: a session starts its research from them.
+fn records(v: &View) -> String {
+    crate::tui::plans::records(v.cfg)
 }
 
 /// `A` → "help me apply it": what Claude is told about the row, and what the chat can do.
@@ -221,18 +213,15 @@ pub fn apply_ask(v: &View, r: &Rec) -> Option<crate::claude::Ask> {
         r.why
     );
     let with_wf = |wf: &str, extra: String| {
-        let plan = plan_text(v, wf);
-        let mut ctx = format!("{head}\n\n{extra}{}", workflow_text(wf));
-        if let Some(p) = &plan {
-            ctx.push_str(&format!("\n\n{p}"));
-        }
+        let ctx = format!("{head}\n\n{extra}{}\n\n{}", workflow_text(wf), records(v));
         Ask::apply(
             r.title.clone(),
             ctx,
             Apply {
                 key: r.key.clone(),
                 workflow: Some(wf.to_string()),
-                plan: plan.map(|_| wf.to_string()),
+                // Its plan is kept under the workflow, and closed when its run ends well.
+                plan: Some(wf.to_string()),
                 ..Default::default()
             },
         )
@@ -278,12 +267,17 @@ pub fn apply_ask(v: &View, r: &Rec) -> Option<crate::claude::Ask> {
     }
 }
 
-/// `A` in the Plan view: apply that plan with Claude.
+/// The session for a workflow's plan (Enter on its ready plan, `P`, `A` in the Plan view):
+/// with a plan saved it opens on that plan; without, Claude researches first.
 pub fn plan_apply_ask(v: &View, wf: &str) -> Option<crate::claude::Ask> {
-    let plan = plan_text(v, wf)?;
     Some(crate::claude::Ask::apply(
         format!("the plan for {wf}"),
-        format!("{plan}\n\n{}", workflow_text(wf)),
+        format!(
+            "Running sentry's workflow {wf} on my Silverblue machine.\n\n{}\n\n{}\n\n{}",
+            context(v),
+            workflow_text(wf),
+            records(v)
+        ),
         crate::claude::Apply {
             key: format!("plan:{wf}"),
             workflow: Some(wf.to_string()),
@@ -516,12 +510,14 @@ impl Maint {
             }
             Action::Char(' ') => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
             Action::Enter => self.act(v, r),
+            // A workflow's saved plan, to read; `P`: its session, from the research.
             Action::Char('p' | 'P') => match &r.action {
-                Do::Run(wf) | Do::OpenPlan(wf) => {
-                    vec![Effect::PlanAsk(wf.clone(), a == Action::Char('P'))]
+                Do::Run(wf) | Do::OpenPlan(wf) if a == Action::Char('p') => {
+                    vec![Effect::PlanOpen(wf.clone())]
                 }
+                Do::Run(wf) | Do::OpenPlan(wf) => vec![Effect::PlanAgain(wf.clone())],
                 _ => vec![Effect::Toast(
-                    "plans are for workflows: p on updates, or on Upgrade (0)".into(),
+                    "plans are kept for workflows: p on updates, or on Upgrade (0)".into(),
                 )],
             },
             Action::Char('m') => match &r.action {
@@ -661,7 +657,8 @@ impl Maint {
                 None => vec![Effect::Goto(crate::tui::ScreenId::Clean)],
             },
             Do::OpenRun => vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
-            Do::OpenPlan(wf) => vec![Effect::PlanOpen(wf.clone())],
+            // A plan ready for it: its session opens on that plan, to approve.
+            Do::OpenPlan(wf) => vec![Effect::PlanApply(wf.clone())],
             Do::Task(id) => task_effects(v, id),
         }
     }
@@ -859,7 +856,9 @@ fn action_words(a: &Do) -> String {
         Do::Reboot => "Enter: reboot (asks first)".into(),
         Do::Cleanup => "Enter: open Cleanup (7): pick what goes, see it, confirm".into(),
         Do::OpenRun => "Enter: open the run on Upgrade (0)".into(),
-        Do::OpenPlan(_) => "Enter: open the plan (Enter there starts its workflow)".into(),
+        Do::OpenPlan(_) => {
+            "Enter: the plan, to approve (it starts its workflow) · p reads it".into()
+        }
         Do::Task(_) => "A task: Enter does it".into(),
     }
 }

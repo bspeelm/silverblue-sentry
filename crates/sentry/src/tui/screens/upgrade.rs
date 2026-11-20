@@ -50,7 +50,8 @@ pub fn hints(v: &View) -> Hints {
             ("Enter", "start"),
             ("e", "edit toml"),
             ("r", "reload"),
-            ("p", "plan with Claude"),
+            ("p", "read plan"),
+            ("P", "with Claude"),
             ("v", "records"),
         ],
         Some(s) if s.done() => vec![("Enter", "close"), ("L", "step log"), ("v", "records")],
@@ -66,7 +67,7 @@ pub fn hints(v: &View) -> Hints {
                 ]
             } else {
                 vec![
-                    ("Enter", "run"),
+                    ("Enter", "run the step"),
                     ("s", "skip"),
                     ("a", "abandon"),
                     ("L", "log"),
@@ -237,8 +238,9 @@ impl Upgrade {
         match a {
             Action::Refresh => vec![Effect::Fetch(Fetch::Workflows)],
             Action::Char('v') => vec![Effect::LogOpen],
-            Action::Char('p') => vec![Effect::PlanAsk(info.entry.name.clone(), false)],
-            Action::Char('P') => vec![Effect::PlanAsk(info.entry.name.clone(), true)],
+            // Its saved plan, to read; `P`: a session works it out (research, then its plan).
+            Action::Char('p') => vec![Effect::PlanOpen(info.entry.name.clone())],
+            Action::Char('P') => vec![Effect::PlanAgain(info.entry.name.clone())],
             Action::Char('e') => vec![Effect::Wf(WfCmd::Edit(info.entry.path.clone()))],
             Action::Enter => {
                 if let Some(why) = info.entry.blocked() {
@@ -283,30 +285,17 @@ impl Upgrade {
                         default,
                     )];
                 }
-                let chain: Vec<&str> = wf.steps.iter().map(|s| s.id.as_str()).collect();
-                let mut lines = vec![
-                    Line::styled(wf.description.clone(), t.fg()),
-                    Line::styled(chain.join(" → "), t.dim()),
-                    Line::styled(
-                        "Auto steps run right away; every other step waits for Enter. Reboots never run on their own.",
-                        t.dim(),
-                    ),
-                ];
+                // Enter was the approval: it starts. Its auto steps run; every step that
+                // changes something waits for its own confirm, and reboots never run on
+                // their own.
+                let mut e = vec![Effect::Wf(WfCmd::Begin(info.entry.name.clone(), vars))];
                 if plan.is_some() {
-                    lines.push(Line::styled(
-                        "With Claude's plan (its values): it closes when the run ends well. To start without it, drop it first (x in the plan).",
-                        t.s(t.cyan),
+                    e.push(Effect::Toast(
+                        "started with Claude's plan (its values): it closes when the run ends well"
+                            .into(),
                     ));
                 }
-                vec![Effect::Confirm(Modal {
-                    title: format!("Start {}", info.entry.name),
-                    color: t.yellow,
-                    lines,
-                    yes: Some((
-                        "start".into(),
-                        vec![Effect::Wf(WfCmd::Begin(info.entry.name.clone(), vars))],
-                    )),
-                })]
+                e
             }
             _ => Vec::new(),
         }

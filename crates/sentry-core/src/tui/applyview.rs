@@ -27,6 +27,23 @@ fn stage(p: Phase) -> usize {
     }
 }
 
+/// A session out of view, for the banner row (as a workflow run has one off its screen):
+/// what it's about, where it stands, and whether it waits for the user.
+pub fn banner(s: &Session) -> String {
+    let what = s.chat.ask.subject.trim_start_matches("apply · ");
+    let word = match s.phase {
+        Phase::Settled(End::Failed) => "not done",
+        Phase::Settled(End::Stopped) => "stopped",
+        Phase::Settled(End::Unverified) => "unverified",
+        Phase::Settled(End::Waited) => "wait",
+        p => STAGES[stage(p)],
+    };
+    match s.enter_word() {
+        Some(w) if !s.busy() => format!("session · {what} · {word} · needs you: Enter {w}"),
+        _ => format!("session · {what} · {word}"),
+    }
+}
+
 /// `wf`: how the workflow the plan waits for is doing (one or two lines, from the app).
 pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, wf: &[String]) {
     f.render_widget(ratatui::widgets::Clear, area);
@@ -111,6 +128,7 @@ fn stages(t: &Theme, p: Phase) -> Line<'static> {
                 Phase::Settled(End::Failed) => "not done",
                 Phase::Settled(End::Stopped) => "stopped",
                 Phase::Settled(End::Unverified) => "unverified",
+                Phase::Settled(End::Waited) => "wait",
                 _ => name,
             }
         } else {

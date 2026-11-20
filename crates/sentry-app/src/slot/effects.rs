@@ -60,9 +60,6 @@ impl Slot {
                     self.modal = Some(m);
                 }
                 Effect::Choose(c) => self.choice = Some(c),
-                Effect::PlanNote(id, plan) => {
-                    w.input = Input::Prompt(Prompt::PlanNote(id, Box::new(plan)), String::new());
-                }
                 Effect::PlanDrop(id) => {
                     if let Some(doc) = self.shared.plans.remove(&id)
                         && !w.offline
@@ -72,14 +69,27 @@ impl Slot {
                     self.plan_view = None;
                     w.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
-                Effect::PlanOpen(id) => match self.ways.no_plan {
-                    Some(say)
-                        if !self.shared.plans.contains_key(&id) && !self.writing_plan(&id) =>
+                // To read: there's only something to open once a session has shown its plan.
+                Effect::PlanOpen(id) if !self.shared.plans.contains_key(&id) => {
+                    w.toast(&match self.ways.no_plan {
+                        Some(say) => say(&id),
+                        None => format!("no plan saved for {id} yet: Enter starts it"),
+                    })
+                }
+                Effect::PlanOpen(id) => {
+                    self.rec_view = None;
+                    self.review_view = None;
+                    self.plan_view = Some((id, 0));
+                }
+                Effect::PlanAgain(id) => {
+                    if let Some(doc) = self.shared.plans.remove(&id)
+                        && !w.offline
                     {
-                        w.toast(&say(&id))
+                        let _ = sentry_core::maint::plan::close(&doc, PlanStatus::Replaced);
                     }
-                    _ => self.plan_view = Some((id, 0)),
-                },
+                    self.plan_view = None;
+                    self.apply_plan(w, &id, now);
+                }
                 Effect::PlanApply(id) => self.apply_plan(w, &id, now),
                 Effect::PlanDoneByHand(id) => self.plan_done_by_hand(w, &id),
                 Effect::Everything => self.everything = !self.everything,
@@ -128,12 +138,6 @@ impl Slot {
                     }
                     None => w.toast("no log for this step yet"),
                 },
-                Effect::PlanWrite(id, doc, prompt) => {
-                    if !w.offline {
-                        let _ = sentry_core::maint::plan::retire(&self.scope, &id);
-                    }
-                    self.write_plan(w, id, doc, prompt, None)
-                }
                 Effect::Snooze(id, until) => {
                     let today = jiff::Zoned::now().date();
                     match sentry_core::maint::later::set(&self.scope, &id, until, today) {

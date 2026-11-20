@@ -46,7 +46,7 @@ pub fn hints(v: &View) -> Hints {
             ("L", "log"),
         ],
         Some(_) => vec![
-            ("Enter", "run"),
+            ("Enter", "run the step"),
             ("s", "skip"),
             ("a", "abandon"),
             ("L", "log"),

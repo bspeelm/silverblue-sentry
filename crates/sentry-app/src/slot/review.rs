@@ -7,13 +7,7 @@ impl Slot {
             .is_some_and(|w| w.review.is_some() && w.running())
     }
 
-    pub(crate) fn writing_plan(&self, item: &str) -> bool {
-        self.writer
-            .as_ref()
-            .is_some_and(|w| w.review.is_none() && w.item == item && w.running())
-    }
-
-    /// Claude writes (a plan or a review) in the background; its view opens.
+    /// Claude writes a review in the background; its window opens.
     pub(crate) fn start_writer(
         &mut self,
         w: &mut Win,
@@ -36,17 +30,12 @@ impl Slot {
             None => {}
         }
         wr.place = self.ways.writer_place;
-        let profile = if wr.review.is_some() {
-            if !wr.quiet {
-                self.review_view
-                    .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
-                    .brief = false;
-            }
-            self.target.profile(ProfileFor::Review, &[])
-        } else {
-            self.plan_view = Some((wr.item.clone(), 0));
-            self.target.profile(ProfileFor::Plan, &[])
-        };
+        if !wr.quiet {
+            self.review_view
+                .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
+                .brief = false;
+        }
+        let profile = self.target.profile(ProfileFor::Review, &[]);
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         let rid = self.mail.next();
         if w.offline {
@@ -63,15 +52,15 @@ impl Slot {
         }
     }
 
-    /// Another turn for the plan being written (in its Claude session).
+    /// Another turn for the review being written (in its Claude session).
     pub(crate) fn writer_follow(&mut self, w: &mut Win, prompt: String) {
         match self.writer.as_ref() {
             Some(wr) if !wr.running() => {
                 let session = wr.session.clone();
-                let next = match &wr.review {
-                    Some(r) => Writer::review(r.clone()),
-                    None => Writer::new(&wr.item, wr.doc.clone()),
+                let Some(r) = wr.review.clone() else {
+                    return;
                 };
+                let next = Writer::review(r);
                 self.start_writer(w, next, prompt, session);
             }
             _ => w.toast("it isn't being written any more"),
@@ -430,7 +419,7 @@ impl Slot {
         self.apply(w, e, w.at);
     }
 
-    /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
+    /// The writer's turn ended: save its answer as the review, then any reads it asked for.
     pub(crate) fn writer_turn_ended(&mut self, w: &mut Win) {
         if let Some(mut rd) = self.writer.as_ref().and_then(|x| x.review.clone()) {
             let (answer, err, session) = self
@@ -483,77 +472,7 @@ impl Slot {
                 }
             }
             w.toast(&msg);
-            return self.offer_reads(w, ReadsFor::Plan, false);
-        }
-        let waits = self
-            .writer
-            .as_ref()
-            .and_then(|x| x.answer.as_deref())
-            .is_some_and(|a| self.target.waits_for_reads(a));
-        let Some(wr) = self.writer.as_mut() else {
-            return;
-        };
-        let mut doc = wr.doc.clone();
-        doc.head.session = wr.session.clone().or(doc.head.session);
-        // Waiting for reads that need root: no plan yet; ask for them (with nothing queued
-        // after all, the target has it write the plan).
-        if waits {
-            wr.doc.head.session = wr.session.clone().or(wr.doc.head.session.clone());
-            wr.doing = "waiting for reads that need root".into();
-            return self.offer_reads(w, ReadsFor::Plan, true);
-        }
-        let answer = match (&wr.answer, &wr.err) {
-            (Some(a), _) if !a.trim().is_empty() => Ok(a.as_str()),
-            (_, err) => Err(err.as_deref()),
-        };
-        // The target's own way with a plan's answer, if it has one.
-        let own = self.target.plan_written(&mut doc, answer);
-        let Some(wr) = self.writer.as_mut() else {
-            return;
-        };
-        let msg = match (&wr.answer, &wr.err) {
-            _ if own.is_some() => own.unwrap_or_default(),
-            (Some(a), _) if !a.trim().is_empty() => {
-                doc.take_answer(a);
-                match doc.head.status {
-                    PlanStatus::Wait => format!("plan for {}: Claude advises waiting", wr.item),
-                    _ => format!(
-                        "plan for {} saved: → {} · Enter applies it",
-                        wr.item,
-                        doc.head.to.as_deref().unwrap_or("retire")
-                    ),
-                }
-            }
-            (_, err) => {
-                // A revision that failed keeps the plan it had.
-                if doc.body.trim().is_empty() {
-                    doc.head.status = PlanStatus::Failed;
-                    doc.body = format!(
-                        "Claude didn't write the plan: {}",
-                        err.clone().unwrap_or_else(|| "no answer".into())
-                    );
-                }
-                format!(
-                    "no plan for {}: {}",
-                    wr.item,
-                    err.clone()
-                        .unwrap_or_else(|| "Claude gave no answer".into())
-                )
-            }
-        };
-        wr.doc = doc.clone();
-        let item = wr.item.clone();
-        if !w.offline
-            && let Err(e) = sentry_core::maint::plan::save(&doc)
-        {
-            return w.toast(&format!("couldn't save the plan: {e}"));
-        }
-        self.shared.plans.insert(item.clone(), doc);
-        w.toast(&msg);
-        self.offer_reads(w, ReadsFor::Plan, false);
-        // Unless reads are being offered (the plan may still change), the series goes on.
-        if self.modal.is_none() {
-            self.series_plan_written(w, &item);
+            self.offer_reads(w, ReadsFor::Plan, false);
         }
     }
 }

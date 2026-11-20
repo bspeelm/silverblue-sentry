@@ -597,24 +597,6 @@ impl Slot {
                 self.apply(w, e, w.at);
             }
             Prompt::LogAddNote(e) => self.log_note_submit(w, *e, text, true),
-            // The plan's note: an empty one is fine.
-            Prompt::PlanNote(id, mut plan) => {
-                plan.head.note = (!text.is_empty()).then(|| text.to_string());
-                if !claude::available() {
-                    return w.toast("plans are written by Claude Code, which isn't installed");
-                }
-                self.ask_for_plan(w, id, *plan);
-            }
-            Prompt::PlanRevise(id) => {
-                let Some(doc) = self.shared.plans.get(&id).cloned() else {
-                    return;
-                };
-                if text.is_empty() {
-                    return;
-                }
-                let session = doc.head.session.clone();
-                self.write_plan(w, id, doc, self.target.plan_revise(text), session);
-            }
             // A task's cadence: tasks.toml's task takes the place of one from the config.
             Prompt::TaskEvery(id) => {
                 use sentry_core::maint::tasks;
@@ -671,20 +653,12 @@ impl Slot {
                     self.series_stop(w);
                 }
             }
-            Prompt::PlanNote(..) => {
-                if let Some(say) = self.ways.not_planned {
-                    w.toast(say);
-                }
-            }
             // No note: what the run changed may still want reading again.
             Prompt::LogNote(_) => {
                 self.settled(w);
                 self.review_after_run(w);
             }
-            Prompt::LogAddNote(_)
-            | Prompt::PlanRevise(_)
-            | Prompt::TaskEvery(_)
-            | Prompt::TaskNote(..) => {}
+            Prompt::LogAddNote(_) | Prompt::TaskEvery(_) | Prompt::TaskNote(..) => {}
         }
     }
 

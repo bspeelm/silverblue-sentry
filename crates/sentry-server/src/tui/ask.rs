@@ -19,7 +19,7 @@ pub fn with_web(mut p: Profile) -> Profile {
     p
 }
 
-/// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
+/// The reviews profile (`R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
 pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
     let mut p = profile(r, os, kernel, sudo)
@@ -122,7 +122,7 @@ pub fn nothing_here(tab: ScreenId, v: &View) -> &'static str {
 }
 
 /// The ranked recommendations, about one of them (`A` on Maintenance, any other row). A move
-/// itself is planned with `p`, which researches it; this is a question.
+/// itself is Enter on its row (a session, which researches it); this is a question.
 fn ask_maintenance(v: &View, r: &Remote, about: &str) -> Ask {
     let lines: Vec<String> = super::screens::maint::recs(v)
         .iter()
@@ -467,8 +467,8 @@ pub fn apply_rec(
     }
 }
 
-/// Applying a maintenance item (its plan if it has one ready), with Claude: also `A` in the
-/// Plan view.
+/// Applying a maintenance item with Claude (Enter on it, `A` → 1, `A` in the Plan view): the
+/// session researches it and keeps its plan under the item.
 pub fn apply_item(
     v: &View,
     r: &Remote,
@@ -492,21 +492,14 @@ pub fn apply_item(
     if let Some(wf) = &wf {
         ctx.push_str(&format!("\n\n{}", steps(wf)));
     }
-    if let Some(p) = plan {
-        let vars: Vec<String> = p
-            .head
-            .vars
-            .iter()
-            .map(|(k, v)| format!("{k} = \"{v}\""))
-            .collect();
+    // A plan from before plans were a session's, with no workflow: Claude carries it out
+    // from its text. (Any other ready plan opens the session on itself.)
+    if let Some(p) =
+        plan.filter(|p| p.head.workflow.is_empty() && !p.body.contains("```sentry-apply"))
+    {
         ctx.push_str(&format!(
-            "\n\nClaude's plan for it, written earlier (target {}{}):\n{}",
+            "\n\nClaude's plan for it, written earlier (target {}):\n{}",
             p.head.to.as_deref().unwrap_or("retire"),
-            if vars.is_empty() {
-                String::new()
-            } else {
-                format!("; the workflow's values: {}", vars.join(", "))
-            },
             p.body
         ));
     }
@@ -517,7 +510,8 @@ pub fn apply_item(
             key,
             workflow: wf,
             item: Some(id.to_string()),
-            plan: plan.map(|_| id.to_string()),
+            // Its plan is kept under the item, and closed when it's done.
+            plan: Some(id.to_string()),
             remote: true,
             ..Default::default()
         },

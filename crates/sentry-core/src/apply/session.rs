@@ -52,6 +52,8 @@ pub enum End {
     Stopped,
     /// Applied, but Claude didn't give a verdict.
     Unverified,
+    /// Claude advises waiting: nothing changed, and the row is put off.
+    Waited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +113,21 @@ pub enum Fx {
     RetryStep,
     /// The written plan this session carried out is done (it moves to plans/done/).
     PlanDone(String),
+    /// The plan Claude just sent is ready to approve: its document (the assessment, then
+    /// the plan's block) is kept under `key` in plans/, so it is there to read and can seed
+    /// a session another day.
+    PlanSave {
+        key: String,
+        body: String,
+    },
+    /// Claude advises waiting: put the row (`key`) off, `again` from now if it said when,
+    /// and keep what it wrote (`body`) as the plan's document when the session has one.
+    Wait {
+        key: String,
+        why: String,
+        again: Option<String>,
+        body: String,
+    },
     /// Mark the task (or the plan done by hand) done, by hand: Claude didn't say it is.
     MarkDone,
     /// A check for later, as a one-time task on Maintenance (due after its `after`).
@@ -166,6 +183,9 @@ pub struct Session {
     /// Its place in a series of ticked rows (2, 5): it starts by itself, and hands on when
     /// it's done.
     pub series: Option<(usize, usize)>,
+    /// It opened on a plan saved earlier (its document): Claude hasn't seen the brief yet,
+    /// so the first turn carries it.
+    seed: Option<String>,
 }
 
 impl Session {
@@ -192,8 +212,29 @@ impl Session {
             audit_for: None,
             asked: None,
             series: None,
+            seed: None,
         }
         .acting()
+    }
+
+    /// Opened on a plan saved earlier (`saved`: its document, the plan's block in it):
+    /// nothing is sent, the plan is there to approve. None: the document has no plan sentry
+    /// can run (one written before plans were a session's).
+    pub fn seeded(ask: Ask, saved: &str, workflows: &[plan::WfInfo]) -> Option<Self> {
+        let (body, p) = plan::take(saved);
+        let p = p?.ok()?;
+        let mut s = Self::new(ask);
+        s.chat.push(
+            Kind::Info,
+            "the plan saved earlier · Enter applies it, or type what to change",
+        );
+        s.chat.push(Kind::Claude, body.clone());
+        s.problems = plan::problems(&p, workflows);
+        s.runs.push(Run::new(p));
+        s.chat.push(Kind::Plan, "0");
+        s.phase = Phase::Review;
+        s.seed = Some(body);
+        Some(s)
     }
 
     /// A session carries out what's allowed: here, or on its server.
@@ -237,6 +278,7 @@ impl Session {
             Phase::Applying if self.waiting_workflow().is_some() => Some("open the workflow"),
             // In a series the next row follows; this one stays ticked if it isn't done.
             Phase::Settled(_) if self.series.is_some() => Some("go on with the next"),
+            Phase::Settled(End::Waited) => Some("close"),
             Phase::Settled(End::Done) if a.is_some_and(|a| a.step.is_some()) => {
                 Some("retry the step")
             }
@@ -314,6 +356,14 @@ impl Session {
     }
 
     fn turn(&mut self, why: Turn, prompt: String, shown: Option<String>) -> Vec<Fx> {
+        // Opened on a saved plan: Claude hears what it's about with the first thing sent.
+        let prompt = match self.seed.take() {
+            Some(doc) => format!(
+                "{}\n\nThe plan for it, written earlier, which I approved as it is:\n{doc}\n\n{prompt}",
+                self.chat.ask.context.trim_end()
+            ),
+            None => prompt,
+        };
         self.phase = Phase::Thinking(why);
         self.turn_from = self.chat.entries.len();
         vec![Fx::Turn { prompt, shown }]
@@ -1027,13 +1077,26 @@ impl Session {
             }
             problems.sort_by_key(|(i, _)| *i);
         }
+        let saved = self
+            .chat
+            .ask
+            .applying()
+            .and_then(|a| a.plan.clone())
+            .map(|key| Fx::PlanSave {
+                key,
+                body: format!(
+                    "{}\n\n{}",
+                    self.chat.entries[at].1.trim(),
+                    plan::to_block(&p)
+                ),
+            });
         self.runs.push(Run::new(p));
         self.chat
             .entries
             .insert(at + 1, (Kind::Plan, (self.runs.len() - 1).to_string()));
         if problems.is_empty() {
             self.phase = Phase::Review;
-            return Vec::new();
+            return saved.into_iter().collect();
         }
         let r = self.run().expect("just pushed");
         let list: Vec<String> = problems
@@ -1114,6 +1177,28 @@ impl Session {
                     .push(Kind::Err, format!("✗ Not done · {}", v.summary));
                 next(self);
                 self.settle_with(End::Failed, Some(&v.summary))
+            }
+            // Nothing to do now: nothing changed, the row is put off, and in a series the
+            // next one follows.
+            Status::Wait => {
+                self.chat.push(
+                    Kind::Info,
+                    format!("Claude advises waiting · {}", v.summary),
+                );
+                next(self);
+                self.phase = Phase::Settled(End::Waited);
+                let mut fx = self.log_runs(Some(&v.summary));
+                let a = self.chat.ask.applying().cloned().unwrap_or_default();
+                fx.push(Fx::Wait {
+                    key: a.key,
+                    why: v.summary.clone(),
+                    again: v.again.clone(),
+                    body: self.chat.entries[at].1.trim().to_string(),
+                });
+                if self.series.is_some() {
+                    fx.push(Fx::Next);
+                }
+                fx
             }
             Status::More => {
                 self.chat
@@ -1931,5 +2016,105 @@ mod tests {
         assert!(matches!(&fx[..], [Fx::Log { ok: true, .. }]), "{fx:?}");
         assert!(s.can_approve() && s.runs.len() == 2);
         assert_eq!(s.replaced, [(0, "done".to_string())]);
+    }
+
+    fn item_session() -> Session {
+        Session::new(Ask::apply(
+            "web",
+            "ctx about web",
+            Apply {
+                key: "web".into(),
+                item: Some("web".into()),
+                plan: Some("web".into()),
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[test]
+    fn the_plan_is_kept_as_it_is_shown_and_seeds_a_session_later() {
+        let mut s = item_session();
+        let fx = key(&mut s, KeyCode::Enter);
+        // Research, then the plan: shown once, and kept (the assessment with its block).
+        let fx = answer(
+            &mut s,
+            &fx,
+            &format!(
+                "TARGET: 1.5.2\n# Plan: web\nNotes say it's safe.\n\n{}",
+                &plan(CHECKS)[11..]
+            ),
+        );
+        let [Fx::PlanSave { key: k, body }] = &fx[..] else {
+            panic!("{fx:?}")
+        };
+        assert_eq!(k, "web");
+        assert!(
+            body.starts_with("TARGET: 1.5.2\n# Plan: web") && body.contains("```sentry-apply"),
+            "{body}"
+        );
+        assert!(s.can_approve());
+        // Another day: opened on that document, straight at the plan; nothing is sent.
+        let mut s = Session::seeded(item_session().chat.ask, body, &[]).expect("a plan in it");
+        assert_eq!(s.phase, Phase::Review);
+        assert!(s.can_approve() && s.run().unwrap().plan.steps.len() == 2);
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(matches!(&fx[..], [Fx::Command { .. }]), "{fx:?}");
+        s.step_ended(0);
+        // The first thing Claude hears carries what it's about and the plan approved.
+        let fx = s.step_ended(0);
+        let [Fx::Turn { prompt, .. }] = &fx[..] else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            prompt.starts_with("ctx about web\n\nThe plan for it, written earlier")
+                && prompt.contains("Notes say it's safe.")
+                && prompt.contains("carried out all 2 steps"),
+            "{prompt}"
+        );
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"done\"\nsummary = \"1.5.2 runs\"\n```",
+        );
+        assert!(fx.contains(&Fx::PlanDone("web".into())), "{fx:?}");
+        // A document with no plan in it (written before) doesn't seed one.
+        assert!(Session::seeded(item_session().chat.ask, "# Plan\nby hand", &[]).is_none());
+    }
+
+    #[test]
+    fn wait_settles_with_nothing_changed_and_puts_the_row_off() {
+        let mut s = item_session();
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "1.5.2 has an open data-loss bug.\n```sentry-verdict\nstatus = \"wait\"\n\
+             summary = \"wait for 1.5.3\"\nagain = \"14d\"\n```",
+        );
+        assert_eq!(s.phase, Phase::Settled(End::Waited));
+        assert_eq!(
+            fx,
+            [Fx::Wait {
+                key: "web".into(),
+                why: "wait for 1.5.3".into(),
+                again: Some("14d".into()),
+                body: "1.5.2 has an open data-loss bug.".into(),
+            }]
+        );
+        assert!(s.runs.is_empty());
+        assert_eq!(s.enter_word(), Some("close"));
+        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::Close]);
+        // In a series the next row follows by itself.
+        let mut s = item_session();
+        let fx = s.start_in_series((1, 2));
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"wait\"\nsummary = \"not yet\"\n```",
+        );
+        assert!(
+            matches!(&fx[..], [Fx::Wait { again: None, .. }, Fx::Next]),
+            "{fx:?}"
+        );
     }
 }

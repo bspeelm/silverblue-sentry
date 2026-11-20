@@ -1228,43 +1228,52 @@ fn esc_hides_a_running_chat_and_a_brings_it_back() {
 }
 
 #[test]
-fn claude_plans_a_workflow_and_reviews_maintenance() {
+fn a_workflows_plan_is_its_sessions_and_claude_reviews_maintenance() {
+    use sentry_core::apply::session::Phase;
     let mut a = app(ScreenId::Maint);
-    // p on the updates recommendation: a note first, then what Claude will do.
+    // p reads the saved plan: there is none yet, and no second Claude flow writes one.
     key(&mut a, KeyCode::Char('p'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("plan quick-update · a note for Claude"), "{s}");
+    assert!(s.contains("no plan saved for quick-update yet"), "{s}");
+    assert!(a.writer_for_test().is_none());
+    // A → 1 on the row: one session. It researches first (the ledger, the notes, the web),
+    // and its plan is kept under the workflow.
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Char('1'));
+    let p = a.consent_text().expect("the session's brief");
+    assert!(
+        p.contains("Maintenance ledger:")
+            && p.contains("start from the maintenance")
+            && p.contains("status = \"wait\""),
+        "{p}"
+    );
     key(&mut a, KeyCode::Enter);
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Plan quick-update with Claude"), "{s}");
+    a.apply_answer_for_test(
+        "TARGET: now\nNothing in the log against it.\n\n```sentry-apply\nsummary = \"update\"\n\
+         [[step]]\ntitle = \"Run it\"\nworkflow = \"quick-update\"\n```",
+    );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Review);
+    let doc = a.slot().shared.plans.get("quick-update").expect("kept");
+    assert_eq!(doc.head.status, crate::maint::plan::PlanStatus::Ready);
     assert!(
-        s.contains("Nothing on this") && s.contains("machine changes"),
-        "{s}"
+        doc.body.starts_with("Nothing in the log") && doc.body.contains("```sentry-apply"),
+        "{}",
+        doc.body
     );
-    key(&mut a, KeyCode::Char('n'));
-    // Claude's answer becomes the plan: TARGET sets the workflow's target var.
-    a.plan_written_for_test(
-        "release-rebase",
-        [("target".to_string(), "45".to_string())].into(),
-        "Reading the ledger.\nTARGET: 46\n# Plan: release-rebase 44 → 46\n\n## Before\n```sh\nrpm-ostree status\n```",
-    );
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("ready to apply") && s.contains("→ 46"), "{s}");
-    assert!(
-        s.contains("rpm-ostree status") && !s.contains("Reading the ledger"),
-        "{s}"
-    );
-    assert!(s.contains("apply (start its workflow)"), "{s}");
     key(&mut a, KeyCode::Esc);
-    // It's a recommendation now; x in its view asks before dropping it.
+    // p now opens it, to read; x in its view asks before dropping it.
+    key(&mut a, KeyCode::Char('p'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Plan ready: release-rebase"), "{s}");
-    a.apply_for_test(vec![crate::tui::app::Effect::PlanOpen(
-        "release-rebase".into(),
-    )]);
+    assert!(s.contains("Nothing in the log against it."), "{s}");
+    assert!(s.contains("P  start over") && !s.contains("revise"), "{s}");
     key(&mut a, KeyCode::Char('x'));
-    assert!(render_to_string(&mut a, 158, 41).contains("Drop the plan for release-rebase"));
+    assert!(render_to_string(&mut a, 158, 41).contains("Drop the plan"));
     key(&mut a, KeyCode::Char('n'));
+    // Enter there: the session opens on that plan, to approve; nothing is sent first.
+    key(&mut a, KeyCode::Enter);
+    let sess = a.apply_session().expect("a session");
+    assert_eq!(sess.phase, Phase::Review);
+    assert!(sess.can_approve() && sess.chat.live.is_none());
     key(&mut a, KeyCode::Esc);
     // R with no review yet: the review window on its brief; nothing is sent before Enter.
     key(&mut a, KeyCode::Char('R'));
@@ -1281,33 +1290,40 @@ fn claude_plans_a_workflow_and_reviews_maintenance() {
 
 #[test]
 fn a_ready_plan_goes_with_its_workflow_however_it_starts() {
+    use sentry_core::apply::session::Phase;
     let mut a = app(ScreenId::Maint);
+    // A plan from before plans were a session's: its document and its workflow's values.
     a.plan_written_for_test(
         "quick-update",
         Default::default(),
         "TARGET: 44\n# Plan: quick-update\n\n## Before\n- back up",
     );
-    key(&mut a, KeyCode::Esc);
-    // Started from the Upgrade screen, not from the plan: the plan still comes along.
-    a.apply_for_test(vec![crate::tui::app::Effect::StartWorkflow(
+    // Its row: Enter opens the session straight on it, as the one workflow step.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Plan ready: quick-update"), "{s}");
+    a.apply_for_test(vec![crate::tui::app::Effect::PlanApply(
         "quick-update".into(),
     )]);
+    let sess = a.apply_session().expect("a session");
+    assert_eq!(sess.phase, Phase::Review);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("Start quick-update"), "{s}");
-    assert!(s.contains("With Claude's plan"), "{s}");
-    key(&mut a, KeyCode::Char('n'));
-    // In the Plan view, A: apply it with Claude, told the plan and the workflow.
+    assert!(
+        s.contains("back up")
+            && s.contains("workflow quick-update")
+            && s.contains("apply the plan"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // In the Plan view, A → 2 asks about it, told the plan and the workflow.
     a.apply_for_test(vec![crate::tui::app::Effect::PlanOpen(
         "quick-update".into(),
     )]);
     assert!(render_to_string(&mut a, 158, 41).contains("A  claude"));
     key(&mut a, KeyCode::Char('A'));
-    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Char('2'));
     let p = a.consent_text().expect("consent");
     assert!(
-        p.contains("Claude's plan for it")
-            && p.contains("back up")
-            && p.contains("workflow = \"quick-update\""),
+        p.contains("The plan for it, written earlier") && p.contains("back up"),
         "{p}"
     );
 }

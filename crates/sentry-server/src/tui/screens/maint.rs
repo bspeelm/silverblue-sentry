@@ -15,7 +15,7 @@ use crate::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::maint::recommend::{self, Action, Level, Rec};
 use crate::maint::{self, local};
 use crate::remote::Remote;
-use crate::tui::target::{Choice, Effect, Modal, Own};
+use crate::tui::target::{Effect, Modal, Own};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::reportview::ReportView;
@@ -120,10 +120,9 @@ pub struct Maint {
 pub enum SeriesKind {
     /// An apply session for this finding.
     Finding(String),
-    /// An apply session for the row (a task done by hand, an item whose plan is ready).
+    /// An apply session for the row (a task done by hand, an item: on its ready plan when
+    /// it has one, else from its research).
     Apply,
-    /// Claude writes this item's plan first; its session follows.
-    Plan(String),
     /// A run of this workflow.
     Workflow(String),
     Audit,
@@ -133,28 +132,15 @@ pub enum SeriesKind {
 pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
     use sentry_core::maint::tasks::Do;
     let claude = sentry_core::claude::available();
-    let ready = |id: &str| {
-        v.plans
-            .get(id)
-            .is_some_and(|p| p.head.status == PlanStatus::Ready)
-    };
-    let item = |id: &str| {
-        if !claude {
-            None
-        } else if ready(id) {
-            Some(SeriesKind::Apply)
-        } else {
-            Some(SeriesKind::Plan(id.to_string()))
-        }
-    };
+    let item = || claude.then_some(SeriesKind::Apply);
     match &x.action {
         Action::Fix(id) if claude => Some(SeriesKind::Finding(id.clone())),
-        Action::Plan(id) | Action::OpenPlan(id) => item(id),
+        Action::Plan(_) | Action::OpenPlan(_) => item(),
         Action::Run(wf) => Some(SeriesKind::Workflow(wf.clone())),
         Action::Audit => Some(SeriesKind::Audit),
         Action::Task(id) => match all_tasks(v).into_iter().find(|t| &t.id == id)?.action() {
             Do::Run(wf) => Some(SeriesKind::Workflow(wf)),
-            Do::Plan(it) => item(&it),
+            Do::Plan(_) => item(),
             Do::Audit => Some(SeriesKind::Audit),
             Do::ByHand if claude => Some(SeriesKind::Apply),
             _ => None,
@@ -408,7 +394,7 @@ pub fn verbs(v: &View) -> Verbs {
 }
 
 fn row_verbs(v: &View) -> Verbs {
-    let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
+    let planned = |id: &str| v.plans.contains_key(id);
     let item = |id: &str, enter: &'static str| Verbs {
         enter,
         plan: true,
@@ -459,7 +445,7 @@ fn row_verbs(v: &View) -> Verbs {
                 Some(id) => item(id, "start"),
                 None => only("start"),
             },
-            Action::Plan(id) => item(id, "plan"),
+            Action::Plan(id) => item(id, "with Claude"),
             Action::OpenPlan(id) => item(id, "apply the plan"),
             Action::Look(id) if !id.is_empty() => item(id, "go to item"),
             Action::Look(_) => only("details"),
@@ -470,26 +456,30 @@ fn row_verbs(v: &View) -> Verbs {
 /// What Enter does on an item's own row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ItemEnter {
-    /// It has a plan, or one is being written: open it.
+    /// It has a plan ready: its session opens on it, to approve.
     OpenPlan,
-    /// There are newer versions, or it's to retire: Claude plans it (what `p` does).
+    /// There are newer versions, or it's to retire: its session, from the research.
     Plan,
-    /// Nothing to plan: what was done to it.
+    /// Nothing to do to it: what was done to it.
     Log,
 }
 
 impl ItemEnter {
     fn word(self) -> &'static str {
         match self {
-            ItemEnter::OpenPlan => "open plan",
-            ItemEnter::Plan => "plan",
+            ItemEnter::OpenPlan => "apply the plan",
+            ItemEnter::Plan => "with Claude",
             ItemEnter::Log => "its log",
         }
     }
 }
 
 fn item_enter(v: &View, s: &Status, it: &MaintItem) -> ItemEnter {
-    if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) {
+    let ready = v
+        .plans
+        .get(&s.id)
+        .is_some_and(|p| p.head.status == PlanStatus::Ready);
+    if ready {
         ItemEnter::OpenPlan
     } else if !s.newer.is_empty() || it.retire.is_some() {
         ItemEnter::Plan
@@ -501,8 +491,12 @@ fn item_enter(v: &View, s: &Status, it: &MaintItem) -> ItemEnter {
 /// What Enter does on a recommendation, in words.
 fn action_words(a: &Action) -> String {
     match a {
-        Action::Plan(id) => format!("Enter: Claude writes a plan for {id}"),
-        Action::OpenPlan(id) => format!("Enter: apply the plan for {id} (with Claude; p opens it)"),
+        Action::Plan(id) => {
+            format!(
+                "Enter: Claude looks into {id}, then shows its plan (nothing changes before you approve it)"
+            )
+        }
+        Action::OpenPlan(id) => format!("Enter: the plan for {id}, to approve (p reads it)"),
         Action::Run(wf) => format!("Enter: start {wf}"),
         Action::Track(_) => "Enter: track it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
@@ -538,9 +532,6 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     let t = v.t;
     let n = s.newer.len();
     let held = s.has(Flag::Held);
-    if v.planning.as_deref() == Some(s.id.as_str()) {
-        return ("planning…".into(), t.cyan);
-    }
     if let Some(p) = v.plans.get(&s.id) {
         let to = p.head.to.clone().unwrap_or_else(|| "retire".into());
         return match p.head.status {
@@ -925,13 +916,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         if let Some(n) = &h.note {
             l.push(Line::styled(format!("note: {n}"), t.fg()));
         }
-        l.push(Line::styled("Enter opens it", t.dim()));
-    } else if v.planning.as_deref() == Some(s.id.as_str()) {
-        l.push(Line::raw(""));
-        l.push(Line::styled(
-            "Claude is writing the plan… (Enter watches it)",
-            t.s(t.cyan),
-        ));
+        l.push(Line::styled("p reads it", t.dim()));
     }
     let hist = maint::history(&v.sh.log, &s.id);
     if !hist.is_empty() {
@@ -954,10 +939,12 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     l.push(Line::raw(""));
     let mut keys = Vec::new();
     keys.push(match (item_enter(v, s, it), workflow_of(it).is_some()) {
-        (ItemEnter::OpenPlan, _) => "Enter opens the plan · P plans again",
-        (ItemEnter::Plan, true) => "Enter: Claude plans it",
-        (ItemEnter::Plan, false) => "Enter: Claude plans it (no workflow: you run its steps)",
-        (ItemEnter::Log, _) => "Enter opens its log · p: Claude plans it",
+        (ItemEnter::OpenPlan, _) => "Enter: its plan, to approve · P starts over",
+        (ItemEnter::Plan, true) => "Enter: with Claude (it looks into it, then shows its plan)",
+        (ItemEnter::Plan, false) => {
+            "Enter: with Claude (no workflow: its plan is the steps, which sentry-server runs)"
+        }
+        (ItemEnter::Log, _) => "Enter opens its log",
     });
     keys.extend(["z review later", "v its log", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
@@ -995,11 +982,8 @@ fn later(v: &View, key: &str, what: &str) -> Vec<Effect> {
 fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
     let found = &v.s.maint_found;
     match (c, &r.action) {
-        ('\n', Action::Plan(id)) => match status_of(v, id).zip(item_of(v, id)) {
-            Some((s, it)) => item_key('P', v, s, it),
-            None => Vec::new(),
-        },
-        ('\n', Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
+        // An item to move or retire: its session (on its plan, when one is ready).
+        ('\n', Action::Plan(id) | Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
         ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
         ('\n' | 't', Action::Track(n)) => match found.candidates.get(*n) {
             Some(c) => vec![Own::track(c.item.clone())],
@@ -1092,8 +1076,8 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     };
     match task.action() {
         Do::Run(wf) => vec![Effect::StartWorkflow(wf)],
-        Do::Plan(it) => match status_of(v, &it).zip(item_of(v, &it)) {
-            Some((s, i)) => item_key('p', v, s, i),
+        Do::Plan(it) => match status_of(v, &it) {
+            Some(_) => vec![Effect::PlanApply(it)],
             None => vec![Effect::Toast(format!("{it} isn't tracked any more"))],
         },
         Do::Audit => vec![
@@ -1144,59 +1128,13 @@ pub fn task_manual(v: &View, id: &str) -> Vec<Effect> {
 fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
     match c {
         'z' => later(v, &s.id, &format!("Review {} later", s.id)),
-        // A plan already there: say so, rather than quietly replacing it.
-        'p' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
-            let what = match v.plans.get(&s.id) {
-                Some(p) => format!(
-                    "→ {} · {}",
-                    p.head.to.as_deref().unwrap_or("retire"),
-                    p.head.status.word()
-                ),
-                None => "being written".into(),
-            };
-            vec![Effect::Toast(format!(
-                "{} already has a plan ({what}): Enter opens it · P plans again",
-                s.id
-            ))]
-        }
-        'p' | 'P' => {
-            let plan = |target: Option<&str>| {
-                vec![Effect::PlanNote(s.id.clone(), plan_doc(v, s, it, target))]
-            };
-            if it.retire.is_some() || s.newer.is_empty() {
-                return plan(None);
-            }
-            let choices =
-                std::iter::once(("let Claude recommend a version".to_string(), plan(None)))
-                    .chain(s.newer.iter().take(8).map(|r| {
-                        (
-                            format!(
-                                "{}{}{}",
-                                r.version,
-                                r.date
-                                    .as_deref()
-                                    .map_or(String::new(), |d| format!("  {d}")),
-                                if r.security { "  ⚠ security" } else { "" }
-                            ),
-                            plan(Some(r.version.as_str())),
-                        )
-                    }))
-                    .collect();
-            vec![Effect::Choose(Choice::numbered(
-                v.t,
-                &format!(
-                    "Plan: move {} from {} to",
-                    s.id,
-                    s.pinned.as_deref().unwrap_or("?")
-                ),
-                choices,
-            ))]
-        }
-        // Enter: the item's plan (or the one being written), a new plan when there's
-        // something to plan, else what was done to it.
+        // The saved plan, to read; started over, it's set aside and the session begins again.
+        'p' => vec![Effect::PlanOpen(s.id.clone())],
+        'P' if v.plans.contains_key(&s.id) => vec![Effect::PlanAgain(s.id.clone())],
+        'P' => vec![Effect::PlanApply(s.id.clone())],
+        // Enter: its session when there's something to do to it, else what was done to it.
         '\n' => match item_enter(v, s, it) {
-            ItemEnter::OpenPlan => vec![Effect::PlanOpen(s.id.clone())],
-            ItemEnter::Plan => item_key('p', v, s, it),
+            ItemEnter::OpenPlan | ItemEnter::Plan => vec![Effect::PlanApply(s.id.clone())],
             ItemEnter::Log => vec![Effect::LogOpen(Some(s.id.clone()))],
         },
         'x' => match v.plans.get(&s.id) {

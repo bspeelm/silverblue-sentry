@@ -15,7 +15,14 @@ impl Slot {
             .series
             .as_ref()
             .filter(|_| banner.is_none() && (self.apply.is_none() || hidden))
-            .map(|s| (s.line(), if hidden { "A shows it" } else { "" }));
+            .map(|s| (s.line(), if hidden { "A shows it" } else { "" }))
+            // A session out of view says where it stands, as a run does off its screen.
+            .or_else(|| {
+                self.apply
+                    .as_ref()
+                    .filter(|a| a.chat.hidden && banner.is_none())
+                    .map(|a| (sentry_core::tui::applyview::banner(a), "A shows it"))
+            });
         let Some(areas) = frame::layout(f, &t, banner.is_some() || series.is_some()) else {
             return;
         };
@@ -83,7 +90,7 @@ impl Slot {
                 body,
                 &t,
                 self.shared.plans.get(id),
-                self.writer.as_ref().filter(|w| &w.item == id),
+                None,
                 *scroll,
                 &path,
             );
@@ -257,20 +264,8 @@ impl Slot {
             rv.hints(self.shared.review.as_ref(), self.writing_review())
         } else if let Some(r) = self.rec_view.as_ref().filter(|_| !plan_first) {
             r.hints()
-        } else if let Some((id, _)) = &self.plan_view {
-            if self
-                .writer
-                .as_ref()
-                .is_some_and(|w| &w.item == id && w.running())
-            {
-                vec![
-                    ("j/k", "scroll"),
-                    ("C-c", "stop"),
-                    ("Esc", "back (it carries on)"),
-                ]
-            } else {
-                self.ways.plan_hints.to_vec()
-            }
+        } else if self.plan_view.is_some() {
+            self.ways.plan_hints.to_vec()
         } else {
             Vec::new()
         }
