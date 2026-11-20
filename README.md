@@ -52,7 +52,7 @@ install -Dm755 silverblue-sentry-0.4.0/sentry-server ~/.local/bin/sentry-server 
 From source (a toolbox with `cargo` and `make` works fine; Rust 1.95+):
 
 ```sh
-make install-binary      # builds sentry and copies it to ~/.local/bin, with sentry-server as a link to it
+make install-binary      # builds sentry and copies it to ~/.local/bin, with sentry-server and sentry-network as links to it
 ```
 
 `make uninstall-binary` removes it again, and `make check` runs the build, tests, clippy and fmt.
@@ -281,6 +281,30 @@ A server's own workflows (`~/.config/sentry/servers/<name>/workflows/`) are wher
 
 Headless: `sentry-server audit`, `record [server]` (metrics every 10 s into the server's ring for History, from this machine, until Ctrl-C), `collect <server> <kind>` (JSON), `cond <server> <condition> [--wait]`, `workflow list|lint [server]`, `maint [server] [--refresh]` (each maintenance item's standing; see `maintenance:` in the sample config). Reports, run state and baselines live under `~/.local/share/sentry/servers/<name>/` and `~/.config/sentry/servers/`.
 
+## sentry-network: a home network through its router
+
+`sentry-network` is the same program under a third name (`sentry network …` is the same thing), for the router of a network you run: OpenWrt, reached with `ssh` as root (a GL.iNet GL-MT6000 on OpenWrt 25.12 is what it was built against). The same rules hold: nothing is installed on the router, nothing runs there between two looks, and it is read-only. This is the first part of it: the Dashboard and History. Clients, the firewall and listeners, maintenance and backups are not built yet.
+
+```sh
+sentry-network init myrouter     # look at the router (read-only) and write a starter network_config.yaml
+sentry-network lint              # the file, checked without contacting the router
+sentry-network check             # reachable as root? the release and board, the ports, the uplink, the tools
+sentry-network                   # the TUI (or: sentry-network home)
+```
+
+**The network is described in one file you write,** `~/.config/sentry/network_config.yaml` ([sample](assets/network_config.example.yaml)): the router's ssh name, what the firewall should look like (zones, port forwards, what may listen), the devices you know (by MAC, or by hostname for one with a private MAC), thresholds, who can decrypt a config backup, and what maintenance to keep up. `init` drafts it from what the router reports, with every device holding a lease listed for you to name, and never touches a file that is already there. sentry never rewrites it. Only the router and the load and memory thresholds are used so far; the rest is read and checked, so the file won't change shape as the other screens arrive.
+
+Once a network is configured, `sentry` shows it in the target strip after the servers (`F3`, `}`, or `:net home`); `sentry-network [name]` opens the same window on it. Nothing is read from a router until its target first has the window.
+
+| Screen | Shows | Keys |
+|---|---|---|
+| `1` Dashboard | the router (release, board, uptime, load, CPU, temperature, memory, flash in use), the uplink (address, gateway, the DHCP lease, DNS, the IPv6 prefix; "down" when it is), and a row per port and Wi-Fi radio: which network it belongs to, link and speed, and how fast it moves data in and out now, with the last minutes as a sparkline when there's room | `r` read again |
+| `H` History | what was recorded for the router, as sentry's graphs over 6h / 24h / 72h. The ring is on this machine (`~/.local/share/sentry/networks/<name>/metrics/ring.bin`) and is written only while sentry samples the router: its Dashboard open, or `sentry-network record <name>` in a spare terminal (foreground, until Ctrl-C). In the strip once there's a ring | `[` `]` window, `←` `→` scrub, `r` reload |
+
+A rate is the router's own byte counters over its own clock (`Δbytes · 8 / Δuptime`), so a slow ssh round trip doesn't bend it; a port shows `–` until there are two samples, and after a counter reset or a reboot. The lease line is exact only until the lease is first renewed: after that the router says only how long the lease is, so it reads "renewed, 1h–2h left". While the Dashboard is in view the router is asked once a second (one ssh exec, about 4 ms of shell there) and its interfaces every 30 s; out of view, nothing.
+
+Headless: `sentry-network collect [probe|ifaces] [name]` (JSON; both without a kind), `record [name]`.
+
 ## Config
 
 `~/.config/sentry/config.toml` follows `docs/spec.md` §12, and every key is optional. Additions:
@@ -288,7 +312,7 @@ Headless: `sentry-server audit`, `record [server]` (metrics every 10 s into the 
 - `[flatpak] trusted_origins = ["flathub", "fedora"]`: remotes that aren't flagged as unverified.
 - `[baseline] findings = ["repo:rpmfusion-*"]`: audit findings to treat as expected (globs allowed).
 - `[keys]`: rebinds, for example `quit = "Q"`, `"screen.history" = "F9"` or `"target.next" = "C-n"`.
-- `[targets] show = ["local", "srv:myserver"]`: which targets the window opens, in the strip's order (default: this machine, then every server).
+- `[targets] show = ["local", "srv:myserver", "net:home"]`: which targets the window opens, in the strip's order (default: this machine, then every server, then every network).
 
 Sentry never writes `config.toml`. What you decide in the TUI goes to machine-written files next to it:
 - `baseline.toml`: listeners and findings marked expected.
@@ -296,7 +320,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 
 ## Development
 
-`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (the kit), `crates/sentry-app` (the app and its flows, and the pieces of a host reached over ssh), `crates/sentry-local` (this machine) and `crates/sentry-server` (a server), and `crates/sentry`, the one binary over both. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
+`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (the kit), `crates/sentry-app` (the app and its flows, and the pieces of a host reached over ssh), `crates/sentry-local` (this machine), `crates/sentry-server` (a server) and `crates/sentry-network` (a network's router), and `crates/sentry`, the one binary over all three. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's and sentry-network's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
 
 ## Docs
 
