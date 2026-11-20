@@ -497,9 +497,9 @@ impl Session {
     }
 }
 
-/// The program's command: this binary when it has that name, one next to it (tests run from
-/// `deps/`), the program it is a command of beside this one (`sentry-server` is `sentry
-/// server`), or PATH's.
+/// The program's command: this binary when it has that name, one next to it or above it
+/// (tests run from `deps/`, or deeper under the profile's directory), the program it is a
+/// command of beside this one (`sentry-server` is `sentry server`), or PATH's.
 fn exe(prog: &str) -> Vec<String> {
     let me = std::env::current_exe().ok();
     if let Some(p) = &me
@@ -509,9 +509,9 @@ fn exe(prog: &str) -> Vec<String> {
     }
     let beside = |name: &str| {
         me.as_deref()
-            .and_then(|p| p.parent())
             .into_iter()
-            .flat_map(|d| [d.join(name), d.join("..").join(name)])
+            .flat_map(|p| p.ancestors().skip(1).take(5))
+            .map(|d| d.join(name))
             .find(|p| p.is_file())
             .map(|p| p.display().to_string())
     };

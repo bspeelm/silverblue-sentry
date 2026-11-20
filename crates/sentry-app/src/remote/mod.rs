@@ -6,6 +6,7 @@ pub mod gateway;
 pub mod probe;
 pub mod recorder;
 pub mod upstream;
+pub mod wfview;
 pub mod workflow;
 
 use std::collections::HashMap;

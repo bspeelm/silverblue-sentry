@@ -258,7 +258,7 @@ impl Slot {
             _ => {
                 let mut h = self.target.hints(false, &self.shared, &cx!(self, w));
                 // Where work is started and followed: auto mode's key.
-                if self.target.offered()
+                if self.target.auto_offered()
                     && matches!(self.screen, ScreenId::Maint | ScreenId::Upgrade)
                 {
                     h.push(self.auto_hint());

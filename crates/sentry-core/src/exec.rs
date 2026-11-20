@@ -443,6 +443,96 @@ impl Cmd {
         }
     }
 
+    /// Run to completion, handing stdout to `sink` as the raw bytes arrive: never decoded
+    /// and never kept here (a binary stream: an archive read over ssh). A non-zero exit is
+    /// an error carrying stderr, as `output` gives it; a sink that fails ends the command.
+    /// Returns how many bytes went through.
+    pub fn bytes_to(&self, sink: &mut dyn io::Write) -> Result<u64, ExecError> {
+        self.check()?;
+        let mut child = self
+            .command()
+            .stdin(self.stdin())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        self.feed(&mut child);
+        let mut out = child.stdout.take().expect("piped");
+        let mut err = child.stderr.take().expect("piped");
+        let t_err = thread::spawn(move || {
+            let mut s = Vec::new();
+            let _ = err.read_to_end(&mut s);
+            s
+        });
+        // The reader hands chunks over, so the wait for one can be cut at the timeout.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        let t_out = thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match out.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let start = Instant::now();
+        let mut total = 0u64;
+        let stop = |child: &mut std::process::Child| {
+            let _ = child.kill();
+            let _ = child.wait();
+        };
+        loop {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(chunk) => {
+                    if let Err(e) = sink.write_all(&chunk) {
+                        drop(rx);
+                        stop(&mut child);
+                        return Err(ExecError::Io(e));
+                    }
+                    total += chunk.len() as u64;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(t) = self.timeout
+                && start.elapsed() > t
+            {
+                drop(rx);
+                stop(&mut child);
+                return Err(ExecError::Timeout(t));
+            }
+        }
+        let _ = t_out.join();
+        let status = child.wait()?;
+        let stderr = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
+        let code = status.code().unwrap_or(-1);
+        if let Site::Ssh(host) = self.site {
+            match code {
+                127 => return Err(ExecError::NotFound(format!("{} on {host}", self.bin()))),
+                255 => {
+                    let why = stderr.trim();
+                    return Err(ExecError::Unreachable(if why.is_empty() {
+                        format!("{host}: ssh failed")
+                    } else {
+                        format!("{host}: {why}")
+                    }));
+                }
+                _ => {}
+            }
+        }
+        if code != 0 {
+            return Err(ExecError::Failed {
+                code,
+                stdout: String::new(),
+                stderr,
+            });
+        }
+        Ok(total)
+    }
+
     /// Spawn and stream stdout/stderr lines to `sink`, followed by exactly one `Exit`.
     /// Returns the child's pid. No timeout: streamed commands are user-confirmed actions.
     pub fn stream(
@@ -825,6 +915,50 @@ mod tests {
             .run()
             .unwrap_err();
         assert!(matches!(e, ExecError::Timeout(_)));
+    }
+
+    #[test]
+    fn bytes_go_through_as_they_are() {
+        // Not UTF-8, with a NUL: what `output` would mangle.
+        let mut got = Vec::new();
+        let n = Cmd::local("printf")
+            .arg("\\377\\000\\201ok")
+            .bytes_to(&mut got)
+            .unwrap();
+        assert_eq!(got, [0xff, 0x00, 0x81, b'o', b'k']);
+        assert_eq!(n, 5);
+        // A failure carries stderr, and what arrived before it was still handed over.
+        let mut got = Vec::new();
+        let e = Cmd::local("sh")
+            .args(["-c", "printf part; echo broke >&2; exit 3"])
+            .bytes_to(&mut got)
+            .unwrap_err();
+        assert!(
+            matches!(&e, ExecError::Failed { code: 3, stderr, .. } if stderr.trim() == "broke"),
+            "{e:?}"
+        );
+        assert_eq!(got, b"part");
+        // A sink that can't take it ends the command.
+        struct Full;
+        impl io::Write for Full {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let e = Cmd::local("sh")
+            .args(["-c", "echo x; sleep 30"])
+            .bytes_to(&mut Full)
+            .unwrap_err();
+        assert!(matches!(e, ExecError::Io(_)), "{e:?}");
+        let e = Cmd::local("sleep")
+            .arg("30")
+            .timeout(Some(Duration::from_millis(100)))
+            .bytes_to(&mut Vec::new())
+            .unwrap_err();
+        assert!(matches!(e, ExecError::Timeout(_)), "{e:?}");
     }
 
     #[test]

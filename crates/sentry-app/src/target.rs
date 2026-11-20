@@ -519,6 +519,11 @@ pub trait Asks {
     fn offered(&self) -> bool {
         true
     }
+    /// Auto mode has work to carry on this target, so its key is named where work is
+    /// started and followed. As `offered`, unless a target has workflows and no Claude yet.
+    fn auto_offered(&self) -> bool {
+        self.offered()
+    }
     /// About the screen in view (its selected row, the run), or why there's nothing.
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String>;
     /// Applying the selected Maintenance row.
