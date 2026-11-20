@@ -276,7 +276,7 @@ EOF
   echo "$c is up: $LOGIN@127.0.0.1:$port, sudo: $mode, files in $dir"
   echo
   echo "Run its tests:   $0 test $mode"
-  echo "or one by hand (cargo build -p sentry-server first: workflow steps run the binary):"
+  echo "or one by hand (cargo build -p sentry first: workflow steps run the binary):"
   for t in $(tests_of "$mode"); do
     echo "  $(env_of "$dir" "$t") \\"
     echo "    cargo test -p sentry-server $t -- --ignored --nocapture"
@@ -291,8 +291,8 @@ run_tests() {
   [[ -n "$c" ]] || die "no $mode container: \`$0 up $mode\` first"
   dir=$(dir_of "$c")
   [[ $# -gt 0 ]] || set -- $(tests_of "$mode")
-  # Workflow steps (`sentry-server cond …`) run the binary beside the test's.
-  cargo build -q -p sentry-server
+  # Workflow steps (`sentry-server cond …`) run the binary beside the test's (`sentry server`).
+  cargo build -q -p sentry
   for t in "$@"; do
     scratch "$dir" "$mode" "$t"
     echo "=== $t ($mode)"

@@ -1,6 +1,6 @@
 [package]
 name = "sentry"
-description = "Daemon-free monitor & maintenance TUI for Fedora Silverblue"
+description = "Daemon-free monitor & maintenance TUI for Fedora Silverblue, and for the servers it reaches over ssh"
 readme = "../../README.md"
 keywords = ["silverblue", "fedora", "rpm-ostree", "nvidia", "tui"]
 categories = ["command-line-utilities"]
@@ -12,25 +12,17 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+# The one program. `sentry-server` is the same executable under that name (a symlink beside
+# it: `make install-binary`), and `sentry server …` the same thing.
+[[bin]]
+name = "sentry"
+path = "src/main.rs"
+
 [dependencies]
 sentry-core.workspace = true
 sentry-app.workspace = true
-ratatui.workspace = true
-sysinfo.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
-serde_ignored.workspace = true
-jiff.workspace = true
+sentry-local.workspace = true
+sentry-server.workspace = true
 clap.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+serde_json.workspace = true
 tracing-subscriber.workspace = true
-signal-hook.workspace = true
-rustix.workspace = true
-
-[dev-dependencies]
-sentry-core = { workspace = true, features = ["testing"] }
-sentry-app = { workspace = true, features = ["testing"] }
-insta.workspace = true

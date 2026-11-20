@@ -19,10 +19,11 @@ check: build
 	cargo clippy --all-targets -- -D warnings
 	cargo fmt --check
 
+# One program: `sentry-server` is the same file under that name.
 install-binary: build
 	install -Dm755 target/release/$(BINARY) $(BINDIR)/$(BINARY)
-	install -Dm755 target/release/sentry-server $(BINDIR)/sentry-server
-	@echo "installed to $(BINDIR)/$(BINARY) and $(BINDIR)/sentry-server"
+	ln -sfn $(BINARY) $(BINDIR)/sentry-server
+	@echo "installed to $(BINDIR)/$(BINARY) (and $(BINDIR)/sentry-server, a link to it)"
 
 # Leaves ~/.config/sentry, ~/.local/share/sentry and the cache alone.
 uninstall-binary:

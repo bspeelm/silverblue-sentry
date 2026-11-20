@@ -52,7 +52,7 @@ install -Dm755 silverblue-sentry-0.4.0/sentry-server ~/.local/bin/sentry-server 
 From source (a toolbox with `cargo` and `make` works fine; Rust 1.95+):
 
 ```sh
-make install-binary      # builds sentry and sentry-server and copies them to ~/.local/bin
+make install-binary      # builds sentry and copies it to ~/.local/bin, with sentry-server as a link to it
 ```
 
 `make uninstall-binary` removes it again, and `make check` runs the build, tests, clippy and fmt.
@@ -214,7 +214,7 @@ Lint (`sentry workflow lint`) checks for unknown fields, duplicate ids, undefine
 
 ## sentry-server: a server over ssh
 
-`sentry-server` is a second binary from the same source, for a server you reach with `ssh`: a Debian or Ubuntu box running systemd services, timers and docker compose. It follows the same rules as `sentry`:
+`sentry-server` is the same program under a second name (`sentry server …` is the same thing), for a server you reach with `ssh`: a Debian or Ubuntu box running systemd services, timers and docker compose. It follows the same rules as `sentry`:
 - **Nothing is installed on the server.** It runs read-only commands through one multiplexed ssh connection while you have it open. That connection closes by itself 15 s after the last command.
 - **Nothing changes without a confirm box** showing the exact command.
 - **The server is described in one file you write,** `~/.config/sentry/server_config.yaml` ([sample](assets/server_config.example.yaml)). sentry-server never rewrites it.
@@ -279,7 +279,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 
 ## Development
 
-`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (what both programs share), `crates/sentry-app` (the pieces of a host reached over ssh), `crates/sentry` and `crates/sentry-server`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
+`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (the kit), `crates/sentry-app` (the app and its flows, and the pieces of a host reached over ssh), `crates/sentry-local` (this machine) and `crates/sentry-server` (a server), and `crates/sentry`, the one binary over both. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
 
 ## Docs
 

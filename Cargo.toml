@@ -3,8 +3,9 @@ resolver = "3"
 members = [
     "crates/sentry-core",
     "crates/sentry-app",
-    "crates/sentry",
+    "crates/sentry-local",
     "crates/sentry-server",
+    "crates/sentry",
 ]
 
 [workspace.package]
@@ -19,6 +20,8 @@ publish = false
 [workspace.dependencies]
 sentry-core = { path = "crates/sentry-core" }
 sentry-app = { path = "crates/sentry-app" }
+sentry-local = { path = "crates/sentry-local" }
+sentry-server = { path = "crates/sentry-server" }
 ratatui = "0.30"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "component", "network", "user"] }
 serde = { version = "1", features = ["derive"] }

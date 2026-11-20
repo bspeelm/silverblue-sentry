@@ -225,11 +225,15 @@ impl Session {
         // `sentry-server cond …` checks the server from here; everything else runs there.
         let here = self.here(&cmd);
         let full = match here {
-            Some(rest) => Cmd::local(&exe(self.prog))
-                .arg(rest.split_whitespace().next().unwrap_or("cond"))
-                .arg(&self.r.name)
-                .args(rest.split_whitespace().skip(1))
-                .timeout(None),
+            Some(rest) => {
+                let exe = exe(self.prog);
+                Cmd::local(&exe[0])
+                    .args(exe[1..].iter().map(String::as_str))
+                    .arg(rest.split_whitespace().next().unwrap_or("cond"))
+                    .arg(&self.r.name)
+                    .args(rest.split_whitespace().skip(1))
+                    .timeout(None)
+            }
             // Nothing on stdin: the step's terminal (it has one, so stopping it here stops
             // it there) would never end for a command that reads it.
             None => self
@@ -460,20 +464,33 @@ impl Session {
     }
 }
 
-/// The program's binary: this one, one next to it (tests run from `deps/`), or PATH's.
-fn exe(prog: &str) -> String {
+/// The program's command: this binary when it has that name, one next to it (tests run from
+/// `deps/`), the program it is a command of beside this one (`sentry-server` is `sentry
+/// server`), or PATH's.
+fn exe(prog: &str) -> Vec<String> {
     let me = std::env::current_exe().ok();
     if let Some(p) = &me
         && p.file_name().is_some_and(|n| n == prog)
     {
-        return p.display().to_string();
+        return vec![p.display().to_string()];
     }
-    me.as_deref()
-        .and_then(|p| p.parent())
-        .into_iter()
-        .flat_map(|d| [d.join(prog), d.join("..").join(prog)])
-        .find(|p| p.is_file())
-        .map_or_else(|| prog.into(), |p| p.display().to_string())
+    let beside = |name: &str| {
+        me.as_deref()
+            .and_then(|p| p.parent())
+            .into_iter()
+            .flat_map(|d| [d.join(name), d.join("..").join(name)])
+            .find(|p| p.is_file())
+            .map(|p| p.display().to_string())
+    };
+    if let Some(p) = beside(prog) {
+        return vec![p];
+    }
+    if let Some((base, sub)) = prog.split_once('-')
+        && let Some(p) = beside(base)
+    {
+        return vec![p, sub.to_string()];
+    }
+    vec![prog.into()]
 }
 
 impl crate::run::WfRun for Session {

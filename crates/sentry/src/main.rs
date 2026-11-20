@@ -1,6 +1,10 @@
-//! sentry: daemon-free monitor & maintenance TUI for Fedora Silverblue.
+//! sentry: daemon-free monitor & maintenance TUI for Fedora Silverblue, and for the servers
+//! it reaches over ssh. One program: called as `sentry-server` (a symlink to it), or as
+//! `sentry server …`, it is that command.
 
-use sentry::{checks, collectors, config, jobs, paths, recorder, status, tui, workflows};
+mod server;
+
+use sentry_local::{checks, collectors, config, jobs, paths, recorder, status, tui, workflows};
 
 use std::process::ExitCode;
 
@@ -78,6 +82,29 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// A server over ssh: `sentry server …` is `sentry-server …` (its own --help says what).
+    Server {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+/// The command line as `sentry-server` would get it, when that's what was called: by that
+/// name (the symlink beside this program), or as `sentry server …`.
+fn as_server(mut args: Vec<std::ffi::OsString>) -> Option<Vec<std::ffi::OsString>> {
+    let called = args
+        .first()
+        .and_then(|a| std::path::Path::new(a).file_name())
+        .is_some_and(|n| n == "sentry-server");
+    if called {
+        return Some(args);
+    }
+    if args.get(1).is_some_and(|a| a == "server") {
+        args.remove(1);
+        args[0] = "sentry-server".into();
+        return Some(args);
+    }
+    None
 }
 
 fn init_logging() {
@@ -104,9 +131,18 @@ fn init_logging() {
 }
 
 fn main() -> ExitCode {
+    if let Some(args) = as_server(std::env::args_os().collect()) {
+        return server::main(args);
+    }
     let cli = Cli::parse();
     init_logging();
     match cli.cmd {
+        // (Taken before the parse: `as_server`.)
+        Some(Command::Server { args }) => server::main(
+            std::iter::once("sentry-server".into())
+                .chain(args.into_iter().map(Into::into))
+                .collect(),
+        ),
         None => match tui::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

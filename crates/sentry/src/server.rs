@@ -1,4 +1,5 @@
-//! sentry-server: monitor and maintain a server over ssh. Runs only while you run it.
+//! `sentry-server` (and `sentry server`): monitor and maintain a server over ssh. Runs only
+//! while you run it.
 
 use std::process::ExitCode;
 
@@ -93,8 +94,9 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+/// `args`: the command line, the program's name first.
+pub fn main(args: Vec<std::ffi::OsString>) -> ExitCode {
+    let cli = Cli::parse_from(args);
     ExitCode::from(match cli.cmd {
         Some(Command::Init { ssh, name, write }) => cli::init(&ssh, name.as_deref(), write),
         Some(Command::Lint { name, offline }) => cli::lint(name.as_deref(), offline),
