@@ -6,27 +6,27 @@ expression: body(&s)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ quick-update · 7/19 ─────────────────────────────────────┐  ┌ Log · steps/upgrade-ritual.log ──────────────────────────────────────────────────────────────┐
-│ ✓   1 Preview the upgrade (decides routine v…      auto  │  │ ▶ 5/17 Exactly one layered kmod-nvidia package present                                       │
-│ ✓   2 Make sure Steam is not running               auto  │  │ ✓ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64                                │
-│ ✓   3 Update Flatpaks                           confirm  │  │                                                                                              │
-│ –   4 Upgrade packages inside every toolbox    optional  │  │                                                                                              │
-│ –   5 Stage upgrade (no kernel change)          confirm  │  │                                                                                              │
-│ –   6 Reboot into the new deployment (whenev…    reboot  │  │                                                                                              │
-│ ✓   7 Exactly one layered kmod-nvidia packag…      auto  │  │                                                                                              │
-│ ▶   8 Stage upgrade, dropping kmod-nvidia-7.…   confirm  │  │                                                                                              │
-│ ↻   9 Reboot onto kernel 7.2.11-200.fc44.x86…    reboot  │  │                                                                                              │
-│ ○  10 Booted into 7.2.11-200.fc44.x86_64           auto  │  │                                                                                              │
-│ ○  11 The driver signing key is usable             auto  │  │                                                                                              │
-│ ○  12 Build the NVIDIA driver for the runnin…   confirm  │  │                                                                                              │
-│ ○  13 Exactly one built driver for the runni…      auto  │  │                                                                                              │
-│ ○  14 Layer the new kmod-nvidia RPM             confirm  │  │                                                                                              │
-│ ↻  15 Reboot to load the driver                  reboot  │  │                                                                                              │
-│ ○  16 Driver loaded on the expected kernel         auto  │  │                                                                                              │
-│ ○  17 Install the Flatpak GL runtimes for th…   confirm  │  │                                                                                              │
-│ ○  18 Flatpak GL.nvidia and GL32.nvidia matc…      auto  │  │                                                                                              │
-│ ○  19 Remove the temporary updates-master.re…  optional  │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│  silverblue 44.20261002.0 · quick-update                 │  │ ▶ 5/17 Exactly one layered kmod-nvidia package present                                       │
+│  ⏸ waiting on you · Enter run the step                   │  │ ✓ kmod-nvidia-7.2.8-200.fc44.x86_64-3:615.71.09-3.fc44.x86_64                                │
+│ ✓  1. Preview the upgrade (decides routine vs. ke…  auto │  │                                                                                              │
+│ ✓  2. Make sure Steam is not running                auto │  │                                                                                              │
+│ ✓  3. Update Flatpaks                            confirm │  │                                                                                              │
+│ –  4. Upgrade packages inside every toolbox     optional │  │                                                                                              │
+│ –  5. Stage upgrade (no kernel change)           confirm │  │                                                                                              │
+│ –  6. Reboot into the new deployment (whenever …  reboot │  │                                                                                              │
+│ ✓  7. Exactly one layered kmod-nvidia package pre…  auto │  │                                                                                              │
+│ ▶  8. Stage upgrade, dropping kmod-nvidia-7.2.…  confirm │  │                                                                                              │
+│ ○  9. Reboot onto kernel 7.2.11-200.fc44.x86_64   reboot │  │                                                                                              │
+│ ○ 10. Booted into 7.2.11-200.fc44.x86_64            auto │  │                                                                                              │
+│ ○ 11. The driver signing key is usable              auto │  │                                                                                              │
+│ ○ 12. Build the NVIDIA driver for the running …  confirm │  │                                                                                              │
+│ ○ 13. Exactly one built driver for the running ke…  auto │  │                                                                                              │
+│ ○ 14. Layer the new kmod-nvidia RPM              confirm │  │                                                                                              │
+│ ○ 15. Reboot to load the driver                   reboot │  │                                                                                              │
+│ ○ 16. Driver loaded on the expected kernel          auto │  │                                                                                              │
+│ ○ 17. Install the Flatpak GL runtimes for the …  confirm │  │                                                                                              │
+│ ○ 18. Flatpak GL.nvidia and GL32.nvidia match the…  auto │  │                                                                                              │
+│ ○ 19. Remove the temporary updates-master.repo  optional │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │

@@ -16,6 +16,7 @@ pub mod modal;
 pub mod records;
 pub mod reportview;
 pub mod reviewview;
+pub mod stepview;
 pub mod theme;
 pub mod wflist;
 pub mod widgets;

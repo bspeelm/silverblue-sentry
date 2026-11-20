@@ -6,17 +6,17 @@ expression: body(&s)
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ apt-maintenance · running · 0 ───────────────────────────┐  ┌ Log · step 1/8 · steps/preview.log ──────────────────────────────────────────────────────────┐
-│ ▶  1 Preview what would change  auto                     │  │ ▶ started apt-maintenance on myserver                                                        │
-│ ○  2 Refresh package lists  confirm                      │  │ ▶ 1/8 Preview what would change                                                              │
-│ ○  3 Install the updates  confirm                        │  │ $ apt-get -s -o Debug::NoLocking=1 dist-upgrade | grep -E '^(Inst|Remv) |upgraded,|kept bac… │
-│ ○  4 Remove packages nothing needs any more  optional    │  │                                                                                              │
-│ ○  5 Reboot onto the new kernel and libraries  reboot    │  │                                                                                              │
-│ ○  6 Running the newest installed kernel  auto           │  │                                                                                              │
-│ ○  7 Configured services are running  auto               │  │                                                                                              │
-│ ○  8 Containers are running and healthy  auto            │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│  myserver · apt-maintenance   ▶ running                  │  │ ▶ started apt-maintenance on myserver                                                        │
+│                                                          │  │ ▶ 1/8 Preview what would change                                                              │
+│ ▶  1. Preview what would change                     auto │  │ $ apt-get -s -o Debug::NoLocking=1 dist-upgrade | grep -E '^(Inst|Remv) |upgraded,|kept bac… │
+│       … running 0:00, no output yet · C-c stops it       │  │                                                                                              │
+│ ○  2. Refresh package lists                      confirm │  │                                                                                              │
+│ ○  3. Install the updates                        confirm │  │                                                                                              │
+│ ○  4. Remove packages nothing needs any more    optional │  │                                                                                              │
+│ ○  5. Reboot onto the new kernel and libraries    reboot │  │                                                                                              │
+│ ○  6. Running the newest installed kernel           auto │  │                                                                                              │
+│ ○  7. Configured services are running               auto │  │                                                                                              │
+│ ○  8. Containers are running and healthy            auto │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │

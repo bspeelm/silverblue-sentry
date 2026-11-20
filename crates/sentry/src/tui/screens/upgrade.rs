@@ -3,8 +3,8 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Color;
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use super::{Cursor, Hints, View};
@@ -14,7 +14,6 @@ use crate::tui::keys::Action;
 use crate::tui::theme::Theme;
 use crate::tui::wf::{LogKind, Session};
 use crate::tui::widgets::{inner, panel, short_home, trunc, wrap};
-use crate::workflows::Kind;
 use crate::workflows::cli::{RealEnv, initial_vars};
 use crate::workflows::runner::{Next, preview};
 use crate::workflows::state::StepStatus;
@@ -24,6 +23,7 @@ pub struct Upgrade {
     pub cur: Cursor,
 }
 
+use crate::tui::stepview;
 pub use crate::tui::wflist::WfInfo;
 use crate::tui::wflist::{self, gate_card, key_rows, when};
 
@@ -462,62 +462,42 @@ impl Upgrade {
         f.render_widget(block, left);
         let [list, info] = Layout::vertical([Constraint::Fill(1), Constraint::Length(4)]).areas(r);
         let cur = s.next.idx();
-        let spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let tick = (jiff::Timestamp::now().as_millisecond() / 250) as usize % spin.len();
-        // Keep the current step in view.
-        let h = list.height as usize;
-        let start = cur.map_or(0, |c| c.saturating_sub(h.saturating_sub(3)));
-        let lines: Vec<Line> =
-            s.wf.steps
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(h)
-                .map(|(i, step)| {
-                    let st = &s.run.state.steps[i];
-                    let is_cur = cur == Some(i) && !s.done();
-                    let live = s.live.as_ref().is_some_and(|l| l.idx == i);
-                    let (g, c) = match st.status {
-                        _ if live => (spin[tick], t.cyan),
-                        StepStatus::Ok => ("✓", t.green),
-                        StepStatus::Skipped => ("–", t.dim),
-                        StepStatus::Failed => ("✗", t.red),
-                        StepStatus::Running if step.kind == Kind::Reboot => ("↻", t.yellow),
-                        _ if is_cur && step.kind == Kind::Reboot => ("↻", t.yellow),
-                        _ if is_cur => ("▶", t.yellow),
-                        _ if step.kind == Kind::Reboot => ("↻", t.dim),
-                        _ => ("○", t.dim),
-                    };
-                    let tag = step.tag();
-                    let tc = match tag {
-                        "reboot" => t.mag,
-                        "confirm" => t.yellow,
-                        _ => t.dim,
-                    };
-                    let title_c = match st.status {
-                        StepStatus::Skipped => t.dim,
-                        StepStatus::Pending if !is_cur => t.dim,
-                        _ => t.fg,
-                    };
-                    let w = list.width as usize;
-                    let title = trunc(&s.title(i), w.saturating_sub(4 + 3 + 10));
-                    let pad = w.saturating_sub(4 + 3 + title.chars().count() + tag.len());
-                    let style = if is_cur {
-                        Style::new().bg(t.sel_bg)
-                    } else {
-                        Style::new()
-                    };
-                    Line::from(vec![
-                        Span::styled(format!("{g}  "), t.s(c)),
-                        Span::styled(format!("{:>2} ", i + 1), t.dim()),
-                        Span::styled(title, t.s(title_c)),
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled(tag, t.s(tc)),
-                    ])
-                    .style(style)
-                })
-                .collect();
-        f.render_widget(Paragraph::new(lines), list);
+        // The steps, as a session's plan is drawn: the same header, rows and place for what
+        // the running step prints.
+        let live = s.live.as_ref().map(|l| l.idx);
+        let rows = stepview::run_rows(&s.wf, &s.run.state, &s.next, live, &|i| s.title(i));
+        let from = s
+            .log
+            .iter()
+            .rposition(|(_, k)| *k == LogKind::Cmd)
+            .map_or(0, |i| i + 1);
+        let out: Vec<String> = s
+            .log
+            .iter()
+            .skip(from)
+            .filter(|(_, k)| matches!(k, LogKind::Out | LogKind::Err))
+            .map(|(l, _)| l.clone())
+            .collect();
+        stepview::draw(
+            f,
+            list,
+            t,
+            &stepview::Steps {
+                target: v.target,
+                what: &s.wf.name,
+                auto: v.auto,
+                state: if s.done() {
+                    stepview::State::Done
+                } else {
+                    stepview::run_state(&s.next, live.is_some())
+                },
+                rows: &rows,
+                at: live.or(cur).filter(|_| !s.done()),
+                output: &out,
+                since: s.live.as_ref().map(|l| l.started),
+                stop: "C-c stops it",
+            },
+        );
         let user_vars: Vec<String> = s
             .run
             .state

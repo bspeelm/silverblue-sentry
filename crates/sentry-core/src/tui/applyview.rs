@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::chat::{brief_lines, entry_lines, show_focused};
+use super::stepview::{self, Mark, State};
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
 use crate::apply::plan::{Kind as K, Run, RunState};
@@ -44,8 +45,36 @@ pub fn banner(s: &Session) -> String {
     }
 }
 
-/// `wf`: how the workflow the plan waits for is doing (one or two lines, from the app).
-pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, wf: &[String]) {
+/// Where the session stands, in the words a workflow run uses (`stepview::State`).
+pub fn state(s: &Session) -> State {
+    let you = || s.enter_word().map_or(State::Idle, |w| State::You(w.into()));
+    match s.phase {
+        Phase::Thinking(Turn::Investigate) => State::Working("Claude is looking into it".into()),
+        Phase::Thinking(Turn::Fix) => State::Working("Claude is correcting the plan".into()),
+        Phase::Thinking(Turn::Verify) => State::Working("Claude is checking the result".into()),
+        Phase::SudoCheck | Phase::Password { checking: true, .. } => {
+            State::Working("checking sudo".into())
+        }
+        Phase::Password { .. } => State::You("unlock".into()),
+        Phase::Applying if s.waiting_workflow().is_some() => you(),
+        Phase::Applying => State::Running,
+        Phase::Settled(End::Done | End::Waited) if s.enter_word() == Some("close") => State::Done,
+        Phase::Settled(End::Failed | End::Unverified) if s.enter_word().is_none() => State::Failed,
+        Phase::Settled(End::Stopped) if s.enter_word().is_none() => State::Stopped,
+        Phase::Brief | Phase::Review | Phase::Settled(_) => you(),
+    }
+}
+
+/// `target`: whose session it is (the header names it, as a run's does). `wf`: how the
+/// workflow the plan waits for is doing (one or two lines, from the app).
+pub fn draw(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    t: &Theme,
+    s: &Session,
+    target: &str,
+    wf: &[String],
+) {
     f.render_widget(ratatui::widgets::Clear, area);
     let rect = widgets::centered(
         area,
@@ -58,11 +87,6 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
         Some((i, n)) => format!("Claude · {i} of {n} · {}", c.ask.subject),
         None => format!("Claude · {}", c.ask.subject),
     };
-    let title = if s.auto {
-        format!("{title} · auto")
-    } else {
-        title
-    };
     let inner = widgets::overlay(f, rect, t, &title, color);
     let [head, log, rule, input, keyline] = Layout::vertical([
         Constraint::Length(2),
@@ -72,7 +96,13 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
         Constraint::Length(1),
     ])
     .areas(inner);
-    f.render_widget(Paragraph::new(stages(t, s.phase)), head);
+    // The header a workflow run has: whose, what, auto, where it stands. Then the stages.
+    let what = c.ask.subject.trim_start_matches("apply · ");
+    let mut top = stepview::head(t, target, what, s.auto, &state(s), head.width as usize);
+    if top.len() == 1 {
+        top.push(stages(t, s.phase));
+    }
+    f.render_widget(Paragraph::new(top), head);
     let w = log.width as usize;
     let mut lines = brief_lines(c, t, w, s.brief_open || s.phase == Phase::Brief);
     lines.extend(entry_lines(c, t, w, true, &|i| plan_lines(s, i, t, w, wf)));
@@ -82,10 +112,12 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     // Applying: the running (or waiting) step stays in view, however long the plan.
     let focus = matches!(s.phase, Phase::Applying)
         .then(|| {
+            // (A step's row starts with its indent, then its mark.)
             lines.iter().rposition(|l| {
                 l.spans
-                    .first()
-                    .is_some_and(|x| x.content.contains('▶') || x.content.contains('⏸'))
+                    .iter()
+                    .take(2)
+                    .any(|x| x.content.starts_with('▶') || x.content.starts_with('⏸'))
             })
         })
         .flatten();
@@ -172,7 +204,7 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
                 _ => String::new(),
             };
             return Some(Line::styled(
-                format!("     ▶ Your turn: {why}Enter {word}"),
+                format!("     ⏸ Waiting on you: {why}Enter {word}"),
                 t.s(t.yellow).add_modifier(ratatui::style::Modifier::BOLD),
             ));
         }
@@ -364,24 +396,30 @@ fn step_lines(
     let st = &r.plan.steps[i];
     let running = r.state == RunState::Running && i == r.current() && s.phase == Phase::Applying;
     let waiting = r.state == RunState::WaitingWorkflow(i);
-    let (glyph, color) = match r.results.get(i) {
-        Some(x) if x.ok => ("✓", t.green),
-        Some(_) => ("✗", t.red),
-        None if waiting => ("⏸", t.yellow),
-        None if running => ("▶", t.cyan),
-        None => ("○", t.dim),
+    let mark = match r.results.get(i) {
+        Some(x) if x.ok => Mark::Done,
+        Some(_) => Mark::Failed,
+        None if waiting => Mark::Waiting,
+        None if running => Mark::Running,
+        None => Mark::Todo,
     };
     let body = w.saturating_sub(9).max(10);
-    let mut l = vec![Line::from(vec![
-        Span::styled(format!("     {glyph} "), t.s(color)),
-        Span::styled(
-            widgets::trunc(
-                &format!("{}. {}", i + 1, st.title),
-                w.saturating_sub(8).max(10),
-            ),
-            t.fg(),
-        ),
-    ])];
+    // The row a workflow's step gets, set in under the plan's line.
+    let idx = s.runs.iter().position(|x| std::ptr::eq(x, r)).unwrap_or(0);
+    let mut first = stepview::row(
+        t,
+        i + 1,
+        &stepview::Row {
+            mark,
+            title: st.title.clone(),
+            tag: String::new(),
+            took: s.took.get(&(idx, i)).copied(),
+        },
+        w.saturating_sub(6).max(10),
+        false,
+    );
+    first.spans.insert(0, Span::raw("     "));
+    let mut l = vec![first];
     let push = |l: &mut Vec<Line<'static>>, text: &str, style| {
         for x in wrap(text, body) {
             l.push(Line::styled(format!("         {x}"), style));
@@ -447,29 +485,20 @@ fn step_lines(
         push(&mut l, &format!("✗ {why}"), t.s(t.red));
     }
     if running {
-        let n = s.output.len();
-        for x in &s.output[n.saturating_sub(6)..] {
-            push(&mut l, &format!("│ {x}"), t.dim());
-        }
-        // A step that prints nothing for minutes (a backup, `systemctl start` of a long
-        // job) still shows it's alive.
+        // Where a run's step shows its output: under its row, then how long it's been.
+        l.extend(stepview::output(t, &s.output, 6, w, 9));
         if let Some(at) = s.job_started {
-            let e = at.elapsed().as_secs();
-            push(
-                &mut l,
-                &format!(
-                    "… running {}:{:02}{}{}",
-                    e / 60,
-                    e % 60,
-                    if n == 0 { ", no output yet" } else { "" },
-                    if s.limited() {
-                        " · stopped at 2:00 · C-c stops it now"
-                    } else {
-                        " · C-c stops it"
-                    }
-                ),
-                t.s(t.cyan),
-            );
+            l.push(stepview::running(
+                t,
+                at,
+                s.output.is_empty(),
+                if s.limited() {
+                    "stopped at 2:00 · C-c stops it now"
+                } else {
+                    "C-c stops it"
+                },
+                9,
+            ));
         }
     }
     if waiting {

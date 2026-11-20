@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::{Hints, View};
@@ -11,11 +11,11 @@ use crate::remote::Remote;
 use crate::tui::target::{Effect, Modal, WfCmd};
 use crate::workflow::{LogKind, Session};
 use sentry_core::tui::keys::Action;
+use sentry_core::tui::stepview;
 use sentry_core::tui::theme::Theme;
 use sentry_core::tui::wflist;
 use sentry_core::tui::widgets::{inner, panel, trunc};
 use sentry_core::workflows::runner::{Next, preview};
-use sentry_core::workflows::state::StepStatus;
 
 /// Screen `0`: the workflows, and the run in progress.
 #[derive(Default)]
@@ -149,7 +149,7 @@ fn running(a: Action, v: &View, r: &Remote, s: &Session) -> Vec<Effect> {
 pub fn draw(f: &mut Frame, area: Rect, v: &View) {
     let cols = wflist::split(area);
     match v.wf {
-        Some(s) => draw_session(f, cols, v.t, s),
+        Some(s) => draw_session(f, cols, v.t, s, (v.name, v.auto)),
         None => wflist::draw_idle(
             f,
             cols,
@@ -162,7 +162,28 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
     }
 }
 
-fn draw_session(f: &mut Frame, (left, right): (Rect, Rect), t: &Theme, s: &Session) {
+/// What the running step has printed so far (the lines since its command).
+fn step_output(s: &Session) -> Vec<String> {
+    let from = s
+        .log
+        .iter()
+        .rposition(|(_, k)| *k == LogKind::Cmd)
+        .map_or(0, |i| i + 1);
+    s.log
+        .iter()
+        .skip(from)
+        .filter(|(_, k)| matches!(k, LogKind::Out | LogKind::Err))
+        .map(|(l, _)| l.clone())
+        .collect()
+}
+
+fn draw_session(
+    f: &mut Frame,
+    (left, right): (Rect, Rect),
+    t: &Theme,
+    s: &Session,
+    (target, auto): (&str, bool),
+) {
     let n = s.wf.steps.len();
     let b = panel(
         t,
@@ -172,41 +193,27 @@ fn draw_session(f: &mut Frame, (left, right): (Rect, Rect), t: &Theme, s: &Sessi
     let r = inner(&b, left);
     f.render_widget(b, left);
     let cur = s.next.idx();
-    let lines: Vec<Line> =
-        s.wf.steps
-            .iter()
-            .enumerate()
-            .map(|(i, step)| {
-                let st = &s.run.state.steps[i];
-                let (icon, c) = match st.status {
-                    StepStatus::Ok => ("✓", t.green),
-                    StepStatus::Skipped => ("–", t.dim),
-                    StepStatus::Failed => ("✗", t.red),
-                    StepStatus::Running => ("▶", t.yellow),
-                    StepStatus::Pending if Some(i) == cur => ("▶", t.yellow),
-                    StepStatus::Pending => ("○", t.dim),
-                };
-                let style = if Some(i) == cur {
-                    ratatui::style::Style::new().bg(t.sel_bg)
-                } else {
-                    ratatui::style::Style::new()
-                };
-                Line::from(vec![
-                    Span::styled(format!("{icon} {:>2} ", i + 1), t.s(c)),
-                    Span::styled(
-                        trunc(&s.title(i), r.width.saturating_sub(14) as usize),
-                        if st.status == StepStatus::Skipped {
-                            t.dim()
-                        } else {
-                            t.fg()
-                        },
-                    ),
-                    Span::styled(format!("  {}", step.tag()), t.dim()),
-                ])
-                .style(style)
-            })
-            .collect();
-    f.render_widget(Paragraph::new(lines), r);
+    // The steps, as a session's plan is drawn: the same header, rows and place for what
+    // the running step prints.
+    let live = s.live.as_ref().map(|l| l.idx);
+    let rows = stepview::run_rows(&s.wf, &s.run.state, &s.next, live, &|i| s.title(i));
+    let out = step_output(s);
+    stepview::draw(
+        f,
+        r,
+        t,
+        &stepview::Steps {
+            target,
+            what: &s.wf.name,
+            auto,
+            state: stepview::run_state(&s.next, live.is_some()),
+            rows: &rows,
+            at: live.or(cur),
+            output: &out,
+            since: s.live.as_ref().map(|l| l.started),
+            stop: "C-c stops it",
+        },
+    );
 
     let card = card(t, s);
     let card_h = (card.len() as u16 + 2).min(right.height / 2);

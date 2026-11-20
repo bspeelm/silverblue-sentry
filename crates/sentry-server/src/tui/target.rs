@@ -679,6 +679,7 @@ fn view_of<'a>(
             .is_some_and(|(read, changed)| read < changed),
         upstream: store.upstream_at,
         everything: cx.everything,
+        auto: cx.auto,
         plans: &sh.plans,
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         wf_list: &sh.wf_list,

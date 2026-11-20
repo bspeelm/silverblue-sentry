@@ -689,6 +689,8 @@ fn ask_claude_context_per_tab() {
         filter: None,
         wf: None,
         everything: false,
+        auto: false,
+        target: "this machine",
     };
     let s = Screens::default();
     let expect: &[(ScreenId, &str)] = &[
@@ -1138,7 +1140,7 @@ gate = "confirm"
         assert!(s.contains("$ test -f /tmp/flag"), "{s}");
         key(&mut a, KeyCode::Char('y'));
         let s = render_to_string(&mut a, 158, 41);
-        assert!(s.contains("▶   2 Afterwards"), "{k}: {s}");
+        assert!(s.contains("▶  2. Afterwards"), "{k}: {s}");
     }
     // A narrow window wraps the card's key line instead of cutting keys off.
     let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
@@ -1646,7 +1648,7 @@ fn a_long_plan_keeps_its_running_step_in_view() {
     // Step 1 runs: it's on screen (with its clock), not the untouched end of the list.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("▶ 1. Check number 1") && s.contains("… running 0:00"),
+        s.contains("▶  1. Check number 1") && s.contains("… running 0:00"),
         "{s}"
     );
     for _ in 0..19 {
@@ -1662,7 +1664,7 @@ fn a_long_plan_keeps_its_running_step_in_view() {
     );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("▶ Your turn: the plan stopped at step 20 (Check number 20); Claude sent a plan for the rest · Enter apply the plan"),
+        s.contains("⏸ Waiting on you: the plan stopped at step 20 (Check number 20); Claude sent a plan for the rest · Enter apply the plan"),
         "{s}"
     );
 }
@@ -1817,7 +1819,7 @@ fn applying_a_task_is_one_session_start_to_done() {
     );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("✓ 1. Line 2") && s.contains("▶ 2. Check it"),
+        s.contains("✓  1. Line 2") && s.contains("▶  2. Check it"),
         "{s}"
     );
     a.apply_step_exit_for_test(0);

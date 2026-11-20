@@ -161,6 +161,8 @@ pub struct Session {
     pub job: Option<(u64, u32)>,
     /// When the running step started (the window shows how long it's been).
     pub job_started: Option<std::time::Instant>,
+    /// How long each step that ran a command took: (plan, step) → time.
+    pub took: std::collections::HashMap<(usize, usize), std::time::Duration>,
     pub output: Vec<String>,
     root: Option<RootWrite>,
     /// C-c on a step: it ends as stopped, nothing sent.
@@ -210,6 +212,7 @@ impl Session {
             turn_from: 0,
             job: None,
             job_started: None,
+            took: Default::default(),
             output: Vec::new(),
             root: None,
             stopping: false,
@@ -988,6 +991,10 @@ impl Session {
     pub fn step_ended(&mut self, code: i32) -> Vec<Fx> {
         self.job = None;
         self.timed_out = false;
+        if let (Some(at), Some(r)) = (self.job_started.take(), self.run()) {
+            self.took
+                .insert((self.runs.len() - 1, r.current()), at.elapsed());
+        }
         let out = plan::tail(&self.output.join("\n"), 15);
         let mut note = if self.stopping {
             "stopped".to_string()

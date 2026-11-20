@@ -114,7 +114,7 @@ impl Slot {
         if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
             widgets::dim_backdrop(f.buffer_mut(), body);
             let wf = self.wf_glimpse();
-            sentry_core::tui::applyview::draw(f, body, &t, sess, &wf);
+            sentry_core::tui::applyview::draw(f, body, &t, sess, &self.title, &wf);
         }
         if let Some(m) = &self.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);

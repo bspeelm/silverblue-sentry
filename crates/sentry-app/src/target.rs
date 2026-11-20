@@ -286,6 +286,10 @@ pub struct Cx<'a> {
     pub finding: Option<&'a str>,
     /// The target's sudo password is held: what needs root runs without asking.
     pub root: bool,
+    /// Auto mode is on for the target.
+    pub auto: bool,
+    /// What the target is called (the top bar's name for it).
+    pub target: &'a str,
 }
 
 /// Why a target should read something again.

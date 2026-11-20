@@ -77,6 +77,8 @@ macro_rules! cx {
             pane: $s.pane.as_ref().map(|p| p.done.is_none()),
             chat_running: $s.chat.as_ref().is_some_and(|c| c.running()),
             root: $s.secret_ok,
+            auto: $s.auto,
+            target: &$s.title,
             finding: $s.apply.as_ref().and_then(|a| a.chat.ask.finding()),
         }
     };

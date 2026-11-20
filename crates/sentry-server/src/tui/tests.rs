@@ -1941,7 +1941,10 @@ fn enter_on_a_workflow_starts_it_or_asks_its_values() {
     assert!(!s.contains("Start apt-maintenance on myserver"), "{s}");
     let w = wf(&a).expect("started");
     assert!(w.live.is_some_and(|l| l.idx == 0), "the preview runs");
-    assert!(s.contains("Refresh package lists  confirm"), "{s}");
+    assert!(
+        s.contains("○  2. Refresh package lists") && s.contains("▶ running"),
+        "the run's steps and where it stands: {s}"
+    );
     drop(_turn);
     // One that takes values: they're asked first, in the key bar, with no box before.
     let mut a = app();
@@ -4873,7 +4876,7 @@ fn auto_does_a_series_with_one_password_and_no_other_key() {
         "run step Some(1)",
         "run step Some(2)",
         "2 of 3",
-        "3 of 3 · apply · Check the UPS battery · auto",
+        "3 of 3 · apply · Check the UPS battery",
     ] {
         assert!(seen.contains(want), "{want}: {seen}");
     }

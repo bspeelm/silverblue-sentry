@@ -58,6 +58,8 @@ pub struct View<'a> {
     pub plans: &'a std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
     /// The workflow run in progress (or just ended).
     pub wf: Option<&'a crate::workflow::Session>,
+    /// Auto mode is on.
+    pub auto: bool,
     /// The workflows there are, each with its last run.
     pub wf_list: &'a [sentry_core::tui::wflist::WfInfo],
 }

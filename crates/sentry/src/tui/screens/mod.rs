@@ -34,6 +34,10 @@ pub struct View<'a> {
     pub wf: Option<&'a crate::tui::wf::Session>,
     /// Maintenance lists what can wait too (`o`).
     pub everything: bool,
+    /// Auto mode is on.
+    pub auto: bool,
+    /// What this machine is called in the top bar.
+    pub target: &'a str,
 }
 
 impl View<'_> {

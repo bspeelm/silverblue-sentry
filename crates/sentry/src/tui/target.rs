@@ -254,6 +254,8 @@ fn view_of<'a>(d: &'a DataStore, cfg: &'a Config, sh: &'a Shared, cx: &Cx<'a>) -
         filter: cx.filter.filter(|s| !s.is_empty()),
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         everything: cx.everything,
+        auto: cx.auto,
+        target: cx.target,
     }
 }
 
