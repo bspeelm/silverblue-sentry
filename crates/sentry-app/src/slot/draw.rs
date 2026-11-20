@@ -1,0 +1,251 @@
+use super::*;
+
+impl Slot {
+    pub(crate) fn draw(&mut self, w: &mut Win, f: &mut Frame) {
+        let t = w.theme;
+        // A run in progress, on every screen but its own.
+        let banner = self
+            .run
+            .as_ref()
+            .filter(|_| self.screen != ScreenId::Upgrade);
+        // A series in progress takes the row when no workflow's banner does, and its
+        // session isn't in front saying so itself.
+        let hidden = self.apply.as_ref().is_some_and(|a| a.chat.hidden);
+        let series = self
+            .series
+            .as_ref()
+            .filter(|_| banner.is_none() && (self.apply.is_none() || hidden))
+            .map(|s| (s.line(), if hidden { "A shows it" } else { "" }));
+        let Some(areas) = frame::layout(f, &t, banner.is_some() || series.is_some()) else {
+            return;
+        };
+        if let Some((line, hint)) = &series {
+            frame::draw_series(f, areas.banner, &t, line, hint);
+        }
+        let body = areas.body;
+        frame::draw_top(f, areas.top, &t, &self.top(w));
+        self.draw_tabs(w, f, areas.tabs);
+        if let Some(s) = banner {
+            let n = s.wf().steps.len();
+            frame::draw_banner(
+                f,
+                areas.banner,
+                &t,
+                &frame::Banner {
+                    workflow: &s.wf().name,
+                    step: s.next().idx().map(|i| (i + 1, n, s.title(i).to_string())),
+                    state: s.state_word(),
+                },
+            );
+        }
+        self.target.render(f, body, &self.shared, &cx!(self, w));
+        if let Some(rv) = &self.review_view {
+            let writer = self.writer.as_ref().filter(|w| w.review.is_some());
+            let path = self.shared.review.as_ref().map_or(String::new(), |d| {
+                sentry_core::tui::widgets::short_home(
+                    &sentry_core::maint::review::dir(&self.scope).join(d.file_name()),
+                )
+            });
+            sentry_core::tui::reviewview::draw(
+                f,
+                body,
+                &t,
+                rv,
+                &sentry_core::tui::reviewview::Shown {
+                    doc: self.shared.review.as_ref(),
+                    writer,
+                    brief: &self.review_brief(w),
+                    path: &path,
+                },
+            );
+        } else if let Some(r) = &self.rec_view {
+            sentry_core::tui::records::draw(f, body, &t, r);
+        } else if let Some((id, scroll)) = &self.plan_view {
+            let path = sentry_core::maint::plan::path(&self.scope, id)
+                .display()
+                .to_string();
+            let home = std::env::var("HOME").unwrap_or_default();
+            let path = match path.strip_prefix(&home) {
+                Some(r) if !home.is_empty() => format!("~{r}"),
+                _ => path,
+            };
+            sentry_core::tui::docview::draw(
+                f,
+                body,
+                &t,
+                self.shared.plans.get(id),
+                self.writer.as_ref().filter(|w| &w.item == id),
+                *scroll,
+                &path,
+            );
+        }
+        self.draw_keybar(w, f, areas.keybar);
+        // Whatever is in front sits in the body, over the screen dimmed.
+        if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            chatmod::draw(f, body, &t, c);
+        }
+        if let Some(sess) = self.apply.as_ref().filter(|s| !s.chat.hidden) {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            let wf = self.wf_glimpse();
+            sentry_core::tui::applyview::draw(f, body, &t, sess, &wf);
+        }
+        if let Some(m) = &self.modal {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw(f, body, &t, m);
+        }
+        // The window's own box (help, quit).
+        if let Some(m) = &w.modal {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw(f, body, &t, m);
+        }
+        if let Some(c) = &self.choice {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            modal::draw_choice(f, body, &t, c);
+        }
+        if let Some(p) = &self.pane {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            frame::draw_run(
+                f,
+                body,
+                &t,
+                &frame::RunView {
+                    title: &p.title,
+                    cmd: &p.cmd,
+                    len: p.lines.len(),
+                    scroll: p.scroll,
+                    started: p.started,
+                    done: p.done.map(|code| (code, None)),
+                },
+                p.lines.iter().map(String::as_str),
+            );
+        }
+    }
+
+    /// The top bar: the target, what it runs and how long it's been up; the connection.
+    fn top(&self, w: &Win) -> frame::Top<'static> {
+        let (facts, state) = self.target.top(&cx!(self, w));
+        let now = w.now().to_zoned(jiff::tz::TimeZone::system());
+        frame::Top {
+            app: self.app,
+            subject: self.title.clone(),
+            facts,
+            state,
+            clock: frame::clock(&now),
+        }
+    }
+
+    /// What a review reads and does, shown before one is started.
+    fn review_brief(&self, w: &Win) -> Vec<Line<'static>> {
+        let t = w.theme;
+        if !claude::available() {
+            return vec![Line::styled(
+                "  Reviews are written by Claude Code, which isn't installed.",
+                t.s(t.yellow),
+            )];
+        }
+        self.target.review_brief(&cx!(self, w))
+    }
+
+    /// The strip: sentry's, with the target's screens.
+    pub(crate) fn draw_tabs(&self, w: &Win, f: &mut Frame, area: ratatui::layout::Rect) {
+        let tabs: Vec<frame::Tab> = self
+            .target
+            .tabs(&self.shared, &cx!(self, w))
+            .into_iter()
+            .map(|tab| frame::Tab {
+                id: tab.id,
+                badge: tab.badge,
+                filter: self
+                    .filters
+                    .get(&tab.id)
+                    .filter(|_| tab.filterable)
+                    .cloned(),
+            })
+            .collect();
+        frame::draw_tabs(f, area, &w.theme, &tabs, self.screen);
+    }
+
+    /// The key bar: what's being typed, or the keys of whatever is in front.
+    pub(crate) fn draw_keybar(&self, w: &Win, f: &mut Frame, area: ratatui::layout::Rect) {
+        let toast = w.toast.as_ref().map(|t| t.msg());
+        let layer = frame::layer(&self.open(w));
+        // A box or a conversation over the line: its keys, not the line's.
+        if layer == Layer::Input
+            && let Some(bar) = w.input.bar()
+        {
+            return frame::draw_keybar(f, area, &w.theme, &bar, toast);
+        }
+        let hints: frame::Hints = match layer {
+            Layer::Run => frame::run_hints(self.pane.as_ref().is_some_and(|p| p.done.is_some())),
+            Layer::Choice => frame::CHOICE_HINTS.to_vec(),
+            Layer::Modal
+                if w.modal
+                    .as_ref()
+                    .or(self.modal.as_ref())
+                    .is_some_and(|m| m.yes.is_some()) =>
+            {
+                frame::CONFIRM_HINTS.to_vec()
+            }
+            // Their windows have their own key line.
+            Layer::Apply | Layer::Chat => Vec::new(),
+            // Records, a plan or a review (an info box over one leaves its keys named).
+            _ if self.open(w).docs => self.doc_hints(),
+            _ => {
+                let h = self.target.hints(false, &self.shared, &cx!(self, w));
+                // A hidden conversation waiting takes `A` over.
+                let hidden = self
+                    .apply
+                    .as_ref()
+                    .filter(|s| s.chat.hidden)
+                    .map(|s| {
+                        if s.busy() {
+                            "applying…"
+                        } else {
+                            "the apply session"
+                        }
+                    })
+                    .or_else(|| {
+                        self.chat
+                            .as_ref()
+                            .filter(|c| c.hidden)
+                            .map(|c| c.hidden_word())
+                    });
+                frame::with_globals(h, hidden, claude::available())
+            }
+        };
+        frame::draw_keybar(f, area, &w.theme, &frame::KeyBar::Hints(hints), toast);
+    }
+
+    /// The keys of Records, a plan or a review, whichever is over the screen.
+    pub(crate) fn doc_hints(&self) -> frame::Hints<'_> {
+        if let Some(rv) = &self.review_view {
+            rv.hints(self.shared.review.as_ref(), self.writing_review())
+        } else if let Some(r) = &self.rec_view {
+            r.hints()
+        } else if let Some((id, _)) = &self.plan_view {
+            if self
+                .writer
+                .as_ref()
+                .is_some_and(|w| &w.item == id && w.running())
+            {
+                vec![
+                    ("j/k", "scroll"),
+                    ("C-c", "stop"),
+                    ("Esc", "back (it carries on)"),
+                ]
+            } else {
+                vec![
+                    ("Enter", "apply"),
+                    ("A", "claude"),
+                    ("r", "revise"),
+                    ("x", "drop"),
+                    ("j/k PgUp/Dn", "scroll"),
+                    ("Esc", "back"),
+                ]
+            }
+        } else {
+            Vec::new()
+        }
+    }
+}

@@ -8,7 +8,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use super::{Hints, View};
 use crate::remote::Remote;
-use crate::tui::app::{Effect, Modal, WfCmd};
+use crate::tui::target::{Effect, Modal, WfCmd};
 use crate::workflow::{LogKind, Session};
 use sentry_core::tui::keys::Action;
 use sentry_core::tui::theme::Theme;
@@ -68,7 +68,7 @@ impl Upgrade {
         match (a, info) {
             (Action::Refresh, _) => vec![Effect::ReloadWorkflows],
             (Action::Char('v'), _) => vec![Effect::LogOpen(None)],
-            (Action::Char('e'), Some(i)) => vec![Effect::EditWorkflow(i.entry.path.clone())],
+            (Action::Char('e'), Some(i)) => vec![Effect::Edit(i.entry.path.clone())],
             (Action::Enter, Some(i)) => vec![Effect::StartWorkflow(i.entry.name.clone())],
             _ => Vec::new(),
         }

@@ -4,9 +4,11 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::Ev;
-use super::app::{App, render_to_string};
+use super::Event as Ev;
 use super::data::{Kind, Payload};
+use super::target::testing::*;
+use super::target::{Effect, Own, WfCmd};
+use sentry_app::app::{App, render_to_string};
 use sentry_core::tui::ScreenId;
 
 /// The screens the server's data fills (`0`, the workflows, has tests of its own).
@@ -183,15 +185,15 @@ fn maint_payload() -> Payload {
 }
 
 fn data(a: &mut App, k: Kind, p: Payload) {
-    a.on_event(Ev::Data(k, Box::new(Ok(p))), Instant::now());
+    a.on_event(data_ev(a, k, Box::new(Ok(p))), Instant::now());
 }
 
 fn app() -> App {
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new("myserver", &cfg()), tx);
-    a.offline = true;
-    a.theme = sentry_core::tui::theme::Theme::truecolor();
-    a.now_override = Some("2026-10-26T12:00:00Z".parse().unwrap());
+    let mut a = super::app(Remote::new("myserver", &cfg()), tx);
+    a.win.offline = true;
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+    a.win.now_override = Some("2026-10-26T12:00:00Z".parse().unwrap());
     data(
         &mut a,
         Kind::Sudo,
@@ -264,9 +266,9 @@ fn app() -> App {
         taken_at: Some("2026-10-26T11:00:00Z".parse().unwrap()),
         ..Default::default()
     };
-    snap.units = a.store.units.value.clone();
-    snap.docker = a.store.docker.value.clone();
-    snap.apt = a.store.apt.value.clone();
+    snap.units = srv(&a).store.units.value.clone();
+    snap.docker = srv(&a).store.docker.value.clone();
+    snap.apt = srv(&a).store.apt.value.clone();
     snap.errors = vec![(
         "fail2ban".into(),
         "needs sudo: add `fail2ban-client status` to sudo: in server_config.yaml".into(),
@@ -321,10 +323,7 @@ fn feed_procs(a: &mut App) {
 
 /// Select a maintenance item's row (recommendations come first).
 fn goto_item(a: &mut App, id: &str) {
-    a.apply(
-        vec![super::app::Effect::MaintJump(id.into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_jump(id.into())], Instant::now());
 }
 
 fn key(a: &mut App, c: KeyCode) {
@@ -345,7 +344,7 @@ fn every_screen_renders() {
         for (w, h) in [(158, 41), (80, 24)] {
             let mut a = app();
             key(&mut a, KeyCode::Char(tab.key()));
-            assert_eq!(a.screen, tab);
+            assert_eq!(a.slot().screen, tab);
             if tab == ScreenId::Proc {
                 feed_procs(&mut a);
             }
@@ -387,7 +386,11 @@ fn overview_status_rows_jump_to_their_tab() {
     assert!(s.contains("1 of 3 containers not running"), "{s}");
     assert!(s.contains("sda ok 31°C") && s.contains("sdc asleep"), "{s}");
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Maint, "first row: reboot → Maintenance");
+    assert_eq!(
+        a.slot().screen,
+        ScreenId::Maint,
+        "first row: reboot → Maintenance"
+    );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("A reboot has been pending") && s.contains("● reboot required"),
@@ -413,7 +416,7 @@ fn findings_are_recommendations_on_maintenance() {
         key(&mut a, KeyCode::Char('j'));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("What  "), "the finding's details\n{s}");
     assert!(
@@ -442,10 +445,10 @@ fn screens_and_badges() {
         "always there: {tabs}"
     );
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.screen, ScreenId::Proc);
+    assert_eq!(a.slot().screen, ScreenId::Proc);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
-    assert_eq!(a.screen, ScreenId::Upgrade, "wraps around");
+    assert_eq!(a.slot().screen, ScreenId::Upgrade, "wraps around");
 }
 
 /// Type a `:` command.
@@ -469,23 +472,23 @@ fn screen_keys_follow_sentry() {
         ('1', ScreenId::Dash),
     ] {
         key(&mut a, KeyCode::Char(c));
-        assert_eq!(a.screen, id, "{c}");
+        assert_eq!(a.slot().screen, id, "{c}");
     }
     // Screens this program doesn't have (yet): their keys do nothing.
     key(&mut a, KeyCode::Char('7'));
-    assert_eq!(a.screen, ScreenId::Dash, "no Cleanup here");
+    assert_eq!(a.slot().screen, ScreenId::Dash, "no Cleanup here");
     // 0 is a screen, as in sentry: the workflows, with or without a run.
     key(&mut a, KeyCode::Char('0'));
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("No workflow in progress."), "{s}");
     assert!(s.lines().nth(1).unwrap().contains("0 Upgrade"), "{s}");
     // Tab walks them in strip order and wraps; the help names them as screens.
     key(&mut a, KeyCode::Tab);
-    assert_eq!(a.screen, ScreenId::Dash);
+    assert_eq!(a.slot().screen, ScreenId::Dash);
     key(&mut a, KeyCode::BackTab);
     key(&mut a, KeyCode::BackTab);
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     key(&mut a, KeyCode::Char('?'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -511,11 +514,11 @@ fn old_names_still_work() {
         ("ser", ScreenId::Svc),
     ] {
         colon(&mut a, cmd);
-        assert_eq!(a.screen, id, ":{cmd}");
+        assert_eq!(a.slot().screen, id, ":{cmd}");
     }
     // Not a screen here.
     colon(&mut a, "flatpaks");
-    assert_eq!(a.screen, ScreenId::Svc);
+    assert_eq!(a.slot().screen, ScreenId::Svc);
     assert!(render_to_string(&mut a, 158, 41).contains("unknown command :flatpaks"));
 }
 
@@ -536,9 +539,9 @@ fn the_keys_table_is_honoured() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("nowhere"), "{warnings:?}");
     key(&mut a, KeyCode::Char('M'));
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     key(&mut a, KeyCode::Char('F'));
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     key(&mut a, KeyCode::Char('Q'));
     assert!(render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
 }
@@ -602,8 +605,7 @@ fn only_the_screen_in_view_is_fetched() {
     let mut a = app();
     let now = Instant::now();
     let polled = |a: &App| {
-        let mut k: Vec<String> = a
-            .polled_for_test()
+        let mut k: Vec<String> = polled_for_test(a)
             .iter()
             .map(|k| format!("{k:?}"))
             .collect();
@@ -621,7 +623,7 @@ fn only_the_screen_in_view_is_fetched() {
         a.enter(id, now);
         assert!(polled(&a).is_empty(), "{id:?}");
         assert!(
-            Screens::polls(id, &a.remote.cfg)
+            Screens::polls(id, &srv(&a).remote.cfg)
                 .iter()
                 .all(|p| p.every.is_none() && p.kind != Kind::Probe),
             "{id:?}"
@@ -630,7 +632,7 @@ fn only_the_screen_in_view_is_fetched() {
     // Leaving the Dashboard stops its sampling; the next wake-up is no sooner than a toast.
     assert!(a.next_due(now) >= now + std::time::Duration::from_secs(1));
     let at_entry = |id| -> Vec<Kind> {
-        Screens::polls(id, &a.remote.cfg)
+        Screens::polls(id, &srv(&a).remote.cfg)
             .into_iter()
             .map(|p| p.kind)
             .collect()
@@ -655,8 +657,8 @@ fn live_screens() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
-    a.theme = sentry_core::tui::theme::Theme::truecolor();
+    let mut a = super::app(Remote::new(n, s), tx);
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
     a.start(Instant::now());
     for tab in SHOWN {
         a.enter(tab, Instant::now());
@@ -673,7 +675,7 @@ fn live_screens() {
 }
 
 fn run_msg(a: &mut App, id: u64, m: sentry_core::exec::StreamMsg) {
-    a.on_event(Ev::Run(id, m), Instant::now());
+    a.on_event(run_ev(a, id, m), Instant::now());
 }
 
 #[test]
@@ -813,7 +815,10 @@ fn custom_actions_and_logs() {
     key(&mut a, KeyCode::Char('4'));
     key(&mut a, KeyCode::Char('j'));
     key(&mut a, KeyCode::Char('L'));
-    a.on_event(Ev::Text(1, Ok("line one\nline two".into())), Instant::now());
+    a.on_event(
+        text_ev(&a, 1, Ok("line one\nline two".into())),
+        Instant::now(),
+    );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("docker logs · db") && s.contains("line two"),
@@ -853,7 +858,7 @@ fn live_actions() {
     std::thread::sleep(std::time::Duration::from_secs(2));
     let running = |r: &Remote| r.sh("pgrep -xf 'sleep 612' | wc -l").output().unwrap();
     assert_eq!(running(&r).trim(), "1", "remote sleep started");
-    super::app::kill_for_test(pid);
+    sentry_app::app::kill_for_test(pid);
     let exit = rx
         .iter()
         .find_map(|m| match m {
@@ -871,7 +876,7 @@ fn live_actions() {
 
     // 2. Refresh lists through the app: confirm, stream, exit 0, apt re-read.
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(r.clone(), tx);
+    let mut a = super::app(r.clone(), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -927,7 +932,7 @@ fn live_actions() {
     key(&mut a, KeyCode::Char('y'));
     pump(&mut a, 5);
     assert_eq!(sleeping(&r).trim(), "0", "ended through the TUI");
-    super::app::kill_for_test(sleeper);
+    sentry_app::app::kill_for_test(sleeper);
     println!("✓ x on Processes sent SIGTERM to the sleep");
 }
 
@@ -943,7 +948,7 @@ fn live_workflow() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -957,7 +962,7 @@ fn live_workflow() {
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     pump(&mut a, 2);
     a.apply(
-        vec![super::app::Effect::StartWorkflow("apt-maintenance".into())],
+        vec![Effect::StartWorkflow("apt-maintenance".into())],
         Instant::now(),
     );
     assert!(screen(&mut a).contains("Start apt-maintenance"));
@@ -967,11 +972,11 @@ fn live_workflow() {
     for _ in 0..30 {
         pump(&mut a, 3);
         let s = screen(&mut a);
-        let busy = a.wf.as_ref().is_some_and(|w| w.live.is_some());
+        let busy = wf(&a).is_some_and(|w| w.live.is_some());
         if busy {
             continue;
         }
-        let Some(w) = a.wf.as_ref() else { break };
+        let Some(w) = wf(&a) else { break };
         if w.done() {
             println!("{s}");
             break;
@@ -998,7 +1003,7 @@ fn live_workflow() {
             _ => {}
         }
     }
-    let w = a.wf.as_ref().unwrap();
+    let w = wf(&a).unwrap();
     assert!(w.done(), "{}", screen(&mut a));
     for (i, st) in w.run.state.steps.iter().enumerate() {
         println!("{:<14} {:?} {:?}", w.wf.steps[i].id, st.status, st.note);
@@ -1010,10 +1015,7 @@ fn fixing_a_finding_on_the_server_is_an_apply_session() {
     use sentry_core::apply::session::{End, Phase, Turn};
     let mut a = app();
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    a.apply(
-        vec![super::app::Effect::MaintFind("finding:".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("finding:".into())], Instant::now());
     key(&mut a, KeyCode::Char('A'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -1091,7 +1093,7 @@ fn live_ask() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -1278,10 +1280,7 @@ fn one_input_line_for_every_prompt() {
         after: None,
         again: None,
     });
-    a.apply(
-        vec![super::app::Effect::MaintFind("task:ups".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("task:ups".into())], Instant::now());
     key(&mut a, KeyCode::Char('d'));
     let b = bar(&mut a);
     assert!(
@@ -1294,7 +1293,7 @@ fn one_input_line_for_every_prompt() {
     key(&mut a, KeyCode::Enter);
     assert!(screen(&mut a).contains("noted in the maintenance log"));
     assert_eq!(
-        a.last_log.as_ref().map(|e| e.body.contains("fine")),
+        a.slot().last_log.as_ref().map(|e| e.body.contains("fine")),
         Some(true)
     );
 }
@@ -1320,9 +1319,7 @@ fn a_var_without_a_value_is_asked_again() {
             .to_string()
     };
     a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
-            "bump".into(),
-        ))],
+        vec![Effect::Wf(WfCmd::Begin("bump".into()))],
         Instant::now(),
     );
     assert!(bar(&mut a).contains("bump 1/2 · New image (image): ▏   Enter next · Esc cancel"));
@@ -1353,14 +1350,14 @@ fn a_paste_goes_to_the_open_prompt() {
     let paste = |a: &mut App, text: &str| a.on_event(Ev::Paste(text.into()), Instant::now());
     // Nothing open: a paste does nothing (its letters aren't keys).
     paste(&mut a, "q6");
-    assert_eq!(a.screen, ScreenId::Dash);
+    assert_eq!(a.slot().screen, ScreenId::Dash);
     assert!(!render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
     // The line being typed takes it whole, on one line.
     key(&mut a, KeyCode::Char(':'));
     paste(&mut a, "maint\n");
     assert!(render_to_string(&mut a, 158, 41).contains(":maint▏"));
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     // A box in front of a prompt: the paste isn't for the prompt.
     goto_item(&mut a, "engine");
     key(&mut a, KeyCode::Char('p'));
@@ -1368,7 +1365,7 @@ fn a_paste_goes_to_the_open_prompt() {
     paste(&mut a, "first");
     assert!(render_to_string(&mut a, 158, 41).contains("a note (optional): first▏"));
     a.apply(
-        vec![super::app::Effect::Info("Note".into(), Vec::new())],
+        vec![Effect::Info("Note".into(), Vec::new())],
         Instant::now(),
     );
     paste(&mut a, " second");
@@ -1408,7 +1405,7 @@ fn chips_and_badge_match_sentry() {
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| a.draw(f)).unwrap();
     let buf = term.backend().buffer().clone();
-    let t = a.theme;
+    let t = a.win.theme;
     let bar = 40;
     let q = (0..158)
         .find(|&x| buf[(x, bar)].symbol() == "q" && buf[(x + 2, bar)].symbol() == " ")
@@ -1444,16 +1441,16 @@ fn chat_input_edits() {
 fn quit_asks_and_colon_commands() {
     let mut a = app();
     key(&mut a, KeyCode::Char('q'));
-    assert!(!a.quit, "q asks first");
+    assert!(!a.win.quit, "q asks first");
     assert!(render_to_string(&mut a, 158, 41).contains("Quit sentry-server?"));
     key(&mut a, KeyCode::Char('n'));
-    assert!(!a.quit);
+    assert!(!a.win.quit);
     for c in ":mai".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     assert!(render_to_string(&mut a, 158, 41).contains(":mai▏"));
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Maint, ":mai goes to Maintenance");
+    assert_eq!(a.slot().screen, ScreenId::Maint, ":mai goes to Maintenance");
     for c in ":wf compose-update".chars() {
         key(&mut a, KeyCode::Char(c));
     }
@@ -1469,7 +1466,7 @@ fn quit_asks_and_colon_commands() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.quit, ":q quits");
+    assert!(a.win.quit, ":q quits");
 }
 
 #[test]
@@ -1528,7 +1525,7 @@ fn live_ask_boxes() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -1543,7 +1540,7 @@ fn live_ask_boxes() {
     a.enter(ScreenId::Maint, Instant::now());
     pump(&mut a, 15);
     a.apply(
-        vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
+        vec![Own::maint_find("wf:apt-maintenance".into())],
         Instant::now(),
     );
     key(&mut a, KeyCode::Char('A'));
@@ -1571,9 +1568,7 @@ fn workflow_vars_are_asked_before_it_starts() {
     }]);
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
-            "bump".into(),
-        ))],
+        vec![Effect::Wf(WfCmd::Begin("bump".into()))],
         Instant::now(),
     );
     // Asked in name order (image, then service): the default is filled in.
@@ -1595,12 +1590,10 @@ fn workflow_vars_are_asked_before_it_starts() {
     // All asked: it tries to start (this one is a draft, so it's refused before any run exists).
     let s = screen(&mut a);
     assert!(s.contains("bump: draft"), "{s}");
-    assert!(a.wf.is_none());
+    assert!(wf(&a).is_none());
     // Esc cancels the start.
     a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
-            "bump".into(),
-        ))],
+        vec![Effect::Wf(WfCmd::Begin("bump".into()))],
         Instant::now(),
     );
     key(&mut a, KeyCode::Esc);
@@ -1639,15 +1632,13 @@ fn auto_steps_run_only_on_screen_0() {
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
-            "apt-maintenance".into(),
-        ))],
+        vec![Effect::Wf(WfCmd::Begin("apt-maintenance".into()))],
         Instant::now(),
     );
     // Started: its screen, where its steps run.
-    assert!(a.wf.is_some(), "{}", screen(&mut a));
-    assert_eq!(a.screen, ScreenId::Upgrade);
-    assert!(a.wf.as_ref().unwrap().armed);
+    assert!(wf(&a).is_some(), "{}", screen(&mut a));
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
+    assert!(wf(&a).unwrap().armed);
     let s = screen(&mut a);
     assert!(s.lines().nth(1).unwrap().contains("0 Upgrade ●"), "{s}");
     // The Maintenance rows aren't on screen: z (later) and x aren't theirs here.
@@ -1657,10 +1648,10 @@ fn auto_steps_run_only_on_screen_0() {
     assert!(!s.contains("in 7 days ("), "{s}");
     assert!(!s.contains("Mark it expected"), "{s}");
     // Another screen: the run stays as it is, and the banner says where it is.
-    let at = a.wf.as_ref().unwrap().next.idx();
+    let at = wf(&a).unwrap().next.idx();
     key(&mut a, KeyCode::Char('6'));
     a.tick(Instant::now());
-    assert_eq!(a.wf.as_ref().unwrap().next.idx(), at, "nothing ran");
+    assert_eq!(wf(&a).unwrap().next.idx(), at, "nothing ran");
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("in 7 days ("));
 }
@@ -1671,9 +1662,7 @@ fn a_run_shows_a_banner_off_screen_0() {
     let _turn = startable(&mut a, "banner-test-apt-maintenance.toml");
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(
-            "apt-maintenance".into(),
-        ))],
+        vec![Effect::Wf(WfCmd::Begin("apt-maintenance".into()))],
         Instant::now(),
     );
     // On its own screen: no banner, the run itself.
@@ -1694,7 +1683,7 @@ fn a_run_shows_a_banner_off_screen_0() {
         "the body below: {s}"
     );
     key(&mut a, KeyCode::Char('0'));
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     assert!(!screen(&mut a).contains("press 0 to continue"));
     // a abandons (after its box); the list is back.
     key(&mut a, KeyCode::Char('a'));
@@ -1706,7 +1695,7 @@ fn a_run_shows_a_banner_off_screen_0() {
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(
-        a.wf.is_none() && s.contains("No workflow in progress."),
+        wf(&a).is_none() && s.contains("No workflow in progress."),
         "{s}"
     );
 }
@@ -1742,7 +1731,7 @@ fn enter_on_a_workflow_asks_its_vars_or_shows_the_start_box() {
     assert!(s.contains("Start apt-maintenance on myserver"), "{s}");
     assert!(s.contains("Auto steps run right away"), "{s}");
     key(&mut a, KeyCode::Esc);
-    assert!(a.wf.is_none());
+    assert!(wf(&a).is_none());
     // One that takes values: they're asked first, in the key bar, with no box before.
     let mut a = app();
     a.set_wf_entries(vec![sentry_core::workflows::Entry {
@@ -1784,7 +1773,7 @@ fn ask_works_on_the_updates_recommendation() {
     // Updates live on Maintenance now: A on their recommendation.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
-        vec![super::app::Effect::MaintFind("wf:apt-maintenance".into())],
+        vec![Own::maint_find("wf:apt-maintenance".into())],
         Instant::now(),
     );
     // A offers: 1 help me apply it (Claude beside apt-maintenance), 2 just ask.
@@ -1822,7 +1811,7 @@ fn live_password_step() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -1835,7 +1824,7 @@ fn live_password_step() {
     };
     pump(&mut a, 2);
     a.apply(
-        vec![super::app::Effect::StartWorkflow("pw-check".into())],
+        vec![Effect::StartWorkflow("pw-check".into())],
         Instant::now(),
     );
     key(&mut a, KeyCode::Char('y'));
@@ -1847,7 +1836,7 @@ fn live_password_step() {
     let status = cmd.interactive();
     a.after_suspend(status);
     pump(&mut a, 3);
-    let w = a.wf.as_ref().unwrap();
+    let w = wf(&a).unwrap();
     let log = std::fs::read_to_string(w.run.log_path("update")).unwrap();
     println!("--- steps/update.log\n{log}---");
     assert!(
@@ -1863,22 +1852,23 @@ fn live_password_step() {
     // The long step: start it, abandon, and nothing is left running there.
     key(&mut a, KeyCode::Enter);
     pump(&mut a, 2);
-    assert!(a.wf.as_ref().unwrap().live.is_some());
+    assert!(wf(&a).unwrap().live.is_some());
     key(&mut a, KeyCode::Char('a'));
     key(&mut a, KeyCode::Char('y'));
     pump(&mut a, 2);
-    let left = a
+    let left = srv(&a)
         .remote
-        .output(&a.remote.sh("pgrep -fx 'sleep 600' || true"))
+        .output(&srv(&a).remote.sh("pgrep -fx 'sleep 600' || true"))
         .unwrap();
     assert!(
         left.trim().is_empty(),
         "still running on the server: {left}"
     );
-    let caps = a
+    let caps = srv(&a)
         .remote
         .output(
-            &a.remote
+            &srv(&a)
+                .remote
                 .sh("ls -A ~/.cache/sentry-server 2>/dev/null || true"),
         )
         .unwrap();
@@ -1893,13 +1883,14 @@ fn live_password_step() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    let log = crate::maint::log::list(&a.remote.name);
+    let log = crate::maint::log::list(&srv(&a).remote.name);
     let e = log.first().expect("an entry");
     println!("{}", e.to_md());
     assert_eq!(e.head.result, "abandoned");
     assert!(e.head.summary.starts_with("apt mirror was slow"));
     let ledger =
-        std::fs::read_to_string(crate::maint::log::dir(&a.remote.name).join("LOG.md")).unwrap();
+        std::fs::read_to_string(crate::maint::log::dir(&srv(&a).remote.name).join("LOG.md"))
+            .unwrap();
     println!("{ledger}");
     assert!(ledger.contains("apt mirror was slow") && ledger.contains("result:abandoned"));
     println!("ok");
@@ -1948,29 +1939,23 @@ fn live_preflight() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
-    a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Begin(wf))],
-        Instant::now(),
-    );
+    a.apply(vec![Effect::Wf(WfCmd::Begin(wf))], Instant::now());
     let until = Instant::now() + std::time::Duration::from_secs(60);
     while Instant::now() < until {
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
             a.on_event(ev, Instant::now());
         }
         a.tick(Instant::now());
-        let w = a.wf.as_ref().expect("started");
+        let w = super::target::testing::wf(&a).expect("started");
         if w.live.is_none() && !matches!(w.next, sentry_core::workflows::runner::Next::Run(_)) {
             break;
         }
     }
     println!("{}", render_to_string(&mut a, 158, 41));
     assert!(a.take_suspend().is_none(), "nothing handed over");
-    a.apply(
-        vec![super::app::Effect::Wf(super::app::WfCmd::Abandon)],
-        Instant::now(),
-    );
+    a.apply(vec![Effect::Wf(WfCmd::Abandon)], Instant::now());
 }
 
 /// Against a disposable sshd whose sudo asks for a password: `I` reads what needs root once,
@@ -1987,7 +1972,7 @@ fn live_inventory() {
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -2028,12 +2013,13 @@ fn live_inventory() {
             .contains("example/web:1.2.3")
     );
     // A workflow condition never uses it: it must see the server as it is now.
-    let plain = Remote::new("scratch", &a.remote.cfg);
+    let plain = Remote::new("scratch", &srv(&a).remote.cfg);
     assert!(crate::collect::docker::collect(&plain).is_err());
-    let left = a
+    let left = srv(&a)
         .remote
         .output(
-            &a.remote
+            &srv(&a)
+                .remote
                 .sh("ls -A ~/.cache/sentry-server 2>/dev/null || true"),
         )
         .unwrap();
@@ -2203,7 +2189,7 @@ fn maintenance_tab_plans_one_item_at_a_time() {
     key(&mut a, KeyCode::Char('y'));
     assert!(!screen(&mut a).contains("planned →"));
     // A plan Claude says to wait on can't be applied.
-    a.store.plans.insert(
+    a.slot_mut().shared.plans.insert(
         "web".into(),
         crate::maint::plan::PlanDoc {
             head: crate::maint::plan::Head {
@@ -2292,7 +2278,7 @@ fn recommendations_come_first_and_enter_does_what_they_say() {
 /// The app with apt-maintenance due every 30 days (`maintenance.cadence` in the config).
 fn app_with_cadence() -> App {
     let mut a = app();
-    std::sync::Arc::make_mut(&mut a.remote.cfg)
+    std::sync::Arc::make_mut(&mut srv_mut(&mut a).remote.cfg)
         .maintenance
         .cadence
         .insert("apt-maintenance".into(), "30d".parse().unwrap());
@@ -2315,9 +2301,7 @@ fn e_on_a_cadence_asks_how_often() {
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
-        vec![super::app::Effect::MaintFind(
-            "task:cadence-apt-maintenance".into(),
-        )],
+        vec![Own::maint_find("task:cadence-apt-maintenance".into())],
         Instant::now(),
     );
     let s = screen(&mut a);
@@ -2373,7 +2357,8 @@ fn a_review_can_change_a_cadence() {
     assert!(s.contains("every 30d → every 14d"), "{s}");
     key(&mut a, KeyCode::Enter);
     let t = a
-        .store
+        .slot()
+        .shared
         .tasks
         .iter()
         .find(|t| t.id == "cadence-apt-maintenance")
@@ -2415,9 +2400,7 @@ fn capital_b_expects_everything_like_it() {
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     a.apply(
-        vec![super::app::Effect::MaintFind(
-            "finding:srv:container-down".into(),
-        )],
+        vec![Own::maint_find("finding:srv:container-down".into())],
         Instant::now(),
     );
     let s = screen(&mut a);
@@ -2495,7 +2478,13 @@ fn enter_on_an_item_plans_it_or_opens_its_log() {
 
 /// The report on screen with one before it: a finding since gone, and one that's new.
 fn two_reports(a: &mut App) {
-    let cur = a.store.report.value.clone().flatten().expect("a report");
+    let cur = srv(a)
+        .store
+        .report
+        .value
+        .clone()
+        .flatten()
+        .expect("a report");
     let mut prev = cur.clone();
     let new = prev.findings.remove(0);
     prev.findings.push(sentry_core::finding::Finding {
@@ -2546,7 +2535,7 @@ fn f_opens_the_audit_report_and_esc_comes_back() {
     assert!(s.contains("marked expected"), "{s}");
     assert!(s.contains("3 to check"), "one fewer: {s}");
     // Taken back (x on it does the same).
-    let id = a
+    let id = srv(&a)
         .store
         .shown
         .as_ref()
@@ -2558,10 +2547,7 @@ fn f_opens_the_audit_report_and_esc_comes_back() {
         })
         .map(|f| f.id.clone())
         .unwrap();
-    a.apply(
-        vec![super::app::Effect::Expected(id, false)],
-        Instant::now(),
-    );
+    a.apply(vec![Own::expected(id, false)], Instant::now());
     let s = screen(&mut a);
     assert!(s.contains("check  container container db is exited"), "{s}");
     // B asks about everything like the one selected.
@@ -2580,7 +2566,7 @@ fn f_opens_the_audit_report_and_esc_comes_back() {
     );
     key(&mut a, KeyCode::Char('1'));
     colon(&mut a, "audit");
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     assert!(screen(&mut a).contains("Maintenance › Audit report"));
 }
 
@@ -2656,15 +2642,16 @@ fn the_writer_profile_adds_the_web_and_only_the_notes() {
 fn a_password_sudo_says_press_i() {
     // A store that never had docker: the tab explains, with the key to press.
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut b = App::new(Remote::new("myserver", &cfg()), tx);
-    b.offline = true;
+    let mut b = super::app(Remote::new("myserver", &cfg()), tx);
+    b.win.offline = true;
     data(
         &mut b,
         Kind::Sudo,
         Payload::Sudo(crate::remote::SudoMode::Password),
     );
     b.on_event(
-        Ev::Data(
+        data_ev(
+            &b,
             Kind::Docker,
             Box::new(Err(crate::remote::SrvError::SudoPassword(
                 "docker ps".into(),
@@ -2719,7 +2706,7 @@ fn live_plan() {
         .position(|i| i.id == item)
         .expect("item");
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut a = App::new(Remote::new(n, s), tx);
+    let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
     let pump = |a: &mut App, secs: u64| {
         let until = Instant::now() + std::time::Duration::from_secs(secs);
@@ -2751,13 +2738,13 @@ fn live_plan() {
         pump(&mut a, 3);
         // Claude stopped for reads that need root: skip them here (no password in a test);
         // it then writes the plan without them.
-        if let Some(reads) = a.take_reads_box() {
+        if let Some(reads) = take_reads_box(&mut a) {
             println!("Claude asked to read with sudo first: {reads:?}");
             asked = true;
             key(&mut a, KeyCode::Char('n'));
             continue;
         }
-        if !a.writing() && a.store.plans.contains_key(&item) {
+        if !a.writing() && a.slot().shared.plans.contains_key(&item) {
             break;
         }
     }
@@ -2766,7 +2753,13 @@ fn live_plan() {
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Enter);
     println!("{}", render_to_string(&mut a, 158, 41));
-    let plan = a.store.plans.get(&item).cloned().expect("a saved plan");
+    let plan = a
+        .slot()
+        .shared
+        .plans
+        .get(&item)
+        .cloned()
+        .expect("a saved plan");
     let path = crate::maint::plan::path(&name, &item);
     println!(
         "{}\n{}",
@@ -2798,18 +2791,18 @@ fn live_claude_reads() {
     let code = crate::gateway::exec_cli(&r, &argv);
     assert_ne!(code, 0);
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut a = App::new(r, tx);
+    let mut a = super::app(r, tx);
     a.open_chat(sentry_core::tui::chat::Chat::new(
         sentry_core::claude::Ask::new("s", "c", "q"),
     ));
-    a.turn_ended_online_for_reads();
-    let reads = a.take_reads_box().expect("the box lists the read");
+    turn_ended_online_for_reads(&mut a);
+    let reads = take_reads_box(&mut a).expect("the box lists the read");
     println!("{}", render_to_string(&mut a, 158, 41));
     assert_eq!(reads, [argv]);
     key(&mut a, KeyCode::Char('y'));
     let (cmd, _) = a.take_suspend().expect("hands over the terminal");
     let st = cmd.interactive();
-    a.offline = true; // the follow-up is shown, not sent
+    a.win.offline = true; // the follow-up is shown, not sent
     a.after_suspend(st);
     let sent = a
         .chat_mut()
@@ -2836,7 +2829,7 @@ fn the_maintenance_log_can_be_reviewed() {
         "{s}"
     );
     key(&mut a, KeyCode::Esc);
-    assert!(a.rec_view.is_none());
+    assert!(a.slot().rec_view.is_none());
     // With entries: the ledger as a list, the item's entries marked; Enter opens one.
     let entry = |text: &str| crate::maint::log::LogEntry::parse(text).unwrap();
     let web = entry(
@@ -2850,7 +2843,7 @@ fn the_maintenance_log_can_be_reviewed() {
         "+++\nserver = \"myserver\"\nkind = \"system\"\nworkflow = \"apt-maintenance\"\n\
          result = \"abandoned\"\nended = \"2026-10-25T09:00:00Z\"\nsummary = \"mirror down\"\n+++\n\n# apt",
     );
-    a.rec_view = Some(sentry_core::tui::records::Records::new(
+    a.slot_mut().rec_view = Some(sentry_core::tui::records::Records::new(
         sentry_core::tui::records::Data {
             dir: "~/.config/sentry/servers/myserver".into(),
             tasks: Vec::new(),
@@ -2883,13 +2876,13 @@ fn the_maintenance_log_can_be_reviewed() {
     key(&mut a, KeyCode::Esc);
     assert!(screen(&mut a).contains("2 run(s)"), "back to the list");
     key(&mut a, KeyCode::Esc);
-    assert!(a.rec_view.is_none());
+    assert!(a.slot().rec_view.is_none());
     // :log from anywhere.
     for c in ":log".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert!(a.rec_view.is_some());
+    assert!(a.slot().rec_view.is_some());
     // Later: what's put off; u brings it back.
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
@@ -2919,11 +2912,11 @@ fn a_read_from_before_the_last_change_says_so() {
         Payload::Sudo(crate::remote::SudoMode::Password),
     );
     let t = |s: &str| -> jiff::Timestamp { s.parse().unwrap() };
-    a.set_inventory_times(t("2026-10-26T10:00:00Z"), t("2026-10-26T11:00:00Z"));
+    set_inventory_times(&mut a, t("2026-10-26T10:00:00Z"), t("2026-10-26T11:00:00Z"));
     key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("before the last change: I reads again"), "{s}");
-    a.set_inventory_times(t("2026-10-26T11:30:00Z"), t("2026-10-26T11:00:00Z"));
+    set_inventory_times(&mut a, t("2026-10-26T11:30:00Z"), t("2026-10-26T11:00:00Z"));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("read with sudo") && !s.contains("before the last change"),
@@ -2939,7 +2932,7 @@ fn the_risk_is_coloured_only_where_something_needs_doing() {
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| a.draw(f)).unwrap();
     let buf = term.backend().buffer().clone();
-    let t = a.theme;
+    let t = a.win.theme;
     let row_of = |item: &str| {
         (0..41)
             .find(|&y| {
@@ -3053,7 +3046,7 @@ fn a_review_that_needs_root_reads_is_not_saved_until_they_are_back() {
     let s = screen(&mut a);
     assert!(!s.contains("READS PENDING"), "{s}");
     // The reads come back (or are skipped): the same session writes the review.
-    a.apply(vec![super::app::Effect::ReadsSkipped], Instant::now());
+    a.apply(vec![Own::ReadsSkipped.into()], Instant::now());
     assert!(a.writing());
     a.writer_answered("# Maintenance review · myserver\n\n## Now\n- web");
     assert!(a.review_for_test().is_some());
@@ -3129,7 +3122,7 @@ fn w_goes_to_screen_0() {
     // w on Maintenance: the workflows are a screen, not a chooser.
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
     key(&mut a, KeyCode::Char('w'));
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     let s = screen(&mut a);
     assert!(
         s.contains("Workflows") && s.contains("apt-maintenance") && !s.contains("pick one"),
@@ -3138,14 +3131,14 @@ fn w_goes_to_screen_0() {
     // :wf <name> goes there, selects it and does what Enter does.
     key(&mut a, KeyCode::Char('1'));
     colon(&mut a, "wf apt-maintenance");
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     assert!(screen(&mut a).contains("Start apt-maintenance on myserver"));
     key(&mut a, KeyCode::Esc);
     // :wf alone, and the old names for the run, open the screen.
     for cmd in ["wf", "run", "workflows", "upgrade"] {
         key(&mut a, KeyCode::Char('1'));
         colon(&mut a, cmd);
-        assert_eq!(a.screen, ScreenId::Upgrade, ":{cmd}");
+        assert_eq!(a.slot().screen, ScreenId::Upgrade, ":{cmd}");
     }
     colon(&mut a, "wf nope");
     assert!(screen(&mut a).contains("no workflow nope"));
@@ -3193,9 +3186,12 @@ fn an_item_without_a_workflow_is_planned_then_applied_in_a_session() {
     key(&mut a, KeyCode::Enter);
     a.apply_exit_for_test(0); // sudo -n works
     a.apply_exit_for_test(0); // the step
-    assert!(a.wf.is_none(), "no workflow started");
+    assert!(wf(&a).is_none(), "no workflow started");
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"29.9.2\"\n```");
-    assert!(!a.store.plans.contains_key("engine"), "the plan is closed");
+    assert!(
+        !a.slot().shared.plans.contains_key("engine"),
+        "the plan is closed"
+    );
 }
 
 #[test]
@@ -3252,7 +3248,7 @@ fn a_review_changes_tasks_and_items_with_one_enter() {
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a);
     assert!(s.contains("6 applied · 1 skipped"), "{s}");
-    let log = &a.store.log[0];
+    let log = &a.slot().shared.log[0];
     assert_eq!(log.head.kind, "review");
     assert!(
         log.body.contains("applied: add track image:cache")
@@ -3272,7 +3268,7 @@ fn a_review_changes_tasks_and_items_with_one_enter() {
     assert!(!s.contains("Track cache"), "tracked now: {s}");
     assert!(!s.contains("legacy"), "untracked: {s}");
     assert!(!s.contains("os: end of life soon"), "put off: {s}");
-    let cfg = &a.remote.cfg.maintenance.items;
+    let cfg = &srv(&a).remote.cfg.maintenance.items;
     let ids: Vec<&str> = cfg.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(ids, ["web", "engine", "os", "cache"]);
     assert_eq!(cfg[0].risk, crate::config::Risk::High);
@@ -3281,10 +3277,7 @@ fn a_review_changes_tasks_and_items_with_one_enter() {
     key(&mut a, KeyCode::Char('R'));
     assert!(screen(&mut a).contains("Enter starts the review"));
     key(&mut a, KeyCode::Esc);
-    a.apply(
-        vec![super::app::Effect::MaintFind("task:restore".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("task:restore".into())], Instant::now());
     let s = screen(&mut a);
     assert!(s.contains("Restore last night's dump"), "the steps: {s}");
     // d: logged as done by hand, then the note box; it leaves the list.
@@ -3365,7 +3358,7 @@ fn applying_on_a_server_is_one_session() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     a.apply(
-        vec![super::app::Effect::AskConsent(Box::new(Ask::apply(
+        vec![Effect::AskConsent(Box::new(Ask::apply(
             "web",
             "ctx",
             Apply {
@@ -3441,7 +3434,7 @@ fn a_workflow_that_wont_start_goes_back_to_claude() {
     };
     a.set_wf_entries(vec![entry("draft = true\n")]);
     a.apply(
-        vec![super::app::Effect::AskConsent(Box::new(Ask::apply(
+        vec![Effect::AskConsent(Box::new(Ask::apply(
             "web",
             "ctx",
             Apply {
@@ -3497,10 +3490,7 @@ fn enter_on_a_task_done_by_hand_is_claude_m_its_steps() {
         again: None,
     });
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    a.apply(
-        vec![super::app::Effect::MaintFind("task:ups".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("task:ups".into())], Instant::now());
     let s = screen(&mut a);
     assert!(s.contains("By hand: Enter works it out with Claude"), "{s}");
     key(&mut a, KeyCode::Enter);
@@ -3533,7 +3523,7 @@ fn network_badge_counts_new() {
     // listeners:, 5432 is local, udp 68 a client).
     assert!(s.contains("3 Network 5"), "{s}");
     key(&mut a, KeyCode::Char('3'));
-    assert_eq!(a.screen, ScreenId::Net);
+    assert_eq!(a.slot().screen, ScreenId::Net);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Listening · ss -tulpn · 9 · 5 new"), "{s}");
     assert!(
@@ -3555,7 +3545,7 @@ fn network_badge_counts_new() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Net);
+    assert_eq!(a.slot().screen, ScreenId::Net);
     for c in "/8080".chars() {
         key(&mut a, KeyCode::Char(c));
     }
@@ -3612,7 +3602,7 @@ fn b_marks_every_family_of_the_port_and_the_finding() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("tcp 443: expected (baseline.toml)"), "{s}");
     // Both families, by the name root sees; the finding too. Nothing is written in tests.
-    let b = &a.store.baseline;
+    let b = &a.slot().shared.baseline;
     assert_eq!(
         b.listeners,
         ["0.0.0.0:443/docker-proxy", "[::]:443/docker-proxy"]
@@ -3629,7 +3619,10 @@ fn b_marks_every_family_of_the_port_and_the_finding() {
     }
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('b'));
-    assert_eq!(a.store.baseline.listeners, ["0.0.0.0:443/*", "[::]:443/*"]);
+    assert_eq!(
+        a.slot().shared.baseline.listeners,
+        ["0.0.0.0:443/*", "[::]:443/*"]
+    );
     names(&mut a);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("3 Network 1"), "still expected with names: {s}");
@@ -3649,12 +3642,15 @@ fn b_again_unmarks() {
     }
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('b'));
-    assert_eq!(a.store.baseline.listeners, ["0.0.0.0:8080/app"]);
+    assert_eq!(a.slot().shared.baseline.listeners, ["0.0.0.0:8080/app"]);
     assert!(render_to_string(&mut a, 158, 41).contains("baseline"));
     key(&mut a, KeyCode::Char('b'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("tcp 8080: no longer expected"), "{s}");
-    assert!(a.store.baseline.listeners.is_empty() && a.store.baseline.findings.is_empty());
+    assert!(
+        a.slot().shared.baseline.listeners.is_empty()
+            && a.slot().shared.baseline.findings.is_empty()
+    );
     assert!(s.contains("3 Network 5"), "{s}");
     // What server_config.yaml expects stays expected: it isn't rewritten.
     key(&mut a, KeyCode::Esc);
@@ -3671,7 +3667,7 @@ fn b_again_unmarks() {
 fn sort_and_filter_match_sentry() {
     let mut a = app();
     key(&mut a, KeyCode::Char('2'));
-    assert_eq!(a.screen, ScreenId::Proc);
+    assert_eq!(a.slot().screen, ScreenId::Proc);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("reading processes…"), "{s}");
     assert!(
@@ -3726,7 +3722,8 @@ fn sort_and_filter_match_sentry() {
     let mut a = app();
     key(&mut a, KeyCode::Char('2'));
     a.on_event(
-        Ev::Data(
+        data_ev(
+            &a,
             Kind::Procs,
             Box::new(Err(crate::remote::SrvError::NotFound("ps".into()))),
         ),
@@ -3739,17 +3736,17 @@ fn sort_and_filter_match_sentry() {
 fn the_processes_sample_feeds_the_probe() {
     use super::screens::Screens;
     let mut a = app();
-    let before = a.store.mem.0.len();
+    let before = srv(&a).store.mem.0.len();
     feed_procs(&mut a);
     assert_eq!(
-        a.store.mem.0.len(),
+        srv(&a).store.mem.0.len(),
         before + 2,
         "the Dashboard's series keep going on this screen"
     );
-    assert_eq!(a.store.login_uid, Some(1000));
-    assert_eq!(a.store.procs.value.as_ref().map(Vec::len), Some(12));
+    assert_eq!(srv(&a).store.login_uid, Some(1000));
+    assert_eq!(srv(&a).store.procs.value.as_ref().map(Vec::len), Some(12));
     // One exec per sample, every 2 s, only while the screen is shown; the second after 1 s.
-    let polls = Screens::polls(ScreenId::Proc, &a.remote.cfg);
+    let polls = Screens::polls(ScreenId::Proc, &srv(&a).remote.cfg);
     assert_eq!(polls.len(), 1);
     assert_eq!(
         (polls[0].kind, polls[0].every),
@@ -3757,10 +3754,10 @@ fn the_processes_sample_feeds_the_probe() {
     );
     let now = Instant::now();
     a.enter(ScreenId::Proc, now);
-    assert_eq!(a.polled_for_test(), [Kind::Procs]);
+    assert_eq!(polled_for_test(&a), [Kind::Procs]);
     assert_eq!(a.next_due(now), now + std::time::Duration::from_secs(1));
     a.enter(ScreenId::Cont, now);
-    assert!(a.polled_for_test().is_empty());
+    assert!(polled_for_test(&a).is_empty());
 }
 
 /// A day and a half of records, every ten minutes, ending at the tests' clock.
@@ -3817,10 +3814,10 @@ fn the_screen_appears_with_the_ring() {
     assert!(!strip(&mut a).contains("History"), "nothing recorded yet");
     // Tab doesn't stop at a screen that isn't in the strip.
     key(&mut a, KeyCode::BackTab);
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     // H opens it all the same, and says how to get data.
     key(&mut a, KeyCode::Char('H'));
-    assert_eq!(a.screen, ScreenId::Hist);
+    assert_eq!(a.slot().screen, ScreenId::Hist);
     assert!(strip(&mut a).trim_end().ends_with("H History"));
     key(&mut a, KeyCode::Char('1'));
     assert!(!strip(&mut a).contains("History"));
@@ -3828,13 +3825,13 @@ fn the_screen_appears_with_the_ring() {
     data(&mut a, Kind::History, Payload::History(Box::new(history())));
     assert!(strip(&mut a).trim_end().ends_with("0 Upgrade   H History"));
     key(&mut a, KeyCode::BackTab);
-    assert_eq!(a.screen, ScreenId::Hist);
+    assert_eq!(a.slot().screen, ScreenId::Hist);
     colon(&mut a, "dash");
     colon(&mut a, "hist");
-    assert_eq!(a.screen, ScreenId::Hist);
+    assert_eq!(a.slot().screen, ScreenId::Hist);
     // Entering it reads the ring (from this machine's disk) and nothing else; nothing polls.
     use super::screens::Screens;
-    let polls = Screens::polls(ScreenId::Hist, &a.remote.cfg);
+    let polls = Screens::polls(ScreenId::Hist, &srv(&a).remote.cfg);
     assert_eq!(polls.len(), 1);
     assert_eq!((polls[0].kind, polls[0].every), (Kind::History, None));
     // The tests sampled the server (three probes), and wrote no ring for it.
@@ -3906,7 +3903,7 @@ fn history_keys() {
     key(&mut a, KeyCode::Char(']'));
     assert!(render_to_string(&mut a, 158, 41).contains("last 72h"));
     assert_eq!(
-        a.screen,
+        a.slot().screen,
         ScreenId::Hist,
         "the arrows aren't screen keys here"
     );
@@ -4067,7 +4064,7 @@ fn pid_1_is_refused() {
     // A process that went away since the sample: said, nothing offered.
     let mut a = app();
     procs_on(&mut a, "tail -f");
-    a.store.proc_ticks.remove(&52100);
+    srv_mut(&mut a).store.proc_ticks.remove(&52100);
     key(&mut a, KeyCode::Char('x'));
     assert!(render_to_string(&mut a, 158, 41).contains("process 52100 is gone"));
 }
@@ -4148,10 +4145,7 @@ fn a_series_plans_an_item_then_applies_its_plan() {
     let mut a = app();
     let screen = |a: &mut App| render_to_string(a, 158, 41);
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    a.apply(
-        vec![super::app::Effect::MaintFind("web".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("web".into())], Instant::now());
     let s = screen(&mut a);
     assert!(s.contains("Enter: Claude writes a plan for web"), "{s}");
     key(&mut a, KeyCode::Char(' '));
@@ -4175,10 +4169,7 @@ fn a_series_plans_an_item_then_applies_its_plan() {
     // A plan that says wait: nothing to apply, and the series is through.
     let mut a = app();
     key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
-    a.apply(
-        vec![super::app::Effect::MaintFind("web".into())],
-        Instant::now(),
-    );
+    a.apply(vec![Own::maint_find("web".into())], Instant::now());
     key(&mut a, KeyCode::Char(' '));
     key(&mut a, KeyCode::Enter);
     a.writer_answered("TARGET: wait\n# Plan: web\nNot until 1.5.3.");
@@ -4204,10 +4195,10 @@ fn a_series_starts_a_workflow_without_its_box_and_stops_when_it_is_abandoned() {
     // The run, on its screen: the series' Enter was the start.
     let s = screen(&mut a);
     assert!(
-        a.wf.is_some() && !s.contains("Start apt-maintenance"),
+        wf(&a).is_some() && !s.contains("Start apt-maintenance"),
         "{s}"
     );
-    assert_eq!(a.screen, ScreenId::Upgrade);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     // Elsewhere the workflow's banner has the row.
     key(&mut a, KeyCode::Char('1'));
     assert!(screen(&mut a).contains("↻ workflow apt-maintenance"));

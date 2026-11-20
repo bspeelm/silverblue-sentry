@@ -30,4 +30,5 @@ serde-saphyr.workspace = true
 
 [dev-dependencies]
 sentry-core = { workspace = true, features = ["testing"] }
+sentry-app = { workspace = true, features = ["testing"] }
 insta.workspace = true

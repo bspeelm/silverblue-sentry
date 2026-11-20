@@ -4,9 +4,9 @@
 
 use ratatui::text::Line;
 
-use super::app::{Effect, Modal, RunSpec};
 use super::data::Kind;
 use super::screens::View;
+use super::target::{Effect, Modal, Own, RunSpec};
 use crate::config::CustomAction;
 use crate::remote::{Remote, SudoMode};
 use sentry_core::exec::{Cmd, sh_quote};
@@ -70,14 +70,14 @@ pub fn confirm(v: &View, r: &Remote, s: Spec) -> Vec<Effect> {
         lines.push(Line::styled("This is hard to undo.", t.s(t.red)));
     }
     let run = if interactive {
-        Effect::Suspend(
+        Own::suspend(
             cmd,
             format!("sentry-server · {} on {}", s.title, r.name),
             s.then.clone(),
             s.reboot,
         )
     } else {
-        Effect::Run(RunSpec {
+        Own::run(RunSpec {
             title: s.title.clone(),
             cmd,
             then: s.then.clone(),
@@ -323,7 +323,7 @@ pub fn custom(v: &View, r: &Remote) -> Vec<Effect> {
         .iter()
         .map(|a| (a.title.clone(), custom_one(v, r, a)))
         .collect();
-    vec![Effect::Choose(super::app::Choice::numbered(
+    vec![Effect::Choose(super::target::Choice::numbered(
         v.t, "Actions", choices,
     ))]
 }
@@ -366,7 +366,7 @@ fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {
         lines,
         yes: Some((
             "run".into(),
-            vec![Effect::Run(RunSpec {
+            vec![Own::run(RunSpec {
                 title: a.title.clone(),
                 cmd,
                 then: vec![Kind::Units, Kind::Docker],

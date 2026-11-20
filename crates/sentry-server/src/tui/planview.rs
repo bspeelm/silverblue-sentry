@@ -5,7 +5,6 @@
 
 use crate::remote::{Remote, SudoMode};
 use sentry_core::claude::Profile;
-pub use sentry_core::tui::docview::{Writer, draw};
 
 /// Claude's instructions for a maintenance review.
 pub fn review_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {

@@ -19,8 +19,8 @@ pub mod upgrade;
 
 use std::time::Duration;
 
-use super::app::Effect;
 use super::data::{Kind, Store};
+use super::target::{Effect, Own};
 use crate::collect::apt::{Kind as PkgKind, Pkg};
 use crate::collect::docker::Container;
 use crate::collect::health::SmartHealth;
@@ -37,6 +37,8 @@ use sentry_core::tui::{Cursor, ScreenId};
 pub struct View<'a> {
     pub t: &'a Theme,
     pub s: &'a Store,
+    /// The server's records (plans, tasks, the log…): the app's, read here.
+    pub sh: &'a sentry_app::shared::Shared,
     pub cfg: &'a Server,
     pub name: &'a str,
     /// The row selected on the screen in view (a copy of its cursor).
@@ -173,7 +175,7 @@ impl Screens {
         if matches!(id, ScreenId::Dash | ScreenId::Maint)
             && v.s.apt.at.is_none_or(|t| t.elapsed() > APT_MAX_AGE)
         {
-            e.push(Effect::Fetch(Kind::Apt));
+            e.push(Own::fetch(Kind::Apt));
         }
         if id == ScreenId::Maint {
             // Upstream changes slowly: looked up again at most daily without `c`.
@@ -181,7 +183,7 @@ impl Screens {
                 .upstream
                 .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
             if stale && !v.cfg.maintenance.items.is_empty() {
-                e.push(Effect::Fetch(Kind::Upstream));
+                e.push(Own::fetch(Kind::Upstream));
             }
         }
         e

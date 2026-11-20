@@ -9,7 +9,6 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::time::Instant;
 
 use super::{Remote, SudoMode};
 use sentry_core::exec::Cmd;
@@ -43,30 +42,7 @@ pub fn pick_dir(own: PathBuf, generic: PathBuf) -> PathBuf {
     if tomls(&own).is_empty() { generic } else { own }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogKind {
-    Info,
-    Cmd,
-    Out,
-    Ok,
-    Err,
-}
-
-/// What the app runs for the session.
-pub enum Exec {
-    /// Stream into the log.
-    Stream { cmd: Cmd, idx: usize },
-    /// Hand over the terminal (sudo that asks for a password). The output is also written to
-    /// `capture` on the server, read back into the step's log afterwards (`tty_output`).
-    Tty {
-        cmd: Cmd,
-        idx: usize,
-        capture: String,
-    },
-    /// `sudo systemctl reboot`; the app then waits for a new boot id. `tty`: sudo asks for a
-    /// password, so the terminal is handed over for it.
-    Reboot { cmd: Cmd, tty: bool },
-}
+pub use crate::run::{Exec, Live, LogKind};
 
 /// A streamed step can't answer a password prompt: its `sudo` fails at once instead of
 /// waiting on a prompt nobody sees.
@@ -88,13 +64,6 @@ pub fn tee_to(cmd: &str, capture: &str) -> String {
 /// What a step that sudo refused says on its card.
 pub const SUDO_REFUSED: &str =
     "sudo asked for a password · r retries with the terminal handed over";
-
-pub struct Live {
-    pub id: u64,
-    pub idx: usize,
-    pub pid: Option<u32>,
-    pub started: Instant,
-}
 
 const LOG_LINES: usize = 2000;
 
@@ -560,6 +529,78 @@ fn exe(prog: &str) -> String {
         .flat_map(|d| [d.join(prog), d.join("..").join(prog)])
         .find(|p| p.is_file())
         .map_or_else(|| prog.into(), |p| p.display().to_string())
+}
+
+impl crate::run::WfRun for Session {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn wf(&self) -> &Workflow {
+        &self.wf
+    }
+    fn run(&self) -> &Run {
+        &self.run
+    }
+    fn next(&self) -> &Next {
+        &self.next
+    }
+    fn live(&self) -> Option<&Live> {
+        self.live.as_ref()
+    }
+    fn set_live(&mut self, live: Option<Live>) -> Option<Live> {
+        std::mem::replace(&mut self.live, live)
+    }
+    fn armed(&self) -> bool {
+        self.armed
+    }
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+    fn done(&self) -> bool {
+        Session::done(self)
+    }
+    fn title(&self, idx: usize) -> String {
+        Session::title(self, idx)
+    }
+    fn state_word(&self) -> &'static str {
+        Session::state_word(self)
+    }
+    fn push(&mut self, text: String, kind: LogKind) {
+        Session::push(self, text, kind);
+    }
+    fn on_line(&mut self, text: &str) {
+        Session::on_line(self, text);
+    }
+    fn on_exit(&mut self, idx: usize, code: i32) {
+        Session::on_exit(self, idx, code);
+    }
+    fn tty_ended(&mut self, idx: usize, capture: &str, code: i32, read: bool) {
+        if read {
+            self.tty_output(idx, capture);
+        }
+        Session::on_exit(self, idx, code);
+    }
+    fn skip(&mut self, force: bool) -> Result<(), String> {
+        Session::skip(self, force)
+    }
+    fn retry(&mut self) -> Result<(), String> {
+        Session::retry(self)
+    }
+    fn mark_done(&mut self) -> Result<(), String> {
+        Session::mark_done(self)
+    }
+    fn abandon(&mut self) {
+        Session::abandon(self);
+    }
+    fn after_reboot(&mut self) {
+        Session::after_reboot(self);
+    }
+    fn step_log(&self) -> Option<(String, String)> {
+        Session::step_log(self)
+    }
 }
 
 #[cfg(test)]

@@ -9,8 +9,8 @@ use ratatui::text::Line;
 
 use super::{Hints, View};
 use crate::remote::Remote;
-use crate::tui::app::Effect;
 use crate::tui::data::Kind;
+use crate::tui::target::{Effect, Own};
 use sentry_core::claude::Ask;
 use sentry_core::tui::histview::{self, HistState};
 use sentry_core::tui::keys::Action;
@@ -27,7 +27,7 @@ pub fn hints() -> Hints {
 impl History {
     pub fn handle(&mut self, a: Action, v: &View) -> Vec<Effect> {
         if !self.s.key(a, v.s.history.value.as_ref()) && a == Action::Refresh {
-            return vec![Effect::Fetch(Kind::History)];
+            return vec![Own::fetch(Kind::History)];
         }
         Vec::new()
     }

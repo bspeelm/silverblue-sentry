@@ -12,8 +12,8 @@ use ratatui::widgets::Paragraph;
 use super::{Hints, View};
 use crate::collect::procs::{kill_script, lineage};
 use crate::remote::{Remote, SrvError, SudoMode};
-use crate::tui::app::{Effect, Modal, RunSpec};
 use crate::tui::data::Kind;
+use crate::tui::target::{Effect, Modal, Own, RunSpec};
 use sentry_core::claude::Ask;
 use sentry_core::collectors::procs::{Proc, SortBy, sort};
 use sentry_core::tui::Cursor;
@@ -77,7 +77,7 @@ impl Processes {
         match a {
             Action::Char('C' | 'P') => self.sort = SortBy::Cpu,
             Action::Char('M') => self.sort = SortBy::Mem,
-            Action::Refresh => return vec![Effect::Fetch(Kind::Procs)],
+            Action::Refresh => return vec![Own::fetch(Kind::Procs)],
             Action::Char('x') => return self.kill(v, r),
             _ => {}
         }
@@ -153,14 +153,14 @@ impl Processes {
         }
         let cmd = r.sh(&kill_script(p.pid, tick.start, how)).timeout(None);
         let run = if interactive {
-            Effect::Suspend(
+            Own::suspend(
                 cmd,
                 format!("sentry-server · kill {} on {}", p.pid, r.name),
                 vec![Kind::Procs],
                 false,
             )
         } else {
-            Effect::Run(RunSpec {
+            Own::run(RunSpec {
                 title: "Kill process".into(),
                 cmd,
                 then: vec![Kind::Procs],

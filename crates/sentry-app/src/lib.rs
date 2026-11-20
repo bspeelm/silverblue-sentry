@@ -1,7 +1,21 @@
-//! What sentry's targets share beyond the kit (`sentry-core`). For now: [`remote`], the pieces
-//! of a host reached over ssh, used by sentry-server and by whatever else is one.
+//! What sentry's targets share beyond the kit (`sentry-core`): the app itself. [`target`] is
+//! what a host is to it, [`app`] the window, [`slot`] one target with everything that belongs
+//! to it and the flows written once for all of them, [`shared`] a target's records, [`effect`]
+//! what keys and boxes ask for, [`run`] a workflow run as the app sees it; [`remote`] is the
+//! pieces of a host reached over ssh, used by sentry-server and by whatever else is one.
 
+pub mod app;
+pub mod effect;
 pub mod remote;
+pub mod run;
+pub mod shared;
+pub mod slot;
+pub mod target;
+
+pub use app::{App, Event, Win};
+pub use effect::Effect;
+pub use slot::Slot;
+pub use target::Target;
 
 #[cfg(test)]
 mod tests {

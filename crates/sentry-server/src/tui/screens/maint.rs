@@ -2,8 +2,6 @@
 //! everything tracked, how it stands against upstream, and the deliberate way to change it
 //! (a plan Claude writes, applied with its workflow; or look again later).
 
-use std::collections::BTreeMap;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
@@ -17,7 +15,7 @@ use crate::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::maint::recommend::{self, Action, Level, Rec};
 use crate::maint::{self, local};
 use crate::remote::Remote;
-use crate::tui::app::{Choice, Effect, Modal};
+use crate::tui::target::{Choice, Effect, Modal, Own};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::reportview::ReportView;
@@ -62,9 +60,9 @@ pub fn every_rec(v: &View) -> Vec<Rec> {
         plans: v.plans,
         found: &v.s.maint_found,
         apt: v.s.apt.value.as_ref(),
-        log: &v.s.log,
-        workflows: &v.s.workflows,
-        snooze: &v.s.later,
+        log: &v.sh.log,
+        workflows: &v.sh.workflows,
+        snooze: &v.sh.later,
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
@@ -74,7 +72,7 @@ pub fn every_rec(v: &View) -> Vec<Rec> {
 
 /// Every task that applies: `tasks.toml`'s and `maintenance.cadence`.
 pub fn all_tasks(v: &View) -> Vec<sentry_core::maint::tasks::Task> {
-    sentry_core::maint::tasks::effective(&v.s.tasks, maint::cadence_tasks(v.cfg, &v.s.workflows))
+    sentry_core::maint::tasks::effective(&v.sh.tasks, maint::cadence_tasks(v.cfg, &v.sh.workflows))
 }
 
 /// The latest audit report, when there is one.
@@ -226,11 +224,11 @@ impl Maint {
         // A key on the list: whatever was to be found has been, or isn't wanted any more.
         self.find = None;
         match a {
-            A::Refresh => vec![Effect::Fetch(Kind::Maint), Effect::Fetch(Kind::Report)],
+            A::Refresh => vec![Own::fetch(Kind::Maint), Own::fetch(Kind::Report)],
             // Check everything: audit the server and look upstream up again.
             A::Check => vec![
-                Effect::Fetch(Kind::Audit),
-                Effect::Fetch(Kind::Upstream),
+                Own::fetch(Kind::Audit),
+                Own::fetch(Kind::Upstream),
                 Effect::Toast("auditing the server and looking up newer versions…".into()),
             ],
             // Ticks: Space the row, a every row that can be, Esc none.
@@ -271,7 +269,7 @@ impl Maint {
             A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm' | 'B')) => key(c, v),
             // A task: how often it recurs; anything else: the config, where items are.
             A::Char('e') => match key('e', v) {
-                e if e.is_empty() => vec![Effect::EditConfig],
+                e if e.is_empty() => vec![Effect::Edit(crate::config::path())],
                 e => e,
             },
             A::Char('F') => self.open_report(),
@@ -287,7 +285,7 @@ impl Maint {
     pub fn open_report(&mut self) -> Vec<Effect> {
         self.view = Some(Sub::Report);
         self.report = ReportView::default();
-        vec![Effect::Fetch(crate::tui::data::Kind::Report)]
+        vec![Own::fetch(crate::tui::data::Kind::Report)]
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
@@ -935,7 +933,7 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
             t.s(t.cyan),
         ));
     }
-    let hist = maint::history(&v.s.log, &s.id);
+    let hist = maint::history(&v.sh.log, &s.id);
     if !hist.is_empty() {
         l.push(Line::raw(""));
         l.push(Line::styled("Changes", t.dim()));
@@ -1004,7 +1002,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
         ('\n', Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
         ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
         ('\n' | 't', Action::Track(n)) => match found.candidates.get(*n) {
-            Some(c) => vec![Effect::Track(c.item.clone())],
+            Some(c) => vec![Own::track(c.item.clone())],
             None => Vec::new(),
         },
         ('x', Action::Track(n)) => match found.candidates.get(*n) {
@@ -1013,7 +1011,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
                 "Ignore this",
                 &r.title,
                 "Discovery stops suggesting it (ignore: in items.toml).",
-                Effect::Ignore(c.key.clone(), c.item.id.clone()),
+                Own::ignore(c.key.clone(), c.item.id.clone()),
             ),
             None => Vec::new(),
         },
@@ -1022,19 +1020,19 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             "Stop tracking it",
             &r.title,
             "It comes off items.toml; the log keeps its history.",
-            Effect::Untrack(id.clone()),
+            Own::untrack(id.clone()),
         ),
-        ('\n', Action::Look(id)) if !id.is_empty() => vec![Effect::MaintJump(id.clone())],
-        ('\n', Action::Fix(id)) => vec![Effect::FixFinding(id.clone())],
+        ('\n', Action::Look(id)) if !id.is_empty() => vec![Own::maint_jump(id.clone())],
+        ('\n', Action::Fix(id)) => vec![Own::fix_finding(id.clone())],
         ('x', Action::Fix(id)) => dismiss(
             v,
             "Mark it expected",
             &r.title,
             "The audit stops listing it (the server's baseline.toml).",
-            Effect::Expected(id.clone(), true),
+            Own::expected(id.clone(), true),
         ),
         ('\n', Action::Audit) => vec![
-            Effect::Fetch(crate::tui::data::Kind::Audit),
+            Own::fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
         ('\n', Action::Task(id)) => task_enter(v, id),
@@ -1099,7 +1097,7 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
             None => vec![Effect::Toast(format!("{it} isn't tracked any more"))],
         },
         Do::Audit => vec![
-            Effect::Fetch(crate::tui::data::Kind::Audit),
+            Own::fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
         Do::Job(j) => vec![Effect::Toast(format!(
@@ -1202,7 +1200,7 @@ fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
             ItemEnter::Log => vec![Effect::LogOpen(Some(s.id.clone()))],
         },
         'x' => match v.plans.get(&s.id) {
-            Some(p) => vec![Effect::Confirm(crate::tui::app::Modal {
+            Some(p) => vec![Effect::Confirm(crate::tui::target::Modal {
                 title: "Drop the plan".into(),
                 color: v.t.yellow,
                 lines: vec![Line::styled(
@@ -1421,16 +1419,3 @@ pub fn ledger_path(server: &str) -> String {
 }
 
 pub use sentry_core::maint::real_path;
-
-/// Vars a prefilled start shows: the workflow's own, with the item's values as defaults.
-pub fn merge_defaults(
-    asks: Vec<(String, String, Option<String>)>,
-    given: &BTreeMap<String, String>,
-) -> Vec<(String, String, Option<String>)> {
-    asks.into_iter()
-        .map(|(k, p, d)| {
-            let d = given.get(&k).cloned().or(d);
-            (k, p, d)
-        })
-        .collect()
-}

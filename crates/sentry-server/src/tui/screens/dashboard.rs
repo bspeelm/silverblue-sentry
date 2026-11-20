@@ -18,7 +18,7 @@ impl Dashboard {
                 Kind::Report,
             ]
             .into_iter()
-            .map(Effect::Fetch)
+            .map(Own::fetch)
             .collect(),
             // A status row: the screen it's about, on the row it means.
             Action::Enter => match status_rows(v).get(v.cur) {
@@ -28,7 +28,7 @@ impl Dashboard {
                     ..
                 }) => {
                     let mut e = vec![Effect::Goto(*t)];
-                    e.extend(pick.map(|p| Effect::MaintFind(p.into())));
+                    e.extend(pick.map(|p| Own::maint_find(p.into())));
                     e
                 }
                 _ => Vec::new(),

@@ -1,45 +1,24 @@
 //! The sentry-server TUI: one server, sentry's screens, everything fetched over ssh while you
-//! watch.
+//! watch. The app itself (the frame, sessions, series, reviews, records, the workflow run) is
+//! `sentry_app`'s; what's here is the server as its target ([`target::ServerTarget`]).
 //! Built on the same runtime as the local TUI ([`sentry_core::tui::run_ui`]).
 
 mod actions;
-mod app;
 mod ask;
 mod data;
 mod planview;
 mod screens;
+mod target;
 #[cfg(test)]
 mod tests;
 
-use ratatui::crossterm::event::KeyEvent;
+use std::sync::mpsc::Sender;
 
-use crate::remote::{Remote, SrvError};
-use sentry_core::exec::StreamMsg;
-use sentry_core::tui::{Input, ScreenId, ScreenSet};
+use crate::remote::Remote;
+use sentry_core::tui::{ScreenId, ScreenSet};
 
-pub use app::App;
-
-pub enum Ev {
-    Key(KeyEvent),
-    Paste(String),
-    Resize,
-    Signal,
-    Data(data::Kind, Box<Result<data::Payload, SrvError>>),
-    Run(u64, StreamMsg),
-    /// Output fetched for the pane (logs).
-    Text(u64, Result<String, String>),
-}
-
-impl From<Input> for Ev {
-    fn from(i: Input) -> Self {
-        match i {
-            Input::Key(k) => Ev::Key(k),
-            Input::Paste(t) => Ev::Paste(t),
-            Input::Resize => Ev::Resize,
-            Input::Signal => Ev::Signal,
-        }
-    }
-}
+pub use sentry_app::{App, Event};
+pub use target::ServerTarget;
 
 /// This program's screens, with sentry's numbers and names: `1` Dashboard, `2` Processes,
 /// `3` Network, `4` Containers, `5` Services (where sentry has Flatpaks), `6` Maintenance,
@@ -62,6 +41,15 @@ pub const SCREENS: ScreenSet = ScreenSet {
     ],
 };
 
+/// The app with this server as its one target.
+pub fn app(remote: Remote, tx: Sender<Event>) -> App {
+    let id = ServerTarget::id_of(&remote.name);
+    let mut app = App::new(tx, &id, |mail| Box::new(ServerTarget::new(remote, mail)));
+    // Until the workflows are read: where the seeded ones are.
+    app.slot_mut().shared.wf_dir = "~/.config/sentry/server-workflows/".into();
+    app
+}
+
 pub fn run(remote: Remote) -> anyhow::Result<()> {
-    sentry_core::tui::run_ui(|tx| App::new(remote, tx))
+    sentry_core::tui::run_ui(|tx| app(remote, tx))
 }

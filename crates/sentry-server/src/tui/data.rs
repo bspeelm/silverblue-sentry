@@ -1,15 +1,14 @@
 //! What the server TUI knows, and fetching it: every fetch runs on its own thread and reports
-//! back as an [`Ev::Data`]; a kind already in flight isn't started twice.
+//! back as a [`Data`] through the target's `Mail`; a kind already in flight isn't started twice.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use super::Ev;
 use crate::audit::{self, Report};
 use crate::collect::{self, JournalUnit, apt, docker, health, probe, units};
 use crate::maint;
 use crate::remote::{Remote, SrvError, SudoMode};
+use sentry_app::target::Mail;
 use sentry_core::collectors::{disk, gpu, net};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,6 +46,9 @@ pub enum Kind {
     /// The server's metrics ring, read from this machine's disk (no ssh).
     History,
 }
+
+/// What a fetch thread sends back: the kind, and what it read or why it couldn't.
+pub struct Data(pub Kind, pub Box<Result<Payload, SrvError>>);
 
 pub enum Payload {
     Host(String, String),
@@ -175,9 +177,6 @@ pub struct Store {
     /// Listeners with the process names only root sees (sudo, or the inventory read).
     pub listeners: Slot<Vec<net::Listener>>,
     pub sockets: Slot<collect::sockets::Sockets>,
-    /// What's marked expected (`servers/<name>/baseline.toml`): read at start and after
-    /// each change, never while drawing.
-    pub baseline: sentry_core::baseline::BaselineFile,
     pub journal: Slot<Vec<JournalUnit>>,
     pub report: Slot<Option<Box<Report>>>,
     /// What the audit report view shows (`F` on Maintenance): a report and the one before.
@@ -187,35 +186,23 @@ pub struct Store {
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
     /// When upstream was last looked up.
     pub upstream_at: Option<jiff::Timestamp>,
-    /// What's put off with `z`, and items' review dates (`servers/<name>/later.toml`).
-    pub later: sentry_core::maint::later::Snoozes,
-    /// Open plans, by item (`servers/<name>/plans/<item>.md`).
-    pub plans: BTreeMap<String, maint::plan::PlanDoc>,
     /// What discovery found: untracked things, tracked ones gone.
     pub maint_found: maint::discover::Found,
-    /// The maintenance log, newest first (for cadences).
-    pub log: Vec<maint::log::LogEntry>,
-    /// The server's workflow names.
-    pub workflows: Vec<String>,
-    /// The latest maintenance review.
-    pub review: Option<maint::review::ReviewDoc>,
-    /// Tasks taken from reviews (`servers/<name>/tasks.toml`).
-    pub tasks: Vec<sentry_core::maint::tasks::Task>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,
 }
 
 impl Store {
-    pub fn fetch(&mut self, k: Kind, r: &Remote, tx: &Sender<Ev>) {
+    pub fn fetch(&mut self, k: Kind, r: &Remote, mail: &Mail) {
         if !self.inflight.insert(k) {
             return;
         }
         let r = r.clone();
-        let tx = tx.clone();
+        let mail = mail.clone();
         std::thread::spawn(move || {
             let res = run(k, &r);
-            let _ = tx.send(Ev::Data(k, Box::new(res)));
+            mail.send(Data(k, Box::new(res)));
         });
     }
 
