@@ -114,6 +114,7 @@ impl Processes {
             match v.s.sudo.value {
                 Some(SudoMode::NoPasswd) => ("sudo kill", "sudo -n kill", false),
                 Some(SudoMode::Password) => ("sudo kill", "sudo kill", true),
+                Some(SudoMode::Root) => ("kill", "kill", false),
                 Some(SudoMode::Absent) => {
                     return vec![Effect::Toast(format!(
                         "{} is owned by {}, and this login has no sudo on the server",

@@ -1565,6 +1565,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentry-app"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "sentry-core",
+ "serde",
+ "serde_json",
+ "signal-hook 0.4.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sentry-core"
 version = "0.4.0"
 dependencies = [
@@ -1591,6 +1604,7 @@ dependencies = [
  "jiff",
  "ratatui",
  "rustix",
+ "sentry-app",
  "sentry-core",
  "serde",
  "serde-saphyr",

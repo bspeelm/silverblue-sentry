@@ -19,6 +19,11 @@ fn root(r: &Remote, mode: Option<SudoMode>, argv: &[&str]) -> Result<(Cmd, bool)
         Some(SudoMode::NoPasswd) => Ok((r.cmd("sudo").arg("-n").args(argv).timeout(None), false)),
         Some(SudoMode::Password) => Ok((r.cmd("sudo").args(argv).timeout(None), true)),
         Some(SudoMode::Absent) => Err("this login has no sudo on the server".into()),
+        // A server's login goes through sudo; a root login would run it as it is.
+        Some(SudoMode::Root) => r
+            .privileged(argv)
+            .map(|c| (c.timeout(None), false))
+            .map_err(|e| e.to_string()),
         None => Err("still checking how sudo works on the server".into()),
     }
 }

@@ -279,7 +279,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 
 ## Development
 
-`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (what both programs share), `crates/sentry` and `crates/sentry-server`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
+`make check` (build, tests, clippy, fmt) over the cargo workspace: `crates/sentry-core` (what both programs share), `crates/sentry-app` (the pieces of a host reached over ssh), `crates/sentry` and `crates/sentry-server`. Parsers are tested against fixtures captured from a real machine (`scripts/capture-fixtures.sh` scrubs usernames, addresses and interface names); sentry-server's fixtures are synthetic, in the real commands' formats. Screens have insta snapshot tests. `make privacy-check` keeps private strings (listed one per line in a gitignored `.private-patterns`) out of tracked files, unpushed commit messages and release tarballs. `CLAUDE.md` holds the working notes the project was built with.
 
 ## Docs
 

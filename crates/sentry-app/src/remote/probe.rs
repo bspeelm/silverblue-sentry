@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::super::remote::{Remote, SrvError};
+use super::{Error, Remote};
 use sentry_core::collectors::procfs::meminfo_kib;
 
 const FILES: &[&str] = &[
@@ -57,8 +57,8 @@ pub fn script() -> String {
         .join("; ")
 }
 
-pub fn collect(r: &Remote) -> Result<Probe, SrvError> {
-    parse(&r.output(&r.sh(&script()))?).map_err(SrvError::Parse)
+pub fn collect(r: &Remote) -> Result<Probe, Error> {
+    parse(&r.output(&r.sh(&script()))?).map_err(Error::Parse)
 }
 
 fn sections(text: &str) -> Vec<(&str, &str)> {
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn parses_the_bundle() {
-        let p = parse(&super::super::fixture("probe.txt")).unwrap();
+        let p = parse(&super::super::fixture("server/probe.txt")).unwrap();
         assert_eq!(p.cores, 4);
         assert_eq!(
             p.cpu,

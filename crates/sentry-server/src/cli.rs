@@ -475,6 +475,7 @@ pub fn check(name: Option<&str>) -> u8 {
             "· sudo asks for a password: monitoring runs without root; maintenance hands you the terminal"
         ),
         Ok(SudoMode::Absent) => println!("· no sudo for this user"),
+        Ok(SudoMode::Root) => println!("✓ root login: nothing needs sudo"),
         Err(e) => {
             println!("✗ sudo: {e}");
             bad += 1;

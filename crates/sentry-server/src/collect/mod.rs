@@ -5,7 +5,7 @@
 pub mod apt;
 pub mod docker;
 pub mod health;
-pub mod probe;
+pub use sentry_app::remote::probe;
 pub mod procs;
 pub mod sockets;
 pub mod units;

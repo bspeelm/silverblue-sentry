@@ -4,6 +4,8 @@
 //! `$( )` arrive as plain text: one command per call, never a shell.
 
 use super::remote::{Remote, SrvError};
+use sentry_app::remote::gateway as shared;
+pub use sentry_app::remote::gateway::{Held, SECRET, queue_read};
 
 /// Allowed commands, as leading words. `*` stands for one word of any value.
 const READ_ONLY: &[&[&str]] = &[
@@ -82,22 +84,6 @@ fn never(cmd: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
-
-/// Files whose contents shouldn't leave the server even when readable.
-const SECRET: &[&str] = &[
-    "shadow",
-    "gshadow",
-    "password",
-    "passwd-",
-    "secret",
-    "token",
-    "private",
-    "id_rsa",
-    "id_ed25519",
-    ".key",
-    "credentials",
-    ".env",
-];
 
 pub fn allowed(argv: &[String]) -> Result<(), String> {
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -202,24 +188,12 @@ pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
     }
 }
 
-/// Why an apply session's command line isn't simply run on the server.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Held {
-    /// It needs root: the user is shown it, and allows it or not.
-    Asks,
-    /// Never from a session, and why.
-    Never(String),
-}
-
 /// A shell command line from an apply session (`sentry-server run`): anything goes that the
 /// login user may do, so Claude can find out what it needs as you would over ssh. Held back:
 /// what needs root (it becomes a request), turning the server off (the Reboot action's, or
 /// a plan's) and files that may hold secrets.
 pub fn runnable(line: &str) -> Result<(), Held> {
-    let words: Vec<&str> = line
-        .split(|c: char| c.is_whitespace() || ";&|()`$'\"{}".contains(c))
-        .filter(|w| !w.is_empty())
-        .collect();
+    let words = shared::words(line);
     if words.is_empty() {
         return Err(Held::Never("no command".into()));
     }
@@ -237,21 +211,10 @@ pub fn runnable(line: &str) -> Result<(), Held> {
         "kexec",
         "soft-reboot",
     ];
-    let base = |w: &str| w.rsplit('/').next().unwrap_or(w).to_string();
     // Each command of the line: its first word (past sudo and the like, and what `-c` runs).
-    for part in line.split([';', '&', '|', '\n', '(', ')', '`']) {
-        let w: Vec<String> = part
-            .split_whitespace()
-            .map(|w| base(w.trim_matches(|c| "'\"${}".contains(c))))
-            .collect();
-        let starts = |i: usize| {
-            w[..i]
-                .iter()
-                .all(|p| ["sudo", "-n", "exec", "nohup", "time", "env"].contains(&p.as_str()))
-                || w[i - 1] == "-c"
-        };
+    for w in shared::commands(line) {
         for (i, word) in w.iter().enumerate() {
-            let cmd = i == 0 || starts(i);
+            let cmd = shared::is_command(&w, i);
             if (cmd && off.contains(&word.as_str()))
                 || (cmd
                     && word == "systemctl"
@@ -267,7 +230,7 @@ pub fn runnable(line: &str) -> Result<(), Held> {
     }
     if words
         .iter()
-        .any(|w| ["sudo", "su", "pkexec", "doas", "run0"].contains(&base(w).as_str()))
+        .any(|w| ["sudo", "su", "pkexec", "doas", "run0"].contains(&shared::base(w).as_str()))
     {
         return Err(Held::Asks);
     }
@@ -276,80 +239,12 @@ pub fn runnable(line: &str) -> Result<(), Held> {
 
 /// Run it as the login user; output passes through.
 pub fn run_cli(r: &Remote, line: &str) -> u8 {
-    match runnable(line) {
-        // The words `claude::refused` knows: the session makes it a request for the user.
-        Err(Held::Asks) => {
-            eprintln!("sentry-server run: this needs root and requires approval: {line}");
-            return 126;
-        }
-        Err(Held::Never(why)) => {
-            eprintln!("sentry-server run: not run: {why}");
-            return 126;
-        }
-        Ok(()) => {}
-    }
-    match r
-        .sh(line)
-        .timeout(Some(std::time::Duration::from_secs(120)))
-        .run()
-    {
-        Ok(o) => {
-            print!("{}", o.stdout);
-            eprint!("{}", o.stderr);
-            if o.code != 0
-                && (o.stderr.contains("Permission denied")
-                    || o.stderr.contains("permission denied"))
-            {
-                eprintln!(
-                    "(if this needs root, call it again with sudo: the user is asked, and the \
-                     output comes back to you)"
-                );
-            }
-            o.code.clamp(0, 255) as u8
-        }
-        Err(e) => {
-            let e: SrvError = e.into();
-            eprintln!("sentry-server run: {e}");
-            125
-        }
-    }
-}
-
-/// Reads Claude asked for that need root, waiting for the user (one per line, as JSON).
-/// Under the runtime directory: the gateway runs as Claude's child, possibly elsewhere than the
-/// TUI's environment, and this is the same for both.
-fn reads_path(server: &str) -> std::path::PathBuf {
-    sentry_core::exec::control_dir().join(format!("reads-{server}.jsonl"))
-}
-
-pub fn queue_read(server: &str, argv: &[String]) -> std::io::Result<()> {
-    use std::io::Write;
-    let p = reads_path(server);
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)?;
-    writeln!(f, "{}", serde_json::to_string(argv).unwrap_or_default())
+    shared::run_cli("sentry-server run", r, line, runnable)
 }
 
 /// The queued reads (each still on the read-only list, no repeats), and the queue emptied.
 pub fn take_reads(server: &str) -> Vec<Vec<String>> {
-    let p = reads_path(server);
-    let text = std::fs::read_to_string(&p).unwrap_or_default();
-    let _ = std::fs::remove_file(&p);
-    let mut out: Vec<Vec<String>> = Vec::new();
-    for l in text.lines() {
-        if let Ok(argv) = serde_json::from_str::<Vec<String>>(l)
-            && allowed(&argv).is_ok()
-            && !out.contains(&argv)
-        {
-            out.push(argv);
-        }
-    }
-    out
+    shared::take_reads(server, |argv| allowed(argv).is_ok())
 }
 
 /// How Claude is told to use the gateway.

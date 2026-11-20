@@ -456,7 +456,7 @@ impl App {
                 &crate::audit::reports_dir(&self.remote.name),
                 keep.reports,
             );
-            self.wf = Session::resume(&self.remote);
+            self.wf = workflow::resume(&self.remote);
             // A run left in progress: show it (its auto steps wait until it's open).
             if self.wf.is_some() {
                 self.screen = ScreenId::Upgrade;
@@ -2642,7 +2642,7 @@ impl App {
                 return;
             }
             WfCmd::BeginWith(name, vars) => match self.wf_entries.iter().find(|e| e.name == name) {
-                Some(e) => match Session::begin(e, &self.remote, vars) {
+                Some(e) => match workflow::begin(e, &self.remote, vars) {
                     Ok(s) => {
                         self.wf = Some(s);
                         // Its screen: the run is followed there, and its auto steps start.

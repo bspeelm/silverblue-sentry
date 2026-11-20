@@ -5,55 +5,36 @@
 
 use std::path::PathBuf;
 
-use jiff::Timestamp;
-use serde::{Deserialize, Serialize};
-
 use super::collect::Snapshot;
 use super::collect::apt::Kind;
 use super::collect::health::SmartHealth;
 use super::config::Server;
 use super::remote::{Remote, SrvError};
-use sentry_core::baseline::{BaselineFile, glob, listener_entry_matches};
+use jiff::Timestamp;
+use sentry_app::remote::audit as store;
+pub use sentry_app::remote::audit::{names, reports_dir, set_expected, set_expected_in};
+use sentry_core::baseline::{BaselineFile, glob};
 use sentry_core::collectors::net::{ListenStatus, Listener};
 use sentry_core::finding::{Finding, Sev};
-use sentry_core::paths;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Report {
-    pub snapshot: Snapshot,
-    pub findings: Vec<Finding>,
-}
+/// The finding namespace of everything a server's audit says.
+pub const NS: &str = "srv";
 
-impl Report {
-    pub fn open(&self) -> impl Iterator<Item = &Finding> {
-        self.findings.iter().filter(|f| !f.expected)
-    }
-}
+/// A server's audit: its snapshot and what that found.
+pub type Report = store::Report<Snapshot>;
+/// A report as the report view shows it, with the one before.
+pub type Shown = store::Shown<Snapshot>;
 
 /// The finding a listener open to the network gets (one per protocol and port).
 pub fn listener_id(l: &Listener) -> String {
-    format!("srv:listener:{}:{}", l.proto, l.port)
+    store::listener_id(NS, l)
 }
 
 /// How a listening socket stands, for the audit and the Network screen alike: loopback is
 /// local, DHCP's client sockets are clients, what `listeners:` in the config or the baseline
 /// file covers is expected, and the rest is new.
 pub fn listener_status(l: &Listener, cfg: &Server, base: &BaselineFile) -> ListenStatus {
-    if l.addr.starts_with("127.") || l.addr == "[::1]" || l.addr == "::1" {
-        return ListenStatus::Local;
-    }
-    if l.proto == "udp" && (l.port == "68" || l.port == "546") {
-        return ListenStatus::Ephemeral;
-    }
-    if cfg
-        .listeners
-        .iter()
-        .chain(&base.listeners)
-        .any(|p| listener_entry_matches(p, &l.key()))
-    {
-        return ListenStatus::Baseline;
-    }
-    ListenStatus::New
+    store::listener_status(l, &cfg.listeners, base)
 }
 
 fn f(id: String, sev: Sev, category: &str, message: String) -> Finding {
@@ -517,110 +498,25 @@ pub fn derive(
     out
 }
 
-pub fn reports_dir(server: &str) -> PathBuf {
-    paths::data_dir()
-        .join("servers")
-        .join(server)
-        .join("reports")
-}
-
-/// Mark a finding expected (or not) in a baseline; whether anything changed.
-pub fn set_expected_in(b: &mut BaselineFile, id: &str, expected: bool) -> bool {
-    if expected {
-        !b.findings.iter().any(|x| x == id) && {
-            b.findings.push(id.to_string());
-            true
-        }
-    } else {
-        let n = b.findings.len();
-        b.findings.retain(|x| x != id);
-        b.findings.len() != n
-    }
-}
-
-/// Mark a finding expected (or not) in the server's baseline file; returns whether anything
-/// changed.
-pub fn set_expected(server: &str, id: &str, expected: bool) -> anyhow::Result<bool> {
-    let mut b = BaselineFile::load(server);
-    let changed = set_expected_in(&mut b, id, expected);
-    if changed {
-        b.save(server)?;
-    }
-    Ok(changed)
-}
-
-/// Every stored report's name (its file's, without `.json`), oldest first.
-pub fn names(server: &str) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(reports_dir(server))
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| Some(p.file_stem()?.to_string_lossy().to_string()))
-        .collect();
-    v.sort();
-    v
-}
-
 /// One stored report, by name.
 pub fn load(server: &str, name: &str) -> Option<Report> {
-    let text = std::fs::read_to_string(reports_dir(server).join(format!("{name}.json"))).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// A report as the report view shows it: with the one before it, and where it is among
-/// those kept.
-#[derive(Debug, Clone, Default)]
-pub struct Shown {
-    pub names: Vec<String>,
-    pub idx: usize,
-    pub cur: Option<Box<Report>>,
-    pub prev: Option<Box<Report>>,
-}
-
-impl Shown {
-    pub fn latest(&self) -> bool {
-        self.idx + 1 >= self.names.len()
-    }
+    store::load(server, name)
 }
 
 /// The report at `idx` (None: the newest), read from disk.
 pub fn shown(server: &str, idx: Option<usize>) -> Shown {
-    let names = names(server);
-    let Some(last) = names.len().checked_sub(1) else {
-        return Shown::default();
-    };
-    let idx = idx.unwrap_or(last).min(last);
-    let at = |i: usize| load(server, &names[i]).map(Box::new);
-    Shown {
-        cur: at(idx),
-        prev: idx.checked_sub(1).and_then(at),
-        idx,
-        names,
-    }
+    store::shown(server, idx)
 }
 
 /// `B`: the pattern for every finding like this one (`srv:<kind>:*`), and what that is in
 /// words. None for a finding that is the only one of its kind.
 pub fn pattern_for(id: &str) -> Option<(String, String)> {
-    let rest = id.strip_prefix("srv:")?;
-    let (kind, what) = rest.split_once(':')?;
-    if what.is_empty() {
-        return None;
-    }
-    Some((format!("srv:{kind}:*"), format!("every {kind} finding")))
+    store::pattern_for(NS, id)
 }
 
 /// The newest stored report.
 pub fn latest(server: &str) -> Option<Report> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(reports_dir(server))
-        .ok()?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
-    files.sort();
-    let text = std::fs::read_to_string(files.last()?).ok()?;
-    serde_json::from_str(&text).ok()
+    store::latest(server)
 }
 
 /// Snapshot, derive, store (keeping the newest 200 reports).
@@ -633,20 +529,7 @@ pub fn run(r: &Remote) -> Result<(Report, PathBuf), SrvError> {
         snapshot: snap,
         findings,
     };
-    let dir = reports_dir(&r.name);
-    std::fs::create_dir_all(&dir).map_err(|e| SrvError::Failed(e.to_string()))?;
-    let stamp = jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S").to_string();
-    let path = dir.join(format!("{stamp}.json"));
-    let json = serde_json::to_vec_pretty(&report).map_err(|e| SrvError::Parse(e.to_string()))?;
-    paths::write_atomic(&path, &json).map_err(|e| SrvError::Failed(e.to_string()))?;
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        let mut all: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
-        all.sort();
-        let excess = all.len().saturating_sub(200);
-        for p in all.into_iter().take(excess) {
-            let _ = std::fs::remove_file(p);
-        }
-    }
+    let path = store::store(&r.name, &report)?;
     Ok((report, path))
 }
 

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/sentry-core", "crates/sentry", "crates/sentry-server"]
+members = [
+    "crates/sentry-core",
+    "crates/sentry-app",
+    "crates/sentry",
+    "crates/sentry-server",
+]
 
 [workspace.package]
 version = "0.4.0"
@@ -13,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 sentry-core = { path = "crates/sentry-core" }
+sentry-app = { path = "crates/sentry-app" }
 ratatui = "0.30"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "component", "network", "user"] }
 serde = { version = "1", features = ["derive"] }
