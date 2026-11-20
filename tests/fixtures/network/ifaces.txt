@@ -1,0 +1,637 @@
+@@board
+{
+	"kernel": "6.12.80",
+	"hostname": "OpenWrt",
+	"system": "ARMv8 Processor rev 4",
+	"model": "Example Router AX",
+	"board_name": "example,router-ax",
+	"rootfs_type": "squashfs",
+	"release": {
+		"distribution": "OpenWrt",
+		"version": "25.12.3",
+		"firmware_url": "https://downloads.openwrt.org/",
+		"revision": "r32800-0123456789",
+		"target": "mediatek/filogic",
+		"description": "OpenWrt 25.12.3 r32800-0123456789",
+		"builddate": "1780000000"
+	}
+}
+@@info
+{
+	"localtime": 1793000000,
+	"uptime": 1363000,
+	"load": [
+		27525,
+		20316,
+		11796
+	],
+	"memory": {
+		"total": 1034272768,
+		"free": 822476800,
+		"shared": 13721600,
+		"buffered": 8294400,
+		"available": 817889280,
+		"cached": 40755200
+	},
+	"root": {
+		"total": 7581184,
+		"free": 7126284,
+		"used": 454900,
+		"avail": 7126284
+	},
+	"tmp": {
+		"total": 505016,
+		"free": 491616,
+		"used": 13400,
+		"avail": 491616
+	},
+	"swap": {
+		"total": 0,
+		"free": 0
+	}
+}
+@@interfaces
+{
+	"interface": [
+		{
+			"interface": "dmz",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 1362990,
+			"l3_device": "lan4",
+			"proto": "static",
+			"device": "lan4",
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "203.0.113.1",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [],
+			"ipv6-prefix": [],
+			"ipv6-prefix-assignment": [],
+			"route": [],
+			"dns-server": [],
+			"dns-search": [],
+			"neighbors": [],
+			"inactive": {
+				"ipv4-address": [],
+				"ipv6-address": [],
+				"route": [],
+				"dns-server": [],
+				"dns-search": [],
+				"neighbors": []
+			},
+			"data": {}
+		},
+		{
+			"interface": "lan",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 1362990,
+			"l3_device": "br-lan",
+			"proto": "static",
+			"device": "br-lan",
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "192.0.2.1",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [],
+			"ipv6-prefix": [],
+			"ipv6-prefix-assignment": [
+				{
+					"address": "2001:db8:1200::",
+					"mask": 60,
+					"preferred": 4400,
+					"valid": 4400,
+					"local-address": {
+						"address": "2001:db8:1200::1",
+						"mask": 60
+					}
+				}
+			],
+			"route": [],
+			"dns-server": [],
+			"dns-search": [],
+			"neighbors": [],
+			"inactive": {
+				"ipv4-address": [],
+				"ipv6-address": [],
+				"route": [],
+				"dns-server": [],
+				"dns-search": [],
+				"neighbors": []
+			},
+			"data": {}
+		},
+		{
+			"interface": "loopback",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 1362990,
+			"l3_device": "lo",
+			"proto": "static",
+			"device": "lo",
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "127.0.0.1",
+					"mask": 8
+				}
+			],
+			"ipv6-address": [],
+			"ipv6-prefix": [],
+			"ipv6-prefix-assignment": [],
+			"route": [],
+			"dns-server": [],
+			"dns-search": [],
+			"neighbors": [],
+			"inactive": {
+				"ipv4-address": [],
+				"ipv6-address": [],
+				"route": [],
+				"dns-server": [],
+				"dns-search": [],
+				"neighbors": []
+			},
+			"data": {}
+		},
+		{
+			"interface": "wan",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 2400,
+			"l3_device": "eth1",
+			"proto": "dhcp",
+			"device": "eth1",
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [
+				{
+					"address": "198.51.100.23",
+					"mask": 24
+				}
+			],
+			"ipv6-address": [],
+			"ipv6-prefix": [],
+			"ipv6-prefix-assignment": [],
+			"route": [
+				{
+					"target": "0.0.0.0",
+					"mask": 0,
+					"nexthop": "198.51.100.1",
+					"source": "198.51.100.23/32"
+				}
+			],
+			"dns-server": [
+				"198.51.100.53",
+				"198.51.100.54"
+			],
+			"dns-search": [
+				"isp.example"
+			],
+			"neighbors": [],
+			"inactive": {
+				"ipv4-address": [],
+				"ipv6-address": [],
+				"route": [],
+				"dns-server": [],
+				"dns-search": [],
+				"neighbors": []
+			},
+			"data": {
+				"dhcpserver": "198.51.100.1",
+				"leasetime": 7200
+			}
+		},
+		{
+			"interface": "wan6",
+			"up": true,
+			"pending": false,
+			"available": true,
+			"autostart": true,
+			"dynamic": false,
+			"uptime": 2390,
+			"l3_device": "eth1",
+			"proto": "dhcpv6",
+			"device": "eth1",
+			"metric": 0,
+			"dns_metric": 0,
+			"delegation": true,
+			"ipv4-address": [],
+			"ipv6-address": [],
+			"ipv6-prefix": [
+				{
+					"address": "2001:db8:1200::",
+					"mask": 56,
+					"preferred": 4400,
+					"valid": 4400,
+					"class": "wan6",
+					"assigned": {
+						"lan": {
+							"address": "2001:db8:1200::",
+							"mask": 60
+						}
+					}
+				}
+			],
+			"ipv6-prefix-assignment": [],
+			"route": [
+				{
+					"target": "::",
+					"mask": 0,
+					"nexthop": "fe80::1",
+					"metric": 512,
+					"valid": 1500,
+					"source": "2001:db8:1200::/56"
+				}
+			],
+			"dns-server": [],
+			"dns-search": [],
+			"neighbors": [],
+			"inactive": {
+				"ipv4-address": [],
+				"ipv6-address": [],
+				"route": [],
+				"dns-server": [],
+				"dns-search": [],
+				"neighbors": []
+			},
+			"data": {}
+		}
+	]
+}
+@@devices
+{
+	"br-lan": {
+		"external": false,
+		"present": true,
+		"type": "bridge",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "1000F",
+		"autoneg": true,
+		"devtype": "bridge",
+		"bridge-members": [
+			"lan1",
+			"lan2",
+			"lan3",
+			"phy0-ap0",
+			"phy1-ap0"
+		],
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 664100000000,
+			"rx_bytes": 84600000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"eth0": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "2500F",
+		"autoneg": true,
+		"devtype": "ethernet",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 257300000000,
+			"rx_bytes": 185900000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"eth1": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "1000F",
+		"autoneg": true,
+		"devtype": "ethernet",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a1",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 101000000000,
+			"rx_bytes": 755100000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"lan1": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "1000F",
+		"autoneg": true,
+		"devtype": "dsa",
+		"conduit": "eth0",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 118300000000,
+			"rx_bytes": 121900000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"lan2": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "100F",
+		"autoneg": true,
+		"devtype": "dsa",
+		"conduit": "eth0",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 294200000,
+			"rx_bytes": 148400000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"lan3": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": false,
+		"auth_status": false,
+		"devtype": "dsa",
+		"conduit": "eth0",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 0,
+			"rx_bytes": 0,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"lan4": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"link-advertising": [
+			"1000baseT-F"
+		],
+		"speed": "1000F",
+		"autoneg": true,
+		"devtype": "dsa",
+		"conduit": "eth0",
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a0",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 133300000000,
+			"rx_bytes": 61400000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"lo": {
+		"external": false,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "00:00:00:00:00:00",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 181000000,
+			"rx_bytes": 181000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"phy0-ap0": {
+		"external": true,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a2",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 59300000000,
+			"rx_bytes": 4627000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	},
+	"phy1-ap0": {
+		"external": true,
+		"present": true,
+		"type": "Network device",
+		"up": true,
+		"carrier": true,
+		"auth_status": false,
+		"mtu": 1500,
+		"mtu6": 1500,
+		"macaddr": "02:00:5e:00:53:a3",
+		"txqueuelen": 1000,
+		"ipv6": true,
+		"statistics": {
+			"collisions": 0,
+			"rx_frame_errors": 0,
+			"tx_compressed": 0,
+			"multicast": 0,
+			"rx_length_errors": 0,
+			"tx_packets": 1000,
+			"rx_errors": 0,
+			"rx_over_errors": 0,
+			"tx_errors": 0,
+			"rx_missed_errors": 0,
+			"tx_bytes": 590000000000,
+			"rx_bytes": 58600000000,
+			"rx_packets": 1000,
+			"tx_dropped": 0,
+			"rx_dropped": 0
+		}
+	}
+}

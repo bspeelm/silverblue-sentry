@@ -1612,6 +1612,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentry-network"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "insta",
+ "jiff",
+ "ratatui",
+ "sentry-app",
+ "sentry-core",
+ "serde",
+ "serde-saphyr",
+ "serde_ignored",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sentry-server"
 version = "0.4.0"
 dependencies = [

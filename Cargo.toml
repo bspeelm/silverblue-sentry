@@ -5,6 +5,7 @@ members = [
     "crates/sentry-app",
     "crates/sentry-local",
     "crates/sentry-server",
+    "crates/sentry-network",
     "crates/sentry",
 ]
 
@@ -22,6 +23,7 @@ sentry-core = { path = "crates/sentry-core" }
 sentry-app = { path = "crates/sentry-app" }
 sentry-local = { path = "crates/sentry-local" }
 sentry-server = { path = "crates/sentry-server" }
+sentry-network = { path = "crates/sentry-network" }
 ratatui = "0.30"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "component", "network", "user"] }
 serde = { version = "1", features = ["derive"] }
