@@ -49,6 +49,25 @@ pub const SUDO_REFUSED: &str = "sudo asked for a password · r retries, and asks
 
 const LOG_LINES: usize = 2000;
 
+/// What a run calls the host it's on. A server's by default; another kind of host says its
+/// own (`Session::on`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Words {
+    /// "the server", "the router".
+    pub host: &'static str,
+    /// "servers", "routers".
+    pub hosts: &'static str,
+}
+
+impl Default for Words {
+    fn default() -> Self {
+        Self {
+            host: "the server",
+            hosts: "servers",
+        }
+    }
+}
+
 pub struct Session {
     pub wf: Workflow,
     pub run: Run,
@@ -65,6 +84,7 @@ pub struct Session {
     /// the host's capture directory carries.
     prog: &'static str,
     env: Box<dyn Env>,
+    words: Words,
 }
 
 impl Session {
@@ -81,6 +101,7 @@ impl Session {
             r: r.clone(),
             prog,
             env,
+            words: Words::default(),
         };
         s.refresh();
         s
@@ -131,6 +152,12 @@ impl Session {
             LogKind::Info,
         );
         Ok(s)
+    }
+
+    /// The run says these words for its host from now on.
+    pub fn on(mut self, words: Words) -> Self {
+        self.words = words;
+        self
     }
 
     pub fn push(&mut self, text: impl Into<String>, kind: LogKind) {
@@ -285,8 +312,8 @@ impl Session {
                 self.refresh();
                 self.push(
                     format!(
-                        "↻ rebooting the server · {} waits for it to come back",
-                        self.prog
+                        "↻ rebooting {} · {} waits for it to come back",
+                        self.words.host, self.prog
                     ),
                     LogKind::Info,
                 );
@@ -298,7 +325,10 @@ impl Session {
                     },
                 }))
             }
-            Next::Shell(_) => Err("shell steps aren't supported on servers".into()),
+            Next::Shell(_) => Err(format!(
+                "shell steps aren't supported on {}",
+                self.words.hosts
+            )),
             Next::Manual { idx, failed: false } => {
                 runner::mark_done(&mut self.run.state, idx, "done by hand");
                 self.push(
@@ -435,7 +465,10 @@ impl Session {
         let before = self.next.clone();
         self.refresh();
         if before != self.next {
-            self.push("↻ the server is back · reboot step complete", LogKind::Ok);
+            self.push(
+                format!("↻ {} is back · reboot step complete", self.words.host),
+                LogKind::Ok,
+            );
         }
     }
 
@@ -620,5 +653,57 @@ mod tests {
             config_dir().join("servers/myserver/workflows")
         );
         assert_eq!(root("net:home"), data_dir().join("networks/home/workflows"));
+    }
+
+    /// A run speaks of a server unless its target says what else it's on.
+    #[test]
+    fn a_run_names_its_host_in_the_targets_words() {
+        struct NoEnv;
+        impl Env for NoEnv {
+            fn cond(&self, _: &str) -> Result<bool, String> {
+                Ok(false)
+            }
+            fn builtin(&self, name: &str) -> Result<String, String> {
+                Err(format!("no built-in {name}"))
+            }
+            fn boot_id(&self) -> String {
+                String::new()
+            }
+        }
+        let wf = workflows::parse(
+            "name = \"w\"\ndescription = \"d\"\n[[steps]]\nid = \"sh\"\ntitle = \"t\"\nkind = \"shell\"\n",
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("sentry-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let run = |tag: &str| {
+            Run::create_in(
+                &dir.join(tag),
+                "w",
+                "",
+                RunState::new("w", &["sh".to_string()], BTreeMap::new()),
+            )
+            .unwrap()
+        };
+        let r = Remote::new(
+            "home",
+            "root@router.example",
+            "net:home",
+            super::super::Privilege::Root,
+        );
+        let mut s = Session::new(wf.clone(), run("a"), &r, "sentry-server", Box::new(NoEnv));
+        assert_eq!(
+            s.go(None).err().unwrap(),
+            "shell steps aren't supported on servers"
+        );
+        let mut s = Session::new(wf, run("b"), &r, "sentry-network", Box::new(NoEnv)).on(Words {
+            host: "the router",
+            hosts: "routers",
+        });
+        assert_eq!(
+            s.go(None).err().unwrap(),
+            "shell steps aren't supported on routers"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
