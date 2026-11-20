@@ -229,6 +229,22 @@ sentry-server check                    # connection, sudo, tools, and each sudo 
 sentry-server                          # the TUI (or: sentry-server myserver)
 ```
 
+**One window, several targets.** Once a server is configured, `sentry` opens with a target strip in the top bar: this machine, then each server. `sentry-server [name]` opens the same window on that server. Each target keeps its own screens, runs, sessions, sudo password and auto mode (`C-a`).
+
+| Key | Does |
+|---|---|
+| `F1` … | the target at that place in the strip |
+| `{` / `}` | the previous / next target |
+| `:local`, `:server <name>` | by name (the start of it is enough) |
+
+- **Work goes on in parallel across targets**: a server's package update and this machine's quick-update can run at once. Within one target it stays one thing after another.
+- **A target out of view never takes a key.** When it comes to something only you can answer (a confirm step, a plan to approve, the sudo password, a failed step), its strip entry shows `!`, one message names it, and it waits until you look. `*` means it's at work; `auto` that auto mode is on there, which keeps answering the routine questions out of view too.
+- **A target costs nothing until you look at it**: no ssh, no fetch, no review at start. Only the target in view polls for its screen. A run left in progress last time is still picked up at start.
+- **This machine's reboot waits** while another target is at work, says for which, and goes by itself when that settles.
+- **`q` lists what each target still has going** before you confirm. Quitting does for each what it always did: a run's state is saved and it carries on next time; a session's Claude is stopped.
+
+`[targets] show = ["local", "srv:myserver"]` in `config.toml` orders the strip or hides a target (default: all, this machine first); `[keys] target.next`, `target.prev` and `target.1`… rebind the keys. With no server configured there is no strip, and with only one target shown the window is that target's alone.
+
 Key-based ssh login is required. **`sudo:` lists read-only commands** sentry-server may run as `sudo -n` (`docker ps`, `smartctl`, `journalctl`, …), because the docker socket, SMART and system journals usually need root. Write commands are refused there. Maintenance gets sudo from its own confirm box. sudo is checked again before each one: if it asks for a password, the terminal is handed over for it (a workflow step's output still lands in its log), and if it stops asking, the command streams. If sudo asks for a password, the read-only commands in `sudo:` can't run in the background; **`I` reads them once with your password** (containers, compose files, SMART, the journal, fail2ban: one sudo, all read-only), and Containers, SMART and the audit use that read, with its age shown, until you read again. Workflow checks never use it: they need the server as it is now.
 
 The screens have sentry's numbers and names wherever they are the same thing (`:overview` still works; `[keys]` in `config.toml` applies here too):
@@ -271,7 +287,8 @@ Headless: `sentry-server audit`, `record [server]` (metrics every 10 s into the 
 - `[ui] terminal = "ghostty -e"`: the terminal used to enter containers.
 - `[flatpak] trusted_origins = ["flathub", "fedora"]`: remotes that aren't flagged as unverified.
 - `[baseline] findings = ["repo:rpmfusion-*"]`: audit findings to treat as expected (globs allowed).
-- `[keys]`: rebinds, for example `quit = "Q"` or `"screen.history" = "F9"`.
+- `[keys]`: rebinds, for example `quit = "Q"`, `"screen.history" = "F9"` or `"target.next" = "C-n"`.
+- `[targets] show = ["local", "srv:myserver"]`: which targets the window opens, in the strip's order (default: this machine, then every server).
 
 Sentry never writes `config.toml`. What you decide in the TUI goes to machine-written files next to it:
 - `baseline.toml`: listeners and findings marked expected.

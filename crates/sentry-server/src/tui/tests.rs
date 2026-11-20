@@ -1842,7 +1842,7 @@ fn startable_as(a: &mut App, file: &str, text: &str) -> std::sync::MutexGuard<'s
 }
 
 #[test]
-fn auto_steps_run_only_on_screen_0() {
+fn a_run_goes_on_whatever_screen_is_in_view() {
     let mut a = app();
     let _turn = startable(&mut a, "auto-steps-test-apt-maintenance.toml");
     let screen = |a: &mut App| render_to_string(a, 158, 41);
@@ -1863,13 +1863,55 @@ fn auto_steps_run_only_on_screen_0() {
     let s = screen(&mut a);
     assert!(!s.contains("in 7 days ("), "{s}");
     assert!(!s.contains("Mark it expected"), "{s}");
-    // Another screen: the run stays as it is, and the banner says where it is.
-    let at = wf(&a).unwrap().next.idx();
+    // Another screen: the run goes on by itself. Its running step ends there, and the next
+    // one is up without going back to 0 (a confirm step: that one waits for the user).
+    assert_eq!(wf(&a).unwrap().live.map(|l| l.idx), Some(0));
     key(&mut a, KeyCode::Char('6'));
+    step_exits(&mut a, 0);
     a.tick(Instant::now());
-    assert_eq!(wf(&a).unwrap().next.idx(), at, "nothing ran");
+    let w = wf(&a).unwrap();
+    assert_eq!(
+        (w.next.clone(), w.live.is_some()),
+        (sentry_core::workflows::runner::Next::Confirm(1), false),
+        "the preview ran through off its screen"
+    );
+    assert_eq!(a.slot().screen, ScreenId::Maint);
+    assert!(
+        screen(&mut a)
+            .lines()
+            .nth(3)
+            .unwrap()
+            .contains("↻ workflow apt-maintenance · step 2/"),
+        "the banner says where it is"
+    );
+    // (It asks for its note when it's through, wherever that is; none here: it isn't.)
     key(&mut a, KeyCode::Char('z'));
     assert!(screen(&mut a).contains("in 7 days ("));
+}
+
+#[test]
+fn an_auto_step_starts_off_screen_0_too() {
+    let mut a = app();
+    // Two steps that run by themselves, one after the other.
+    let _turn = startable_as(
+        &mut a,
+        "off-screen-apt-maintenance.toml",
+        "name = \"apt-maintenance\"\ndescription = \"test\"\n\
+         [[steps]]\nid = \"one\"\ntitle = \"One\"\nrun = \"echo one\"\ngate = \"auto\"\n\
+         [[steps]]\nid = \"two\"\ntitle = \"Two\"\nrun = \"echo two\"\ngate = \"auto\"\n",
+    );
+    a.apply(
+        vec![Effect::Wf(WfCmd::Begin("apt-maintenance".into()))],
+        Instant::now(),
+    );
+    assert_eq!(wf(&a).unwrap().live.map(|l| l.idx), Some(0));
+    key(&mut a, KeyCode::Char('1'));
+    step_exits(&mut a, 0);
+    // The second started with the Dashboard in view (before, it waited for screen 0).
+    assert_eq!(wf(&a).unwrap().live.map(|l| l.idx), Some(1));
+    step_exits(&mut a, 0);
+    assert!(wf(&a).unwrap().done());
+    assert_eq!(a.slot().screen, ScreenId::Dash);
 }
 
 #[test]

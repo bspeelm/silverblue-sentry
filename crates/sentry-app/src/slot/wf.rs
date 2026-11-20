@@ -300,6 +300,7 @@ impl Slot {
     pub(crate) fn wf_cmd(&mut self, w: &mut Win, c: WfCmd) {
         if matches!(c, WfCmd::Abandon | WfCmd::Close) {
             self.wf_stop_live();
+            self.reboot_held = None;
         }
         let r: Result<Option<Exec>, String> = match c {
             WfCmd::Arm => {
@@ -472,7 +473,7 @@ impl Slot {
             Ok(None) => {}
             Err(e) => w.toast(&e),
         }
-        if self.ways.auto_in_view {
+        if self.ways.auto_polled {
             self.wf_auto(w);
         } else {
             self.wf_log_change(w);
@@ -482,13 +483,10 @@ impl Slot {
         w.dirty = true;
     }
 
-    /// Run the next auto step: while the run is in view (screen 0), or wherever the user is
-    /// (the target's way).
+    /// Run the next auto step, whatever screen and whichever target is in view: a run that
+    /// was started or opened goes on by itself until a step needs the user.
     pub(crate) fn wf_auto(&mut self, w: &mut Win) {
         self.wf_log_change(w);
-        if self.screen != ScreenId::Upgrade && self.ways.auto_in_view {
-            return;
-        }
         self.wf_auto_now(w);
         // Auto mode: the step that waits for its confirm.
         self.auto_step(w);
@@ -543,18 +541,67 @@ impl Slot {
                             .and_then(|i| s.run().state.steps[i].boot_id.clone())
                     })
                     .unwrap_or_default();
-                match how {
-                    crate::run::How::Plain(cmd) => {
-                        let e = self.target.reboot(cmd, old, &cx!(self, w));
-                        self.apply(w, e, w.at);
+                // A reboot that ends the TUI would cut the other targets' work off: it
+                // waits for them (`reboot_when_settled`).
+                if self.ways.reboot_ends_tui && !w.others_working.is_empty() {
+                    let who = w.others_working.join(", ");
+                    if let Some(s) = self.run.as_mut() {
+                        s.push(
+                            format!(
+                                "↻ the reboot waits for {who}: it goes by itself when that \
+                                 settles (or stop it there)"
+                            ),
+                            LogKind::Info,
+                        );
                     }
-                    crate::run::How::Root(line) => {
-                        let what = format!("to reboot {}", self.title);
-                        self.with_root(w, what, root::Waiting::Reboot(line, old));
-                    }
+                    w.toast(&format!("the reboot waits for {who}"));
+                    self.reboot_held = Some((how, old, who));
+                    return;
                 }
+                self.reboot_now(w, how, old);
             }
         }
+    }
+
+    /// The host reboots now.
+    fn reboot_now(&mut self, w: &mut Win, how: crate::run::How, old: String) {
+        match how {
+            crate::run::How::Plain(cmd) => {
+                let e = self.target.reboot(cmd, old, &cx!(self, w));
+                self.apply(w, e, w.at);
+            }
+            crate::run::How::Root(line) => {
+                let what = format!("to reboot {}", self.title);
+                self.with_root(w, what, root::Waiting::Reboot(line, old));
+            }
+        }
+    }
+
+    /// The reboot that waited for the other targets: they're through, so it goes.
+    pub(crate) fn reboot_when_settled(&mut self, w: &mut Win) {
+        if self.reboot_held.is_none() {
+            return;
+        }
+        if !w.others_working.is_empty() {
+            // Whoever it waits for now (one may have ended while another began).
+            let who = w.others_working.join(", ");
+            if let Some(h) = self.reboot_held.as_mut().filter(|h| h.2 != who) {
+                h.2 = who;
+                w.dirty = true;
+            }
+            return;
+        }
+        let Some((how, old, _)) = self.reboot_held.take() else {
+            return;
+        };
+        if let Some(s) = self.run.as_mut() {
+            s.push(
+                "↻ the other targets settled: rebooting".into(),
+                LogKind::Info,
+            );
+        }
+        self.reboot_now(w, how, old);
+        w.dirty = true;
     }
 
     /// Start the step's command; its lines and exit arrive as the run's live step.

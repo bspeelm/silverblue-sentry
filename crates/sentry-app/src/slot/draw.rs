@@ -43,6 +43,11 @@ impl Slot {
         self.draw_tabs(w, f, areas.tabs);
         if let Some(s) = banner {
             let n = s.wf().steps.len();
+            // A reboot that waits says for whom.
+            let waits = self
+                .reboot_held
+                .as_ref()
+                .map(|h| format!("the reboot waits for {}", h.2));
             frame::draw_banner(
                 f,
                 areas.banner,
@@ -50,7 +55,7 @@ impl Slot {
                 &frame::Banner {
                     workflow: &s.wf().name,
                     step: s.next().idx().map(|i| (i + 1, n, s.title(i).to_string())),
-                    state: s.state_word(),
+                    state: waits.as_deref().unwrap_or(s.state_word()),
                     auto: self.auto,
                 },
             );

@@ -84,7 +84,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `sentry workflow list|lint [name]|abandon|<name> [--var k=v]`.
 
 ## A13. Recorder and History (milestone 6)
-- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `crates/sentry/src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
+- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `crates/sentry-core/src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
 - `metrics/recorder.pid` marks a live recorder. Only one runs at a time, and the file is removed on Ctrl-C/SIGTERM/SIGHUP.
 - Footprint, measured on the host with a release build at a 10 s interval: **0.07% of one core including children, 9.8 MB RSS**. Getting there meant:
   - top-3 processes from a CPU-only process refresh (kernel names) once a minute;
@@ -121,7 +121,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 ## A17. Audit, explained (supersedes parts of A9)
 - Every finding carries `what` / `why` / `fix` text. The screen shows them in a detail box, and the raw evidence underneath.
 - Severity is shown as **check** (high), **review** (medium) or **info** (low). Stored values are unchanged.
-- **Listeners are grouped by service.** `crates/sentry/src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
+- **Listeners are grouped by service.** `crates/sentry-local/src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
   - Reach is described in words (all networks / LAN / VPN / link-local).
   - An unknown root-owned service is **check**, with the `sudo ss` command that names it.
   - A known remote-access service open to every network is **review**. A stock desktop service is **info**.
@@ -220,14 +220,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **quick-update fixes the GL runtimes itself:** a `flatpak-gl-update` step (`flatpak update -y`, confirm, `when = "!flatpak_gl_nvidia"`) runs before the `flatpak-gl` check. The earlier `flatpak` step runs before the new driver is loaded, so it can't pull the matching GL runtimes; the check used to fail and leave the command to the user.
 
 ## A23. sentry-server
-- A second binary (`crates/sentry-server/src/main.rs`) over the shared library (`crates/sentry-core`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`crates/sentry-server/src/config.rs`, sample in `assets/`).
+- A second kind of target (`crates/sentry-server`, a library; the command `sentry-server` is the one binary `crates/sentry` under that name) over the shared library (`crates/sentry-core`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`crates/sentry-server/src/config.rs`, sample in `assets/`).
 - Transport: `exec::Site::Ssh`. Captured commands share one multiplexed connection (`ControlPersist=15s`); streamed and interactive ones get their own, so killing them stops the remote side (`-tt`). Exit 127 = not found there, 255 = unreachable.
 - Collectors (`crates/sentry-server/src/collect/`) parse synthetic fixtures in `tests/fixtures/server/`; the audit (`crates/sentry-server/src/audit.rs`) derives `srv:*` findings from a snapshot.
 - Workflows reuse `workflows::runner` with a remote `Env` (built-ins and conditions over ssh, `Env::builtins`/`live`), `LintRules`, and runs under the server's own data dir. `sentry-server cond` steps run locally and read the server.
 - Ask Claude uses `claude::Profile`: Claude may only run `sentry-server exec <server>` (`crates/sentry-server/src/gateway.rs` allowlist); ssh, scp, sftp and rsync are denied.
 
 ## A24. Workspace (2026-11)
-- One repo, a cargo workspace of three crates: `sentry-core` (what both programs share: `exec`, `paths`, `config`, `baseline`, `finding`, `claude`, `maint`, the workflow format and runner, a few parsers, the TUI kit), `sentry` (this machine) and `sentry-server`. The compiler keeps the direction: core depends on neither binary.
+- One repo, a cargo workspace: `sentry-core` (what every target shares: `exec`, `paths`, `config`, `baseline`, `finding`, `claude`, `maint`, the workflow format and runner, a few parsers, the TUI kit), `sentry-app` (the app: one window, a slot per target), the targets `sentry-local` (this machine) and `sentry-server`, and `sentry`, the one binary over both. The compiler keeps the direction: core depends on nothing above it, and targets never depend on each other.
 - `sentry` re-exports the core modules under their old names (`crate::exec`, `crate::maint`, …), and its `maint`, `workflows`, `collectors` and `tui` add their local parts to core's. sentry-server names core as `sentry_core::…` (its own `config`, `maint`, `tui` and `audit` would clash).
 - Tests: core's `testing` feature (scratch dirs per process, Claude Code counted as installed) is turned on only by the other crates' dev-dependencies; release builds never have it.
 
@@ -287,3 +287,13 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `0` is a real screen and always on the strip (` ●` while a run is in progress). With nothing running it lists the workflows as sentry's Upgrade does (core `tui/wflist.rs`, used by both): steps, draft, lint, last run, and the selected one's chain and start card. `Enter` starts the one selected: its values are asked first when it takes any (the key bar's prompt), otherwise the box that says what starting does. `e` edits its file, `r` reads them again, `v` opens Records.
 - A run is followed on the same screen (steps, log, the step's card; Enter, `s`, `d`, `r`, `a`, `L`; `C-c` stops a running step). Its auto steps run only while `0` is in view; on any other screen the banner row says where it stands. A finished run stays until Enter closes it.
 - `w` on Maintenance goes to `0` (the chooser is gone); `:wf` opens it and `:wf <name>` does what Enter on that workflow does. Tab and `h`/`l` walk all the screens, `0` included.
+
+## A35. One program, a window with targets (2026-11)
+- One binary, `sentry` (`crates/sentry`), over the target libraries (`sentry-local`, `sentry-server`). `sentry-server …` is the same executable under that name (a symlink beside it) and `sentry server …` the same command line; every command's output is unchanged.
+- `sentry` opens this machine plus one target per server in `server_config.yaml`; `sentry-server [name]` the same window on that server. `[targets] show` orders and hides them. With one target there is no strip and nothing differs from before.
+- The target strip is in the top bar: `F1`… by place, `{` / `}`, `:local`, `:server <name>` (`[keys] target.*`). A character bound to a target is text wherever text is typed. Each entry shows `*` (at work), `!` (needs you) and `auto`.
+- A target reads and fetches nothing until it first has the window (a run left in progress is still picked up). Only the target in view polls for its screen.
+- Work is parallel across targets and one after another within one. A run goes on whatever screen or target is in view: this replaces A34's "auto steps run only while `0` is in view". A target out of view never takes a key: what only the user can answer waits there, flagged in the strip and said once with the target's name. Auto mode keeps answering out of view what it may answer in view.
+- Each target has its own sudo password; a prompt belongs to the target that asked and is shown only while that target is in view.
+- This machine's reboot waits while another target is at work, says for which, and goes when that settles.
+- `q` with several targets lists what each has going; quitting does for each what it did for one.

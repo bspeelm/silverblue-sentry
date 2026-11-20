@@ -25,7 +25,7 @@ impl Slot {
             if self.run.is_none() {
                 self.run = self.target.resume_run();
             }
-            // A run left in progress: show it (its auto steps wait until it's open).
+            // A run left in progress: show it (its auto steps wait until it's opened).
             if self.run.is_some() && self.ways.resume_opens_run {
                 self.screen = ScreenId::Upgrade;
             }
@@ -56,7 +56,7 @@ impl Slot {
             if self.shared.wf_entries.is_empty() && !w.offline {
                 self.load_wf_entries();
             }
-            // Its auto steps may run now that it's in view.
+            // The run is opened: its auto steps may run from now on.
             if let Some(s) = self.run.as_mut() {
                 s.arm();
             }
@@ -90,9 +90,11 @@ impl Slot {
         if self.talking() && w.focused {
             w.dirty = true;
         }
-        if self.screen == ScreenId::Upgrade && self.ways.auto_in_view {
+        // The run goes on whatever is in view.
+        if self.ways.auto_polled {
             self.wf_auto(w);
         }
+        self.reboot_when_settled(w);
         // A command run for Claude that doesn't end is stopped (its exit goes back to it).
         if let Some(pid) = self.apply.as_mut().and_then(|s| s.overdue()) {
             let _ = kill(pid);
@@ -137,7 +139,10 @@ impl Slot {
             due = Some(due.map_or(t, |d| d.min(t)));
         }
         // (A request running out of view still has its time limit.)
-        if (focused && self.talking()) || self.apply.as_ref().is_some_and(|s| s.limited()) {
+        if (focused && self.talking())
+            || self.apply.as_ref().is_some_and(|s| s.limited())
+            || self.reboot_held.is_some()
+        {
             let t = now + Duration::from_secs(1);
             due = Some(due.map_or(t, |d| d.min(t)));
         }

@@ -139,11 +139,11 @@ impl Slot {
                 // What checking a fix again means is the target's (a server leaves it to
                 // Claude's own read-only check).
                 Fx::Reaudit => self.refresh(w, Why::Reaudit),
-                Fx::RetryStep if self.ways.auto_in_view => {
+                Fx::RetryStep if self.ways.auto_polled => {
                     self.wf_cmd(w, WfCmd::Retry);
                     self.enter(w, ScreenId::Upgrade, w.at);
                 }
-                // Where auto steps don't wait for the screen: the step runs again now, a
+                // Where the next step isn't looked for by itself: the step runs again now, a
                 // confirm step too (the retry was the confirm).
                 Fx::RetryStep => {
                     self.wf_cmd(w, WfCmd::Retry);

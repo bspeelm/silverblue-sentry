@@ -112,7 +112,7 @@ impl Slot {
 
     /// The run's step that waits for its confirm.
     fn auto_confirm(&mut self, w: &mut Win) {
-        if self.modal.is_some() || (self.screen != ScreenId::Upgrade && self.ways.auto_in_view) {
+        if self.modal.is_some() {
             return;
         }
         let Some(s) = self.run.as_deref_mut() else {

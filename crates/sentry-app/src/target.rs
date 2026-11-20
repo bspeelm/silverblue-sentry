@@ -82,10 +82,14 @@ pub struct Ident {
 pub struct Ways {
     /// Said when Claude Code isn't there.
     pub no_claude: &'static str,
-    /// Auto steps run only while the run's screen is in view, and are looked for on every
-    /// tick and after every workflow key. Off: they run wherever the user is, when the run is
-    /// armed, a step ends, or the terminal comes back.
-    pub auto_in_view: bool,
+    /// The run's next auto step is looked for on every tick and after every workflow key
+    /// (what it waits for is read in the background: how sudo works there). Off: when the
+    /// run is armed, a step ends, or the terminal comes back. Either way a run goes on
+    /// whatever screen, and whichever target, is in view.
+    pub auto_polled: bool,
+    /// Rebooting this host ends the TUI: a workflow's reboot step waits while another
+    /// target is at work, and goes by itself when that settles.
+    pub reboot_ends_tui: bool,
     /// A run left in progress is shown at start.
     pub resume_opens_run: bool,
     /// The workflows are read at start (off: when something first needs them).
@@ -161,7 +165,8 @@ impl Default for Ways {
     fn default() -> Self {
         Self {
             no_claude: "Claude Code isn't installed (or not on PATH)",
-            auto_in_view: true,
+            auto_polled: true,
+            reboot_ends_tui: false,
             resume_opens_run: true,
             workflows_at_start: true,
             docs_keep_run_key: true,

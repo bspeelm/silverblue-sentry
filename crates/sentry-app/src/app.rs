@@ -261,6 +261,16 @@ impl App {
         self.slots[to].park(&mut self.win);
         self.focus = to;
         self.slots[to].flagged = None;
+        // What was said about it out of view is on screen now.
+        let said = format!("{} · ", self.slots[to].title());
+        if self
+            .win
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.msg().starts_with(&said))
+        {
+            self.win.toast = None;
+        }
         // Help was about the other target's screen.
         self.win.modal = None;
         self.win.dirty = true;
@@ -570,6 +580,31 @@ impl App {
             Instant::now(),
         );
     }
+    /// sudo's check of the password typed for the slot at `i` ended (nothing ran).
+    pub fn unlock_exit_at(&mut self, i: usize, code: i32) {
+        let s = &self.slots[i];
+        let id = s
+            .unlock
+            .as_ref()
+            .and_then(|u| u.checking)
+            .expect("no password being checked");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// The apply session of the slot at `i`.
+    pub fn apply_session_at(&self, i: usize) -> Option<&sentry_core::apply::session::Session> {
+        self.slots[i].apply.as_ref()
+    }
     /// The sudo password being asked for in slot `i`: (what for, characters typed).
     pub fn unlock_at(&self, i: usize) -> Option<(String, usize)> {
         let u = self.slots[i].unlock.as_ref()?;
@@ -613,8 +648,11 @@ impl App {
     }
     /// Claude's answer to the apply session's turn (nothing was sent).
     pub fn apply_answer_for_test(&mut self, text: &str) {
-        let id = self
-            .slot()
+        self.apply_answer_at(self.focus, text);
+    }
+    /// The same, for the session of the slot at `i`.
+    pub fn apply_answer_at(&mut self, i: usize, text: &str) {
+        let id = self.slots[i]
             .apply
             .as_ref()
             .and_then(|s| s.chat.live.map(|l| l.0))
@@ -624,7 +662,7 @@ impl App {
             "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}
         })
         .to_string();
-        let tid = self.slot().mail.id().clone();
+        let tid = self.slots[i].mail.id().clone();
         self.on_event(
             Event::Stream(
                 tid.clone(),
@@ -650,7 +688,11 @@ impl App {
     }
     /// The apply session's running step (or sudo's check) ended (nothing ran).
     pub fn apply_exit_for_test(&mut self, code: i32) {
-        let s = self.slot();
+        self.apply_exit_at(self.focus, code);
+    }
+    /// The same, for the session of the slot at `i`.
+    pub fn apply_exit_at(&mut self, i: usize, code: i32) {
+        let s = &self.slots[i];
         let id = s
             .apply
             .as_ref()

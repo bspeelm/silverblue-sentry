@@ -218,6 +218,9 @@ pub struct Slot {
     asleep: bool,
     /// What it waits for out of view, once said (`App::flag`).
     pub(crate) flagged: Option<&'static str>,
+    /// The run's reboot, asked for while another target was at work: how, the boot id it
+    /// had, and who it waits for. It goes when they settle (`reboot_when_settled`).
+    reboot_held: Option<(crate::run::How, String, String)>,
 }
 
 /// What a slot is doing, for its entry in the target strip.
@@ -288,6 +291,7 @@ impl Slot {
             line: Input::None,
             asleep: false,
             flagged: None,
+            reboot_held: None,
         }
     }
 
@@ -356,7 +360,12 @@ impl Slot {
         }
         // The run first: a session that waits for its workflow stands where the run does.
         let mut working = false;
-        if let Some(r) = self.run.as_ref().filter(|r| !r.done()) {
+        // (A reboot that waits for the other targets was already asked for.)
+        if let Some(r) = self
+            .run
+            .as_ref()
+            .filter(|r| !r.done() && self.reboot_held.is_none())
+        {
             if r.live().is_some() {
                 working = true;
             } else {
@@ -400,6 +409,7 @@ impl Slot {
             || self.chat.as_ref().is_some_and(|c| c.running())
             || self.pane.as_ref().is_some_and(|p| p.done.is_none())
             || self.unlock.is_some()
+            || self.reboot_held.is_some()
             || !self.reads.is_empty();
         if working {
             Needs::Working
@@ -437,6 +447,12 @@ impl Slot {
         v
     }
 
+    /// sudo's check for the session is running (tests).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn apply_aux_for_test(&self) -> bool {
+        self.apply_aux.is_some()
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn asleep_for_test(&self) -> bool {
         self.asleep
@@ -444,7 +460,7 @@ impl Slot {
 
     /// This target's reboot waits for the other targets' work to settle.
     pub(crate) fn reboot_waits(&self) -> bool {
-        false
+        self.reboot_held.is_some()
     }
 
     /// The id the next stream would get (tests: the last one started is this minus one).

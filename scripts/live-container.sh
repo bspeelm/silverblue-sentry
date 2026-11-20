@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# A disposable sshd container for sentry-server's mutating live tests (`#[ignore]`):
+# A disposable sshd container for the server target's mutating live tests (`#[ignore]`):
 #   nopasswd  live_actions, live_workflow, live_sudo_stop, live_auto_series   (sudo -n works)
+#             live_two_targets (the one window: the container beside this machine, which
+#             runs two `echo`s of its own on the host)
 #   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop,
 #             live_auto_series
 #             (sudo asks; the tests type the password into the TUI's own prompt)
@@ -40,9 +42,17 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets" ;;
     password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
+  esac
+}
+
+# The crate a test is in: the window's own (several targets) are the binary's.
+pkg_of() {
+  case "$1" in
+    live_two_targets) echo sentry ;;
+    *) echo sentry-server ;;
   esac
 }
 
@@ -218,7 +228,7 @@ EOF
 
 env_of() {
   local dir=$1 t=$2 x="$1/xdg/$2"
-  printf 'SENTRY_SSH_CONFIG=%q SENTRY_SERVER_SCRATCH=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' \
+  printf 'SENTRY_NO_REBOOT=1 SENTRY_SSH_CONFIG=%q SENTRY_SERVER_SCRATCH=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' \
     "$dir/ssh_config" "$SERVER" "$x/config" "$x/data" "$x/cache"
   # The file that holds the container's sudo password (never the password itself).
   [[ ! -f "$dir/password" ]] || printf ' SENTRY_SERVER_SCRATCH_PASSWORD=%q' "$dir/password"
@@ -279,7 +289,7 @@ EOF
   echo "or one by hand (cargo build -p sentry first: workflow steps run the binary):"
   for t in $(tests_of "$mode"); do
     echo "  $(env_of "$dir" "$t") \\"
-    echo "    cargo test -p sentry-server $t -- --ignored --nocapture"
+    echo "    cargo test -p $(pkg_of "$t") $t -- --ignored --nocapture"
   done
   echo "Remove it:       $0 down"
 }
@@ -298,8 +308,8 @@ run_tests() {
     echo "=== $t ($mode)"
     local cmd=(env "SENTRY_SSH_CONFIG=$dir/ssh_config" "SENTRY_SERVER_SCRATCH=$SERVER"
       "XDG_CONFIG_HOME=$dir/xdg/$t/config" "XDG_DATA_HOME=$dir/xdg/$t/data"
-      "XDG_CACHE_HOME=$dir/xdg/$t/cache"
-      cargo test -q -p sentry-server "$t" -- --ignored --nocapture --test-threads=1)
+      "XDG_CACHE_HOME=$dir/xdg/$t/cache" SENTRY_NO_REBOOT=1
+      cargo test -q -p "$(pkg_of "$t")" "$t" -- --ignored --nocapture --test-threads=1)
     # The tests type the password into the TUI's prompt: no terminal is involved.
     [[ $mode != password ]] || cmd=(env "SENTRY_SERVER_SCRATCH_PASSWORD=$dir/password" "${cmd[@]}")
     "${cmd[@]}" </dev/null || rc=$?

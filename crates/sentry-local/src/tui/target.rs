@@ -283,7 +283,8 @@ impl LocalTarget {
                 wf_dir: "~/.config/sentry/workflows/".into(),
                 ways: Ways {
                     no_claude: "Claude Code not found (expected ~/.local/bin/claude)",
-                    auto_in_view: false,
+                    auto_polled: false,
+                    reboot_ends_tui: true,
                     resume_opens_run: false,
                     workflows_at_start: false,
                     docs_keep_run_key: false,
@@ -722,12 +723,14 @@ impl Target for LocalTarget {
     }
 
     fn due(&mut self, now: Instant, cx: &Cx) -> bool {
+        // Only while this machine has the window: out of view nothing is sampled or fetched
+        // for a screen, and nothing of it is drawn.
+        if !cx.focused {
+            return false;
+        }
         let mut dirty = false;
         let first_sample = self.data.sys.is_none();
-        // Only while this machine has the window: out of view nothing is sampled or fetched
-        // for a screen.
         match cx.screen {
-            _ if !cx.focused => {}
             ScreenId::Dash => {
                 if now >= self.sched.sys {
                     self.data.sample_system();
@@ -786,11 +789,14 @@ impl Target for LocalTarget {
     }
 
     fn next_due(&self, now: Instant, cx: &Cx) -> Option<Instant> {
+        // Out of view nothing here sets a time (a run's own limits are the app's).
+        if !cx.focused {
+            return None;
+        }
         let mut due =
             now + Duration::from_secs(60 - (jiff::Timestamp::now().as_second() % 60) as u64);
         let mut at = |t: Instant| due = due.min(t);
         match cx.screen {
-            _ if !cx.focused => {}
             ScreenId::Dash => {
                 at(self.sched.sys);
                 at(self.sched.counts);
