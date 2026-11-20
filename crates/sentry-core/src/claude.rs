@@ -828,6 +828,138 @@ fn reads(cmd: &str) -> bool {
             sub,
             Some("list" | "info" | "search" | "repoquery" | "check-update")
         ),
+        "git" => git_reads(&w[1..]),
+        _ => false,
+    }
+}
+
+/// A git command (the words after `git`) only looks: one of the subcommands that never
+/// write, with nothing that makes it write a file or run a program of the caller's choosing.
+fn git_reads(w: &[&str]) -> bool {
+    // What may come before the subcommand: where the repository is, and no pager. A `-c`
+    // only for settings that can't name a program (an alias, a pager, an fsmonitor could).
+    const SETTINGS: &[&str] = &["color.", "advice.", "column.", "status.", "core.quotepath"];
+    let mut i = 0;
+    loop {
+        match w.get(i).copied() {
+            Some("-C") if w.get(i + 1).is_some() => i += 2,
+            Some("-c") => {
+                let Some(kv) = w.get(i + 1) else {
+                    return false;
+                };
+                let key = kv.split('=').next().unwrap_or(kv).to_ascii_lowercase();
+                if !SETTINGS.iter().any(|s| key.starts_with(s)) {
+                    return false;
+                }
+                i += 2;
+            }
+            Some("--no-pager" | "-P" | "--no-optional-locks" | "--literal-pathspecs") => i += 1,
+            Some(a) if a.starts_with("--git-dir=") || a.starts_with("--work-tree=") => i += 1,
+            Some(a) if a.starts_with('-') => return false,
+            _ => break,
+        }
+    }
+    let Some(sub) = w.get(i).copied() else {
+        return false;
+    };
+    let args = &w[i + 1..];
+    let flag = |names: &[&str]| args.iter().any(|a| names.contains(a));
+    // `--output` writes the result to a file, whatever the subcommand.
+    if args
+        .iter()
+        .any(|a| *a == "--output" || a.starts_with("--output="))
+    {
+        return false;
+    }
+    // Words that aren't flags, nor the value of one of `takes`: for `branch` and `tag` such
+    // a word is a name to create, unless they're listing.
+    let names = |takes: &[&str]| {
+        let mut n = 0;
+        let mut skip = false;
+        for a in args {
+            if std::mem::take(&mut skip) {
+                continue;
+            }
+            if takes.contains(a) {
+                skip = true;
+            } else if !a.starts_with('-') {
+                n += 1;
+            }
+        }
+        n
+    };
+    const VALUED: &[&str] = &[
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+        "--format",
+    ];
+    let listing = |extra: &[&str]| {
+        args.iter().filter(|a| a.starts_with('-')).all(|a| {
+            let name = a.split('=').next().unwrap_or(a);
+            VALUED.contains(&name)
+                || extra.contains(&name)
+                || matches!(
+                    name,
+                    "-l" | "--list" | "-i" | "--ignore-case" | "--column" | "--no-column"
+                )
+        }) && (names(VALUED) == 0 || flag(&["-l", "--list"]))
+    };
+    match sub {
+        "status" | "log" | "diff" | "show" | "rev-parse" | "describe" | "blame" | "shortlog" => {
+            !flag(&["-o"])
+        }
+        // (`-o` is `--others` here.)
+        "ls-files" => true,
+        "branch" => listing(&[
+            "-a",
+            "--all",
+            "-r",
+            "--remotes",
+            "-v",
+            "-vv",
+            "--verbose",
+            "--show-current",
+            "--color",
+            "--no-color",
+            "--abbrev",
+            "--no-abbrev",
+        ]),
+        "tag" => listing(&["-n"]) || (args.len() == 1 && args[0].starts_with("-n")),
+        "remote" => match args {
+            [] | ["-v" | "--verbose"] => true,
+            ["get-url", rest @ ..] => rest.iter().filter(|a| !a.starts_with('-')).count() == 1,
+            _ => false,
+        },
+        "stash" => matches!(args.first().copied(), Some("list" | "show")),
+        "config" => {
+            let writes = args.iter().any(|a| {
+                matches!(
+                    *a,
+                    "-e" | "--edit"
+                        | "--add"
+                        | "--replace-all"
+                        | "--rename-section"
+                        | "--remove-section"
+                        | "set"
+                        | "unset"
+                        | "edit"
+                        | "rename-section"
+                        | "remove-section"
+                ) || a.starts_with("--unset")
+            });
+            let looks = args
+                .iter()
+                .any(|a| a.starts_with("--get") || matches!(*a, "--list" | "-l"))
+                || matches!(
+                    args.iter().find(|a| !a.starts_with('-')).copied(),
+                    Some("get" | "list")
+                );
+            looks && !writes
+        }
         _ => false,
     }
 }
@@ -1654,6 +1786,88 @@ mod tests {
         ] {
             assert!(only_reads(c), "{c}");
         }
+    }
+
+    #[test]
+    fn git_that_only_looks() {
+        for c in [
+            "git status",
+            "git -C /var/mnt/work/repo status --short",
+            "git --no-pager -C repo log --oneline -5",
+            "git -c color.ui=never diff --stat HEAD~1",
+            "git show HEAD:README.md",
+            "git branch",
+            "git branch -a -vv",
+            "git branch --show-current",
+            "git branch --list 'feat*'",
+            "git branch --contains abc123",
+            "git rev-parse --abbrev-ref HEAD",
+            "git remote -v",
+            "git remote",
+            "git remote get-url origin",
+            "git ls-files -o --exclude-standard",
+            "git describe --tags --always",
+            "git blame -L 1,5 src/main.rs",
+            "git shortlog -sn",
+            "git tag",
+            "git tag -l 'v0.*'",
+            "git tag --sort=-creatordate",
+            "git stash list",
+            "git config --get user.name",
+            "git config --list --show-origin",
+            "git config get user.name",
+            "git -C a status --short; git -C a log -1 | head -3",
+        ] {
+            assert!(only_reads(c), "{c}");
+        }
+        for c in [
+            "git",
+            "git commit -m x",
+            "git -C repo push",
+            "git pull",
+            "git fetch",
+            "git checkout main",
+            "git reset --hard",
+            "git clean -fd",
+            "git add .",
+            "git stash",
+            "git stash pop",
+            "git stash drop",
+            "git branch new-branch",
+            "git branch -d old",
+            "git branch -D old",
+            "git branch -m a b",
+            "git branch --set-upstream-to=origin/main",
+            "git tag v1.0",
+            "git tag -d v1.0",
+            "git tag -a v1 -m x",
+            "git remote add origin url",
+            "git remote remove origin",
+            "git remote set-url origin url",
+            "git config user.name me",
+            "git config --unset user.name",
+            "git config --get user.name --add x",
+            "git config set user.name me",
+            "git config --edit",
+            "git diff --output=/tmp/x",
+            "git log --output /tmp/x",
+            "git show --output=x HEAD",
+            "git format-patch -o /tmp/p HEAD~1",
+            "git diff -o x",
+            "git -c core.pager=less log",
+            "git -c alias.st=!rm status",
+            "git -c core.fsmonitor=/tmp/x status",
+            "git --exec-path=/tmp status",
+            "git -p log",
+            "git log > /tmp/x",
+            "git status && git commit -am x",
+        ] {
+            assert!(!only_reads(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn commands_that_change() {
         for c in [
             "sudo ss -tlnp",
             "rpm-ostree upgrade",
