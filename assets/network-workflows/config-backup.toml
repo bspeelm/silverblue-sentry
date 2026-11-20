@@ -1,0 +1,29 @@
+name = "config-backup"
+description = "Back the router's configuration up, encrypted on this machine, and check the backup holds what the router has now"
+# Both steps run on this machine: `sentry-network …` reads the router over ssh and writes
+# nothing there. The archive is encrypted to backup.recipients (network_config.yaml) before
+# it touches this disk; restoring is `sentry-network backup decrypt`, then OpenWrt's own
+# restore. Built-in: network.
+
+[[steps]]
+id = "backup"
+title = "Make an encrypted backup of the config"
+run = "sentry-network backup"
+gate = "auto"
+on_fail = "manual"
+manual = """
+No backup was made. The log (L) says why; usually:
+  - no recipient: set backup.recipients in network_config.yaml
+    (`sentry-network backup key <file>` makes a key and prints the line), then retry (r)
+  - the router wasn't reachable: retry (r) when it is"""
+
+[[steps]]
+id = "verify"
+title = "The backup is there and holds what the router has"
+run = "sentry-network backup --verify"
+gate = "auto"
+on_fail = "manual"
+manual = """
+The newest backup doesn't match the router: something changed while it was made, or the
+file isn't what it should be. Retry (r) checks again; abandon (a) and run it again to make
+a new one."""

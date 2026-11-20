@@ -336,6 +336,28 @@ pub fn check(name: Option<&str>) -> u8 {
         }),
         t,
     );
+    // What Maintenance reads about its items.
+    let t = Instant::now();
+    timed(
+        "packages",
+        collect::updates::collect(&r)
+            .map(|u| format!("{} upgradable · {}", u.packages.len(), u.index_said())),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "backups",
+        super::backup::status(&r, None).map(|b| match (&b.newest, &b.changed) {
+            (None, _) if b.recipients => "none yet".to_string(),
+            (None, _) => "none yet · no recipient (backup.recipients)".to_string(),
+            (Some(_), Some(c)) if c.any() => {
+                format!("{} kept · {} file(s) changed since", b.count, c.files.len())
+            }
+            (Some(_), Some(_)) => format!("{} kept · nothing changed since", b.count),
+            (Some(_), None) => format!("{} kept", b.count),
+        }),
+        t,
+    );
     let problems = config::lint(&n, &cfg);
     problems.iter().for_each(|p| println!("· config: {p}"));
     u8::from(bad > 0)
@@ -391,6 +413,153 @@ pub fn init(ssh: &str, name: Option<&str>) -> u8 {
         }
         Err(e) => {
             eprintln!("{}: {e}", p.display());
+            1
+        }
+    }
+}
+
+/// `backup [name]`: back the router's configuration up now, encrypted to the config's
+/// recipients. 3: no recipient is configured.
+pub fn backup(name: Option<&str>) -> u8 {
+    use super::backup::{self, Error};
+    let (n, cfg) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    match backup::run(&Router::new(&n, &cfg)) {
+        Ok(made) => {
+            made.lines().iter().for_each(|l| println!("{l}"));
+            println!(
+                "· the archive took {} ms, the files' digest {} ms",
+                made.took.as_millis(),
+                made.digest_took.as_millis()
+            );
+            0
+        }
+        Err(Error::Unavailable(why)) => {
+            println!("✗ {why}");
+            3
+        }
+        Err(e) => {
+            println!("✗ no backup was made: {e}");
+            1
+        }
+    }
+}
+
+/// `backup [name] --verify`: the newest backup is there, encrypted, and holds what the
+/// router has now.
+pub fn backup_verify(name: Option<&str>) -> u8 {
+    let (n, cfg) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    match super::backup::verify(&Router::new(&n, &cfg)) {
+        Ok(said) => {
+            println!("✓ {said}");
+            0
+        }
+        Err(why) => {
+            println!("✗ {why}");
+            1
+        }
+    }
+}
+
+/// `backup list [name]`: the backups kept, newest first. Nothing is read from the router.
+pub fn backup_list(name: Option<&str>) -> u8 {
+    let (n, cfg) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let scope = super::remote::scope(&n);
+    let dir = super::backup::backups_dir(&scope);
+    let kept = super::backup::list(&scope);
+    if kept.is_empty() {
+        println!("no backups of {n} yet ({})", dir.display());
+        if cfg.backup.recipients.is_empty() {
+            println!("· {}", super::backup::NO_RECIPIENTS);
+        }
+        return 0;
+    }
+    for k in &kept {
+        println!(
+            "{}  OpenWrt {:<10} {:>10}  {}",
+            k.at.strftime("%Y-%m-%d %H:%M UTC"),
+            k.release,
+            sentry_core::fmt::bytes(k.size),
+            k.path.display()
+        );
+    }
+    println!(
+        "{} kept (backup.keep {}, and each month's first for a year)",
+        kept.len(),
+        cfg.backup.keep
+    );
+    0
+}
+
+/// `backup decrypt <file> -i <identity> [-o out]`: read a backup back with your secret key.
+/// What comes out is the plain archive (the Wi-Fi passphrase and the router's keys are in
+/// it): `-o -` writes it to stdout instead of a file.
+pub fn backup_decrypt(file: &std::path::Path, identity: &std::path::Path, out: Option<&str>) -> u8 {
+    use super::backup;
+    let res = match out {
+        Some("-") => backup::decrypt(file, identity, &mut std::io::stdout().lock()).map(|_| None),
+        _ => {
+            let path = out.map_or_else(|| backup::decrypted_name(file), std::path::PathBuf::from);
+            backup::plain_file(&path).and_then(|mut f| {
+                backup::decrypt(file, identity, &mut f)
+                    .inspect_err(|_| {
+                        let _ = std::fs::remove_file(&path);
+                    })
+                    .map(|n| Some((path, n)))
+            })
+        }
+    };
+    match res {
+        Ok(Some((path, n))) => {
+            eprintln!(
+                "wrote {} ({}): the plain archive, secrets and all. Restore it with OpenWrt's \
+                 own restore, then remove it.",
+                path.display(),
+                sentry_core::fmt::bytes(n)
+            );
+            0
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            eprintln!("sentry-network backup decrypt: {e}");
+            1
+        }
+    }
+}
+
+/// `backup key <path>`: make a key to encrypt backups to. The file is the secret half;
+/// what's printed is the public half, for the config.
+pub fn backup_key(path: &std::path::Path) -> u8 {
+    match super::backup::make_key(path) {
+        Ok(public) => {
+            eprintln!(
+                "wrote {} (0600): the secret key. Keep a copy somewhere that isn't this \
+                 machine; without it no backup can be read.",
+                path.display()
+            );
+            eprintln!("In network_config.yaml, under the network:");
+            println!("    backup: {{ recipients: [ \"{public}\" ] }}");
+            0
+        }
+        Err(e) => {
+            eprintln!("sentry-network backup key: {e}");
             1
         }
     }

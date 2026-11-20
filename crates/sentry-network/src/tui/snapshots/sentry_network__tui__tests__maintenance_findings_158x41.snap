@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8
+ 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Recommended · 8 · 2 can wait (o) · audited 5m ago ─────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
@@ -18,11 +18,17 @@ expression: s
 │ soon     zone dmz isn't in expect.zones  Which interfaces share a zone decides wha │ │        it: on the uplink's address, or on every address with the    │
 │                                                                                    │ │        firewall letting the port in.                                │
 └────────────────────────────────────────────────────────────────────────────────────┘ │ Why    Anyone on the internet can talk to it.                       │
-┌ Last audit · 2026-10-26 ───────────────────────────────────────────────────────────┐ │ To do  If you meant it, name it in expect.listeners with the        │
-│ ● firewall      3 zones · 2 forwards                                               │ │        uplink's zone (or press b); otherwise close the firewall     │
-│ ● access        ssh takes passwords · web interface over HTTP too                  │ │        rule or bind it inside.                                      │
-│ ✓ config        nothing staged                                                     │ │        198.51.100.23:1900/?                                         │
-│ ● listeners     25 sockets                                                         │ │        net:listener:udp:1900                                        │
+┌ Items · 3 ─────────────────────────────────────────────────────────────────────────┐ │ To do  If you meant it, name it in expect.listeners with the        │
+│ Item       State                                                                   │ │        uplink's zone (or press b); otherwise close the firewall     │
+│ firmware   25.12.3                upstream not looked up yet (r)                   │ │        rule or bind it inside.                                      │
+│ packages   …                                                                       │ │        198.51.100.23:1900/?                                         │
+│ backup     …                                                                       │ │        net:listener:udp:1900                                        │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ Last audit · 2026-10-26 ───────────────────────────────────────────────────────────┐ │                                                                     │
+│ ● firewall      3 zones · 2 forwards                                               │ │                                                                     │
+│ ● access        ssh takes passwords · web interface over HTTP too                  │ │                                                                     │
+│ ✓ config        nothing staged                                                     │ │                                                                     │
+│ ● listeners     25 sockets                                                         │ │                                                                     │
 │ ● clients       10 seen · 2 unknown                                                │ │                                                                     │
 │ ✓ services      3 of 3 running                                                     │ │                                                                     │
 │                                                                                    │ │                                                                     │
@@ -34,12 +40,6 @@ expression: s
 │                                                                                    │ │                                                                     │
 │                                                                                    │ │                                                                     │
 │                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
-│                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  in the report   x  expected   B  all like it   z  later   o  everything   r  audit   F  report   v  records   ?  help   q  quit
+ Enter  in the report   x  expected   B  all like it   z  later   o  everything   r  refresh   c  audit   F  report   v  records   ?  help   q  quit

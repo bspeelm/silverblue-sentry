@@ -17,14 +17,15 @@ pub use sentry_app::{App, Event};
 pub use target::NetworkTarget;
 
 /// The network target's screens, with sentry's numbers and names: `1` Dashboard, `2`
-/// Clients, `3` Network, `6` Maintenance and `H` History (in the strip once something was
-/// recorded). Upgrade (`0`) joins when a network has workflows.
+/// Clients, `3` Network, `6` Maintenance, `0` Upgrade (its workflows, and the run) and `H`
+/// History (in the strip once something was recorded).
 pub const SCREENS: ScreenSet = ScreenSet {
     ids: &[
         ScreenId::Dash,
         ScreenId::Clients,
         ScreenId::Net,
         ScreenId::Maint,
+        ScreenId::Upgrade,
         ScreenId::Hist,
     ],
     aliases: &[
@@ -95,6 +96,11 @@ pub mod testing {
                 Kind::Services => "services",
                 Kind::Audit => "audit",
                 Kind::Report | Kind::ReportAt(_) => "report",
+                Kind::Updates => "updates",
+                Kind::Refresh => "refresh",
+                Kind::Upstream => "upstream",
+                Kind::Lookup => "lookup",
+                Kind::Backup => "backup",
             })
             .collect()
     }

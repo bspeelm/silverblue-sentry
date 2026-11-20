@@ -215,8 +215,8 @@ impl Default for Thresholds {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct Backup {
-    /// Who can decrypt a backup: age recipients (`age1…`), ssh public keys (`ssh-ed25519 …`)
-    /// or files holding either. sentry never has the secret key.
+    /// Who can decrypt a backup: age recipients (`age1…`), or files holding one a line.
+    /// sentry never has the secret key.
     pub recipients: Vec<String>,
     /// How many of the newest backups are kept.
     pub keep: u32,
@@ -344,36 +344,6 @@ pub fn listener(entry: &str) -> Result<(&str, Ports, &str), String> {
     Ok((proto, port.parse().map_err(|_| bad())?, zone))
 }
 
-/// A backup recipient sentry can hand to `age`: an age key, an ssh public key, or a file.
-fn recipient_ok(r: &str) -> Result<(), String> {
-    let r = r.trim();
-    if let Some(rest) = r.strip_prefix("age1") {
-        let ok = rest.len() >= 50
-            && rest
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
-        return ok
-            .then_some(())
-            .ok_or_else(|| format!("`{r}` isn't a whole age recipient (age1… is 62 characters)"));
-    }
-    if r.starts_with("ssh-ed25519 ") || r.starts_with("ssh-rsa ") {
-        return Ok(());
-    }
-    if r.starts_with('/') || r.starts_with('~') {
-        let p = match r.strip_prefix("~/") {
-            Some(rest) => paths::home().join(rest),
-            None => PathBuf::from(r),
-        };
-        return p
-            .is_file()
-            .then_some(())
-            .ok_or_else(|| format!("recipient file {r} isn't there"));
-    }
-    Err(format!(
-        "`{r}` isn't an age recipient (age1…), an ssh public key or a file holding one"
-    ))
-}
-
 /// Problems found without contacting the router.
 pub fn lint(name: &str, n: &Network) -> Vec<String> {
     let mut p = Vec::new();
@@ -459,7 +429,7 @@ pub fn lint(name: &str, n: &Network) -> Vec<String> {
         p.push(format!("{name}: thresholds: backup_age must be above 0"));
     }
     for r in &n.backup.recipients {
-        if let Err(e) = recipient_ok(r) {
+        if let Err(e) = crate::backup::recipient(r) {
             p.push(format!("{name}: backup: {e}"));
         }
     }
@@ -544,7 +514,7 @@ mod tests {
             (2.0, 85.0, 21)
         );
         assert_eq!(n.thresholds.backup_age, Dur::secs(30 * 86400));
-        assert_eq!((n.backup.recipients.len(), n.backup.keep), (1, 12));
+        assert_eq!((n.backup.recipients.len(), n.backup.keep), (0, 12));
         let kinds: Vec<ItemKind> = n.maintenance.items.iter().map(|i| i.kind).collect();
         assert_eq!(
             kinds,

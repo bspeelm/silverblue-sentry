@@ -1,5 +1,6 @@
-//! The network target's screens: `1` Dashboard, `2` Clients, `3` Network, `6` Maintenance
-//! and `H` History. Their numbers and names are sentry's (`super::SCREENS`).
+//! The network target's screens: `1` Dashboard, `2` Clients, `3` Network, `6` Maintenance,
+//! `0` Upgrade (the shared `remote::wfview`) and `H` History. Their numbers and names are
+//! sentry's (`super::SCREENS`).
 
 pub mod clients;
 pub mod dashboard;
@@ -15,6 +16,7 @@ use ratatui::style::Color;
 use super::data::Store;
 use super::target::Effect;
 use crate::config::Network;
+use sentry_app::remote::wfview;
 use sentry_core::tui::keys::Action;
 use sentry_core::tui::theme::Theme;
 use sentry_core::tui::{Cursor, ScreenId};
@@ -37,6 +39,9 @@ pub struct View<'a> {
     pub filter: Option<&'a str>,
     /// Maintenance lists what can wait too (`o`).
     pub everything: bool,
+    /// The workflow run in progress (or just ended).
+    pub wf: Option<&'a crate::workflow::Session>,
+    pub auto: bool,
 }
 
 impl View<'_> {
@@ -63,6 +68,23 @@ pub struct Screens {
     pub net: network::Network,
     pub maint: maint::Maint,
     pub hist: history::History,
+    pub upgrade: wfview::Upgrade,
+}
+
+/// The Upgrade screen as the shared view draws it, in a router's words.
+fn upgrade<'a>(v: &'a View, cur: usize) -> wfview::Shown<'a> {
+    wfview::Shown {
+        t: v.t,
+        wf: v.wf,
+        list: &v.sh.wf_list,
+        cur,
+        name: v.name,
+        auto: v.auto,
+        words: crate::workflow::WORDS,
+        prog: crate::workflow::PROG,
+        reboot: "reboot",
+        none: "No workflows: a network's own go in ~/.config/sentry/networks/<name>/workflows/.",
+    }
 }
 
 impl Screens {
@@ -76,6 +98,7 @@ impl Screens {
             ScreenId::Clients => Some(&mut self.clients.cur),
             ScreenId::Net => Some(&mut self.net.cur),
             ScreenId::Maint => Some(&mut self.maint.cur),
+            ScreenId::Upgrade => Some(&mut self.upgrade.cur),
             _ => None,
         }
     }
@@ -86,6 +109,7 @@ impl Screens {
             ScreenId::Clients => self.clients.cur.sel,
             ScreenId::Net => self.net.cur.sel,
             ScreenId::Maint => self.maint.cur.sel,
+            ScreenId::Upgrade => self.upgrade.cur.sel,
             _ => 0,
         }
     }
@@ -96,6 +120,7 @@ impl Screens {
             ScreenId::Clients => self.clients.count(v),
             ScreenId::Net => network::rows(v).len(),
             ScreenId::Maint => self.maint.count(v),
+            ScreenId::Upgrade if v.wf.is_none() => v.sh.wf_list.len(),
             _ => 0,
         }
     }
@@ -119,6 +144,7 @@ impl Screens {
             ScreenId::Clients => self.clients.handle(a, v),
             ScreenId::Net => self.net.handle(a, v),
             ScreenId::Maint => self.maint.handle(a, v),
+            ScreenId::Upgrade => self.upgrade.handle(a, &upgrade(v, v.cur)),
             _ => dashboard::handle(a),
         }
     }
@@ -129,6 +155,7 @@ impl Screens {
             ScreenId::Net => self.net.render(f, area, v),
             ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
+            ScreenId::Upgrade => wfview::draw(f, area, &upgrade(v, v.cur)),
             _ => dashboard::render(f, area, v),
         }
     }
@@ -138,7 +165,8 @@ impl Screens {
             ScreenId::Clients => clients::hints(),
             ScreenId::Net => network::hints(),
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
-            ScreenId::Maint => maint::hints(v),
+            ScreenId::Maint => maint::hints(v, maint::ticked(v, &self.maint.ticks)),
+            ScreenId::Upgrade => wfview::hints(v.wf),
             ScreenId::Hist => history::hints(),
             _ => dashboard::hints(),
         }

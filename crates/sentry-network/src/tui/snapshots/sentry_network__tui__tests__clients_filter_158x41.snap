@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients /wifi   3 Network   6 Maintenance
+ 1 Dashboard   2 Clients /wifi   3 Network   6 Maintenance   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Clients · 8 here · 5 wired · 3 Wi-Fi · 0 new · by name · read just now ────────────────────────────────────────────────────────────────────────────────────┐

@@ -42,11 +42,15 @@ networks:
     # When the Dashboard and the audit call something high, soon or old.
     thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }
 
-    # Config backups are encrypted on this machine with `age` before they touch its disk.
-    # Recipients are public: an age recipient, an ssh public key, or a file holding either.
-    # sentry never has the secret key; restoring is your own `age -d`.
+    # Config backups (`sentry-network backup`, the config-backup workflow) are encrypted on
+    # this machine before they touch its disk, to these recipients: age public keys (age1…),
+    # or files holding one a line. `sentry-network backup key <file>` makes a key and prints
+    # its line; keep that file somewhere else too, since sentry never has the secret key and
+    # can't read a backup back. Restoring: `sentry-network backup decrypt <file> -i <key>`,
+    # then OpenWrt's own restore. `keep`: the newest so many are kept, plus each month's
+    # first for a year. Until a recipient is set, no backup is made.
     backup:
-      recipients: [ "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" ]
+      recipients: []   # e.g. [ "age1…" ] (62 characters)
       keep: 12
 
     maintenance:

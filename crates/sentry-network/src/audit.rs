@@ -44,6 +44,8 @@ pub struct Snapshot {
     /// The web interface's certificate (none: it has none, or it wasn't read).
     pub cert: Option<Cert>,
     pub services: Option<Services>,
+    /// The config backups against the router's files as they are now (none: not compared).
+    pub backup: Option<crate::backup::Status>,
     /// (section, why it's missing)
     pub errors: Vec<(String, String)>,
 }
@@ -323,9 +325,8 @@ fn on(link: &Link) -> String {
 }
 
 /// Every finding for this snapshot. `base` is what was marked expected (findings, listeners).
-/// Nothing is compared with the report before yet (`_prev`): that is where what changed
-/// since the last config backup will be read from, once there are backups
-/// (`net:config:unsaved`).
+/// Nothing is compared with the report before (`_prev`): what changed since the last config
+/// backup is in the snapshot itself (`backup`, read against the backup's own manifest).
 pub fn derive(
     s: &Snapshot,
     cfg: &Network,
@@ -607,7 +608,57 @@ pub fn derive(
                 .evidence(lines.join("\n")),
             );
         }
-        // (`net:config:unsaved` goes here: the config differs from the last backup.)
+    }
+
+    // The config against its newest backup (or there is none).
+    if let Some(b) = &s.backup {
+        let fix = if b.recipients {
+            "Enter here runs config-backup (or `sentry-network backup`)."
+        } else {
+            "Set backup.recipients in network_config.yaml (`sentry-network backup key <file>` makes a key), then run config-backup."
+        };
+        let id = format!("{NS}:config:unsaved");
+        match (&b.newest, b.changed.as_ref().filter(|c| c.any())) {
+            (None, _) => out.push(
+                f(
+                    id,
+                    // Nobody set backups up: said, but nothing presses.
+                    if b.recipients { Sev::Medium } else { Sev::Low },
+                    "config",
+                    "there is no backup of the router's config".into(),
+                )
+                .explain(
+                    "sentry has never backed this router's configuration up.",
+                    "A reset, a failed upgrade or a dead router takes the firewall, the Wi-Fi and every lease with it.",
+                    fix,
+                ),
+            ),
+            (Some(k), Some(c)) => {
+                let what = if c.options.is_empty() { &c.files } else { &c.options };
+                out.push(
+                    f(
+                        id,
+                        Sev::Medium,
+                        "config",
+                        format!(
+                            "the config changed since the last backup ({} file(s))",
+                            c.files.len()
+                        ),
+                    )
+                    .explain(
+                        "What's on the router isn't what the newest backup holds.",
+                        "Restoring that backup would lose these changes.",
+                        fix,
+                    )
+                    .evidence(format!(
+                        "since {}\n{}",
+                        k.at.strftime("%Y-%m-%d %H:%M UTC"),
+                        crate::backup::capped(what, 8).join("\n")
+                    )),
+                );
+            }
+            _ => {}
+        }
     }
 
     if let Some(ls) = &s.listeners {
@@ -759,6 +810,12 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
     let raw = part("clients", collect::clients::collect(r), &mut errors)?;
     let cert = part("certificate", collect::cert::collect(r), &mut errors)?.flatten();
     let services = part("services", collect::services::collect(r), &mut errors)?;
+    // How the backups stand (a backup's sidecars are plain: nothing is decrypted).
+    let backup = part(
+        "backup",
+        crate::backup::status(r, uci.as_ref()),
+        &mut errors,
+    )?;
     let clients = raw.map(|raw| {
         let topo = ifaces.as_ref().map(Topo::of).unwrap_or_default();
         let mut seen = Seen::load(&r.scope);
@@ -775,6 +832,7 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
         clients,
         cert,
         services,
+        backup,
         errors,
     })
 }
@@ -860,6 +918,7 @@ networks:
             clients: Some(list),
             cert: cert::parse(&fixture("network/cert.hex")).unwrap(),
             services: Some(services::parse(&fixture("network/services.json")).unwrap()),
+            backup: None,
             errors: Vec::new(),
         }
     }
@@ -1270,6 +1329,89 @@ networks:
             "wireguard isn't a service the router has"
         );
         assert_eq!(find(&f, "net:mem-high").message, "memory 90% used");
+    }
+
+    #[test]
+    fn a_config_that_isnt_backed_up_is_a_finding() {
+        use crate::backup::{Changed, Kept, Status};
+        let c = cfg();
+        let unsaved = |b: Status| {
+            let mut s = snap(&c);
+            s.backup = Some(b);
+            derive(&s, &c, None, &none())
+                .into_iter()
+                .find(|f| f.id == "net:config:unsaved")
+        };
+        let kept = Kept {
+            stamp: "20261020T090000Z".into(),
+            at: "2026-10-20T09:00:00Z".parse().unwrap(),
+            release: "25.12.3".into(),
+            size: 30_000,
+            path: "x".into(),
+        };
+        let with = |changed: Option<Changed>| Status {
+            recipients: true,
+            count: 1,
+            newest: Some(kept.clone()),
+            changed,
+        };
+        // Not compared (the backups weren't read): nothing is said.
+        assert!(
+            !ids(&derive(&snap(&c), &c, None, &none()))
+                .iter()
+                .any(|(id, _)| *id == "net:config:unsaved")
+        );
+        // A backup of the router as it is: nothing.
+        assert!(unsaved(with(Some(Changed::default()))).is_none());
+        // One without a manifest can't be compared: nothing is claimed.
+        assert!(unsaved(with(None)).is_none());
+        // Changed since: the options named (capped), a secret's value never among them.
+        let options: Vec<String> = (0..11)
+            .map(|i| format!("firewall.@rule[{i}].enabled: 1 → 0"))
+            .chain(["wireless.default_radio0.key changed".to_string()])
+            .collect();
+        let f = unsaved(with(Some(Changed {
+            files: vec!["/etc/config/firewall".into(), "/etc/config/wireless".into()],
+            options,
+        })))
+        .unwrap();
+        assert_eq!(f.severity, Sev::Medium);
+        assert_eq!(
+            f.message,
+            "the config changed since the last backup (2 file(s))"
+        );
+        let ev: Vec<&str> = f.evidence.lines().collect();
+        assert_eq!(ev[0], "since 2026-10-20 09:00 UTC");
+        assert_eq!(ev[1], "firewall.@rule[0].enabled: 1 → 0");
+        assert_eq!(ev.len(), 10);
+        assert_eq!(ev[9], "… 4 more");
+        assert!(f.fix.contains("config-backup"), "{}", f.fix);
+        // Files outside the configs read: the files are named instead.
+        let f = unsaved(with(Some(Changed {
+            files: vec!["/etc/shadow".into()],
+            options: Vec::new(),
+        })))
+        .unwrap();
+        assert!(f.evidence.ends_with("/etc/shadow"), "{}", f.evidence);
+        // No backup at all: its own words; low until someone can be encrypted to.
+        let none_yet = |recipients| Status {
+            recipients,
+            ..Default::default()
+        };
+        let f = unsaved(none_yet(true)).unwrap();
+        assert_eq!(f.message, "there is no backup of the router's config");
+        assert_eq!(f.severity, Sev::Medium);
+        let f = unsaved(none_yet(false)).unwrap();
+        assert_eq!(f.severity, Sev::Low);
+        assert!(f.fix.contains("backup.recipients"), "{}", f.fix);
+        // Marked expected like any finding.
+        let base = BaselineFile {
+            findings: vec!["net:config:unsaved".into()],
+            ..Default::default()
+        };
+        let mut s = snap(&c);
+        s.backup = Some(none_yet(true));
+        assert!(find(&derive(&s, &c, None, &base), "net:config:unsaved").expected);
     }
 
     #[test]

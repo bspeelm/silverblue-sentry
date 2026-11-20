@@ -245,13 +245,8 @@ pub fn draft(name: &str, ssh: &str, f: &Facts, today: &str) -> String {
     line(String::new());
     line("    thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }".into());
     line(String::new());
-    line(
-        "    # Config backups are encrypted with `age` on this machine. Put a public recipient"
-            .into(),
-    );
-    line(
-        "    # here (an age1… key, an ssh public key, or a file holding one) to have them.".into(),
-    );
+    line("    # Config backups are encrypted on this machine. Put a public recipient here".into());
+    line("    # (an age1… key; `sentry-network backup key <file>` makes one) to have them.".into());
     line("    backup: { recipients: [], keep: 12 }".into());
     line(String::new());
     line("    maintenance:".into());

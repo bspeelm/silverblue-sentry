@@ -893,8 +893,8 @@ fn the_strip_has_a_network_as_its_third_target() {
         tabs.contains("1 Dashboard")
             && tabs.contains("2 Clients")
             && tabs.contains("6 Maintenance")
-            && !tabs.contains("Processes")
-            && !tabs.contains("Upgrade"),
+            && tabs.contains("0 Upgrade")
+            && !tabs.contains("Processes"),
         "{s}"
     );
     assert_eq!(a.slot().screen, ScreenId::Dash);
@@ -911,12 +911,13 @@ fn the_strip_has_a_network_as_its_third_target() {
     let s = screen(&mut a);
     assert!(s.contains("Example Router AX") && s.contains("● 1G"), "{s}");
     // The digits are the network's: 2 is its Clients, 3 its own Network, 6 its
-    // Maintenance; 4, 5 and 0 are nothing there (yet).
-    for c in ['4', '5', '0'] {
+    // Maintenance, 0 its workflows; 4 and 5 are nothing there.
+    for c in ['4', '5'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
     }
     for (c, id) in [
+        ('0', ScreenId::Upgrade),
         ('2', ScreenId::Clients),
         ('3', ScreenId::Net),
         ('6', ScreenId::Maint),
@@ -1012,7 +1013,8 @@ fn a_network_is_asleep_until_it_first_has_the_window() {
 fn claude_is_offered_only_where_it_answers() {
     // Claude Code is there (as tests have it): this machine and the server offer it in the
     // key bar, on a screen that names no `A` of its own; the network, which has no Claude
-    // yet, doesn't, and neither does its `?`.
+    // yet, doesn't, and neither does its `?`. Auto mode it does offer, where its workflows
+    // are started: on Maintenance.
     let mut a = three();
     let bar = |a: &mut App| screen(a).lines().last().unwrap().to_string();
     key(&mut a, KeyCode::Char('1'));
@@ -1028,12 +1030,12 @@ fn claude_is_offered_only_where_it_answers() {
         key(&mut a, KeyCode::Char(c));
         let b = bar(&mut a);
         assert!(!b.contains("Claude") && !b.contains("claude"), "{c}: {b}");
-        assert!(!b.contains("auto"), "{c}: {b}");
+        assert_eq!(b.contains("C-a  auto"), c == '6', "{c}: {b}");
     }
     key(&mut a, KeyCode::Char('?'));
     let help = screen(&mut a);
     assert!(
-        help.contains("Maintenance:") && !help.contains("Claude") && !help.contains("auto mode"),
+        help.contains("Maintenance:") && !help.contains("Claude") && help.contains("auto mode"),
         "{help}"
     );
     key(&mut a, KeyCode::Esc);

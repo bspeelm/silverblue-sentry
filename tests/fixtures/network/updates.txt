@@ -1,0 +1,14 @@
+@@list
+ca-bundle-20250419-r2 noarch {feeds/base/system/ca-certificates} (GPL-2.0-or-later MPL-2.0) [upgradable from: ca-bundle-20250419-r1]
+dnsmasq-2.93-r2 aarch64_cortex-a53 {feeds/base/network/services/dnsmasq} (GPL-2.0) [upgradable from: dnsmasq-2.93-r1]
+libmbedtls21-3.6.7-r1 aarch64_cortex-a53 {feeds/base/libs/mbedtls} (GPL-2.0-or-later) [upgradable from: libmbedtls21-3.6.6-r1]
+libubox20260213-2026.11.02~0f1e2d3c-r1 aarch64_cortex-a53 {feeds/base/libs/libubox} (ISC) [upgradable from: libubox20260213-2026.02.13~4b5a6978-r1]
+luci-26.315.12466~1a2b3c4d noarch {feeds/luci/feeds/luci/collections/luci} (Apache-2.0) [upgradable from: luci-26.301.40111~9f8e7d6c]
+luci-app-firewall-26.315.12466~1a2b3c4d noarch {feeds/luci/feeds/luci/applications/luci-app-firewall} (Apache-2.0) [upgradable from: luci-app-firewall-26.301.40111~9f8e7d6c]
+wpad-basic-mbedtls-2025.08.26~aa11bb22-r7 aarch64_cortex-a53 {feeds/base/network/services/hostapd} (BSD-3-Clause) [upgradable from: wpad-basic-mbedtls-2025.08.26~aa11bb22-r6]
+@@index
+1792111200
+1792111201
+1792111199
+@@now
+1792892401

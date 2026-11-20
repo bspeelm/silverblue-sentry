@@ -1,17 +1,23 @@
 //! Maintenance: what on the network needs attention (the shared list, `maintlist`): the
-//! audit's findings, the audit itself when it's due, and the tasks due from `tasks.toml`.
-//! Beside it, what the last audit looked at; `F` opens its report. Nothing here changes the
-//! router: a finding is looked at, marked expected or put off; a task is done by hand.
+//! audit's findings, the audit itself when it's due, what the firmware, the packages and
+//! the config backups ask for (`maint::recommend`), and the tasks due (`tasks.toml` over
+//! the config's cadences). Under it the Items: firmware, packages, backup, one cursor with
+//! the list; then what the last audit looked at. `F` opens the audit's report. The one thing started from here that does
+//! something is a workflow (`config-backup`, which only reads the router); everything else
+//! is looked at, marked expected or put off, and a by-hand task is done by hand.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Cell, Paragraph, Row, Wrap};
 
 use super::{Hints, View, report};
 use crate::audit::Report;
 use crate::collect::services::State as SvcState;
+use crate::config::ItemKind;
+use crate::maint::eval::{self, EolState, Firmware};
+use crate::maint::recommend::{self, BACKUP_WF, ItemRow, Tone};
 use crate::tui::data::Kind;
 use crate::tui::target::{Effect, Modal, Own};
 use sentry_core::finding::{Finding, Sev};
@@ -22,7 +28,7 @@ use sentry_core::maint::tasks::{Do, Task};
 use sentry_core::tui::keys::Action as Key;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::reportview::ReportView;
-use sentry_core::tui::widgets::{inner, panel};
+use sentry_core::tui::widgets::{self, TableSpec, inner, panel};
 
 /// What Enter does on a row.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,15 +39,25 @@ pub enum Action {
     Audit,
     /// A task (its id): what Enter does is the task's own.
     Task(String),
+    /// Start this workflow.
+    Run(String),
+    /// Something of this item that sentry can't carry out yet: Enter says how it stands.
+    About(ItemKind),
 }
 
-/// Keys (for `z`): `finding:<id>`, `audit`, `task:<id>`.
+/// The audit's finding that the config isn't backed up: Enter on it makes a backup.
+pub const UNSAVED: &str = "net:config:unsaved";
+
+/// Keys (for `z`): `finding:<id>`, `audit`, `task:<id>`, `net:maint:<what>`.
 pub type Rec = rec::Rec<Action>;
 
 impl rec::Act for Action {
     fn target(&self) -> Target {
         match self {
             Action::Audit => Target::Audit,
+            Action::Run(wf) => Target::Workflow(wf.clone()),
+            // A backup task that's due is the same row.
+            Action::Finding(id) if id == UNSAVED => Target::Workflow(BACKUP_WF.into()),
             _ => Target::None,
         }
     }
@@ -69,16 +85,67 @@ pub fn audit_age(v: &View) -> (Option<jiff::Timestamp>, bool) {
     (at, due)
 }
 
-/// Every task that applies: `tasks.toml`'s (a network's config implies none yet).
+/// Every task that applies: `tasks.toml`'s over the config's cadences.
 pub fn all_tasks(v: &View) -> Vec<Task> {
-    sentry_core::maint::tasks::effective(&v.sh.tasks, Vec::new())
+    sentry_core::maint::tasks::effective(
+        &v.sh.tasks,
+        crate::maint::cadence_tasks(v.cfg, &v.sh.workflows),
+    )
+}
+
+/// The firmware against upstream, once the board was read (by a screen, or the last audit).
+pub fn firmware(v: &View) -> Option<Firmware> {
+    let version =
+        v.s.ifaces
+            .value
+            .as_ref()
+            .or_else(|| latest(v)?.snapshot.ifaces.as_ref())
+            .map(|i| i.board.version.as_str())?;
+    let up = v.s.upstream.value.as_ref().and_then(|c| c.as_ref());
+    Some(eval::firmware(
+        version,
+        up.map(|c| &c.data),
+        v.now.to_zoned(jiff::tz::TimeZone::UTC).date(),
+    ))
+}
+
+/// The config isn't backed up, as last read (none: not read yet).
+fn unsaved_now(v: &View) -> Option<bool> {
+    v.s.backup.value.as_ref().map(|b| b.unsaved())
+}
+
+/// What the rules are asked with.
+fn with_state<R>(v: &View, f: impl FnOnce(&recommend::State) -> R) -> R {
+    let fw = firmware(v);
+    // The audit's finding says the config isn't backed up, and nothing read since says
+    // otherwise: it is the row (marked expected, it is nobody's).
+    let listed = finding(v, UNSAVED).is_some() && unsaved_now(v) != Some(false);
+    f(&recommend::State {
+        firmware: fw.as_ref(),
+        updates: v.s.updates.value.as_ref(),
+        backup: v.s.backup.value.as_ref(),
+        backup_age: v.cfg.thresholds.backup_age.0.as_secs() as i64,
+        now: v.now,
+        unsaved_listed: listed,
+    })
+}
+
+/// The Items panel's rows.
+pub fn items(v: &View) -> Vec<ItemRow> {
+    with_state(v, |s| recommend::items(v.cfg, s))
 }
 
 /// Every recommendation there is, whatever is shown.
 pub fn every_rec(v: &View) -> Vec<Rec> {
     let mut out: Vec<Rec> = Vec::new();
     let findings = latest(v).map_or(&[][..], |r| &r.findings[..]);
-    for f in findings.iter().filter(|f| !f.expected) {
+    // A backup made since the audit: its finding is over before the next audit says so.
+    let stale = |f: &&Finding| f.id == UNSAVED && unsaved_now(v) == Some(false);
+    for f in findings
+        .iter()
+        .filter(|f| !f.expected)
+        .filter(|f| !stale(f))
+    {
         out.push(Rec {
             level: match f.severity {
                 Sev::High => Level::Now,
@@ -110,6 +177,20 @@ pub fn every_rec(v: &View) -> Vec<Rec> {
             action: Action::Audit,
             item: None,
             can_wait: false,
+        });
+    }
+    for r in with_state(v, recommend::rules) {
+        out.push(Rec {
+            level: r.level,
+            key: r.key.to_string(),
+            title: r.title,
+            why: r.why,
+            action: match r.action {
+                recommend::Do::Run(wf) => Action::Run(wf),
+                recommend::Do::Say(_) => Action::About(r.item),
+            },
+            item: None,
+            can_wait: r.can_wait,
         });
     }
     out.sort_by(|a, b| a.level.cmp(&b.level).then(a.title.cmp(&b.title)));
@@ -153,14 +234,77 @@ pub struct Maint {
     pub sel: Option<String>,
     pub view: Option<Sub>,
     pub report: ReportView,
+    /// The rows ticked for a series (Space), by key.
+    pub ticks: maintlist::Ticks,
+    /// Whether the list showed everything when the selection was last noted (`o` changes
+    /// the list under the cursor).
+    pub everything: bool,
 }
 
+/// The selected row: a recommendation (they come first) or an item.
+pub enum Sel {
+    Rec(Rec),
+    Item(ItemRow),
+}
+
+pub fn sel(v: &View) -> Option<Sel> {
+    let r = recs(v);
+    if let Some(x) = r.get(v.cur) {
+        return Some(Sel::Rec(x.clone()));
+    }
+    items(v).into_iter().nth(v.cur - r.len()).map(Sel::Item)
+}
+
+/// The recommendation selected (none: nothing, or an item).
 pub fn pick(v: &View) -> Option<Rec> {
     recs(v).get(v.cur).cloned()
 }
 
+fn rec_key(r: &Rec) -> String {
+    format!("{}:{}", r.key, r.title)
+}
+
+/// What the row at the cursor is, to find it again after the list changes.
 pub fn row_key(v: &View) -> Option<String> {
-    pick(v).map(|r| format!("{}:{}", r.key, r.title))
+    match sel(v)? {
+        Sel::Rec(r) => Some(rec_key(&r)),
+        Sel::Item(i) => Some(format!("item:{}", i.id)),
+    }
+}
+
+/// How a series takes care of a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeriesKind {
+    Workflow(String),
+    Audit,
+}
+
+/// What a series does for this row (None: Enter does it by itself, it can't be ticked).
+pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
+    let has = |wf: &str| v.sh.workflows.iter().any(|w| w == wf);
+    let run = |wf: &str| has(wf).then(|| SeriesKind::Workflow(wf.to_string()));
+    match &x.action {
+        Action::Run(wf) => run(wf),
+        Action::Finding(id) if id == UNSAVED => run(BACKUP_WF),
+        Action::Audit => Some(SeriesKind::Audit),
+        Action::Task(id) => match task_of(v, id)?.action() {
+            Do::Run(wf) => run(&wf),
+            Do::Audit => Some(SeriesKind::Audit),
+            _ => None,
+        },
+        Action::Finding(_) | Action::About(_) => None,
+    }
+}
+
+/// How many of the rows there are ticked.
+pub fn ticked(v: &View, ticks: &maintlist::Ticks) -> usize {
+    if ticks.is_empty() {
+        return 0;
+    }
+    every_rec(v)
+        .iter()
+        .filter(|r| ticks.contains(&r.key))
+        .count()
 }
 
 fn task_of(v: &View, id: &str) -> Option<Task> {
@@ -173,15 +317,31 @@ pub fn verbs(v: &View) -> Verbs {
         enter,
         ..Default::default()
     };
-    match pick(v).map(|r| r.action) {
-        None => Verbs::default(),
-        Some(Action::Finding(_)) => Verbs {
+    let series = pick(v).is_some_and(|r| series_kind(v, &r).is_some());
+    let row = match sel(v) {
+        None => return Verbs::default(),
+        Some(Sel::Item(i)) => {
+            return only(match i.kind {
+                ItemKind::Backup => "back up",
+                _ => "about",
+            });
+        }
+        Some(Sel::Rec(r)) => r.action,
+    };
+    let vb = match row {
+        Action::Run(_) => only("run"),
+        Action::About(_) => only("about"),
+        Action::Finding(id) if id == UNSAVED => Verbs {
+            dismiss: Some(Dismiss::Expected),
+            ..only("back up")
+        },
+        Action::Finding(_) => Verbs {
             dismiss: Some(Dismiss::Expected),
             like: true,
             ..only("in the report")
         },
-        Some(Action::Audit) => only("audit"),
-        Some(Action::Task(id)) => {
+        Action::Audit => only("audit"),
+        Action::Task(id) => {
             let what = task_of(v, &id).map(|t| t.action());
             Verbs {
                 done: true,
@@ -191,33 +351,46 @@ pub fn verbs(v: &View) -> Verbs {
                 ..only(match what {
                     Some(Do::ByHand) => "its steps",
                     Some(Do::Audit) => "audit",
+                    Some(Do::Run(_)) => "run",
                     _ => "do it",
                 })
             }
         }
-    }
+    };
+    Verbs { series, ..vb }
 }
 
 /// The key bar: the row's keys (no Claude for a network yet, so no `A`), then the screen's.
-pub fn hints(v: &View) -> Hints {
+/// `ticked`: how many rows are ticked for a series.
+pub fn hints(v: &View, ticked: usize) -> Hints {
     // (An empty list has no row to name keys for.)
-    let mut h: Hints = match pick(v) {
-        Some(_) => maintlist::hints(&verbs(v), 0)
+    let mut h: Hints = match sel(v) {
+        Some(Sel::Rec(_)) => maintlist::hints(&verbs(v), ticked)
             .into_iter()
             .filter(|(k, _)| *k != "A")
+            .collect(),
+        // An item is looked at or acted on; it isn't put off.
+        Some(Sel::Item(_)) => maintlist::hints(&verbs(v), ticked)
+            .into_iter()
+            .filter(|(k, _)| !matches!(*k, "A" | "z"))
             .collect(),
         None => Vec::new(),
     };
     if v.everything || waiting(v) > 0 {
         h.push(("o", maintlist::everything_word(v.everything)));
     }
-    h.extend([("r", "audit"), ("F", "report"), ("v", "records")]);
+    h.extend([
+        ("r", "refresh"),
+        ("c", "audit"),
+        ("F", "report"),
+        ("v", "records"),
+    ]);
     h
 }
 
 /// `?`: every row key a network's rows take.
 pub fn help() -> Hints {
-    let not_here = ["p / P", "t", "x", "Space / a", "A"];
+    let not_here = ["p / P", "t", "x", "A"];
     maintlist::GRAMMAR
         .iter()
         .copied()
@@ -225,8 +398,13 @@ pub fn help() -> Hints {
         .chain([
             ("x", "expected (a finding) · remove (a task); asks first"),
             ("b", "a finding: expected (as x, without the box)"),
-            ("r / c", "audit the network now (it only reads)"),
+            (
+                "r",
+                "refresh: fetch the package index again (apk update, tmpfs only), look upstream, audit",
+            ),
+            ("c", "audit the network now (it only reads)"),
             ("F", "the audit report"),
+            ("w", "the workflows (0)"),
             ("v", "records: tasks, the log, what's put off or expected"),
         ])
         .collect()
@@ -253,8 +431,9 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     match task.action() {
         Do::Audit => report::audit_now(),
         Do::ByHand => task_manual(v, id),
+        Do::Run(wf) if v.sh.workflows.contains(&wf) => vec![Effect::StartWorkflow(wf)],
         Do::Run(wf) => vec![Effect::Toast(format!(
-            "there are no workflows for a network yet ({wf}): d marks it done"
+            "this network has no workflow {wf}: d marks it done"
         ))],
         Do::Plan(it) => vec![Effect::Toast(format!(
             "nothing is tracked on a network yet ({it}): d marks it done"
@@ -290,12 +469,71 @@ pub fn task_manual(v: &View, id: &str) -> Vec<Effect> {
     })]
 }
 
+/// Enter on anything that makes a backup: the workflow, or what it can't start without.
+fn backup_enter(v: &View) -> Vec<Effect> {
+    if v.cfg.backup.recipients.is_empty() {
+        return vec![Effect::Confirm(Modal {
+            title: "No backup recipient".into(),
+            color: v.t.yellow,
+            lines: vec![
+                Line::styled(
+                    "A backup is encrypted to the public keys under backup.recipients in \
+                     network_config.yaml, and there are none.",
+                    v.t.fg(),
+                ),
+                Line::raw(""),
+                Line::styled(
+                    "`sentry-network backup key <file>` makes a key and prints the line to add. \
+                     Keep that file safe: sentry never has the secret key.",
+                    v.t.dim(),
+                ),
+            ],
+            yes: None,
+        })];
+    }
+    vec![Effect::StartWorkflow(BACKUP_WF.into())]
+}
+
+/// Enter on an item (or a row about one): the backup is made; the firmware and the
+/// packages say how they stand, and that changing them isn't sentry's yet.
+fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
+    let (title, not_yet) = match kind {
+        ItemKind::Backup => return backup_enter(v),
+        ItemKind::Firmware => ("Firmware", recommend::FIRMWARE_NOT_YET),
+        ItemKind::Packages => ("Packages", recommend::PACKAGES_NOT_YET),
+    };
+    let mut lines = item_lines(v, kind);
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(not_yet, v.t.s(v.t.yellow)));
+    vec![Effect::Confirm(Modal {
+        title: title.into(),
+        color: v.t.cyan,
+        lines,
+        yes: None,
+    })]
+}
+
 fn key(c: char, v: &View) -> Vec<Effect> {
-    let Some(r) = pick(v) else {
-        return Vec::new();
+    let r = match sel(v) {
+        Some(Sel::Rec(r)) => r,
+        Some(Sel::Item(i)) => {
+            return match c {
+                '\n' => item_enter(v, i.kind),
+                'x' | 'z' => vec![Effect::Toast(
+                    "an item stays: its rows above are what's put off (z) or marked expected"
+                        .into(),
+                )],
+                _ => Vec::new(),
+            };
+        }
+        None => return Vec::new(),
     };
     let t = v.t;
     match (c, &r.action) {
+        ('\n', Action::Finding(id)) if id == UNSAVED => backup_enter(v),
+        ('\n', Action::Run(wf)) if wf == BACKUP_WF => backup_enter(v),
+        ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
+        ('\n', Action::About(kind)) => item_enter(v, *kind),
         ('\n', Action::Finding(id)) => vec![Effect::own(Own::OpenReport(Some(id.clone())))],
         ('\n', Action::Audit) => report::audit_now(),
         ('\n', Action::Task(id)) => task_enter(v, id),
@@ -346,7 +584,7 @@ fn key(c: char, v: &View) -> Vec<Effect> {
 
 impl Maint {
     pub fn count(&self, v: &View) -> usize {
-        recs(v).len()
+        recs(v).len() + items(v).len()
     }
 
     pub fn handle(&mut self, a: Key, v: &View) -> Vec<Effect> {
@@ -358,11 +596,55 @@ impl Maint {
             return report::handle(&mut self.report, a, v);
         }
         match a {
-            Key::Refresh | Key::Check => report::audit_now(),
-            Key::Enter => key('\n', v),
+            // Refresh: the one place the package index is fetched again (`apk update`
+            // writes the router's tmpfs cache), with upstream, the backups and the audit.
+            Key::Refresh => vec![
+                Own::fetch(Kind::Refresh),
+                Own::fetch(Kind::Lookup),
+                Own::fetch(Kind::Backup),
+                Own::fetch(Kind::Audit),
+                Effect::Toast(
+                    "refreshing: the package index, upstream, the backups and the audit…".into(),
+                ),
+            ],
+            Key::Check => report::audit_now(),
+            // Ticks: Space the row, a every row that can be, Esc none.
+            Key::Char(' ') => match pick(v) {
+                Some(r) if series_kind(v, &r).is_some() => {
+                    maintlist::tick(&mut self.ticks, &r.key);
+                    Vec::new()
+                }
+                _ => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
+            },
+            Key::Char('a') => {
+                let can = recs(v)
+                    .iter()
+                    .filter(|r| series_kind(v, r).is_some())
+                    .map(|r| r.key.clone())
+                    .collect();
+                maintlist::tick_all(&mut self.ticks, can);
+                Vec::new()
+            }
+            Key::Esc => {
+                self.ticks.clear();
+                Vec::new()
+            }
+            // With rows ticked, Enter does those, one after another.
+            Key::Enter => {
+                let rows: Vec<(String, String)> = every_rec(v)
+                    .into_iter()
+                    .filter(|r| self.ticks.contains(&r.key))
+                    .map(|r| (r.key, r.title))
+                    .collect();
+                if rows.is_empty() {
+                    self.ticks.clear();
+                    key('\n', v)
+                } else {
+                    vec![Effect::SeriesStart(rows)]
+                }
+            }
             Key::Char(c @ ('x' | 'b' | 'B' | 'z' | 'd' | 'm' | 'e')) => key(c, v),
-            // Nothing a network's rows do is carried out by sentry yet: no series.
-            Key::Char(' ' | 'a') => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
+            Key::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
             Key::Char('F') => self.open_report(v, None),
             Key::Char('o') => vec![Effect::Everything],
             Key::Char('v') => vec![Effect::LogOpen(None)],
@@ -383,14 +665,20 @@ impl Maint {
 
     /// The list changed under the cursor: put it back on the row it was on.
     pub fn keep(&mut self, v: &View) {
-        if let Some(key) = &self.sel
-            && let Some(i) = recs(v)
-                .iter()
-                .position(|r| &format!("{}:{}", r.key, r.title) == key)
-        {
-            self.cur.sel = i;
+        let recs = recs(v);
+        if let Some(key) = &self.sel {
+            let at = match key.strip_prefix("item:") {
+                Some(id) => items(v)
+                    .iter()
+                    .position(|i| i.id == id)
+                    .map(|i| recs.len() + i),
+                None => recs.iter().position(|r| &rec_key(r) == key),
+            };
+            if let Some(i) = at {
+                self.cur.sel = i;
+            }
         }
-        let n = recs(v).len();
+        let n = self.count(v);
         self.cur.clamp(n);
     }
 
@@ -417,7 +705,7 @@ impl Maint {
         } else {
             format!(
                 "{} · {}",
-                rec::note(recs.len(), 0, waiting(v)),
+                rec::note(recs.len(), ticked(v, &self.ticks), waiting(v)),
                 match audited {
                     Some(at) => format!("audited {}", fmt::ago(v.secs_since(at))),
                     None => "no audit yet".into(),
@@ -433,11 +721,10 @@ impl Maint {
             maintlist::NO_MATCH.to_string()
         } else {
             match waiting(v) {
-                0 => "✓ nothing needs attention right now · r audits again".to_string(),
+                0 => "✓ nothing needs attention right now · c audits again".to_string(),
                 n => maintlist::empty(n),
             }
         };
-        let none = maintlist::Ticks::new();
         self.cur.page = maintlist::draw(
             f,
             rec_a,
@@ -447,26 +734,71 @@ impl Maint {
                 note,
                 selected: (v.cur < recs.len()).then_some(v.cur),
                 empty: (empty.as_str(), t.dim()),
-                ticks: &none,
+                ticks: &self.ticks,
             },
         );
-
-        let b = panel(t, "Last audit", audited.map_or(String::new(), fmt::date));
-        let r = inner(&b, audit_a);
-        f.render_widget(b, audit_a);
-        f.render_widget(Paragraph::new(audit_lines(v)), r);
+        // The items, and under them (where there's room) what the last audit looked at.
+        let n_items = items(v).len() as u16;
+        let [items_a, last_a] =
+            Layout::vertical([Constraint::Length(n_items + 3), Constraint::Fill(1)]).areas(audit_a);
+        draw_items(f, items_a, v, v.cur.checked_sub(recs.len()));
+        if last_a.height >= 4 {
+            let b = panel(t, "Last audit", audited.map_or(String::new(), fmt::date));
+            let r = inner(&b, last_a);
+            f.render_widget(b, last_a);
+            f.render_widget(Paragraph::new(audit_lines(v)), r);
+        }
 
         let b = panel(t, "Details", "");
         let r = inner(&b, detail_a);
         f.render_widget(b, detail_a);
-        let lines = match recs.get(v.cur) {
+        let lines = match sel(v) {
             None => vec![Line::styled(
                 if read { "nothing selected" } else { "" },
                 t.dim(),
             )],
-            Some(x) => {
+            Some(Sel::Item(i)) => {
+                let mut l = vec![
+                    Line::styled(i.id.clone(), t.s(t.cyan)),
+                    Line::styled(
+                        match i.kind {
+                            ItemKind::Backup => "Enter: make a backup now (config-backup)",
+                            _ => "Enter: how it stands",
+                        },
+                        t.s(t.cyan),
+                    ),
+                    Line::raw(""),
+                ];
+                l.extend(item_lines(v, i.kind));
+                l
+            }
+            Some(Sel::Rec(x)) => {
+                let x = &x;
                 let mut l = maintlist::detail_head(t, x, r.width as usize);
                 match &x.action {
+                    Action::Run(wf) => {
+                        l.push(Line::styled(
+                            format!("Enter: run {wf} (it only reads the router) · z: later"),
+                            t.s(t.cyan),
+                        ));
+                        l.push(Line::raw(""));
+                        l.extend(item_lines(v, ItemKind::Backup));
+                    }
+                    Action::About(kind) => {
+                        l.push(Line::styled("Enter: how it stands · z: later", t.s(t.cyan)));
+                        l.push(Line::raw(""));
+                        l.extend(item_lines(v, *kind));
+                    }
+                    Action::Finding(id) if id == UNSAVED => {
+                        l.push(Line::styled(
+                            "Enter: back it up now (config-backup) · b or x: expected · z: later",
+                            t.s(t.cyan),
+                        ));
+                        if let Some(fd) = finding(v, id) {
+                            l.push(Line::raw(""));
+                            l.extend(report::finding_lines(t, fd, r.width as usize));
+                        }
+                    }
                     Action::Finding(id) => {
                         l.push(Line::styled(
                             "Enter: its place in the audit report · b or x: expected · z: later",
@@ -491,6 +823,9 @@ impl Maint {
                                     }
                                     Do::Audit => {
                                         "Enter audits now; it's done with the audit.".to_string()
+                                    }
+                                    Do::Run(wf) if v.sh.workflows.contains(&wf) => {
+                                        format!("Enter runs {wf}; it's done when that ends well.")
                                     }
                                     _ => "d marks it done.".to_string(),
                                 },
@@ -614,6 +949,193 @@ fn audit_lines(v: &View) -> Vec<Line<'static>> {
     }
     for (sec, e) in &s.errors {
         l.push(Line::styled(format!("– {sec}: {e}"), t.dim()));
+    }
+    l
+}
+
+/// The Items panel: firmware, packages, backup, each with how it stands.
+fn draw_items(f: &mut Frame, area: Rect, v: &View, selected: Option<usize>) {
+    let t = v.t;
+    let rows = items(v);
+    let up = match v.s.upstream.value.as_ref() {
+        None => String::new(),
+        Some(None) => " · upstream not looked up yet (r)".to_string(),
+        Some(Some(c)) => format!(" · upstream {}", fmt::ago(v.secs_since(c.fetched_at))),
+    };
+    let b = panel(t, "Items", format!("{}{up}", rows.len()));
+    let r = inner(&b, area);
+    f.render_widget(b, area);
+    let color = |tone: Tone| match tone {
+        Tone::Ok => t.green,
+        Tone::Note => t.cyan,
+        Tone::Warn => t.yellow,
+        Tone::Dim => t.dim,
+    };
+    let table: Vec<Row> = rows
+        .iter()
+        .map(|i| {
+            Row::new(vec![
+                Cell::from(i.id.clone()).style(t.fg()),
+                Cell::from(i.state.clone()).style(t.s(color(i.tone))),
+                Cell::from(i.detail.clone()).style(t.dim()),
+            ])
+        })
+        .collect();
+    widgets::table(
+        f,
+        r,
+        t,
+        TableSpec {
+            header: vec!["Item", "State", ""],
+            widths: vec![
+                Constraint::Length(10),
+                Constraint::Length(22),
+                Constraint::Fill(1),
+            ],
+            rows: table,
+            selected,
+        },
+    );
+}
+
+/// What Details (and Enter's box) say about an item.
+fn item_lines(v: &View, kind: ItemKind) -> Vec<Line<'static>> {
+    let t = v.t;
+    let row = |what: &str, said: String| {
+        Line::from(vec![
+            Span::styled(format!("{what:<13}"), t.dim()),
+            Span::styled(said, t.fg()),
+        ])
+    };
+    let dim = |s: String| Line::styled(s, t.dim());
+    let mut l = Vec::new();
+    match kind {
+        ItemKind::Firmware => {
+            let Some(f) = firmware(v) else {
+                return vec![dim("the router's release wasn't read yet".into())];
+            };
+            l.push(row("installed", format!("OpenWrt {}", f.installed)));
+            if let Some(latest) = &f.latest {
+                l.push(row(
+                    "latest",
+                    format!(
+                        "{latest}{}",
+                        match (f.newer, f.security) {
+                            (false, _) => " (this one)",
+                            (true, Some(true)) => " · its notes list security fixes",
+                            (true, Some(false)) => " · no security fix in its notes",
+                            (true, None) => " · its notes couldn't be read",
+                        }
+                    ),
+                ));
+            }
+            l.push(row(
+                "end of life",
+                match (f.eol_state, f.eol) {
+                    (EolState::Unknown, _) => "not known".into(),
+                    (EolState::Supported, None) => {
+                        format!("none announced for {}", f.series.as_deref().unwrap_or("it"))
+                    }
+                    (EolState::Past(n), d) => format!(
+                        "{} · {n} days ago",
+                        d.map_or(String::new(), |d| d.to_string())
+                    ),
+                    (EolState::Soon(n), d) => format!(
+                        "{} · in {n} days",
+                        d.map_or(String::new(), |d| d.to_string())
+                    ),
+                    (EolState::Supported, Some(d)) => d.to_string(),
+                },
+            ));
+            if let Some(n) = &f.note {
+                l.push(dim(n.clone()));
+            }
+            l.push(dim(
+                "Looked up from this machine (endoflife.date, GitHub): nothing runs on the router for it."
+                    .into(),
+            ));
+        }
+        ItemKind::Packages => {
+            let Some(u) = v.s.updates.value.as_ref() else {
+                return vec![dim(match &v.s.updates.err {
+                    Some(e) => format!("packages: {e}"),
+                    None => "the package listing wasn't read yet".into(),
+                })];
+            };
+            l.push(row("index", u.index_said()));
+            if let Some(c) = u.refresh_failed {
+                l.push(Line::styled(
+                    format!("the last refresh failed (apk update exited {c})"),
+                    t.s(t.yellow),
+                ));
+            }
+            l.push(row("upgradable", u.packages.len().to_string()));
+            for p in u.packages.iter().take(12) {
+                l.push(dim(format!("  {}  {} → {}", p.name, p.from, p.to)));
+            }
+            if u.packages.len() > 12 {
+                l.push(dim(format!("  … {} more", u.packages.len() - 12)));
+            }
+            l.push(dim(
+                "The index is only as new as the last r here (apk update: the router's tmpfs)."
+                    .into(),
+            ));
+        }
+        ItemKind::Backup => {
+            let Some(b) = v.s.backup.value.as_ref() else {
+                return vec![dim(match &v.s.backup.err {
+                    Some(e) => format!("backups: {e}"),
+                    None => "the backups weren't compared yet".into(),
+                })];
+            };
+            match &b.newest {
+                None => l.push(row("newest", "none yet".into())),
+                Some(k) => l.push(row(
+                    "newest",
+                    format!(
+                        "{} · OpenWrt {} · {}",
+                        fmt::ago(v.secs_since(k.at)),
+                        k.release,
+                        fmt::bytes(k.size)
+                    ),
+                )),
+            }
+            l.push(row(
+                "kept",
+                format!("{} (backup.keep {})", b.count, v.cfg.backup.keep),
+            ));
+            l.push(row(
+                "encrypted to",
+                match v.cfg.backup.recipients.len() {
+                    0 => "nobody: set backup.recipients".into(),
+                    n => format!("{n} recipient(s)"),
+                },
+            ));
+            match &b.changed {
+                Some(c) if c.any() => {
+                    l.push(Line::styled(
+                        format!("{} file(s) changed since:", c.files.len()),
+                        t.s(t.yellow),
+                    ));
+                    let what = if c.options.is_empty() {
+                        &c.files
+                    } else {
+                        &c.options
+                    };
+                    l.extend(
+                        crate::backup::capped(what, 10)
+                            .into_iter()
+                            .map(|o| dim(format!("  {o}"))),
+                    );
+                }
+                Some(_) => l.push(Line::styled("nothing changed since", t.s(t.green))),
+                None => {}
+            }
+            l.push(dim(format!(
+                "in {}",
+                widgets::short_home(&crate::backup::backups_dir(&crate::remote::scope(v.name)))
+            )));
+        }
     }
     l
 }

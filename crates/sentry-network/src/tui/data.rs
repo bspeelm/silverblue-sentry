@@ -11,11 +11,14 @@ use crate::collect::cert::Cert;
 use crate::collect::clients::Raw;
 use crate::collect::services::Services;
 use crate::collect::uci::Uci;
+use crate::collect::updates::Updates;
 use crate::collect::{self, CollectError, ifaces, probe};
+use crate::maint::upstream::{self, Upstream};
 use crate::rates::{Rate, Rates};
 use crate::remote::Router;
 use sentry_app::remote::probe::CpuDelta;
 use sentry_app::target::Mail;
+use sentry_core::cache::Cached;
 use sentry_core::collectors::net::Listener;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,6 +45,16 @@ pub enum Kind {
     Report,
     /// The report at this place among those kept.
     ReportAt(u16),
+    /// Which packages could be upgraded, from the index the router has (it only reads).
+    Updates,
+    /// The same after `apk update`: only ever on the user's `r`.
+    Refresh,
+    /// What was last looked up upstream, from this machine's cache (no network).
+    Upstream,
+    /// Look upstream up (from this machine; within a day the cache answers): on `r`.
+    Lookup,
+    /// The config backups against the router's files now.
+    Backup,
 }
 
 /// What a fetch thread sends back: the kind, and what it read or why it couldn't.
@@ -57,6 +70,9 @@ pub enum Payload {
     Cert(Option<Cert>),
     Services(Services),
     Reports(Box<Shown>),
+    Updates(Updates),
+    Upstream(Option<Box<Cached<Upstream>>>),
+    Backup(Box<crate::backup::Status>),
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -135,6 +151,12 @@ pub struct Store {
     pub report: Slot<Option<Box<Report>>>,
     /// What the audit report view shows (`F` on Maintenance): a report and the one before.
     pub shown: Option<Shown>,
+    /// The packages that could be upgraded, and how old the index is.
+    pub updates: Slot<Updates>,
+    /// What upstream has released (`Some(None)`: read, never looked up).
+    pub upstream: Slot<Option<Cached<Upstream>>>,
+    /// The config backups against the router now.
+    pub backup: Slot<crate::backup::Status>,
     /// `seen.toml` was written by an audit since it was read here.
     seen_stale: bool,
     /// The clients were read and the list isn't made of that read yet (it waits for the
@@ -187,9 +209,19 @@ impl Store {
                 Kind::Cert => self.cert.err = Some(e),
                 Kind::Services => self.services.err = Some(e),
                 Kind::Audit | Kind::Report | Kind::ReportAt(_) => self.report.err = Some(e),
+                Kind::Updates | Kind::Refresh => self.updates.err = Some(e),
+                Kind::Upstream | Kind::Lookup => self.upstream.err = Some(e),
+                Kind::Backup => self.backup.err = Some(e),
             },
             Ok(p) => {
-                if !matches!(k, Kind::History | Kind::Report | Kind::ReportAt(_)) {
+                if !matches!(
+                    k,
+                    Kind::History
+                        | Kind::Report
+                        | Kind::ReportAt(_)
+                        | Kind::Upstream
+                        | Kind::Lookup
+                ) {
                     self.unreachable = None;
                 }
                 match p {
@@ -202,6 +234,9 @@ impl Store {
                     Payload::Cert(c) => self.cert.set(c),
                     Payload::Services(sv) => self.services.set(sv),
                     Payload::Reports(shown) => self.on_reports(*shown, k),
+                    Payload::Updates(u) => self.updates.set(u),
+                    Payload::Upstream(u) => self.upstream.set(u.map(|u| *u)),
+                    Payload::Backup(b) => self.backup.set(*b),
                 }
             }
         }
@@ -264,6 +299,9 @@ impl Store {
                         self.clients = Some(c.clone());
                     }
                     self.cert.set(snap.cert);
+                    if let Some(b) = &snap.backup {
+                        self.backup.set(b.clone());
+                    }
                     self.seen_stale = true;
                 }
             }
@@ -331,6 +369,21 @@ fn run(k: Kind, r: &Router) -> Result<Payload, CollectError> {
         Kind::Audit => {
             audit::run(r)?;
             Payload::Reports(Box::new(audit::shown(&r.scope, None)))
+        }
+        Kind::Updates => Payload::Updates(collect::updates::collect(r)?),
+        Kind::Refresh => Payload::Updates(collect::updates::refresh(r)?),
+        Kind::Upstream => Payload::Upstream(upstream::load(&r.name).map(Box::new)),
+        Kind::Lookup => {
+            // The series the router runs decides what's looked up.
+            let version = ifaces::collect(r)?.board.version;
+            match crate::maint::eval::series(&version) {
+                Some(s) => Payload::Upstream(Some(Box::new(upstream::get(&r.name, &s)))),
+                None => Payload::Upstream(upstream::load(&r.name).map(Box::new)),
+            }
+        }
+        Kind::Backup => {
+            let uci = collect::uci::collect(r).ok();
+            Payload::Backup(Box::new(crate::backup::status(r, uci.as_ref())?))
         }
     })
 }

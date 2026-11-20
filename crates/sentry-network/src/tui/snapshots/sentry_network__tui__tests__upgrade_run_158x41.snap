@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   6 Maintenance 1   0 Upgrade ●
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ config-backup · running · 0 ─────────────────────────────┐  ┌ Log · step 1/2 · steps/backup.log ───────────────────────────────────────────────────────────┐
+│  home · config-backup   ▶ running                        │  │ ▶ started config-backup on home                                                              │
+│                                                          │  │ ▶ 1/2 Make an encrypted backup of the config                                                 │
+│ ▶  1. Make an encrypted backup of the config        auto │  │ $ sentry-network backup                                                                      │
+│       … running 0:00, no output yet · C-c stops it       │  │                                                                                              │
+│ ○  2. The backup is there and holds what the rout…  auto │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+│                                                          │  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                          │  │▶ Make an encrypted backup of the config · auto                                               │
+│                                                          │  │$ sentry-network backup                                                                       │
+│                                                          │  │[Enter] run   [s] skip (asks)   [L] log   [a] abandon                                         │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ C-c  terminate step   L  log   C-a  auto   ?  help   q  quit

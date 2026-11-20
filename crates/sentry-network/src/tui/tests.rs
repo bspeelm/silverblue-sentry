@@ -443,9 +443,42 @@ fn samples_become_the_ring_but_tests_write_none() {
 }
 
 #[test]
-fn claude_and_workflows_say_what_isnt_there_yet() {
+fn claude_says_what_isnt_there_yet_and_workflows_are() {
     use sentry_app::target::{Asks, Cx, Host, ProfileFor, Upkeep};
     let mut a = app();
+    // The digits of screens it doesn't have do nothing.
+    for c in ['4', '5', '7'] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("0 Upgrade") && !s.contains("Containers"), "{s}");
+    // Claude isn't offered anywhere: not in the key bar, not in `?`. Auto mode is, where
+    // work is started and followed (Maintenance and the run's screen).
+    for c in ['1', '2', '3', '6', '0'] {
+        key(&mut a, KeyCode::Char(c));
+        let s = render_to_string(&mut a, 158, 41);
+        let bar = s.lines().last().unwrap();
+        assert!(
+            !bar.contains("A  ask") && !bar.contains("A  claude"),
+            "{c}: {bar}"
+        );
+        assert!(!bar.contains("review"), "{c}: {bar}");
+        assert_eq!(
+            bar.contains("C-a  auto"),
+            matches!(c, '6' | '0'),
+            "{c}: {bar}"
+        );
+        key(&mut a, KeyCode::Char('?'));
+        let help = render_to_string(&mut a, 158, 41);
+        assert!(!help.contains("Claude"), "{c}: {help}");
+        assert!(
+            help.contains("C-a") && help.contains("auto mode"),
+            "{c}: {help}"
+        );
+        key(&mut a, KeyCode::Esc);
+    }
+    key(&mut a, KeyCode::Char('1'));
     // A: nothing is asked, and it says why (whether or not Claude Code is installed).
     key(&mut a, KeyCode::Char('A'));
     assert_eq!(
@@ -453,40 +486,10 @@ fn claude_and_workflows_say_what_isnt_there_yet() {
         Some("Claude isn't set up for a network yet")
     );
     assert!(a.chat_for_test().is_none() && a.apply_session().is_none());
-    // No workflows: `:wf` says so and stays where it is.
+    // `:wf` goes to its workflows; one it doesn't have says so.
     typed(&mut a, ":wf package-update");
-    assert_eq!(
-        a.toast_for_test(),
-        Some("there are no workflows for a network yet")
-    );
-    typed(&mut a, ":workflow");
-    assert_eq!(a.slot().screen, ScreenId::Dash);
-    // The digits of screens it doesn't have do nothing.
-    for c in ['4', '5', '7', '0'] {
-        key(&mut a, KeyCode::Char(c));
-        assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
-    }
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(!s.contains("Upgrade") && !s.contains("Containers"), "{s}");
-    // Nothing that isn't there is offered: no Claude in the key bar or in `?`, no auto
-    // mode, on any of its screens.
-    for c in ['1', '2', '3', '6'] {
-        key(&mut a, KeyCode::Char(c));
-        let s = render_to_string(&mut a, 158, 41);
-        let bar = s.lines().last().unwrap();
-        assert!(!bar.to_lowercase().contains("claude"), "{c}: {bar}");
-        assert!(
-            !bar.contains("auto") && !bar.contains("review"),
-            "{c}: {bar}"
-        );
-        key(&mut a, KeyCode::Char('?'));
-        let help = render_to_string(&mut a, 158, 41);
-        assert!(
-            !help.contains("Claude") && !help.contains("auto mode"),
-            "{c}: {help}"
-        );
-        key(&mut a, KeyCode::Esc);
-    }
+    assert_eq!(a.toast_for_test(), Some("no workflow package-update"));
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
     key(&mut a, KeyCode::Char('1'));
     // What the app would be told if it asked.
     let slot = a.slot();
@@ -517,12 +520,10 @@ fn claude_and_workflows_say_what_isnt_there_yet() {
         t.series_step("finding:net:ssh:password", &slot.shared, &cx)
             .is_none()
     );
+    assert!(!t.offered() && t.auto_offered());
     assert!(t.apply_ask(&slot.shared, &cx).is_none());
     assert!(t.ask(&slot.shared, &cx).is_err());
     assert!(t.records(&slot.shared, &cx).0.is_empty());
-    let (wfs, dir) = t.workflows();
-    assert!(wfs.is_empty());
-    assert!(dir.ends_with("networks/home/workflows"));
     assert!(t.resume_run().is_none());
     // A profile that allows nothing, should one ever be asked for.
     let p = t.profile(ProfileFor::Session, &[]);
@@ -531,13 +532,17 @@ fn claude_and_workflows_say_what_isnt_there_yet() {
     let c = t.command("logread -l 5");
     assert_eq!(c.remote_line(), "env LC_ALL=C sh -c 'logread -l 5'");
     assert!(c.holds_stdin());
-    // Its records are a network's.
+    // Its records are a network's, and so are its workflows and their runs.
     let id = t.ident();
     assert_eq!(
         (id.id.as_str(), id.scope.as_str(), id.word),
         ("net:home", "net:home", "net")
     );
     assert!(id.runs.ends_with("networks/home/workflows"));
+    assert_eq!(
+        sentry_app::remote::workflow::own_dir(&id.scope),
+        sentry_core::paths::config_dir().join("networks/home/workflows")
+    );
 }
 
 #[test]
@@ -622,6 +627,8 @@ fn live_network_screens() {
         now: jiff::Timestamp::now(),
         filter: None,
         everything: false,
+        wf: None,
+        auto: false,
     });
     assert!(rows.len() >= 2, "{} rows", rows.len());
     assert!(
@@ -693,6 +700,185 @@ fn live_network_screens() {
     }
     println!("findings by kind: {kinds:?}");
     assert!(crate::redact::path(&scope).exists() && crate::clients::Seen::path(&scope).exists());
+    // Maintenance read its items too, with reads only: the packages from the index the
+    // router has (never `apk update`), the backups against its files (never a lookup).
+    assert!(
+        !t.asked
+            .iter()
+            .any(|k| matches!(k, Kind::Refresh | Kind::Lookup)),
+        "entering Maintenance refreshed something"
+    );
+    let u = t.store.updates.value.as_ref().expect("the packages");
+    let b = t.store.backup.value.as_ref().expect("the backups");
+    println!(
+        "packages: {} upgradable, {} · backups: {} kept, unsaved {} · the audit said so: {}",
+        u.packages.len(),
+        u.index_said(),
+        b.count,
+        b.unsaved(),
+        rep.findings.iter().any(|f| f.id == "net:config:unsaved")
+    );
+    assert_eq!(
+        rep.snapshot.backup.as_ref().map(|x| x.unsaved()),
+        Some(b.unsaved())
+    );
+    // Its workflows, seeded under the scratch config dir.
+    key(&mut a, KeyCode::Char('0'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("config-backup") && s.contains("2 steps"), "{s}");
+}
+
+/// `config-backup` for real, through the app: its two steps run here as child processes of
+/// this program, each reading the router. `SENTRY_NETWORK_LIVE=<name>` with scratch XDG
+/// dirs whose `network_config.yaml` names a recipient (a throwaway key from
+/// `sentry-network backup key`). What it leaves under XDG_DATA_HOME is a real backup of
+/// the router's config, encrypted to that key: delete the scratch dirs afterwards.
+#[test]
+#[ignore]
+fn live_backup_workflow() {
+    let Some(r) = live_router() else {
+        return;
+    };
+    if r.cfg.backup.recipients.is_empty() {
+        println!("no backup.recipients in the config used: nothing to run");
+        return;
+    }
+    assert!(
+        std::env::var_os("XDG_DATA_HOME").is_some()
+            && std::env::var_os("XDG_CONFIG_HOME").is_some(),
+        "set XDG_DATA_HOME and XDG_CONFIG_HOME to scratch dirs"
+    );
+    let scope = r.scope.clone();
+    let before = crate::backup::list(&scope).len();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(tx, &super::id_of(&r.name), super::target(r));
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+    a.start(Instant::now());
+    a.apply(
+        vec![super::target::Effect::StartWorkflow("config-backup".into())],
+        Instant::now(),
+    );
+    assert!(wf(&a).is_some(), "{}", render_to_string(&mut a, 158, 41));
+    let t = Instant::now();
+    while !wf(&a).is_some_and(|w| w.done()) && t.elapsed() < Duration::from_secs(90) {
+        if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+    }
+    let run = wf(&a).expect("the run");
+    // (Its lines name files under the scratch dir and nothing of the router's.)
+    let said: Vec<&str> = run
+        .log
+        .iter()
+        .map(|(l, _)| l.as_str())
+        .filter(|l| l.starts_with('✓') || l.starts_with('✗') || l.starts_with('·'))
+        .collect();
+    println!(
+        "{} s · {} lines: {said:#?}",
+        t.elapsed().as_secs(),
+        run.log.len()
+    );
+    assert!(run.done(), "not done in 90 s: {}", run.state_word());
+    assert_eq!(
+        run.run.state.status,
+        sentry_core::workflows::state::RunStatus::Done
+    );
+    assert!(run.run.state.steps.iter().all(|s| s.code == Some(0)));
+    assert_eq!(crate::backup::list(&scope).len(), before + 1);
+    // Logged under the network.
+    let log = sentry_core::maint::log::list(&scope);
+    assert!(
+        log.first()
+            .is_some_and(|e| e.head.workflow == "config-backup" && e.head.result == "done"),
+        "not in the log"
+    );
+    // And Maintenance, read again, has nothing to say about backups.
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('6'));
+    let until = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < until {
+        if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+    }
+    let b = net(&a).store.backup.value.as_ref().expect("the backups");
+    assert!(
+        !b.unsaved() && b.count == before + 1,
+        "{} kept (was {before}), changed {:?}",
+        b.count,
+        b.changed.as_ref().map(|c| (c.files.len(), c.options.len()))
+    );
+}
+
+/// The one write a network's Maintenance asks a router for: `apk update` (its tmpfs index
+/// cache, nothing on flash), as `r` does it. Only with `SENTRY_NETWORK_REFRESH=1` beside
+/// `SENTRY_NETWORK_LIVE=<name>`: says how old the index was, and is, and how many packages
+/// each lists.
+#[test]
+#[ignore]
+fn live_refresh_index() {
+    let Some(r) = live_router() else {
+        return;
+    };
+    if std::env::var_os("SENTRY_NETWORK_REFRESH").is_none() {
+        println!("not refreshing: set SENTRY_NETWORK_REFRESH=1 to run `apk update` once");
+        return;
+    }
+    let before = crate::collect::updates::collect(&r).unwrap();
+    let t = Instant::now();
+    let after = crate::collect::updates::refresh(&r).unwrap();
+    println!(
+        "before: {} upgradable, {} · after ({} ms): {} upgradable, {} · apk update failed: {:?}",
+        before.packages.len(),
+        before.index_said(),
+        t.elapsed().as_millis(),
+        after.packages.len(),
+        after.index_said(),
+        after.refresh_failed
+    );
+    assert!(after.refresh_failed.is_none(), "apk update failed");
+    assert!(
+        after.index_age().is_some_and(|a| a < 120),
+        "the index isn't new"
+    );
+}
+
+/// What upstream says about the router's release, looked up from this machine (nothing
+/// runs on the router but the board read): `SENTRY_NETWORK_LIVE=<name>` with scratch XDG
+/// dirs (the answer is cached under XDG_CACHE_HOME).
+#[test]
+#[ignore]
+fn live_upstream() {
+    let Some(r) = live_router() else {
+        return;
+    };
+    let version = crate::collect::ifaces::collect(&r).unwrap().board.version;
+    let series = crate::maint::eval::series(&version).expect("a release");
+    let t = Instant::now();
+    let up = crate::maint::upstream::get(&r.name, &series);
+    let took = t.elapsed().as_millis();
+    let today = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date();
+    let f = crate::maint::eval::firmware(&version, Some(&up.data), today);
+    println!(
+        "{version} (series {series}) · latest {:?} · newer {} · security {:?} · eol {:?} {:?} · note {:?} · {took} ms",
+        f.latest, f.newer, f.security, f.eol, f.eol_state, f.note
+    );
+    assert!(up.data.eol.is_ok(), "{:?}", up.data.eol);
+    assert!(
+        up.data.releases.is_ok(),
+        "{:?}",
+        up.data.releases.as_ref().err()
+    );
+    assert!(f.latest.is_some());
+    // Within the day the cache answers.
+    let t = Instant::now();
+    let again = crate::maint::upstream::get(&r.name, &series);
+    assert_eq!(again.fetched_at, up.fetched_at);
+    assert!(t.elapsed().as_millis() < 50);
 }
 
 /// The gate "rates are right", against a real router (read-only): two readings ten seconds
@@ -1213,13 +1399,18 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
         "B  all like it",
         "z  later",
         "o  everything",
-        "r  audit",
+        "r  refresh",
+        "c  audit",
         "F  report",
         "v  records",
     ] {
         assert!(bar.contains(k), "{k} in {bar}");
     }
     assert!(!bar.contains("Space") && !bar.contains("A  "), "{bar}");
+    // The items under the list, before anything about them was read: the firmware from
+    // the board, with nothing looked up yet.
+    assert!(line(&s, "│ firmware").contains("25.12.3"), "{s}");
+    assert!(s.contains("upstream not looked up yet (r)"), "{s}");
     // o: the low ones too (listeners only the inside reaches).
     key(&mut a, KeyCode::Char('o'));
     let s = render_to_string(&mut a, 158, 41);
@@ -1414,34 +1605,62 @@ fn maintenance_audits_on_entry_when_the_last_report_is_old() {
         };
         data(a, Kind::Report, Ok(Payload::Reports(Box::new(shown))));
     };
+    // What entering Maintenance reads: the report from disk, the board, the packages from
+    // the index the router has, what was last looked up upstream (this machine's cache)
+    // and the backups. Never the index's refresh, never a lookup: those are `r`.
+    const ENTRY: [Kind; 5] = [
+        Kind::Report,
+        Kind::Ifaces,
+        Kind::Updates,
+        Kind::Upstream,
+        Kind::Backup,
+    ];
+    let after_entry = |a: &App| net(a).asked[ENTRY.len()..].to_vec();
     // Five minutes old: entering Maintenance reads the report from disk and leaves it.
     let mut a = blank_with(&cfg);
     key(&mut a, KeyCode::Char('6'));
-    assert_eq!(net(&a).asked, [Kind::Report]);
+    assert_eq!(net(&a).asked, ENTRY);
     report_at(&mut a, Some("2026-10-26T11:55:00Z"));
     // (It's a day's worth of certificate, too.)
-    assert_eq!(net(&a).asked, [Kind::Report]);
+    assert_eq!(net(&a).asked, ENTRY);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("✓ nothing needs attention right now · r audits again"),
+        s.contains("✓ nothing needs attention right now · c audits again"),
         "{s}"
     );
-    // Nothing listed: only the screen's own keys.
+    // Nothing listed: the first item's Enter, then the screen's own keys.
     assert!(
         s.lines()
             .last()
             .unwrap()
-            .starts_with(" r  audit   F  report"),
+            .starts_with(" Enter  about   r  refresh   c  audit   F  report"),
         "{s}"
     );
-    // r audits whenever asked.
+    // c audits whenever asked; r refreshes everything: the package index (the one place
+    // `apk update` is run), upstream, the backups, and the audit.
+    key(&mut a, KeyCode::Char('c'));
+    assert_eq!(after_entry(&a), [Kind::Audit]);
     key(&mut a, KeyCode::Char('r'));
-    assert_eq!(net(&a).asked, [Kind::Report, Kind::Audit]);
+    assert_eq!(
+        after_entry(&a),
+        [
+            Kind::Audit,
+            Kind::Refresh,
+            Kind::Lookup,
+            Kind::Backup,
+            Kind::Audit
+        ]
+    );
+    // Leaving and coming back refreshes nothing by itself.
+    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Char('6'));
+    let again: Vec<Kind> = net(&a).asked.iter().rev().take(5).rev().copied().collect();
+    assert_eq!(again, ENTRY);
     // Eight days old: the audit runs by itself, once.
     let mut a = blank_with(&cfg);
     key(&mut a, KeyCode::Char('6'));
     report_at(&mut a, Some("2026-10-18T11:00:00Z"));
-    assert_eq!(net(&a).asked, [Kind::Report, Kind::Audit]);
+    assert_eq!(after_entry(&a), [Kind::Audit]);
     assert_eq!(a.toast_for_test(), Some("auditing the network…"));
     report_at(&mut a, Some("2026-10-18T11:00:00Z"));
     assert_eq!(
@@ -1459,7 +1678,7 @@ fn maintenance_audits_on_entry_when_the_last_report_is_old() {
     let mut a = blank_with(&cfg);
     key(&mut a, KeyCode::Char('6'));
     report_at(&mut a, None);
-    assert_eq!(net(&a).asked, [Kind::Report, Kind::Audit]);
+    assert_eq!(after_entry(&a), [Kind::Audit]);
     data(
         &mut a,
         Kind::Audit,
@@ -1537,4 +1756,574 @@ fn tasks_by_hand_work_on_a_network() {
     key(&mut a, KeyCode::Char('v'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Tasks") && s.contains("Later"), "{s}");
+}
+
+// ── Upkeep: the items, what they ask for, backups and the one workflow ─────────────────
+
+use crate::backup::{Changed, Kept, Status};
+
+/// A backup made `days` before the tests' clock.
+fn kept(days: i64) -> Kept {
+    let now: jiff::Timestamp = "2026-10-26T12:00:00Z".parse().unwrap();
+    let at = jiff::Timestamp::from_second(now.as_second() - days * 86_400).unwrap();
+    Kept {
+        stamp: crate::backup::stamp(at),
+        at,
+        release: "25.12.3".into(),
+        size: 31_744,
+        path: format!("{}-25.12.3.tar.gz.age", crate::backup::stamp(at)).into(),
+    }
+}
+
+fn backed_up(days: i64, changed: &[&str]) -> Status {
+    Status {
+        recipients: true,
+        count: 3,
+        newest: Some(kept(days)),
+        changed: Some(Changed {
+            files: changed
+                .iter()
+                .map(|_| "/etc/config/wireless".to_string())
+                .collect(),
+            options: changed.iter().map(|s| s.to_string()).collect(),
+        }),
+    }
+}
+
+/// What upstream had two hours ago: 25.12.5 out, with security fixes in its notes.
+fn upstream() -> Payload {
+    use sentry_app::remote::upstream::{Eol, Release};
+    let rel = |v: &str, security| Release {
+        version: v.into(),
+        security,
+        ..Default::default()
+    };
+    Payload::Upstream(Some(Box::new(sentry_core::cache::Cached {
+        fetched_at: "2026-10-26T10:00:00Z".parse().unwrap(),
+        data: crate::maint::upstream::Upstream {
+            series: "25.12".into(),
+            eol: Ok(Eol {
+                cycle: "25.12".into(),
+                eol: None,
+                latest: Some("25.12.5".into()),
+            }),
+            releases: Ok(vec![
+                rel("v25.12.5", true),
+                rel("v25.12.4", false),
+                rel("v25.12.3", false),
+            ]),
+        },
+    })))
+}
+
+/// What entering Maintenance reads about the items.
+fn upkeep(a: &mut App, backup: Status) {
+    let u = crate::collect::updates::parse(&fixture("network/updates.txt")).unwrap();
+    data(a, Kind::Updates, Ok(Payload::Updates(u)));
+    data(a, Kind::Upstream, Ok(upstream()));
+    data(a, Kind::Backup, Ok(Payload::Backup(Box::new(backup))));
+}
+
+#[test]
+fn the_items_and_what_they_ask_for() {
+    let mut a = full();
+    upkeep(&mut a, backed_up(6, &[]));
+    let s = screen(&mut a, '6', 158, 41);
+    insta::assert_snapshot!("maintenance_items_158x41", s);
+    // The items: how each stands.
+    assert!(s.contains("Items · 3 · upstream 2h ago"), "{s}");
+    let fw = line(&s, "│ firmware");
+    assert!(
+        fw.contains("25.12.3 → 25.12.5") && fw.contains("no end of life announced"),
+        "{fw}"
+    );
+    let pk = line(&s, "│ packages");
+    assert!(
+        pk.contains("7 upgradable") && pk.contains("index 9d ago"),
+        "{pk}"
+    );
+    let bk = line(&s, "│ backup");
+    assert!(
+        bk.contains("newest 6d ago") && bk.contains("nothing changed since"),
+        "{bk}"
+    );
+    // A patch release whose notes list security fixes is asked for; packages wait.
+    assert!(s.contains("Recommended · 1 · 1 can wait (o)"), "{s}");
+    assert!(
+        line(&s, "│ soon").contains("Firmware 25.12.3 → 25.12.5"),
+        "{s}"
+    );
+    assert!(!s.contains("package(s) could be upgraded"), "{s}");
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Enter  about") && bar.contains("z  later"),
+        "{bar}"
+    );
+    // Enter says how it stands, and plainly that sentry doesn't do it yet.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("its notes list security fixes")
+            && s.contains("sentry doesn't upgrade firmware yet"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // o: what can wait too.
+    key(&mut a, KeyCode::Char('o'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        line(&s, "│ routine").contains("7 package(s) could be upgraded"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('o'));
+    // One cursor: past the recommendations are the items. The packages' Enter lists them.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("dnsmasq  2.93-r1 → 2.93-r2") && s.contains("index        index 9d ago"),
+        "{s}"
+    );
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.starts_with(" Enter  about   o  everything   r  refresh"),
+        "{bar}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sentry doesn't update packages yet"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // The backup item: where they are, whom they're for. Nobody yet in this config, so
+    // Enter says what to set instead of starting anything.
+    key(&mut a, KeyCode::Char('j'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("encrypted to nobody: set backup.recipients")
+            && s.contains("networks/home/backups")
+            && s.contains("Enter  back up"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("No backup recipient") && s.contains("sentry-network backup key"),
+        "{s}"
+    );
+    assert!(a.slot().run.is_none());
+    key(&mut a, KeyCode::Esc);
+    // An item isn't ticked or put off.
+    key(&mut a, KeyCode::Char(' '));
+    assert_eq!(
+        a.toast_for_test(),
+        Some(sentry_core::tui::maintlist::NOT_IN_A_SERIES)
+    );
+    // The selection stays on its item when the list above it grows.
+    key(&mut a, KeyCode::Char('o'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("encrypted to nobody"), "{s}");
+}
+
+#[test]
+fn the_items_say_what_isnt_known() {
+    // Nothing looked up, no index since the router booted, the backups not compared.
+    let mut a = full();
+    data(
+        &mut a,
+        Kind::Updates,
+        Ok(Payload::Updates(
+            crate::collect::updates::parse("@@list\n@@index\n@@now\n1792892401\n").unwrap(),
+        )),
+    );
+    data(&mut a, Kind::Upstream, Ok(Payload::Upstream(None)));
+    data(
+        &mut a,
+        Kind::Backup,
+        Err(CollectError::Unavailable("sysupgrade".into())),
+    );
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(
+        s.contains("Items · 3 · upstream not looked up yet (r)"),
+        "{s}"
+    );
+    let pk = line(&s, "│ packages");
+    assert!(
+        pk.contains("not known") && pk.contains("no index since boot · r fetches it"),
+        "{pk}"
+    );
+    assert!(line(&s, "│ backup").contains("…"), "{s}");
+    // Past its end of life, as upstream says: a row, and the item says when.
+    let Payload::Upstream(Some(mut up)) = upstream() else {
+        unreachable!()
+    };
+    up.data.eol.as_mut().unwrap().eol = Some(jiff::civil::date(2026, 9, 30));
+    data(&mut a, Kind::Upstream, Ok(Payload::Upstream(Some(up))));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("OpenWrt 25.12 is past its end")
+            && line(&s, "│ firmware   25").contains("past end of life (2026-09-30)"),
+        "{s}"
+    );
+    // A refresh that failed on the router says so, where the index's age is.
+    let mut u = crate::collect::updates::parse(&fixture("network/updates.txt")).unwrap();
+    u.refresh_failed = Some(1);
+    data(&mut a, Kind::Refresh, Ok(Payload::Updates(u)));
+    assert_eq!(
+        a.toast_for_test(),
+        Some("apk update failed on the router: the index is as it was")
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(line(&s, "│ packages").contains("refresh failed"), "{s}");
+}
+
+/// A network that can make backups: someone to encrypt to, and a cadence for it.
+fn backup_cfg() -> Network {
+    let mut cfg = fx_cfg();
+    cfg.backup.recipients = vec![age::x25519::Identity::generate().to_public().to_string()];
+    cfg.maintenance.cadence = vec![crate::config::Cadence {
+        workflow: "config-backup".into(),
+        every: sentry_core::config::Dur::secs(30 * 86_400),
+    }];
+    cfg
+}
+
+/// One test at a time starts a run: they share the network's runs directory.
+fn runs() -> std::sync::MutexGuard<'static, ()> {
+    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::remove_dir_all(crate::workflow::root(&super::id_of(NAME)));
+    turn
+}
+
+/// The app with the network's workflows as they're seeded (in the tests' scratch dirs).
+fn with_workflows(cfg: &Network, backup: Option<Status>) -> App {
+    let mut a = full_with(cfg, |c| {
+        let mut s = audit::tests::snap(c);
+        s.backup = backup.clone();
+        s
+    });
+    if let Some(b) = backup {
+        data(&mut a, Kind::Backup, Ok(Payload::Backup(Box::new(b))));
+    }
+    let list = {
+        let _turn = crate::workflow::seeding();
+        crate::workflow::list_for(&super::id_of(NAME))
+    };
+    assert_eq!(list.len(), 1, "the seeded workflow");
+    a.set_wf_entries(list);
+    a
+}
+
+fn wf(a: &App) -> Option<&crate::workflow::Session> {
+    a.slot().run.as_ref()?.as_any().downcast_ref()
+}
+
+fn asks_nothing(a: &App) -> bool {
+    // No box to answer, no password, no line to type.
+    a.box_yes_for_test().is_none()
+        && a.unlock_for_test().is_none()
+        && !matches!(a.win.input, sentry_core::tui::input::Input::Prompt(..))
+}
+
+#[test]
+fn the_workflows_list_and_a_backup_run() {
+    let _turn = runs();
+    let cfg = backup_cfg();
+    let none_yet = Status {
+        recipients: true,
+        ..Default::default()
+    };
+    let mut a = with_workflows(&cfg, Some(none_yet));
+    // 0: its workflows.
+    let s = screen(&mut a, '0', 158, 41);
+    // (The list's title is where they come from: the tests' scratch directory.)
+    let stable: Vec<String> = s
+        .lines()
+        .map(|l| match l.split_once("┐") {
+            Some((left, rest)) if left.starts_with("┌ Workflows · ") => {
+                format!("┌ Workflows · <where they come from>┐{rest}")
+            }
+            _ => l.to_string(),
+        })
+        .collect();
+    insta::assert_snapshot!("upgrade_list_158x41", stable.join("\n"));
+    assert!(
+        s.contains("config-backup") && s.contains("Enter  start"),
+        "{s}"
+    );
+    // Maintenance: the config isn't backed up. The audit's finding and the cadence's task
+    // are about the same thing: one row, and Enter on it runs the workflow.
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(s.contains("Recommended · 1 · "), "{s}");
+    let row = line(&s, "Run config-backup");
+    assert!(row.contains("│ soon"), "{row}");
+    assert!(
+        s.contains("also: there is no backup of the router's config"),
+        "{s}"
+    );
+    assert!(line(&s, "│ backup").contains("none yet"), "{s}");
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Enter  run") && bar.contains("Space  tick"),
+        "{bar}"
+    );
+    let asked_before = net(&a).asked.len();
+    key(&mut a, KeyCode::Enter);
+    // Started, on its screen, its first step running here (not on the router): Enter was
+    // the approval, nothing more is asked.
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
+    let run = wf(&a).expect("the run");
+    assert_eq!(run.wf.name, "config-backup");
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(0));
+    assert!(asks_nothing(&a));
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("upgrade_run_158x41", s);
+    assert!(
+        s.contains("▶ started config-backup on home") && s.contains("$ sentry-network backup"),
+        "{s}"
+    );
+    assert!(s.contains("0 Upgrade ●"), "{s}");
+    // It ends well: the check runs by itself.
+    a.run_step_exit_for_test(0);
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(1));
+    assert!(
+        run.log
+            .iter()
+            .any(|(l, _)| l == "$ sentry-network backup --verify"),
+        "{:?}",
+        run.log
+    );
+    a.run_step_exit_for_test(0);
+    assert!(wf(&a).unwrap().done());
+    // Each step that ended had the backups compared again (the Items row follows the run).
+    let since: Vec<Kind> = net(&a).asked[asked_before..].to_vec();
+    assert!(
+        since.iter().filter(|k| **k == Kind::Backup).count() >= 2,
+        "{since:?}"
+    );
+    // Logged under the network, like any run; the one question is the note.
+    let e = a.slot().shared.log.first().expect("logged");
+    assert_eq!(
+        (
+            e.head.server.as_str(),
+            e.head.workflow.as_str(),
+            e.head.result.as_str()
+        ),
+        ("net:home", "config-backup", "done")
+    );
+    assert!(
+        e.head
+            .run
+            .as_deref()
+            .is_some_and(|r| r.contains("networks/home/workflows")),
+        "{:?}",
+        e.head.run
+    );
+    assert!(matches!(
+        a.win.input,
+        sentry_core::tui::input::Input::Prompt(..)
+    ));
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.slot().run.is_none());
+    // The backup is there now: the audit's finding is over before the next audit says so,
+    // and the cadence's task is done (the log says the workflow ended well).
+    data(
+        &mut a,
+        Kind::Backup,
+        Ok(Payload::Backup(Box::new(backed_up(0, &[])))),
+    );
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(
+        !s.contains("Run config-backup") && !s.contains("there is no backup"),
+        "{s}"
+    );
+    assert!(
+        line(&s, "│ backup").contains("nothing changed since"),
+        "{s}"
+    );
+}
+
+#[test]
+fn a_changed_config_names_its_options_and_never_a_secret() {
+    let cfg = backup_cfg();
+    let changed = backed_up(
+        3,
+        &[
+            "wireless.default_radio0.key changed",
+            "dhcp.lan.limit: 150 → 200",
+        ],
+    );
+    let mut a = with_workflows(&cfg, Some(changed));
+    // The finding is the row.
+    // (The log began a week ago, so the cadence, never run, isn't due yet either.)
+    let (slot, _) = a.parts();
+    let mut began =
+        sentry_core::maint::log::LogEntry::task("net:home", "x", "started the log", None);
+    began.head.started = Some("2026-10-19T12:00:00Z".parse().unwrap());
+    began.head.ended = began.head.started;
+    slot.shared.log.push(began);
+    let s = screen(&mut a, '6', 158, 41);
+    let row = line(&s, "the config changed since");
+    assert!(row.contains("│ soon"), "{row}");
+    assert!(
+        s.contains("wireless.default_radio0.key changed")
+            && s.contains("dhcp.lan.limit: 150 → 200"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("correct horse") && !s.contains("redacted:"),
+        "{s}"
+    );
+    assert!(
+        line(&s, "│ backup").contains("2 file(s) changed since"),
+        "{s}"
+    );
+    assert!(s.lines().last().unwrap().contains("Enter  back up"), "{s}");
+    // Marked expected, it is nobody's: no second row takes its place.
+    key(&mut a, KeyCode::Char('b'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Recommended · 0"), "{s}");
+}
+
+#[test]
+fn a_ticked_backup_task_runs_in_a_series_and_auto_asks_nothing() {
+    let _turn = runs();
+    let cfg = backup_cfg();
+    let mut a = with_workflows(&cfg, Some(backed_up(40, &[])));
+    // The last audit is old too: two rows a series can do.
+    let mut old = audit::tests::snap(&cfg);
+    old.taken_at = Some("2026-10-10T11:00:00Z".parse().unwrap());
+    old.backup = Some(backed_up(40, &[]));
+    let rep = report_for(&cfg, old, &a);
+    data(
+        &mut a,
+        Kind::Report,
+        Ok(Payload::Reports(Box::new(shown(rep.clone(), None, 1)))),
+    );
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(
+        s.contains("Run config-backup") && s.contains("Audit the network"),
+        "{s}"
+    );
+    // The backup being old is the cadence's own row, not a second one.
+    assert!(s.contains("Recommended · 2"), "{s}");
+    key(&mut a, KeyCode::Char('j'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("also: The newest config backup is 40d old"),
+        "{s}"
+    );
+    // Auto on: a root login has no password to ask for.
+    a.on_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        Instant::now(),
+    );
+    assert!(a.slot().auto && asks_nothing(&a));
+    // Both ticked, one Enter.
+    key(&mut a, KeyCode::Char('a'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("· 2 ticked ·") && s.contains("Enter  do the ticked"),
+        "{s}"
+    );
+    let audits = |a: &App| net(a).asked.iter().filter(|k| **k == Kind::Audit).count();
+    let before = audits(&a);
+    key(&mut a, KeyCode::Enter);
+    // The audit first (offline it's asked for and taken as read), then the workflow.
+    // Whatever the world does next (a step ends well), no key is pressed and nothing is
+    // asked, until both rows are done.
+    assert_eq!(audits(&a), before + 1);
+    let mut steps = Vec::new();
+    while let Some(i) = wf(&a).and_then(|w| w.live.as_ref().map(|l| l.idx)) {
+        assert!(asks_nothing(&a), "{}", render_to_string(&mut a, 158, 41));
+        steps.push(i);
+        a.run_step_exit_for_test(0);
+    }
+    assert_eq!(steps, [0, 1]);
+    // The run was closed by the series, and auto asked for no note.
+    assert!(a.slot().run.is_none());
+    assert!(asks_nothing(&a));
+    assert_eq!(a.toast_for_test(), Some("series: 2 of 2 done"));
+    // (What the audit stored, and what each step's end had read again: the backup that's
+    // there now.)
+    let mut fresh = rep.clone();
+    fresh.snapshot.taken_at = Some("2026-10-26T12:00:00Z".parse().unwrap());
+    fresh.snapshot.backup = Some(backed_up(0, &[]));
+    data(
+        &mut a,
+        Kind::Report,
+        Ok(Payload::Reports(Box::new(shown(fresh, None, 1)))),
+    );
+    data(
+        &mut a,
+        Kind::Backup,
+        Ok(Payload::Backup(Box::new(backed_up(0, &[])))),
+    );
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(
+        !s.contains("Run config-backup")
+            && !s.contains("Audit the network")
+            && !s.contains("ticked"),
+        "{s}"
+    );
+    // The run is in the log, with what auto answered for it.
+    let e = a
+        .slot()
+        .shared
+        .log
+        .iter()
+        .find(|e| e.head.workflow == "config-backup")
+        .expect("logged");
+    assert_eq!(e.head.result, "done");
+}
+
+#[test]
+fn a_cadence_is_a_task_once_its_workflow_is_there() {
+    use sentry_app::target::{Cx, SeriesStep, Upkeep};
+    let cfg = backup_cfg();
+    let a = with_workflows(&cfg, Some(backed_up(1, &[])));
+    let slot = a.slot();
+    let t = net(&a);
+    let tasks = t.derived_tasks(&slot.shared);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "cadence-config-backup");
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let cx = Cx {
+        theme: &theme,
+        now: "2026-10-26T12:00:00Z".parse().unwrap(),
+        screen: ScreenId::Maint,
+        filter: None,
+        everything: false,
+        writer: None,
+        run: None,
+        last_change: None,
+        offline: true,
+        at: Instant::now(),
+        modal: false,
+        pane: None,
+        chat_running: false,
+        finding: None,
+        root: false,
+        auto: false,
+        focused: true,
+        target: NAME,
+    };
+    // Its row is a workflow's run to a series; a finding's isn't anything to one.
+    assert!(matches!(
+        t.series_step("task:cadence-config-backup", &slot.shared, &cx),
+        Some(SeriesStep::Workflow(w)) if w == "config-backup"
+    ));
+    assert!(
+        t.series_step("net:maint:firmware", &slot.shared, &cx)
+            .is_none()
+    );
+    assert_eq!(
+        t.item_kind("backup"),
+        Some(("backup".to_string(), "low".to_string()))
+    );
+    // Without the workflow (a network with its own set), the cadence is nobody's task.
+    let mut b = with_workflows(&cfg, None);
+    b.set_wf_entries(Vec::new());
+    assert!(net(&b).derived_tasks(&b.slot().shared).is_empty());
 }

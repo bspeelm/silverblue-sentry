@@ -8,6 +8,7 @@ pub mod listeners;
 pub mod probe;
 pub mod services;
 pub mod uci;
+pub mod updates;
 
 use sentry_app::remote::{Error, Remote};
 
@@ -74,6 +75,7 @@ pub const KINDS: &[&str] = &[
     "uci",
     "cert",
     "services",
+    "updates",
 ];
 
 /// One kind, read now, as JSON (`sentry-network collect`).
@@ -89,6 +91,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, Collect
         "uci" => json(serde_json::to_value(uci::collect(r)?)),
         "cert" => json(serde_json::to_value(cert::collect(r)?)),
         "services" => json(serde_json::to_value(services::collect(r)?)),
+        "updates" => json(serde_json::to_value(updates::collect(r)?)),
         other => Err(CollectError::Failed(format!(
             "no collector `{other}` (there are: {})",
             KINDS.join(", ")

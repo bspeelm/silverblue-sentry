@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8
+ 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
  Maintenance › Audit report  Esc back
@@ -42,4 +42,4 @@ expression: s
 │        net:forward:udp:8000-8010                                             │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Esc  back   j/k  select   b  expected on/off   B  all like it   c  run audit   [ ]  browse reports   C-h/l  focus   ?  help   q  quit
+ Esc  back   j/k  select   b  expected on/off   B  all like it   c  run audit   [ ]  browse reports   C-h/l  focus   C-a  auto   ?  help   q  quit
