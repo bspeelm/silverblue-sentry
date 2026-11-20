@@ -43,6 +43,7 @@ impl Slot {
         sentry_core::tui::records::Data {
             dir: match dir.strip_prefix(&home) {
                 Some(r) if !home.is_empty() && !w.offline => format!("~{r}"),
+                _ if w.offline && rel.is_empty() => "~/.config/sentry".into(),
                 _ if w.offline => format!("~/.config/sentry/{rel}"),
                 _ => dir,
             },
@@ -136,7 +137,7 @@ impl Slot {
             }
             Fx::OpenPlan(item) => {
                 self.rec_view = None;
-                self.plan_view = Some((item, 0));
+                self.apply(w, vec![Effect::PlanOpen(item)], now);
             }
             Fx::OpenReview(p) => match sentry_core::maint::review::read(&p).or_else(|| {
                 self.shared
@@ -189,6 +190,7 @@ impl Slot {
                             return w.toast(&format!("baseline.toml: {e}"));
                         }
                         self.shared.baseline = b;
+                        self.refresh(w, Why::Baseline);
                     }
                 }
                 w.toast(&format!("{}: back on Maintenance", row.key));
@@ -210,12 +212,22 @@ impl Slot {
             .writer
             .as_ref()
             .is_some_and(|w| w.item == id && w.running());
+        if matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
+            self.plan_view = None;
+            return;
+        }
+        // The keys the target takes itself (what applying, revising and dropping mean there).
+        let own = self
+            .target
+            .plan_key(&id, k, writing, &self.shared, &cx!(self, w));
+        if let Some(e) = own {
+            return self.apply(w, e, now);
+        }
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.plan_view = None,
             // Claude alongside: apply this plan, or ask about it.
             KeyCode::Char('A') if !writing => {
                 if !claude::available() {
-                    return w.toast("Claude Code isn't installed (or not on PATH)");
+                    return w.toast(self.ways.no_claude);
                 }
                 if self.shared.wf_entries.is_empty() {
                     self.load_wf_entries();
@@ -247,7 +259,7 @@ impl Slot {
                     .and_then(|w| w.live.map(|(_, p)| p))
                 {
                     let _ = kill(pid);
-                    w.toast("stopped: the plan keeps what it had");
+                    w.toast(self.ways.plan_stopped);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => set(self, scroll + 1),

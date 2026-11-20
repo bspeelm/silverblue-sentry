@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::text::Line;
 
 use crate::run::LogKind;
@@ -96,6 +97,20 @@ pub enum Effect {
     TaskDone(String),
     /// Ask how often a task recurs (`e`): written to this target's tasks.toml.
     TaskEvery(String),
+    /// A key, as if pressed.
+    Key(KeyEvent),
+    /// The help box (`?`).
+    Help,
+    /// Ask for a line in the key bar (with what's there to start with).
+    Prompt(Prompt, String),
+    /// Into the maintenance log now.
+    LogEvent(Box<LogEntry>),
+    /// Close the Plan view.
+    PlanClose,
+    /// From a target: a line of its own in the open chat.
+    ChatNote(String),
+    /// From a target: what the apply session fixed was audited again (true: it's gone).
+    Reaudited(bool),
     /// From a target: its audit ended (a series may be waiting for it).
     AuditEnded(bool),
     /// From a target: what a review at start is told about has been read.
@@ -158,6 +173,20 @@ pub enum Prompt {
     PlanRevise(String),
     /// A task's cadence (its id): `30d`, `off`.
     TaskEvery(String),
+    /// A task just logged as done (its entry, its title): a note for the entry (optional).
+    TaskNote(Box<LogEntry>, String),
+    /// One of a target's own: it gets the answer (`Target::on_prompt`).
+    Own(OwnPrompt),
+}
+
+/// A prompt only one kind of target asks.
+#[derive(Clone, Debug)]
+pub struct OwnPrompt {
+    pub label: String,
+    pub enter: &'static str,
+    /// The workflow whose values it asks for, if that's what it is.
+    pub workflow: Option<String>,
+    pub own: Own,
 }
 
 impl PromptLine for Prompt {
@@ -183,6 +212,10 @@ impl PromptLine for Prompt {
             ),
             Prompt::PlanRevise(_) => "revise the plan: ".into(),
             Prompt::TaskEvery(id) => format!("{id} · every (e.g. 30d, 90d, off): "),
+            Prompt::TaskNote(_, title) => {
+                format!("{title}: done, logged · how it went, for the log (optional): ")
+            }
+            Prompt::Own(o) => o.label.clone(),
         }
     }
 
@@ -190,6 +223,7 @@ impl PromptLine for Prompt {
         match self {
             Prompt::WfVar(_) => "next",
             Prompt::PlanRevise(_) => "send",
+            Prompt::Own(o) => o.enter,
             _ => "save",
         }
     }
@@ -218,6 +252,10 @@ pub enum WfCmd {
     /// is logged as a change to the item when it ends.
     BeginPrefilled(String, BTreeMap<String, String>, Option<ItemChange>),
     BeginWith(String, BTreeMap<String, String>),
+    /// The run's screen is open: auto steps may run, and the next one does.
+    Arm,
+    /// One of a target's own, on the run (`Host::run_cmd`).
+    Own(Own),
     Go,
     Skip(bool),
     Done,
@@ -239,6 +277,10 @@ pub struct RunSpec {
     pub then: Vec<Effect>,
     /// It reboots the host: logged as one.
     pub reboot: bool,
+    /// Run after `cmd`, in order, while each one succeeds.
+    pub queue: Vec<Cmd>,
+    /// When the last one exits, the target hears how (`Target::pane_ended`).
+    pub end: Option<Own>,
 }
 
 /// A command that gets the terminal.

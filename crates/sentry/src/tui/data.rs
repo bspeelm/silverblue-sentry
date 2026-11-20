@@ -1,14 +1,12 @@
 //! Everything the screens render from. Mutated only on the main thread; background fetches
-//! arrive as `Event::Data` and are applied here.
+//! arrive as the target's [`Data`] (through its `Mail`) and are applied here.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use jiff::Timestamp;
 
-use super::Event;
 use super::screens::history::HistData;
 use super::screens::upgrade::WfInfo;
 use crate::audit::store::Stored;
@@ -29,6 +27,13 @@ use crate::collectors::{CollectError, Ctx};
 use crate::config::Config;
 use crate::jobs::JobId;
 use crate::jobs::plan::Plan;
+use crate::maint::log::LogEntry;
+#[cfg(test)]
+use sentry_app::shared::Shared;
+use sentry_app::target::Mail;
+
+/// What a fetch thread read, on its way back to the target.
+pub struct Data(pub Fetch, pub Box<Result<Payload, FetchErr>>);
 
 /// Background work the UI can request. At most one of each kind is in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -198,11 +203,16 @@ pub struct DataStore {
     pub recorder: Option<crate::recorder::Live>,
     /// Effective baseline; reloaded after the TUI writes baseline.toml.
     pub baseline: Baseline,
-    /// Recommendations put off with `z` (`maint.toml`), and Claude's plans (`plans/`).
+    /// What a test's records start as: put off with `z`, Claude's plans, the tasks and the
+    /// maintenance log. The app keeps its records in its `Shared` (read at start); these
+    /// are moved there (`records_into`), never read by a screen.
+    #[cfg(test)]
     pub snoozes: crate::maint::later::Snoozes,
+    #[cfg(test)]
     pub plans: std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
-    /// Tasks taken from reviews (`tasks.toml`), and the maintenance log that says which are done.
+    #[cfg(test)]
     pub tasks: Vec<crate::maint::tasks::Task>,
+    #[cfg(test)]
     pub maint_log: Vec<crate::maint::log::LogEntry>,
 
     pub inflight: HashSet<Fetch>,
@@ -217,10 +227,6 @@ impl DataStore {
         // Old jobs.json / cadence.toml into the log and tasks.toml, once, before they're read.
         crate::jobs::state::migrate(&cfg);
         d.baseline = Baseline::effective(&cfg);
-        d.snoozes = crate::maint::later::load(crate::maint::LOCAL);
-        d.plans = crate::maint::plan::list(crate::maint::LOCAL);
-        d.tasks = crate::maint::tasks::load(crate::maint::LOCAL);
-        d.maint_log = crate::maint::log::list(crate::maint::LOCAL);
         d.ostree_checked =
             cache::load::<serde_json::Value>(cache::OSTREE_CHECK).map(|c| c.fetched_at);
         // Cached results are shown immediately with their age; never refreshed automatically.
@@ -238,18 +244,39 @@ impl DataStore {
         d
     }
 
+    /// The records a test put in the store, into the app's.
+    #[cfg(test)]
+    pub fn records_into(&mut self, sh: &mut Shared) {
+        sh.later = std::mem::take(&mut self.snoozes);
+        sh.plans = std::mem::take(&mut self.plans);
+        sh.tasks = std::mem::take(&mut self.tasks);
+        sh.log = std::mem::take(&mut self.maint_log);
+    }
+
+    /// The same, copied (tests that look at a screen without the app).
+    #[cfg(test)]
+    pub fn records(&self) -> Shared {
+        Shared {
+            later: self.snoozes.clone(),
+            plans: self.plans.clone(),
+            tasks: self.tasks.clone(),
+            log: self.maint_log.clone(),
+            ..Shared::default()
+        }
+    }
+
     /// Flatpak updates waiting, unless the count is from before the last quick-update.
-    pub fn fp_waiting(&self) -> Option<&Cached<Vec<FpUpdate>>> {
+    pub fn fp_waiting(&self, log: &[LogEntry]) -> Option<&Cached<Vec<FpUpdate>>> {
         self.fp_updates
             .get()
-            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, &self.maint_log))
+            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, log))
     }
 
     /// The same for the toolboxes' packages.
-    pub fn tbx_waiting(&self) -> Option<&Cached<ToolboxUpdates>> {
+    pub fn tbx_waiting(&self, log: &[LogEntry]) -> Option<&Cached<ToolboxUpdates>> {
         self.tbx_updates
             .get()
-            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, &self.maint_log))
+            .filter(|c| crate::maint::local::still_waiting(c.fetched_at, log))
     }
 
     /// No disk access: used by `new` and by render tests.
@@ -281,9 +308,13 @@ impl DataStore {
             history: Slot::default(),
             recorder: None,
             baseline: Baseline::default(),
+            #[cfg(test)]
             snoozes: Default::default(),
+            #[cfg(test)]
             plans: Default::default(),
+            #[cfg(test)]
             tasks: Default::default(),
+            #[cfg(test)]
             maint_log: Default::default(),
             inflight: HashSet::new(),
             os_version,
@@ -364,11 +395,8 @@ impl DataStore {
             Fetch::Podman => put!(podman, Payload::Podman),
             Fetch::Units => put!(units, Payload::Units),
             Fetch::Reports => put!(reports, Payload::Reports),
-            Fetch::Log => {
-                if let Ok(Payload::Log(v)) = r {
-                    self.maint_log = v;
-                }
-            }
+            // The log is one of the target's records: it goes there (`Records::log`).
+            Fetch::Log => {}
             Fetch::Cleanup => put!(cleanup, Payload::Cleanup),
             Fetch::Workflows => put!(workflows, Payload::Workflows),
             Fetch::History => put!(history, Payload::History),
@@ -382,16 +410,16 @@ impl DataStore {
     }
 
     /// Start a background fetch unless one of the same kind is already running.
-    pub fn fetch(&mut self, f: Fetch, cfg: &Arc<Config>, tx: &Sender<Event>) {
+    pub fn fetch(&mut self, f: Fetch, cfg: &Arc<Config>, mail: &Mail) {
         if !self.inflight.insert(f) {
             return;
         }
         let cfg = Arc::clone(cfg);
-        let tx = tx.clone();
+        let mail = mail.clone();
         std::thread::spawn(move || {
             let ctx = Ctx::new((*cfg).clone());
             let r = run_fetch(f, &ctx);
-            let _ = tx.send(Event::Data(f, Box::new(r)));
+            mail.send(Data(f, Box::new(r)));
         });
     }
 }

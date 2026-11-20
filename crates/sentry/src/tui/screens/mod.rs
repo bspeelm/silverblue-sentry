@@ -26,6 +26,8 @@ use crate::config::Config;
 
 pub struct View<'a> {
     pub d: &'a DataStore,
+    /// The app's records: the log, tasks, plans, what's put off.
+    pub sh: &'a sentry_app::shared::Shared,
     pub cfg: &'a Config,
     pub t: &'a Theme,
     pub filter: Option<&'a str>,

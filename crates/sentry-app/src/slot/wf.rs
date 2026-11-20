@@ -112,30 +112,17 @@ impl Slot {
         let change = self.wf_change.take();
         // A plan carried out is done with (it moves to plans/done/); an abandoned run leaves it.
         let mut plan_path = None;
-        if let Some(c) = &change
+        if let Some(key) = self.target.run_plan(&**s, change.as_ref())
             && done
-            && let Some(doc) = self.shared.plans.remove(&c.item)
+            && let Some(doc) = self.shared.plans.remove(&key)
         {
             plan_path = if w.offline {
-                Some(plan::path(&self.scope, &c.item))
+                Some(plan::path(&self.scope, &key))
             } else {
                 plan::close(&doc, PlanStatus::Done).ok()
             };
         }
-        let info = change.as_ref().map(|c| {
-            let (kind, risk) = self
-                .target
-                .item_kind(&c.item)
-                .unwrap_or_else(|| ("system".into(), "medium".into()));
-            log::ItemInfo {
-                item: c.item.clone(),
-                kind,
-                risk,
-                from: c.from.clone(),
-                to: c.to.clone(),
-                plan: plan_path,
-            }
-        });
+        let info = self.target.run_info(&**s, change.as_ref(), plan_path);
         let mut entry = log::LogEntry::from_run(
             &self.scope,
             s.wf(),
@@ -152,6 +139,14 @@ impl Slot {
             }
             self.shared.log = log::list(&self.scope);
             self.refresh(w, Why::Lists);
+            self.refresh(w, Why::Logged);
+        } else if self.ways.log_kept {
+            // Tests write nothing, but what's done is still read from the log: one entry
+            // per run, newest first.
+            self.shared
+                .log
+                .retain(|e| e.head.run.is_none() || e.head.run != entry.head.run);
+            self.shared.log.insert(0, entry.clone());
         }
         if done {
             self.review_run = Some(entry.clone());
@@ -264,8 +259,17 @@ impl Slot {
         {
             return w.toast(&format!("couldn't write the note: {e}"));
         }
+        if !self.ways.log_kept {
+        } else if w.offline {
+            self.shared
+                .log
+                .retain(|e| e.head.run.is_none() || e.head.run != with_note.head.run);
+            self.shared.log.insert(0, with_note.clone());
+        } else {
+            self.shared.log = sentry_core::maint::log::list(&self.scope);
+        }
         self.last_log = Some(with_note);
-        w.toast("noted in the maintenance log");
+        w.toast(self.ways.noted);
     }
 
     /// Stop the workflow's running step (abandoning, closing or quitting).
@@ -285,6 +289,28 @@ impl Slot {
             self.wf_stop_live();
         }
         let r: Result<Option<Exec>, String> = match c {
+            WfCmd::Arm => {
+                if let Some(s) = self.run.as_mut() {
+                    s.arm();
+                }
+                self.wf_auto_now(w);
+                Ok(None)
+            }
+            WfCmd::Own(own) => match self.run.as_deref_mut() {
+                None => return,
+                Some(s) => {
+                    let r = self
+                        .target
+                        .run_cmd(s, &own, &self.shared, &cx!(self, w, norun));
+                    match r {
+                        Ok(e) => {
+                            self.apply(w, e, w.at);
+                            Ok(None)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            },
             WfCmd::Begin(name) => {
                 let asks: Vec<(String, String, Option<String>)> = self
                     .shared
@@ -365,12 +391,19 @@ impl Slot {
                 return;
             }
             WfCmd::BeginWith(name, vars) => {
-                match self.shared.wf_entries.iter().find(|e| e.name == name) {
-                    Some(e) => match self.target.begin_run(e, vars) {
+                let entry = self.target.find_workflow(&name).or_else(|| {
+                    self.shared
+                        .wf_entries
+                        .iter()
+                        .find(|e| e.name == name)
+                        .cloned()
+                });
+                match entry {
+                    Some(e) => match self.target.begin_run(&e, vars, &self.shared) {
                         Ok(s) => {
                             self.run = Some(s);
                             // Its screen: the run is followed there, and its auto steps start.
-                            self.enter(w, ScreenId::Upgrade, Instant::now());
+                            self.enter(w, ScreenId::Upgrade, w.at);
                             Ok(None)
                         }
                         Err(e) => Err(e),
@@ -400,6 +433,8 @@ impl Slot {
                     WfCmd::Begin(_)
                     | WfCmd::BeginWith(..)
                     | WfCmd::BeginPrefilled(..)
+                    | WfCmd::Arm
+                    | WfCmd::Own(_)
                     | WfCmd::Close => Ok(None),
                 },
             },
@@ -409,16 +444,26 @@ impl Slot {
             Ok(None) => {}
             Err(e) => w.toast(&e),
         }
-        self.wf_auto(w);
+        if self.ways.auto_in_view {
+            self.wf_auto(w);
+        } else {
+            self.wf_log_change(w);
+        }
         w.dirty = true;
     }
 
-    /// Run the next auto step while the run is in view (screen 0).
+    /// Run the next auto step: while the run is in view (screen 0), or wherever the user is
+    /// (the target's way).
     pub(crate) fn wf_auto(&mut self, w: &mut Win) {
         self.wf_log_change(w);
-        if self.screen != ScreenId::Upgrade {
+        if self.screen != ScreenId::Upgrade && self.ways.auto_in_view {
             return;
         }
+        self.wf_auto_now(w);
+    }
+
+    /// The next auto step, if the run is armed and idle.
+    pub(crate) fn wf_auto_now(&mut self, w: &mut Win) {
         if !self
             .run
             .as_ref()
@@ -437,34 +482,54 @@ impl Slot {
 
     pub(crate) fn wf_exec(&mut self, w: &mut Win, e: Exec) {
         match e {
-            Exec::Stream { cmd, idx } => {
+            Exec::Stream {
+                cmd,
+                idx,
+                dry,
+                timeout,
+            } => {
                 let id = self.mail.next();
                 let mut pid = None;
+                let live = |pid| Live {
+                    id,
+                    idx,
+                    pid,
+                    started: Instant::now(),
+                    dry,
+                    deadline: timeout.map(|t| Instant::now() + t),
+                };
                 if !w.offline {
                     match self.mail.stream(id, &cmd) {
                         Ok(p) => pid = Some(p),
                         Err(err) => {
                             if let Some(s) = self.run.as_mut() {
-                                s.push(format!("✗ {err}"), LogKind::Err);
-                                s.on_exit(idx, 127);
+                                s.spawn_failed(idx, dry, &err.to_string());
                             }
                             return;
                         }
                     }
                 }
                 if let Some(s) = self.run.as_mut() {
-                    s.set_live(Some(Live {
-                        id,
-                        idx,
-                        pid,
-                        started: Instant::now(),
-                    }));
+                    s.set_live(Some(live(pid)));
                 }
+            }
+            Exec::Shell { idx } => {
+                let sh = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+                let cmd = sentry_core::exec::Cmd::local(&sh).timeout(None);
+                self.suspend_shell = Some(idx);
+                self.suspend = Some(Suspend {
+                    banner: format!("$ {}", cmd.display()),
+                    cmd,
+                    then: Vec::new(),
+                    own: None,
+                });
             }
             Exec::Tty { cmd, idx, capture } => {
                 let _ = self.mail.next();
                 self.suspend_step = Some((idx, capture));
-                let banner = format!("{} · workflow step on {}", self.app, self.title);
+                let own = self.run.as_ref().and_then(|s| s.tty_banner(&cmd));
+                let banner = own
+                    .unwrap_or_else(|| format!("{} · workflow step on {}", self.app, self.title));
                 self.suspend = Some(Suspend {
                     cmd,
                     banner,
@@ -485,7 +550,7 @@ impl Slot {
                     })
                     .unwrap_or_default();
                 let e = self.target.reboot(cmd, tty, old, &cx!(self, w));
-                self.apply(w, e, Instant::now());
+                self.apply(w, e, w.at);
             }
         }
     }
@@ -494,6 +559,10 @@ impl Slot {
     /// Enter on a workflow (screen 0, `:wf <name>`): its values are asked when it takes any,
     /// otherwise the box that says what starting it does.
     pub(crate) fn wf_start(&mut self, w: &mut Win, name: &str, now: Instant) {
+        // The target's own way of starting one (its screen's Enter).
+        if let Some(e) = self.target.wf_start(name, &self.shared, &cx!(self, w)) {
+            return self.apply(w, e, now);
+        }
         if self.screen != ScreenId::Upgrade {
             self.enter(w, ScreenId::Upgrade, now);
         }

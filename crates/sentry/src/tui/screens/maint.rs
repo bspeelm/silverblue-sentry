@@ -161,7 +161,7 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
         },
         Do::Run(wf) | Do::OpenPlan(wf) => Verbs {
             plan: true,
-            planned: v.d.plans.contains_key(wf),
+            planned: v.sh.plans.contains_key(wf),
             ..base
         },
         Do::Task(id) => Verbs {
@@ -199,7 +199,7 @@ fn workflow_text(wf: &str) -> String {
 /// Claude's plan for a workflow, when there's one ready.
 fn plan_text(v: &View, wf: &str) -> Option<String> {
     let p =
-        v.d.plans
+        v.sh.plans
             .get(wf)
             .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)?;
     Some(format!(
@@ -338,24 +338,24 @@ pub fn recs_all(v: &View) -> Vec<Rec> {
         report: v.d.reports.get().and_then(|r| r.last()).map(|s| &s.report),
         baseline: &v.d.baseline,
         ostree: v.d.ostree.get(),
-        flatpak_updates: v.d.fp_waiting().map(|c| c.data.len()),
+        flatpak_updates: v.d.fp_waiting(&v.sh.log).map(|c| c.data.len()),
         toolbox_updates: v
             .d
-            .tbx_waiting()
+            .tbx_waiting(&v.sh.log)
             .map(|c| crate::collectors::toolbox::total(&c.data)),
         reclaim,
         disk_tight,
         run,
-        plans: &v.d.plans,
-        snoozes: &v.d.snoozes,
+        plans: &v.sh.plans,
+        snoozes: &v.sh.later,
         tasks: &all_tasks(v),
-        log: &v.d.maint_log,
+        log: &v.sh.log,
     })
 }
 
 /// Every task that applies: `tasks.toml`'s and the jobs' cadences.
 pub fn all_tasks(v: &View) -> Vec<Task> {
-    crate::maint::tasks::effective(&v.d.tasks, crate::jobs::state::tasks(v.cfg))
+    crate::maint::tasks::effective(&v.sh.tasks, crate::jobs::state::tasks(v.cfg))
 }
 
 /// The task behind a `Task` recommendation.

@@ -1552,6 +1552,7 @@ dependencies = [
  "jiff",
  "ratatui",
  "rustix",
+ "sentry-app",
  "sentry-core",
  "serde",
  "serde_ignored",

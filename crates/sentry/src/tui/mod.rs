@@ -1,5 +1,5 @@
-//! sentry's TUI: the app, its screens and their data. The terminal, event loop and widgets are
-//! `sentry_core::tui` (re-exported here).
+//! sentry's TUI: this machine as a target of the app (`sentry_app`), its screens and their
+//! data. The terminal, event loop and widgets are `sentry_core::tui` (re-exported here).
 //!
 //! One main thread owns all state. An input thread forwards key events; background fetches and
 //! streamed commands send `Event`s over the same channel. There is no ticker thread: the loop
@@ -9,6 +9,7 @@ mod app;
 mod data;
 mod plans;
 mod screens;
+mod target;
 mod wf;
 
 pub use sentry_core::tui::*;
@@ -29,31 +30,22 @@ pub const SCREENS: ScreenSet = ScreenSet {
     aliases: &[],
 };
 
-use ratatui::crossterm::event::KeyEvent;
-
-use crate::exec::StreamMsg;
 pub use data::{Fetch, FetchErr, Payload};
+pub use sentry_app::Event;
 
-impl From<Input> for Event {
-    fn from(i: Input) -> Self {
-        match i {
-            Input::Key(k) => Event::Key(k),
-            Input::Paste(t) => Event::Paste(t),
-            Input::Resize => Event::Resize,
-            Input::Signal => Event::Signal,
-        }
+/// The app with this machine as its one target.
+pub fn app(tx: std::sync::mpsc::Sender<Event>) -> sentry_app::App {
+    let (cfg, warnings) = crate::config::Config::load();
+    let mut app = sentry_app::App::new(tx, target::LocalTarget::ID, |mail| {
+        Box::new(target::LocalTarget::new(cfg, mail))
+    });
+    // What's wrong in config.toml, said once the TUI is up (ahead of a `[keys]` warning).
+    if let Some(w) = warnings.into_iter().next() {
+        app.warn_at_start(w);
     }
-}
-
-pub enum Event {
-    Key(KeyEvent),
-    Paste(String),
-    Resize,
-    Data(Fetch, Box<Result<Payload, FetchErr>>),
-    Run(u64, StreamMsg),
-    Signal,
+    app
 }
 
 pub fn run() -> anyhow::Result<()> {
-    run_ui(app::App::new)
+    run_ui(app)
 }

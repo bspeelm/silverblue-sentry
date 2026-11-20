@@ -14,6 +14,7 @@ publish.workspace = true
 
 [dependencies]
 sentry-core.workspace = true
+sentry-app.workspace = true
 ratatui.workspace = true
 sysinfo.workspace = true
 serde.workspace = true
@@ -31,4 +32,5 @@ rustix.workspace = true
 
 [dev-dependencies]
 sentry-core = { workspace = true, features = ["testing"] }
+sentry-app = { workspace = true, features = ["testing"] }
 insta.workspace = true

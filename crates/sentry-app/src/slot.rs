@@ -69,6 +69,11 @@ macro_rules! cx {
             run: $run,
             last_change: $s.last_change_at,
             offline: $w.offline,
+            at: $w.at,
+            modal: $s.modal.is_some(),
+            pane: $s.pane.as_ref().map(|p| p.done.is_none()),
+            chat_running: $s.chat.as_ref().is_some_and(|c| c.running()),
+            finding: $s.apply.as_ref().and_then(|a| a.chat.ask.finding()),
         }
     };
 }
@@ -79,17 +84,41 @@ pub(crate) struct Pane {
     id: u64,
     title: String,
     pub(crate) cmd: String,
-    lines: VecDeque<String>,
+    pub(crate) lines: VecDeque<String>,
     pid: Option<u32>,
     /// Exit code once finished (`None` = running).
-    done: Option<i32>,
+    pub(crate) done: Option<i32>,
+    /// How long it took.
+    took: Option<Duration>,
     started: Instant,
     scroll: usize,
     /// What follows its exit.
     then: Vec<Effect>,
+    /// Commands still to run after this one, while each succeeds.
+    queue: VecDeque<sentry_core::exec::Cmd>,
+    /// The target hears how the last one ended.
+    end: Option<Own>,
 }
 
-const PANE_LINES: usize = 5000;
+impl Pane {
+    /// A pane with nothing running in it yet.
+    fn new(id: u64, title: String, cmd: String) -> Self {
+        Self {
+            id,
+            title,
+            cmd,
+            lines: VecDeque::new(),
+            pid: None,
+            done: None,
+            took: None,
+            started: Instant::now(),
+            scroll: 0,
+            then: Vec::new(),
+            queue: VecDeque::new(),
+            end: None,
+        }
+    }
+}
 
 pub struct Slot {
     pub target: Box<dyn Target>,
@@ -120,6 +149,10 @@ pub struct Slot {
     suspend_edit: bool,
     /// A step running with the terminal handed over, and where its output is captured.
     suspend_step: Option<(usize, String)>,
+    /// A shell step's shell has the terminal.
+    suspend_shell: Option<usize>,
+    /// Where this program's flows go their own way (the target's, fixed).
+    pub(crate) ways: crate::target::Ways,
     /// The ticked rows being done one after another.
     series: Option<sentry_core::maint::series::Series>,
     /// The item whose plan the series had written: it isn't written twice.
@@ -133,7 +166,7 @@ pub struct Slot {
     /// The review at start is still to begin (it waits for the first data).
     start_check: bool,
     /// `[review]` in config.toml: the reviews started without being asked.
-    auto_review: sentry_core::config::Review,
+    pub auto_review: sentry_core::config::Review,
     /// When the last maintenance run ended.
     pub(crate) last_change_at: Option<jiff::Timestamp>,
     /// Tests: the last entry written with a note.
@@ -159,9 +192,14 @@ impl Slot {
     pub fn new(target: Box<dyn Target>, mail: Mail) -> Self {
         let id = target.ident();
         let (scope, title, app) = (id.scope.clone(), id.title.clone(), id.app);
+        let ways = id.ways;
+        let shared = Shared {
+            wf_dir: id.wf_dir.clone(),
+            ..Shared::default()
+        };
         Self {
             target,
-            shared: Shared::default(),
+            shared,
             mail,
             scope,
             title,
@@ -177,6 +215,8 @@ impl Slot {
             suspend_own: None,
             suspend_edit: false,
             suspend_step: None,
+            suspend_shell: None,
+            ways,
             series: None,
             series_planned: None,
             wf_change: None,
@@ -200,7 +240,7 @@ impl Slot {
     /// Have the target read something again; what it says to that is done.
     pub(crate) fn refresh(&mut self, w: &mut Win, why: Why) {
         let e = self.target.refresh(why, &cx!(self, w));
-        self.apply(w, e, Instant::now());
+        self.apply(w, e, w.at);
     }
 
     /// The lists changed, a key was handled: the target's cursors and selections follow.
@@ -211,7 +251,7 @@ impl Slot {
     /// A run or a series is over: what the target offers then (reading the host again…).
     pub(crate) fn settled(&mut self, w: &mut Win) {
         let e = self.target.settled(&cx!(self, w));
-        self.apply(w, e, Instant::now());
+        self.apply(w, e, w.at);
     }
 
     /// Every task that applies: `tasks.toml` over what the target's config implies.
@@ -224,16 +264,50 @@ impl Slot {
 
     /// Don't leave a streamed command running on the host.
     pub(crate) fn shutdown(&mut self) {
-        if let Some(pid) = self.pane.as_ref().and_then(|p| p.pid) {
-            let _ = kill(pid);
-        }
-        if let Some(pid) = self.run.as_ref().and_then(|s| s.live()).and_then(|l| l.pid) {
-            let _ = kill(pid);
+        if self.ways.exit_kills_run {
+            if let Some(pid) = self.pane.as_ref().and_then(|p| p.pid) {
+                let _ = kill(pid);
+            }
+            if let Some(pid) = self.run.as_ref().and_then(|s| s.live()).and_then(|l| l.pid) {
+                let _ = kill(pid);
+            }
         }
         if let Some((_, pid)) = self.chat.as_ref().and_then(|c| c.live) {
             let _ = kill(pid);
         }
+        if self.ways.exit_kills_session
+            && let Some(s) = self.apply.as_ref()
+        {
+            for pid in [s.chat.live.map(|l| l.1), s.job.map(|j| j.1)]
+                .into_iter()
+                .flatten()
+            {
+                let _ = kill(pid);
+            }
+        }
     }
+
+    /// Which of Records, the plan and the review is in front, when more than one is open.
+    pub(crate) fn doc_front(&self) -> Option<Doc> {
+        let order = if self.ways.review_over_plan {
+            [Doc::Review, Doc::Records, Doc::Plan]
+        } else {
+            [Doc::Records, Doc::Plan, Doc::Review]
+        };
+        order.into_iter().find(|d| match d {
+            Doc::Review => self.review_view.is_some(),
+            Doc::Records => self.rec_view.is_some(),
+            Doc::Plan => self.plan_view.is_some(),
+        })
+    }
+}
+
+/// What can be open over the screen.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Doc {
+    Records,
+    Plan,
+    Review,
 }
 
 /// `A` where Claude can help apply something: apply it with Claude, or just ask.

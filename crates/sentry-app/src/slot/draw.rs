@@ -39,7 +39,12 @@ impl Slot {
             );
         }
         self.target.render(f, body, &self.shared, &cx!(self, w));
-        if let Some(rv) = &self.review_view {
+        let front = self.doc_front();
+        if let Some(rv) = self
+            .review_view
+            .as_ref()
+            .filter(|_| front == Some(Doc::Review))
+        {
             let writer = self.writer.as_ref().filter(|w| w.review.is_some());
             let path = self.shared.review.as_ref().map_or(String::new(), |d| {
                 sentry_core::tui::widgets::short_home(
@@ -58,7 +63,11 @@ impl Slot {
                     path: &path,
                 },
             );
-        } else if let Some(r) = &self.rec_view {
+        } else if let Some(r) = self
+            .rec_view
+            .as_ref()
+            .filter(|_| front == Some(Doc::Records))
+        {
             sentry_core::tui::records::draw(f, body, &t, r);
         } else if let Some((id, scroll)) = &self.plan_view {
             let path = sentry_core::maint::plan::path(&self.scope, id)
@@ -115,7 +124,9 @@ impl Slot {
                     len: p.lines.len(),
                     scroll: p.scroll,
                     started: p.started,
-                    done: p.done.map(|code| (code, None)),
+                    done: p
+                        .done
+                        .map(|code| (code, p.took.filter(|_| self.ways.pane_took))),
                 },
                 p.lines.iter().map(String::as_str),
             );
@@ -172,8 +183,16 @@ impl Slot {
         let layer = frame::layer(&self.open(w));
         // A box or a conversation over the line: its keys, not the line's.
         if layer == Layer::Input
-            && let Some(bar) = w.input.bar()
+            && let Some(mut bar) = w.input.bar()
         {
+            // The target's own words for a prompt.
+            if let (Input::Prompt(p, _), frame::KeyBar::Prompt { label, enter, .. }) =
+                (&w.input, &mut bar)
+                && let Some((own, word)) = (self.ways.label)(p)
+            {
+                *label = own;
+                *enter = word;
+            }
             return frame::draw_keybar(f, area, &w.theme, &bar, toast);
         }
         let hints: frame::Hints = match layer {
@@ -219,9 +238,12 @@ impl Slot {
 
     /// The keys of Records, a plan or a review, whichever is over the screen.
     pub(crate) fn doc_hints(&self) -> frame::Hints<'_> {
-        if let Some(rv) = &self.review_view {
+        // The app's own way names the review's keys first, then Records', then the plan's;
+        // the other names the plan's first.
+        let plan_first = !self.ways.review_over_plan && self.plan_view.is_some();
+        if let Some(rv) = self.review_view.as_ref().filter(|_| !plan_first) {
             rv.hints(self.shared.review.as_ref(), self.writing_review())
-        } else if let Some(r) = &self.rec_view {
+        } else if let Some(r) = self.rec_view.as_ref().filter(|_| !plan_first) {
             r.hints()
         } else if let Some((id, _)) = &self.plan_view {
             if self
@@ -235,14 +257,7 @@ impl Slot {
                     ("Esc", "back (it carries on)"),
                 ]
             } else {
-                vec![
-                    ("Enter", "apply"),
-                    ("A", "claude"),
-                    ("r", "revise"),
-                    ("x", "drop"),
-                    ("j/k PgUp/Dn", "scroll"),
-                    ("Esc", "back"),
-                ]
+                self.ways.plan_hints.to_vec()
             }
         } else {
             Vec::new()

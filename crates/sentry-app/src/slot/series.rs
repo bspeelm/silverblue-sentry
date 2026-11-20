@@ -20,10 +20,11 @@ impl Slot {
         if self.run.as_ref().is_some_and(|s| !s.done()) {
             return w.toast("a workflow run is in progress: finish it first (0)");
         }
-        if self
-            .writer
-            .as_ref()
-            .is_some_and(|w| w.running() && !w.quiet)
+        if self.ways.series_waits_writer
+            && self
+                .writer
+                .as_ref()
+                .is_some_and(|w| w.running() && !w.quiet)
         {
             return w.toast("Claude is writing: wait for it, or C-c in its view");
         }
@@ -63,7 +64,9 @@ impl Slot {
                     let mut sess = sentry_core::apply::session::Session::new(ask);
                     sess.chat.privacy = self.target.ident().session_privacy.clone();
                     let fx = sess.start_in_series(pos, secret, ok);
-                    self.plan_view = None;
+                    if self.ways.series_closes_plan {
+                        self.plan_view = None;
+                    }
                     self.apply = Some(sess);
                     self.apply_fx(w, fx);
                     return;
@@ -91,9 +94,9 @@ impl Slot {
                 }
                 Some(SeriesStep::Workflow(name)) => {
                     sr.wait = Wait::Workflow(name.clone());
-                    self.wf_start(w, &name, Instant::now());
+                    self.wf_start(w, &name, w.at);
                     self.series_answer_box(w);
-                    let asked = matches!(&w.input, Input::Prompt(Prompt::WfVar(_), _));
+                    let asked = self.asking_vars(w).is_some();
                     let going = self
                         .run
                         .as_ref()
@@ -122,7 +125,7 @@ impl Slot {
         if self.modal.as_ref().is_some_and(|m| m.yes.is_some())
             && let Some((_, effects)) = self.modal.take().and_then(|m| m.yes)
         {
-            self.apply(w, effects, Instant::now());
+            self.apply(w, effects, w.at);
         }
     }
 
@@ -143,7 +146,9 @@ impl Slot {
             Phase::Settled(End::Stopped) => Outcome::Failed("stopped".into()),
             _ => Outcome::Failed("not verified".into()),
         });
-        self.plan_view = None;
+        if self.ways.series_closes_plan {
+            self.plan_view = None;
+        }
         self.series_go(w);
     }
 
@@ -167,7 +172,7 @@ impl Slot {
         if !w.offline {
             self.load_wf_entries();
         }
-        self.enter(w, ScreenId::Maint, Instant::now());
+        self.enter(w, ScreenId::Maint, w.at);
         if let Some(sr) = self.series.as_mut() {
             sr.ended(Outcome::Done);
         }
@@ -203,6 +208,9 @@ impl Slot {
         }
         if !ok {
             return self.series_stop(w);
+        }
+        if self.ways.audit_in_pane {
+            self.pane = None;
         }
         if let Some(sr) = self.series.as_mut() {
             sr.ended(Outcome::Done);

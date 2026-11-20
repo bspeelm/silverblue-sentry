@@ -19,6 +19,10 @@ impl Slot {
                 }
                 StreamMsg::Line { stderr: true, text } => sess.chat.on_raw(text.clone()),
                 StreamMsg::Exit { code, .. } => {
+                    // The plan's steps are checked against the workflows as they are.
+                    if self.shared.wf_entries.is_empty() && !w.offline {
+                        self.load_wf_entries();
+                    }
                     let names = self.wf_infos();
                     let Some(sess) = self.apply.as_mut() else {
                         return true;
@@ -124,9 +128,23 @@ impl Slot {
                 // What checking a fix again means is the target's (a server leaves it to
                 // Claude's own read-only check).
                 Fx::Reaudit => self.refresh(w, Why::Reaudit),
+                Fx::RetryStep if self.ways.auto_in_view => {
+                    self.wf_cmd(w, WfCmd::Retry);
+                    self.enter(w, ScreenId::Upgrade, w.at);
+                }
+                // Where auto steps don't wait for the screen: the step runs again now, a
+                // confirm step too (the retry was the confirm).
                 Fx::RetryStep => {
                     self.wf_cmd(w, WfCmd::Retry);
-                    self.enter(w, ScreenId::Upgrade, Instant::now());
+                    self.wf_auto(w);
+                    if self
+                        .run
+                        .as_ref()
+                        .is_some_and(|s| s.live().is_none() && matches!(s.next(), Next::Confirm(_)))
+                    {
+                        self.wf_cmd(w, WfCmd::Go);
+                    }
+                    self.apply(w, vec![Effect::Goto(ScreenId::Upgrade)], w.at);
                 }
                 Fx::MarkDone => {
                     let a = self
@@ -136,16 +154,17 @@ impl Slot {
                         .unwrap_or_default();
                     match (a.task, a.plan) {
                         (Some(id), _) => {
+                            let title = self.task_title(&id);
                             let e = sentry_core::maint::log::LogEntry::task(
                                 &self.scope,
                                 &id,
-                                &id,
+                                &title,
                                 None,
                             );
                             self.log_event(w, e);
                         }
-                        (None, Some(item)) => {
-                            self.apply(w, vec![Effect::PlanDoneByHand(item)], Instant::now())
+                        (None, Some(item)) if self.ways.plans_by_hand => {
+                            self.apply(w, vec![Effect::PlanDoneByHand(item)], w.at)
                         }
                         _ => {}
                     }
@@ -173,6 +192,23 @@ impl Slot {
                     }
                 }
                 Fx::StartWorkflow(wf, vars) => {
+                    // The target's own way of starting one for a session.
+                    let own = self
+                        .target
+                        .session_starts(&wf, &vars, &self.shared, &cx!(self, w));
+                    if let Some(e) = own {
+                        self.apply(w, e, w.at);
+                        // A workflow that needs you first (a value, a confirm): its run, in
+                        // front.
+                        let going = self.run.as_ref().is_some_and(|s| s.live().is_some());
+                        if !going || w.input.is_open() {
+                            if let Some(sess) = self.apply.as_mut() {
+                                sess.chat.hidden = true;
+                            }
+                            w.toast(&format!("{wf}{}", self.ways.needs_you));
+                        }
+                        continue;
+                    }
                     // It can't start (a draft, another run open): the step fails with why, and
                     // Claude hears it, rather than the plan waiting for a run that never comes.
                     if let Some(why) = self.wf_refusal(w, &wf) {
@@ -209,16 +245,14 @@ impl Slot {
                     self.apply(
                         w,
                         vec![Effect::Wf(WfCmd::BeginPrefilled(wf.clone(), given, change))],
-                        Instant::now(),
+                        w.at,
                     );
                     let going = self.run.as_ref().is_some_and(|s| s.live().is_some());
                     if !going || self.asking_vars(w).is_some() {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
-                        w.toast(&format!(
-                            "{wf} needs you · the plan carries on after its run (A)"
-                        ));
+                        w.toast(&format!("{wf}{}", self.ways.needs_you));
                     }
                 }
                 Fx::PlanDone(item) => {
@@ -227,9 +261,27 @@ impl Slot {
                         if !w.offline {
                             let _ = sentry_core::maint::plan::close(&doc, PlanStatus::Done);
                         }
-                        self.plan_view = None;
-                        w.toast(&format!("the plan for {item} is done (plans/done/)"));
+                        if self.ways.plan_done_says {
+                            self.plan_view = None;
+                            w.toast(&format!("the plan for {item} is done (plans/done/)"));
+                        }
                     }
+                }
+                Fx::OpenRun(wf, vars) if !self.ways.run_checks => {
+                    let running = self
+                        .run
+                        .as_ref()
+                        .is_some_and(|s| s.wf().name == wf && !s.done());
+                    if !running && !w.input.is_open() {
+                        // It never started (its values dismissed, refused): start it again.
+                        self.apply_fx(w, vec![Fx::StartWorkflow(wf, vars)]);
+                        continue;
+                    }
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.chat.hidden = true;
+                    }
+                    self.apply(w, vec![Effect::Goto(ScreenId::Upgrade)], w.at);
+                    w.toast("the plan carries on when the run ends · A shows it");
                 }
                 Fx::OpenRun(wf, vars) => {
                     // Its values being asked: they're in front already.
@@ -247,7 +299,7 @@ impl Slot {
                         if let Some(sess) = self.apply.as_mut() {
                             sess.chat.hidden = true;
                         }
-                        self.enter(w, ScreenId::Upgrade, Instant::now());
+                        self.enter(w, ScreenId::Upgrade, w.at);
                         w.toast(&format!(
                             "{other} is in progress: finish it, then A · Enter starts {wf}"
                         ));
@@ -262,7 +314,7 @@ impl Slot {
                         sess.chat.hidden = true;
                     }
                     if running {
-                        self.enter(w, ScreenId::Upgrade, Instant::now());
+                        self.enter(w, ScreenId::Upgrade, w.at);
                     }
                     w.toast("the plan carries on when the run ends · A shows it");
                 }
@@ -273,6 +325,7 @@ impl Slot {
                         .as_ref()
                         .and_then(|s| s.chat.ask.applying())
                         .and_then(|a| a.item.clone())
+                        .filter(|_| self.ways.log_item_tag)
                     {
                         tags.push(format!("item:{i}"));
                     }
@@ -288,7 +341,8 @@ impl Slot {
                     self.log_event(w, e);
                 }
                 Fx::TaskDone(id) => {
-                    let e = sentry_core::maint::log::LogEntry::task(&self.scope, &id, &id, None);
+                    let title = self.task_title(&id);
+                    let e = sentry_core::maint::log::LogEntry::task(&self.scope, &id, &title, None);
                     self.log_event(w, e);
                 }
                 Fx::AddTask(t) => self.task_add(w, *t),
@@ -310,11 +364,22 @@ impl Slot {
         }
     }
 
+    /// What a task done in a session is logged as: its title, or (the app's own way) its id.
+    fn task_title(&self, id: &str) -> String {
+        if !self.ways.log_task_title {
+            return id.to_string();
+        }
+        self.all_tasks()
+            .into_iter()
+            .find(|t| t.id == id)
+            .map_or(id.to_string(), |t| t.title)
+    }
+
     /// Open the conversation, nothing sent yet: an apply session, or a chat, showing the
     /// brief; Enter sends it.
     pub(crate) fn open_ask(&mut self, w: &mut Win, ask: Ask) {
         if !claude::available() {
-            w.toast("Claude Code isn't installed (or not on PATH)");
+            w.toast(self.ways.no_claude);
             return;
         }
         if ask.applying().is_some() {
@@ -391,6 +456,9 @@ impl Slot {
         let _ = to;
         let Some(c) = self.chat.as_mut() else { return };
         c.pending = false;
+        if w.offline && self.ways.offline_turns_live {
+            return c.begin_turn(&shown, id, 0);
+        }
         if w.offline {
             c.push(chatmod::Kind::You, shown);
             return;
@@ -413,7 +481,7 @@ impl Slot {
                     let note = std::mem::take(&mut c.input);
                     let mut prompt = c.ask.prompt();
                     let shown = match note.trim() {
-                        "" => c.ask.question.lines().next().unwrap_or("").to_string(),
+                        "" => (self.ways.first_shown)(&c.ask),
                         n => {
                             prompt.push_str(&format!("\n\nFrom me: {n}"));
                             n.to_string()
@@ -431,6 +499,17 @@ impl Slot {
             return;
         }
         let idle = c.input.is_empty() && !c.busy();
+        // Carried on somewhere else, where the target has such a place.
+        if k.code == KeyCode::Char('C')
+            && !ctrl
+            && idle
+            && let Some(session) = c.session.clone()
+            && let Some(e) = self.target.chat_continue(&session)
+        {
+            w.dirty = true;
+            return self.apply(w, e, w.at);
+        }
+        let Some(c) = self.chat.as_mut() else { return };
         match k.code {
             KeyCode::Char('c') if ctrl => {
                 if let Some((_, pid)) = c.live {

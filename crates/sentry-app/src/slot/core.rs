@@ -24,7 +24,7 @@ impl Slot {
             );
             self.run = self.target.resume_run();
             // A run left in progress: show it (its auto steps wait until it's open).
-            if self.run.is_some() {
+            if self.run.is_some() && self.ways.resume_opens_run {
                 self.screen = ScreenId::Upgrade;
             }
             self.shared.plans = sentry_core::maint::plan::list(&self.scope);
@@ -36,9 +36,13 @@ impl Slot {
                 .log
                 .first()
                 .and_then(|e| e.head.ended.or(e.head.started));
-            self.load_wf_entries();
+            if self.ways.workflows_at_start {
+                self.load_wf_entries();
+            }
         }
         self.enter(w, self.screen, now);
+        // A run that ended while the program was closed (with the reboot) is logged now.
+        self.wf_log_change(w);
     }
 
     /// Switch screens; what the screen shows is fetched right away, and from then on only
@@ -78,16 +82,32 @@ impl Slot {
             w.toast = None;
             w.dirty = true;
         }
-        if self.screen == ScreenId::Upgrade {
+        if self.screen == ScreenId::Upgrade && self.ways.auto_in_view {
             self.wf_auto(w);
         }
+        // A step that takes too long is stopped.
+        if let Some(s) = self.run.as_mut()
+            && let Some(l) = s.live()
+            && l.deadline.is_some_and(|d| now >= d)
+        {
+            let (pid, mut l) = (l.pid, *l);
+            l.deadline = None;
+            s.set_live(Some(l));
+            if let Some(pid) = pid {
+                let _ = kill(pid);
+            }
+            s.push("✗ timeout: sent SIGTERM".into(), LogKind::Err);
+            w.dirty = true;
+        }
         // Only what the screen in view polls (and what the target waits for).
-        self.target.due(now, &cx!(self, w));
+        if self.target.due(now, &cx!(self, w)) {
+            w.dirty = true;
+        }
     }
 
     /// When this slot next has something to do by itself.
-    pub(crate) fn next_due(&self, now: Instant) -> Option<Instant> {
-        let mut due = self.target.next_due();
+    pub(crate) fn next_due(&self, w: &Win, now: Instant) -> Option<Instant> {
+        let mut due = self.target.next_due(now, &cx!(self, w));
         if self.talking() {
             let t = now + Duration::from_secs(1);
             due = Some(due.map_or(t, |d| d.min(t)));
@@ -98,7 +118,7 @@ impl Slot {
     /// Something one of the target's threads read.
     pub(crate) fn on_data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
         let e = self.target.on_data(data, &mut self.shared, &cx!(self, w));
-        self.apply(w, e, Instant::now());
+        self.apply(w, e, w.at);
         self.settle(w, Settle::Lists);
         w.dirty = true;
     }
@@ -169,7 +189,7 @@ impl Slot {
                     let e = self
                         .target
                         .offer_reads(ReadsFor::Chat, false, &cx!(self, w));
-                    self.apply(w, e, Instant::now());
+                    self.apply(w, e, w.at);
                 }
             }
             w.dirty = true;
@@ -180,7 +200,7 @@ impl Slot {
         {
             let idx = l.idx;
             match m {
-                StreamMsg::Line { text, .. } => s.on_line(&text),
+                StreamMsg::Line { stderr, text } => s.on_line(&text, stderr),
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, code);
                     // What the step's end means for the host (sudo changed under us…).
@@ -194,7 +214,7 @@ impl Slot {
             return;
         }
         if let Some(e) = self.target.on_stream(id, &m, &cx!(self, w)) {
-            self.apply(w, e, Instant::now());
+            self.apply(w, e, w.at);
             w.dirty = true;
             return;
         }
@@ -203,16 +223,45 @@ impl Slot {
         };
         match m {
             StreamMsg::Line { text, .. } => {
-                if p.lines.len() == PANE_LINES {
+                if p.lines.len() == self.ways.pane_lines {
                     p.lines.pop_front();
                 }
                 p.lines.push_back(text);
             }
-            StreamMsg::Exit { code, .. } => {
+            StreamMsg::Exit { code, elapsed } => {
+                let mut code = code;
+                // The next of its commands, while each one succeeds.
+                if code == 0
+                    && let Some(next) = p.queue.pop_front()
+                {
+                    p.lines.push_back(String::new());
+                    p.lines.push_back(format!("$ {}", next.display()));
+                    match self.mail.stream(id, &next) {
+                        Ok(pid) => {
+                            p.pid = Some(pid);
+                            p.cmd = next.display();
+                            w.dirty = true;
+                            return;
+                        }
+                        Err(e) => {
+                            p.lines.push_back(e.to_string());
+                            code = 127;
+                        }
+                    }
+                }
                 p.done = Some(code);
+                p.took = Some(elapsed);
                 p.pid = None;
                 let then = p.then.clone();
-                self.apply(w, then, Instant::now());
+                let end = p.end.take();
+                let tail: Vec<String> = p.lines.iter().rev().take(5).rev().cloned().collect();
+                self.apply(w, then, w.at);
+                if let Some(end) = end {
+                    let e =
+                        self.target
+                            .pane_ended(&end, code, &tail, &mut self.shared, &cx!(self, w));
+                    self.apply(w, e, w.at);
+                }
             }
         }
         w.dirty = true;
@@ -256,6 +305,7 @@ impl Slot {
     pub(crate) fn asking_vars<'a>(&self, w: &'a Win) -> Option<&'a str> {
         match &w.input {
             Input::Prompt(Prompt::WfVar(v), _) => Some(&v.workflow),
+            Input::Prompt(Prompt::Own(o), _) => o.workflow.as_deref(),
             _ => None,
         }
     }
@@ -335,7 +385,9 @@ impl Slot {
             Layer::Docs => {
                 // Over Records, a plan or a review: a screen key goes there, `:` still works.
                 match w.keys.resolve(&k) {
-                    Some(Action::Screen(id)) if id != ScreenId::Upgrade => {
+                    Some(Action::Screen(id))
+                        if id != ScreenId::Upgrade || !self.ways.docs_keep_run_key =>
+                    {
                         self.rec_view = None;
                         self.review_view = None;
                         self.plan_view = None;
@@ -347,9 +399,12 @@ impl Slot {
                     }
                     _ => {}
                 }
+                // Records first, then whichever of the plan and the review is in front.
                 if self.rec_view.is_some() {
                     self.records_key(w, k, now);
-                } else if self.review_view.is_some() {
+                } else if self.plan_view.is_none()
+                    || (self.review_view.is_some() && self.ways.review_over_plan)
+                {
                     self.review_view_key(w, k);
                 } else {
                     self.plan_view_key(w, k, now);
@@ -417,9 +472,12 @@ impl Slot {
                 } else if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
                     c.hidden = false;
                 } else if !claude::available() {
-                    w.toast("Claude Code isn't installed (or not on PATH)");
+                    w.toast(self.ways.no_claude);
                 } else {
-                    if self.screen == ScreenId::Maint && self.shared.wf_entries.is_empty() {
+                    if self.screen == ScreenId::Maint
+                        && self.shared.wf_entries.is_empty()
+                        && !w.offline
+                    {
                         self.load_wf_entries();
                     }
                     let ask = self.target.ask(&self.shared, &cx!(self, w));
@@ -453,7 +511,7 @@ impl Slot {
             }
             Typed::FilterCleared => {
                 self.filters.remove(&self.screen);
-                self.settle(w, Settle::Filter);
+                self.settle(w, Settle::FilterCleared);
             }
             Typed::Command(c) => self.command(w, c.trim(), now),
             Typed::Submit(p, text) => self.submit(w, p, text.trim()),
@@ -490,6 +548,29 @@ impl Slot {
             Prompt::LogNote(e) => {
                 self.log_note_submit(w, *e, text, false);
                 self.review_after_run(w);
+            }
+            // A task marked done: the same entry, with how it went.
+            Prompt::TaskNote(..) if text.is_empty() => {}
+            Prompt::TaskNote(old, title) => {
+                let new = sentry_core::maint::log::LogEntry::task(
+                    &self.scope,
+                    old.head.item.as_deref().unwrap_or_default(),
+                    &title,
+                    Some(text),
+                );
+                if !w.offline {
+                    if let Err(e) = sentry_core::maint::log::write_replacing(&old, &new) {
+                        return w.toast(&format!("couldn't write the note: {e}"));
+                    }
+                    self.shared.log = sentry_core::maint::log::list(&self.scope);
+                }
+                w.toast(self.ways.noted);
+            }
+            Prompt::Own(o) => {
+                let e = self
+                    .target
+                    .on_prompt(&o.own, Some(text), &mut self.shared, &cx!(self, w));
+                self.apply(w, e, w.at);
             }
             Prompt::LogAddNote(e) => self.log_note_submit(w, *e, text, true),
             // The plan's note: an empty one is fine.
@@ -547,19 +628,39 @@ impl Slot {
     pub(crate) fn cancelled(&mut self, w: &mut Win, p: Prompt) {
         match p {
             Prompt::WfVar(v) => {
-                w.toast("not started");
+                if let Some(say) = self.ways.not_started {
+                    w.toast(say);
+                }
                 // The series' workflow, its values dismissed: it never starts.
                 if self.series_waits(&sentry_core::maint::series::Wait::Workflow(v.workflow)) {
                     self.series_stop(w);
                 }
             }
-            Prompt::PlanNote(..) => w.toast("not planned"),
+            Prompt::Own(o) => {
+                let e = self
+                    .target
+                    .on_prompt(&o.own, None, &mut self.shared, &cx!(self, w));
+                self.apply(w, e, w.at);
+                if let Some(wf) = o.workflow
+                    && self.series_waits(&sentry_core::maint::series::Wait::Workflow(wf))
+                {
+                    self.series_stop(w);
+                }
+            }
+            Prompt::PlanNote(..) => {
+                if let Some(say) = self.ways.not_planned {
+                    w.toast(say);
+                }
+            }
             // No note: what the run changed may still want reading again.
             Prompt::LogNote(_) => {
                 self.settled(w);
                 self.review_after_run(w);
             }
-            Prompt::LogAddNote(_) | Prompt::PlanRevise(_) | Prompt::TaskEvery(_) => {}
+            Prompt::LogAddNote(_)
+            | Prompt::PlanRevise(_)
+            | Prompt::TaskEvery(_)
+            | Prompt::TaskNote(..) => {}
         }
     }
 
@@ -573,11 +674,19 @@ impl Slot {
             RunKey::Kill => {
                 if let Some(pid) = p.pid {
                     let _ = kill(pid);
-                    p.lines.push_back("■ stopping…".into());
+                    match self.ways.pane_kill {
+                        Some(say) => w.toast(say),
+                        None => p.lines.push_back("■ stopping…".into()),
+                    }
                 }
             }
-            RunKey::Busy => w.toast("running · C-c stops it"),
-            RunKey::Scroll(n) => p.scroll = p.scroll.saturating_add_signed(n as isize).min(len),
+            RunKey::Busy => w.toast(self.ways.pane_busy),
+            RunKey::Scroll(n) => {
+                p.scroll = p.scroll.saturating_add_signed(n as isize);
+                if self.ways.pane_clamp {
+                    p.scroll = p.scroll.min(len);
+                }
+            }
             RunKey::End => p.scroll = 0,
             RunKey::Top => p.scroll = len,
             RunKey::None => {}
@@ -610,7 +719,7 @@ impl Slot {
         let (name, arg) = (parts.next(), parts.next());
         // One only this kind of target has.
         if let Some(n) = name
-            && let Some(e) = self.target.colon(n, arg, &self.shared, &cx!(self, w))
+            && let Some(e) = self.target.colon(c, n, arg, &self.shared, &cx!(self, w))
         {
             return self.apply(w, e, now);
         }
@@ -652,7 +761,7 @@ impl Slot {
     pub(crate) fn take_suspend(&mut self, w: &mut Win) -> Option<(sentry_core::exec::Cmd, String)> {
         let s = self.suspend.take()?;
         // Re-read afterwards whatever the command changed.
-        self.apply(w, s.then, Instant::now());
+        self.apply(w, s.then, w.at);
         self.suspend_own = s.own;
         Some((s.cmd, s.banner))
     }
@@ -661,11 +770,17 @@ impl Slot {
         if let Some((idx, capture)) = self.suspend_step.take()
             && let Some(s) = self.run.as_mut()
         {
-            let code = match &status {
-                Ok(st) => st.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            s.tty_ended(idx, &capture, code, !w.offline);
+            match &status {
+                Ok(st) => s.tty_ended(idx, &capture, st.code().unwrap_or(-1), !w.offline),
+                Err(e) => s.tty_failed(idx, &capture, &e.to_string(), !w.offline),
+            }
+            self.wf_auto(w);
+            return;
+        }
+        if let Some(idx) = self.suspend_shell.take()
+            && let Some(s) = self.run.as_mut()
+        {
+            s.after_shell(idx);
             self.wf_auto(w);
             return;
         }
@@ -679,7 +794,7 @@ impl Slot {
             let e = self
                 .target
                 .after_suspend(&own, status, &mut self.shared, &cx!(self, w));
-            return self.apply(w, e, Instant::now());
+            return self.apply(w, e, w.at);
         }
         match status {
             Ok(s) if s.success() => w.toast("done"),

@@ -887,7 +887,7 @@ fn ask_finished(s: &Session) -> crate::claude::Ask {
 
 /// The plan ready for this workflow, if there is one.
 pub fn ready_plan<'a>(v: &View<'a>, wf: &str) -> Option<&'a crate::maint::plan::PlanDoc> {
-    v.d.plans
+    v.sh.plans
         .get(wf)
         .filter(|p| p.head.status == crate::maint::plan::PlanStatus::Ready)
 }

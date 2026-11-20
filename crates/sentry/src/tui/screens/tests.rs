@@ -204,22 +204,22 @@ fn other_screens_snapshot() {
 fn navigation_and_modals() {
     let mut a = app(ScreenId::Dash);
     key(&mut a, KeyCode::Char('3'));
-    assert_eq!(a.screen, ScreenId::Net);
+    assert_eq!(a.slot().screen, ScreenId::Net);
     key(&mut a, KeyCode::Char('l'));
-    assert_eq!(a.screen, ScreenId::Cont);
+    assert_eq!(a.slot().screen, ScreenId::Cont);
     key(&mut a, KeyCode::Char('h'));
     key(&mut a, KeyCode::Char('h'));
-    assert_eq!(a.screen, ScreenId::Proc);
+    assert_eq!(a.slot().screen, ScreenId::Proc);
     key(&mut a, KeyCode::Char('H'));
-    assert_eq!(a.screen, ScreenId::Hist);
+    assert_eq!(a.slot().screen, ScreenId::Hist);
     key(&mut a, KeyCode::Char('q'));
     let s = render_to_string(&mut a, 120, 30);
     assert!(s.contains("Quit sentry?"), "{s}");
     key(&mut a, KeyCode::Esc);
-    assert!(!a.quit);
+    assert!(!a.win.quit);
     key(&mut a, KeyCode::Char('q'));
     key(&mut a, KeyCode::Char('y'));
-    assert!(a.quit);
+    assert!(a.win.quit);
 }
 
 #[test]
@@ -231,7 +231,11 @@ fn updates_are_applied_by_quick_update() {
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Upgrade, "Enter starts it on Upgrade");
+    assert_eq!(
+        a.slot().screen,
+        ScreenId::Upgrade,
+        "Enter starts it on Upgrade"
+    );
 }
 
 #[test]
@@ -257,11 +261,11 @@ fn command_line() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.screen, ScreenId::Flat);
+    assert_eq!(a.slot().screen, ScreenId::Flat);
     key(&mut a, KeyCode::Char(':'));
     key(&mut a, KeyCode::Char('q'));
     key(&mut a, KeyCode::Enter);
-    assert!(a.quit);
+    assert!(a.win.quit);
 }
 
 fn audit_reports() -> Vec<crate::audit::store::Stored> {
@@ -667,8 +671,10 @@ fn ask_claude_context_per_tab() {
     d.reports.set(Ok(audit_reports()));
     let cfg = Config::default();
     let t = Theme::truecolor();
+    let sh = d.records();
     let v = View {
         d: &d,
+        sh: &sh,
         cfg: &cfg,
         t: &t,
         filter: None,
@@ -802,7 +808,7 @@ fn dashboard_rows_jump_to_tabs() {
     key(&mut a, KeyCode::Char('j'));
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     assert!(
         s.contains("soon  Updates waiting"),
         "the updates row selects its recommendation: {s}"
@@ -850,7 +856,7 @@ fn maintenance_keys_and_views() {
     assert!(render_to_string(&mut a, 158, 41).contains("Recommended"));
     // Cleanup is its own screen: C goes there.
     key(&mut a, KeyCode::Char('C'));
-    assert_eq!(a.screen, ScreenId::Clean);
+    assert_eq!(a.slot().screen, ScreenId::Clean);
 }
 
 #[test]
@@ -1137,7 +1143,7 @@ gate = "confirm"
     let mut a = App::for_test(Config::default(), store(), ScreenId::Upgrade);
     a.set_wf(stopped());
     key(&mut a, KeyCode::Char('l'));
-    assert_ne!(a.screen, ScreenId::Upgrade);
+    assert_ne!(a.slot().screen, ScreenId::Upgrade);
 }
 
 #[test]
@@ -1216,7 +1222,7 @@ fn esc_hides_a_running_chat_and_a_brings_it_back() {
     assert!(s.contains("Claude answering…"), "the A chip says so: {s}");
     // Keys go to the screen again.
     key(&mut a, KeyCode::Char('2'));
-    assert_eq!(a.screen, ScreenId::Proc);
+    assert_eq!(a.slot().screen, ScreenId::Proc);
     key(&mut a, KeyCode::Char('A'));
     assert!(render_to_string(&mut a, 158, 41).contains("Claude · dashboard"));
 }
@@ -2122,7 +2128,7 @@ fn a_series_runs_a_workflow_and_goes_on_when_it_ends_well() {
     key(&mut a, KeyCode::Enter);
     // The run, on its screen, with no start box: the series' Enter was the start.
     let s = render_to_string(&mut a, 158, 41);
-    assert_eq!(a.screen, ScreenId::Upgrade, "{s}");
+    assert_eq!(a.slot().screen, ScreenId::Upgrade, "{s}");
     assert!(
         s.contains("Update the firmware") && !s.contains(&format!("Start {name}")),
         "{s}"
@@ -2135,7 +2141,7 @@ fn a_series_runs_a_workflow_and_goes_on_when_it_ends_well() {
         "{s}"
     );
     assert!(!s.contains("what to know next time"), "{s}");
-    assert_eq!(a.screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
     assert!(!a.tasks_due_for_test().contains(&"fw".to_string()));
     let _ = std::fs::remove_file(&file);
 }

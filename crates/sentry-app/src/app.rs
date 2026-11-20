@@ -57,6 +57,8 @@ pub struct Win {
     pub modal: Option<Modal>,
     pub quit: bool,
     pub dirty: bool,
+    /// The moment of the event being handled: the one clock the flows schedule by.
+    pub at: Instant,
     /// Fixed clock for snapshot tests.
     pub now_override: Option<jiff::Timestamp>,
     /// Tests: never start a fetch, write a record or send anything.
@@ -105,6 +107,7 @@ impl App {
                 modal: None,
                 quit: false,
                 dirty: true,
+                at: Instant::now(),
                 now_override: None,
                 offline: false,
                 keys_warning: warnings.into_iter().next(),
@@ -131,7 +134,13 @@ impl App {
         Some((s, &mut self.win))
     }
 
+    /// Something to say once the TUI is up, ahead of a `[keys]` warning.
+    pub fn warn_at_start(&mut self, s: String) {
+        self.win.keys_warning = Some(s);
+    }
+
     pub fn start(&mut self, now: Instant) {
+        self.win.at = now;
         for s in &mut self.slots {
             s.start(&mut self.win, now);
         }
@@ -141,23 +150,26 @@ impl App {
     }
 
     pub fn enter(&mut self, id: ScreenId, now: Instant) {
+        self.win.at = now;
         let (s, w) = self.parts();
         s.enter(w, id, now);
     }
 
     pub fn apply(&mut self, effects: Vec<Effect>, now: Instant) {
+        self.win.at = now;
         let (s, w) = self.parts();
         s.apply(w, effects, now);
     }
 
     pub fn tick(&mut self, now: Instant) {
+        self.win.at = now;
         let (s, w) = self.parts();
         s.tick(w, now);
     }
 
     pub fn next_due(&self, now: Instant) -> Instant {
         let mut due = now + Duration::from_secs(60);
-        if let Some(t) = self.slot().next_due(now) {
+        if let Some(t) = self.slot().next_due(&self.win, now) {
             due = due.min(t);
         }
         if let Some(t) = &self.win.toast {
@@ -167,6 +179,7 @@ impl App {
     }
 
     pub fn on_event(&mut self, ev: Event, now: Instant) {
+        self.win.at = now;
         match ev {
             Event::Key(k) => {
                 let (s, w) = self.parts();
@@ -203,11 +216,13 @@ impl App {
     }
 
     pub fn take_suspend(&mut self) -> Option<(Cmd, String)> {
+        self.win.at = Instant::now();
         let (s, w) = self.parts();
         s.take_suspend(w)
     }
 
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
+        self.win.at = Instant::now();
         let (s, w) = self.parts();
         s.after_suspend(w, status);
     }
@@ -409,6 +424,35 @@ impl App {
     /// The box in front, if it's one to confirm: what yes does.
     pub fn box_yes_for_test(&self) -> Option<&[Effect]> {
         Some(&self.slot().modal.as_ref()?.yes.as_ref()?.1)
+    }
+    /// The run that ended is logged, as the event loop would.
+    pub fn run_logged_for_test(&mut self) {
+        let (s, w) = self.parts();
+        s.wf_log_change(w);
+    }
+    /// A workflow run ended with this log entry: the session waiting for it hears.
+    pub fn run_ended_for_test(&mut self, e: &sentry_core::maint::log::LogEntry) {
+        let (s, w) = self.parts();
+        s.apply_run_ended(w, e);
+    }
+    /// What Claude is writing in the background, or last wrote.
+    pub fn writer_for_test(&self) -> Option<&sentry_core::tui::docview::Writer> {
+        self.slot().writer.as_ref()
+    }
+    /// The review the app starts by itself begins (nothing is sent).
+    pub fn review_auto_for_test(&mut self) {
+        let (s, w) = self.parts();
+        s.review_auto(w, None);
+    }
+    /// Claude starts writing this (nothing is sent).
+    pub fn start_writer_for_test(&mut self, wr: sentry_core::tui::docview::Writer) {
+        let (s, w) = self.parts();
+        s.start_writer(w, wr, String::new(), None);
+    }
+    /// The pane's lines and, once its command ended, its exit code.
+    pub fn pane_for_test(&self) -> Option<(Vec<String>, Option<i32>)> {
+        let p = self.slot().pane.as_ref()?;
+        Some((p.lines.iter().cloned().collect(), p.done))
     }
     /// When the target last changed (a run, a task done).
     pub fn set_last_change_for_test(&mut self, at: jiff::Timestamp) {

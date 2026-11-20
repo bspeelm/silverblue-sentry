@@ -8,6 +8,22 @@ impl Slot {
                     let e = self.target.on_own(&own, &mut self.shared, &cx!(self, w));
                     self.apply(w, e, now);
                 }
+                Effect::Key(k) => self.on_key(w, k, now),
+                Effect::Help => self.show_help(w),
+                Effect::Prompt(p, init) => w.input = Input::Prompt(p, init),
+                Effect::LogEvent(e) => self.log_event(w, *e),
+                Effect::PlanClose => self.plan_view = None,
+                Effect::ChatNote(text) => {
+                    if let Some(c) = self.chat.as_mut() {
+                        c.push(chatmod::Kind::Info, text);
+                    }
+                }
+                Effect::Reaudited(gone) => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        let fx = sess.reaudited(gone);
+                        self.apply_fx(w, fx);
+                    }
+                }
                 Effect::Toast(s) => w.toast(&s),
                 Effect::Quit => w.quit = true,
                 Effect::Info(title, lines) => {
@@ -22,7 +38,7 @@ impl Slot {
                 Effect::Wf(c) => self.wf_cmd(w, c),
                 Effect::ChatGrant => self.chat_grant(w),
                 Effect::ApplyAsk => {
-                    if self.shared.wf_entries.is_empty() {
+                    if self.shared.wf_entries.is_empty() && !w.offline {
                         self.load_wf_entries();
                     }
                     let apply = self.target.apply_ask(&self.shared, &cx!(self, w));
@@ -56,7 +72,14 @@ impl Slot {
                     self.plan_view = None;
                     w.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
-                Effect::PlanOpen(id) => self.plan_view = Some((id, 0)),
+                Effect::PlanOpen(id) => match self.ways.no_plan {
+                    Some(say)
+                        if !self.shared.plans.contains_key(&id) && !self.writing_plan(&id) =>
+                    {
+                        w.toast(&say(&id))
+                    }
+                    _ => self.plan_view = Some((id, 0)),
+                },
                 Effect::PlanApply(id) => self.apply_plan(w, &id, now),
                 Effect::PlanDoneByHand(id) => self.plan_done_by_hand(w, &id),
                 Effect::Everything => self.everything = !self.everything,
@@ -98,17 +121,10 @@ impl Slot {
                 }
                 Effect::StepLog => match self.run.as_ref().and_then(|s| s.step_log()) {
                     Some((title, text)) => {
-                        self.pane = Some(Pane {
-                            id: self.mail.next(),
-                            title,
-                            cmd: String::new(),
-                            lines: text.lines().map(str::to_string).collect(),
-                            pid: None,
-                            done: Some(0),
-                            started: Instant::now(),
-                            scroll: 0,
-                            then: Vec::new(),
-                        });
+                        let mut pane = Pane::new(self.mail.next(), title, String::new());
+                        pane.lines = text.lines().map(str::to_string).collect();
+                        pane.done = Some(0);
+                        self.pane = Some(pane);
                     }
                     None => w.toast("no log for this step yet"),
                 },
@@ -160,17 +176,7 @@ impl Slot {
                 Effect::Run(spec) => self.start_run(w, spec),
                 Effect::Logs(title, cmd) => {
                     let id = self.mail.next();
-                    self.pane = Some(Pane {
-                        id,
-                        title,
-                        cmd: cmd.display(),
-                        lines: VecDeque::new(),
-                        pid: None,
-                        done: None,
-                        started: Instant::now(),
-                        scroll: 0,
-                        then: Vec::new(),
-                    });
+                    self.pane = Some(Pane::new(id, title, cmd.display()));
                     if !w.offline {
                         self.mail.text(id, cmd);
                     }
@@ -224,23 +230,18 @@ impl Slot {
             self.log_event(w, e);
         }
         let id = self.mail.next();
-        let mut pane = Pane {
-            id,
-            title: spec.title,
-            cmd: spec.cmd.display(),
-            lines: VecDeque::new(),
-            pid: None,
-            done: None,
-            started: Instant::now(),
-            scroll: 0,
-            then: spec.then,
-        };
+        let mut pane = Pane::new(id, spec.title, spec.cmd.display());
+        pane.then = spec.then;
+        pane.queue = spec.queue.into();
+        pane.end = spec.end;
         if !w.offline {
             match self.mail.stream(id, &spec.cmd) {
                 Ok(pid) => pane.pid = Some(pid),
                 Err(e) => {
-                    pane.lines.push_back(format!("✗ {e}"));
-                    pane.done = Some(-1);
+                    let (before, code) = self.ways.pane_failed;
+                    pane.lines.push_back(format!("{before}{e}"));
+                    pane.done = Some(code);
+                    pane.took = Some(Duration::ZERO);
                 }
             }
         }

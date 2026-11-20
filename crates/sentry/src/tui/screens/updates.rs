@@ -159,7 +159,7 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
         }
         None => l.push(Line::styled("OS: no update known", t.dim())),
     }
-    if let Some(c) = v.d.fp_waiting() {
+    if let Some(c) = v.d.fp_waiting(&v.sh.log) {
         l.push(Line::styled(
             format!(
                 "Flatpak: {} (checked {})",
@@ -190,13 +190,13 @@ pub fn updates_lines(v: &View) -> Vec<Line<'static>> {
             ));
         }
     }
-    if v.d.fp_updates.get().is_some() && v.d.fp_waiting().is_none() {
+    if v.d.fp_updates.get().is_some() && v.d.fp_waiting(&v.sh.log).is_none() {
         l.push(Line::styled(
             "Flatpak: not checked since the last quick-update · c checks",
             t.dim(),
         ));
     }
-    if let Some(c) = v.d.tbx_waiting() {
+    if let Some(c) = v.d.tbx_waiting(&v.sh.log) {
         for (name, b) in &c.data {
             if !b.updates.is_empty() {
                 l.push(Line::styled(
@@ -249,7 +249,7 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
             }
         }
     }
-    if let Some(c) = v.d.fp_waiting() {
+    if let Some(c) = v.d.fp_waiting(&v.sh.log) {
         lines.push(format!("{} Flatpak updates:", c.data.len()));
         for u in c.data.iter().take(30) {
             lines.push(format!("  {} {} ({})", u.id, u.branch, u.origin));

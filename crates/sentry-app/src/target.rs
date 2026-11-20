@@ -17,17 +17,19 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
 use crate::app::Event;
-use crate::effect::{Effect, Own, ReadsFor};
+use crate::effect::{Effect, ItemChange, Own, Prompt, ReadsFor};
 use crate::run::{Exec, WfRun};
 use crate::shared::Shared;
 use sentry_core::claude::{Ask, Grant, Profile};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
 use sentry_core::maint::changes::{Change, Known};
+use sentry_core::maint::log::ItemInfo;
 use sentry_core::maint::plan::PlanDoc;
 use sentry_core::maint::tasks::Task;
 use sentry_core::tui::docview::Writer;
@@ -56,6 +58,10 @@ pub struct Ident {
     pub screens: &'static ScreenSet,
     /// Where its workflow runs are kept.
     pub runs: PathBuf,
+    /// Where its workflows come from, as shown until they're read.
+    pub wf_dir: String,
+    /// Where this program's flows go their own way.
+    pub ways: Ways,
     /// The quit box's question.
     pub quit: String,
     /// `?`: the keys that work on every screen, the `:` commands, the last line.
@@ -65,6 +71,140 @@ pub struct Ident {
     /// What Claude may do with what's sent, shown with a chat's brief and a session's.
     pub privacy: String,
     pub session_privacy: String,
+}
+
+/// Where one program's flows differ from another's: its words, and the rules it keeps. The
+/// default is the app's own way (a host over ssh); a target says only what it does otherwise.
+#[derive(Clone, Copy)]
+pub struct Ways {
+    /// Said when Claude Code isn't there.
+    pub no_claude: &'static str,
+    /// Auto steps run only while the run's screen is in view, and are looked for on every
+    /// tick and after every workflow key. Off: they run wherever the user is, when the run is
+    /// armed, a step ends, or the terminal comes back.
+    pub auto_in_view: bool,
+    /// A run left in progress is shown at start.
+    pub resume_opens_run: bool,
+    /// The workflows are read at start (off: when something first needs them).
+    pub workflows_at_start: bool,
+    /// The key of the run's screen leaves Records, a plan or a review open.
+    pub docs_keep_run_key: bool,
+    /// With both open, the review is over the plan (off: the plan over the review, and
+    /// Records over both).
+    pub review_over_plan: bool,
+    /// The words of a prompt, where they aren't the app's: what it asks, and what Enter does.
+    pub label: fn(&Prompt) -> Option<(String, &'static str)>,
+    /// Esc on a workflow's values says this.
+    pub not_started: Option<&'static str>,
+    /// Esc on a plan's note says this.
+    pub not_planned: Option<&'static str>,
+    /// A run's note was saved.
+    pub noted: &'static str,
+    /// A task marked done asks for its note in words of its own, and no review follows it.
+    pub task_note: bool,
+    /// Tasks done in a session are logged under their titles (off: their ids).
+    pub log_task_title: bool,
+    /// A session marked done by hand closes its plan as done by hand.
+    pub plans_by_hand: bool,
+    /// A session's log entry names its item (`item:<id>`).
+    pub log_item_tag: bool,
+    /// A plan closed by its session is said, and its view closes.
+    pub plan_done_says: bool,
+    /// A plan that isn't there isn't opened: this is said (with what it's for).
+    pub no_plan: Option<fn(&str) -> String>,
+    /// The Plan view's keys, when a plan is there.
+    pub plan_hints: &'static [(&'static str, &'static str)],
+    /// C-c in the Plan view.
+    pub plan_stopped: &'static str,
+    /// A series doesn't start while Claude writes something asked for.
+    pub series_waits_writer: bool,
+    /// A series' next row closes a plan left open.
+    pub series_closes_plan: bool,
+    /// The audit runs in the pane: a series closes it when it goes on.
+    pub audit_in_pane: bool,
+    /// What a review may change is asked for as a server's (`changes::request_section`).
+    pub server_changes: bool,
+    /// Whether a task is due after a run counts the last audit.
+    pub due_counts_audit: bool,
+    /// What a plan or a review says it's about ("server", "machine").
+    pub writer_place: &'static str,
+    /// The first question's line in a chat's transcript.
+    pub first_shown: fn(&Ask) -> String,
+    /// Offline (tests), a chat's turn still counts as running.
+    pub offline_turns_live: bool,
+    /// The session's workflow needs the user: what follows the workflow's name.
+    pub needs_you: &'static str,
+    /// Leaving ends the pane's command and the run's step.
+    pub exit_kills_run: bool,
+    /// Leaving ends the session's turn and step.
+    pub exit_kills_session: bool,
+    /// Opening the session's run looks for another run in progress first, and goes to the
+    /// run's screen only when it runs.
+    pub run_checks: bool,
+    /// The log in memory follows every entry written, a run's note too (and tests, which
+    /// write nothing, still see their runs in it).
+    pub log_kept: bool,
+    /// The pane: lines kept, whether it says how long the command took, what a command that
+    /// couldn't start shows (before the error) and its exit code, what C-c says (none: a
+    /// line in the pane), what a key says while it runs, and whether scrolling stops at
+    /// the top.
+    pub pane_lines: usize,
+    pub pane_took: bool,
+    pub pane_failed: (&'static str, i32),
+    pub pane_kill: Option<&'static str>,
+    pub pane_busy: &'static str,
+    pub pane_clamp: bool,
+}
+
+impl Default for Ways {
+    fn default() -> Self {
+        Self {
+            no_claude: "Claude Code isn't installed (or not on PATH)",
+            auto_in_view: true,
+            resume_opens_run: true,
+            workflows_at_start: true,
+            docs_keep_run_key: true,
+            review_over_plan: true,
+            label: |_| None,
+            not_started: Some("not started"),
+            not_planned: Some("not planned"),
+            noted: "noted in the maintenance log",
+            task_note: false,
+            log_task_title: false,
+            plans_by_hand: true,
+            log_item_tag: true,
+            plan_done_says: true,
+            no_plan: None,
+            plan_hints: &[
+                ("Enter", "apply"),
+                ("A", "claude"),
+                ("r", "revise"),
+                ("x", "drop"),
+                ("j/k PgUp/Dn", "scroll"),
+                ("Esc", "back"),
+            ],
+            plan_stopped: "stopped: the plan keeps what it had",
+            series_waits_writer: true,
+            series_closes_plan: true,
+            audit_in_pane: false,
+            server_changes: true,
+            due_counts_audit: false,
+            writer_place: "server",
+            first_shown: |a| a.question.lines().next().unwrap_or("").to_string(),
+            offline_turns_live: false,
+            needs_you: " needs you · the plan carries on after its run (A)",
+            exit_kills_run: true,
+            exit_kills_session: false,
+            run_checks: true,
+            log_kept: false,
+            pane_lines: 5000,
+            pane_took: false,
+            pane_failed: ("✗ ", -1),
+            pane_kill: None,
+            pane_busy: "running · C-c stops it",
+            pane_clamp: true,
+        }
+    }
 }
 
 /// How events reach a target's slot: its fetches, its streams and the logs it reads all come
@@ -137,6 +277,16 @@ pub struct Cx<'a> {
     pub last_change: Option<jiff::Timestamp>,
     /// Tests: nothing is fetched, written or sent.
     pub offline: bool,
+    /// The moment of the event being handled (what scheduling counts from).
+    pub at: Instant,
+    /// One of the slot's boxes is open.
+    pub modal: bool,
+    /// The pane is open (true: its command still runs).
+    pub pane: Option<bool>,
+    /// Claude is answering in the chat.
+    pub chat_running: bool,
+    /// The finding the apply session is fixing.
+    pub finding: Option<&'a str>,
 }
 
 /// Why a target should read something again.
@@ -156,6 +306,10 @@ pub enum Why {
     Audit,
     /// The user edited a file of its own.
     Edited,
+    /// A run's entry was written to the log.
+    Logged,
+    /// What's marked expected changed (a listener taken back in Records).
+    Baseline,
 }
 
 /// Why a target's cursors and selections may need putting right.
@@ -167,6 +321,8 @@ pub enum Settle {
     Lists,
     /// The filter of the screen in view changed.
     Filter,
+    /// It was emptied.
+    FilterCleared,
     /// A series ended: these rows stay ticked.
     Ticks(Vec<String>),
     /// The workflow at this place in the list is the one meant.
@@ -218,10 +374,10 @@ pub trait Target: Upkeep + Asks + Host {
     fn start(&mut self, sh: &mut Shared, cx: &Cx) -> Vec<Effect>;
     /// `cx.screen` came into view (from `from`): what it shows is fetched right away.
     fn enter(&mut self, from: ScreenId, now: Instant, sh: &Shared, cx: &Cx) -> Vec<Effect>;
-    /// Start what the screen in view polls and is due.
-    fn due(&mut self, now: Instant, cx: &Cx);
+    /// Start what the screen in view polls and is due. True: draw again.
+    fn due(&mut self, now: Instant, cx: &Cx) -> bool;
     /// When `due` next has something to do.
-    fn next_due(&self) -> Option<Instant>;
+    fn next_due(&self, now: Instant, cx: &Cx) -> Option<Instant>;
     /// Something one of its threads sent (`Mail::send`).
     fn on_data(&mut self, data: Box<dyn Any + Send>, sh: &mut Shared, cx: &Cx) -> Vec<Effect>;
     /// A stream of its own (`Mail::stream`). None: not one of its.
@@ -231,6 +387,28 @@ pub trait Target: Upkeep + Asks + Host {
     fn refresh(&mut self, why: Why, cx: &Cx) -> Vec<Effect>;
     /// One of its own effects came back.
     fn on_own(&mut self, fx: &Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect>;
+    /// A prompt of its own was answered (None: dismissed).
+    fn on_prompt(
+        &mut self,
+        _own: &Own,
+        _answer: Option<&str>,
+        _sh: &mut Shared,
+        _cx: &Cx,
+    ) -> Vec<Effect> {
+        Vec::new()
+    }
+    /// A pane's command that named an end of its own (`RunSpec::end`) exited: its code and
+    /// its last lines.
+    fn pane_ended(
+        &mut self,
+        _end: &Own,
+        _code: i32,
+        _tail: &[String],
+        _sh: &mut Shared,
+        _cx: &Cx,
+    ) -> Vec<Effect> {
+        Vec::new()
+    }
     /// A command of its own that had the terminal ended.
     fn after_suspend(
         &mut self,
@@ -250,9 +428,10 @@ pub trait Target: Upkeep + Asks + Host {
     fn settle(&mut self, why: Settle, sh: &Shared, cx: &Cx);
     /// The top bar: facts about the host, and the state of the connection.
     fn top(&self, cx: &Cx) -> (Vec<String>, (String, Color));
-    /// A `:` command only this target has.
+    /// A `:` command only this target has (`line`: all of it, as typed).
     fn colon(
         &mut self,
+        _line: &str,
         _cmd: &str,
         _arg: Option<&str>,
         _sh: &Shared,
@@ -284,6 +463,30 @@ pub trait Upkeep {
     fn settled(&mut self, _cx: &Cx) -> Vec<Effect> {
         Vec::new()
     }
+    /// A run ended: the key of the plan it carried out (closed when it ended well).
+    fn run_plan(&mut self, _run: &dyn WfRun, change: Option<&ItemChange>) -> Option<String> {
+        change.map(|c| c.item.clone())
+    }
+    /// What the run changed, for the log (`plan`: the plan it closed).
+    fn run_info(
+        &self,
+        _run: &dyn WfRun,
+        change: Option<&ItemChange>,
+        plan: Option<PathBuf>,
+    ) -> Option<ItemInfo> {
+        let c = change?;
+        let (kind, risk) = self
+            .item_kind(&c.item)
+            .unwrap_or_else(|| ("system".into(), "medium".into()));
+        Some(ItemInfo {
+            item: c.item.clone(),
+            kind,
+            risk,
+            from: c.from.clone(),
+            to: c.to.clone(),
+            plan,
+        })
+    }
 }
 
 /// What Claude is asked, told and allowed.
@@ -311,6 +514,30 @@ pub trait Asks {
     /// Claude's profile for one of its roles; `grants`: what the user allowed in this
     /// conversation (a chat's, a session's).
     fn profile(&self, f: ProfileFor, grants: &[Grant]) -> Profile;
+    /// A key in the Plan view that this target takes itself (None: the app's own keys).
+    fn plan_key(
+        &mut self,
+        _item: &str,
+        _key: KeyEvent,
+        _writing: bool,
+        _sh: &Shared,
+        _cx: &Cx,
+    ) -> Option<Vec<Effect>> {
+        None
+    }
+    /// Claude's turn on a plan ended (its answer, or why there's none): the plan as it is
+    /// kept, and what to say. None: the app's own way.
+    fn plan_written(
+        &self,
+        _doc: &mut PlanDoc,
+        _answer: Result<&str, Option<&str>>,
+    ) -> Option<String> {
+        None
+    }
+    /// `C` in an idle chat: carry the conversation on somewhere else (its Claude session).
+    fn chat_continue(&mut self, _session: &str) -> Option<Vec<Effect>> {
+        None
+    }
     /// The answer says Claude waits for reads only the user can allow.
     fn waits_for_reads(&self, _answer: &str) -> bool {
         false
@@ -328,11 +555,42 @@ pub trait Host {
     fn command(&self, line: &str) -> Cmd;
     /// The workflows there are, and where they come from.
     fn workflows(&self) -> (Vec<Entry>, PathBuf);
+    /// The workflow as it is now, when the list read earlier isn't to be trusted for it.
+    fn find_workflow(&self, _name: &str) -> Option<Entry> {
+        None
+    }
     fn begin_run(
-        &self,
+        &mut self,
         entry: &Entry,
         vars: BTreeMap<String, String>,
+        sh: &Shared,
     ) -> Result<Box<dyn WfRun>, String>;
+    /// Starting a workflow by name (`:wf`, a recommendation, a series' row), when that's
+    /// the target's own flow. None: the app's start box.
+    fn wf_start(&mut self, _name: &str, _sh: &Shared, _cx: &Cx) -> Option<Vec<Effect>> {
+        None
+    }
+    /// An apply session's plan starts a workflow with these values, the target's own way.
+    /// None: the app's (a refusal fails the step, the plan's values come first).
+    fn session_starts(
+        &mut self,
+        _wf: &str,
+        _vars: &BTreeMap<String, String>,
+        _sh: &Shared,
+        _cx: &Cx,
+    ) -> Option<Vec<Effect>> {
+        None
+    }
+    /// A workflow command of its own (`WfCmd::Own`), on the run.
+    fn run_cmd(
+        &mut self,
+        _run: &mut dyn WfRun,
+        _own: &Own,
+        _sh: &Shared,
+        _cx: &Cx,
+    ) -> Result<Vec<Effect>, String> {
+        Ok(Vec::new())
+    }
     /// A run left in progress.
     fn resume_run(&self) -> Option<Box<dyn WfRun>>;
     /// The run's next step (`auto`: only if it runs without asking): what to execute. What

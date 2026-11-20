@@ -275,9 +275,16 @@ impl Session {
             Exec::Stream {
                 cmd: self.r.sh(&no_prompt(&cmd)).timeout(None),
                 idx,
+                dry: false,
+                timeout: None,
             }
         } else {
-            Exec::Stream { cmd: full, idx }
+            Exec::Stream {
+                cmd: full,
+                idx,
+                dry: false,
+                timeout: None,
+            }
         })
     }
 
@@ -571,7 +578,7 @@ impl crate::run::WfRun for Session {
     fn push(&mut self, text: String, kind: LogKind) {
         Session::push(self, text, kind);
     }
-    fn on_line(&mut self, text: &str) {
+    fn on_line(&mut self, text: &str, _stderr: bool) {
         Session::on_line(self, text);
     }
     fn on_exit(&mut self, idx: usize, code: i32) {

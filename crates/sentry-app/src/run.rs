@@ -4,7 +4,7 @@
 //! command, and what sudo needs for it, stays with the target (`Host::run_go`).
 
 use std::any::Any;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sentry_core::exec::Cmd;
 use sentry_core::workflows::Workflow;
@@ -22,8 +22,14 @@ pub enum LogKind {
 
 /// What the app runs for the session.
 pub enum Exec {
-    /// Stream into the log.
-    Stream { cmd: Cmd, idx: usize },
+    /// Stream into the log. `dry`: a dry run of the step, before the real one; `timeout`:
+    /// stopped when it takes longer.
+    Stream {
+        cmd: Cmd,
+        idx: usize,
+        dry: bool,
+        timeout: Option<Duration>,
+    },
     /// Hand over the terminal (sudo that asks for a password). The output is also written to
     /// `capture` on the host, read back into the step's log afterwards (`tty_output`).
     Tty {
@@ -31,17 +37,24 @@ pub enum Exec {
         idx: usize,
         capture: String,
     },
+    /// An interactive shell for the step, with the terminal handed over.
+    Shell { idx: usize },
     /// The host reboots; what follows is the target's (`Host::reboot`). `tty`: sudo asks for
     /// a password, so the terminal is handed over for it.
     Reboot { cmd: Cmd, tty: bool },
 }
 
 /// The step that's running.
+#[derive(Clone, Copy)]
 pub struct Live {
     pub id: u64,
     pub idx: usize,
     pub pid: Option<u32>,
     pub started: Instant,
+    /// It's the step's dry run.
+    pub dry: bool,
+    /// When it's stopped for taking too long.
+    pub deadline: Option<Instant>,
 }
 
 pub trait WfRun: Any {
@@ -61,10 +74,25 @@ pub trait WfRun: Any {
     fn title(&self, idx: usize) -> String;
     fn state_word(&self) -> &'static str;
     fn push(&mut self, text: String, kind: LogKind);
-    fn on_line(&mut self, text: &str);
+    fn on_line(&mut self, text: &str, stderr: bool);
     fn on_exit(&mut self, idx: usize, code: i32);
+    /// The step's command couldn't be started.
+    fn spawn_failed(&mut self, idx: usize, _dry: bool, err: &str) {
+        self.push(format!("✗ {err}"), LogKind::Err);
+        self.on_exit(idx, 127);
+    }
     /// A step that had the terminal ended; `read`: its captured output is read back first.
     fn tty_ended(&mut self, idx: usize, capture: &str, code: i32, read: bool);
+    /// The command that had the terminal couldn't be run at all.
+    fn tty_failed(&mut self, idx: usize, capture: &str, _err: &str, read: bool) {
+        self.tty_ended(idx, capture, -1, read);
+    }
+    /// What's printed above a step that gets the terminal (None: the app's line).
+    fn tty_banner(&self, _cmd: &Cmd) -> Option<String> {
+        None
+    }
+    /// The shell of a shell step exited.
+    fn after_shell(&mut self, _idx: usize) {}
     fn skip(&mut self, force: bool) -> Result<(), String>;
     fn retry(&mut self) -> Result<(), String>;
     fn mark_done(&mut self) -> Result<(), String>;

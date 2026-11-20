@@ -550,9 +550,9 @@ fn draw_status(
             .as_ref()
             .map_or(0, |u| u.upgraded.len() + u.added.len())
     });
-    let fp = v.d.fp_waiting().map(|c| c.data.len());
+    let fp = v.d.fp_waiting(&v.sh.log).map(|c| c.data.len());
     let tb =
-        v.d.tbx_waiting()
+        v.d.tbx_waiting(&v.sh.log)
             .map(|c| crate::collectors::toolbox::total(&c.data));
     let checking = v.d.loading(Fetch::OstreeCheck)
         || v.d.loading(Fetch::FlatpakUpdates)
@@ -743,10 +743,10 @@ pub fn ask(v: &View) -> Result<crate::claude::Ask, String> {
             None => lines.push("no rpm-ostree update known".into()),
         }
     }
-    if let Some(c) = d.fp_waiting() {
+    if let Some(c) = d.fp_waiting(&v.sh.log) {
         lines.push(format!("{} Flatpak updates", c.data.len()));
     }
-    if let Some(c) = d.tbx_waiting() {
+    if let Some(c) = d.tbx_waiting(&v.sh.log) {
         lines.push(format!(
             "{} package updates inside toolboxes",
             crate::collectors::toolbox::total(&c.data)
@@ -822,7 +822,7 @@ fn tasks_due(v: &View, now: jiff::Timestamp) -> Vec<String> {
             .get()
             .and_then(|r| r.last())
             .map(|s| s.report.taken_at);
-    crate::maint::tasks::recs(&all, &v.d.maint_log, audited, now)
+    crate::maint::tasks::recs(&all, &v.sh.log, audited, now)
         .into_iter()
         .map(|r| r.title)
         .collect()

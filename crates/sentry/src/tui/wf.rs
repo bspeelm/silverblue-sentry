@@ -2,7 +2,7 @@
 //! Decisions come from `workflows::runner`; the app only executes the `Exec`s returned here.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::exec::Cmd;
 use crate::workflows::cli::{self, RealEnv};
@@ -10,14 +10,7 @@ use crate::workflows::runner::{self, Env, Next};
 use crate::workflows::state::{Run, RunStatus, StepStatus};
 use crate::workflows::{Entry, Kind, Workflow, dry_run_of};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogKind {
-    Info,
-    Cmd,
-    Out,
-    Ok,
-    Err,
-}
+pub use sentry_app::run::{Live, LogKind};
 
 /// Something the app has to execute for the session.
 pub enum Exec {
@@ -38,15 +31,6 @@ pub enum Exec {
         idx: usize,
     },
     Reboot,
-}
-
-pub struct Live {
-    pub id: u64,
-    pub idx: usize,
-    pub dry: bool,
-    pub started: Instant,
-    pub deadline: Option<Instant>,
-    pub pid: Option<u32>,
 }
 
 const LOG_LINES: usize = 2000;
@@ -484,5 +468,96 @@ impl Session {
         runner::mark_done(&mut self.run.state, idx, "shell exited");
         self.push("✓ shell exited", LogKind::Ok);
         self.refresh();
+    }
+}
+
+/// The run as the app holds it. Its steps become commands in `LocalTarget::run_go`.
+impl sentry_app::run::WfRun for Session {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn wf(&self) -> &Workflow {
+        &self.wf
+    }
+    fn run(&self) -> &Run {
+        &self.run
+    }
+    fn next(&self) -> &Next {
+        &self.next
+    }
+    fn live(&self) -> Option<&Live> {
+        self.live.as_ref()
+    }
+    fn set_live(&mut self, live: Option<Live>) -> Option<Live> {
+        std::mem::replace(&mut self.live, live)
+    }
+    fn armed(&self) -> bool {
+        self.armed
+    }
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+    fn done(&self) -> bool {
+        Session::done(self)
+    }
+    fn title(&self, idx: usize) -> String {
+        Session::title(self, idx)
+    }
+    fn state_word(&self) -> &'static str {
+        Session::state_word(self)
+    }
+    fn push(&mut self, text: String, kind: LogKind) {
+        Session::push(self, text, kind);
+    }
+    fn on_line(&mut self, text: &str, stderr: bool) {
+        Session::on_line(self, text.to_string(), stderr);
+    }
+    /// The running step's exit (its dry run's, if that's what ran).
+    fn on_exit(&mut self, idx: usize, code: i32) {
+        let dry = self.live.as_ref().is_some_and(|l| l.dry);
+        Session::on_exit(self, idx, dry, code, None);
+    }
+    fn spawn_failed(&mut self, idx: usize, dry: bool, err: &str) {
+        Session::on_exit(self, idx, dry, 127, Some(err.to_string()));
+    }
+    fn tty_ended(&mut self, idx: usize, _capture: &str, code: i32, _read: bool) {
+        Session::on_exit(self, idx, false, code, None);
+    }
+    fn tty_failed(&mut self, idx: usize, _capture: &str, err: &str, _read: bool) {
+        Session::on_exit(self, idx, false, 127, Some(err.to_string()));
+    }
+    fn tty_banner(&self, cmd: &Cmd) -> Option<String> {
+        Some(format!("$ {}", cmd.display()))
+    }
+    fn after_shell(&mut self, idx: usize) {
+        Session::after_shell(self, idx);
+    }
+    fn skip(&mut self, force: bool) -> Result<(), String> {
+        Session::skip(self, force)
+    }
+    /// `r`: after an error of sentry's own (state.json, a tty that isn't there) the run is
+    /// looked at again; otherwise the failed step is retried.
+    fn retry(&mut self) -> Result<(), String> {
+        if self.error.is_some() {
+            self.refresh();
+            Ok(())
+        } else {
+            Session::retry(self)
+        }
+    }
+    fn mark_done(&mut self) -> Result<(), String> {
+        Session::mark_done(self)
+    }
+    fn abandon(&mut self) {
+        Session::abandon(self);
+    }
+    /// This machine's reboot ends the TUI; the run is resumed by the next one.
+    fn after_reboot(&mut self) {}
+    /// `L` opens the step's log file in a pager (`WfOwn::OpenLog`).
+    fn step_log(&self) -> Option<(String, String)> {
+        None
     }
 }

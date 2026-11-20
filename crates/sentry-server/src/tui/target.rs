@@ -148,6 +148,8 @@ impl Own {
             cmd: spec.cmd,
             then,
             reboot: spec.reboot,
+            queue: Vec::new(),
+            end: None,
         })
     }
     /// Hand the terminal to a command (sudo password prompts), then refresh. `reboot`: it's
@@ -212,6 +214,9 @@ impl ServerTarget {
                 app: APP,
                 screens: &SCREENS,
                 runs: workflow::root(&name),
+                // Until the workflows are read: where the seeded ones are.
+                wf_dir: "~/.config/sentry/server-workflows/".into(),
+                ways: Default::default(),
                 quit: format!("Quit sentry-server? Nothing keeps running on {name} after exit."),
                 help_globals: &[("I", "read what needs root, once, with your sudo password")],
                 commands: ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
@@ -865,7 +870,7 @@ impl Target for ServerTarget {
         self.with_screens(sh, cx, |s, v, _| s.on_enter(id, v))
     }
 
-    fn due(&mut self, now: Instant, cx: &Cx) {
+    fn due(&mut self, now: Instant, cx: &Cx) -> bool {
         if self.reboot_wait.is_some() && self.reboot_probe.is_none_or(|t| now >= t) {
             // Every 2 s on any screen until the boot id changes.
             self.fetch(Kind::Probe, cx);
@@ -880,9 +885,10 @@ impl Target for ServerTarget {
                 self.due.insert(p.kind, now + every);
             }
         }
+        false
     }
 
-    fn next_due(&self) -> Option<Instant> {
+    fn next_due(&self, _now: Instant, _cx: &Cx) -> Option<Instant> {
         let mut due = self.due.values().copied().min();
         if let Some(t) = self.reboot_probe.filter(|_| self.reboot_wait.is_some()) {
             due = Some(due.map_or(t, |d| d.min(t)));
@@ -970,6 +976,8 @@ impl Target for ServerTarget {
             }
             // Findings on a server are verified by Claude's own read-only check.
             Why::Reaudit => {}
+            // Nothing of the server's follows the log or the baseline file.
+            Why::Logged | Why::Baseline => {}
             Why::Audit => {
                 self.fetch(Kind::Audit, cx);
                 return vec![Effect::Toast("auditing… (a few seconds)".into())];
@@ -1224,7 +1232,7 @@ impl Target for ServerTarget {
                 }
             }
             Settle::Lists => self.clamp(sh, cx),
-            Settle::Filter => self.screens.reset_cursor(cx.screen),
+            Settle::Filter | Settle::FilterCleared => self.screens.reset_cursor(cx.screen),
             Settle::Ticks(left) => self.screens.maint.ticks = left.into_iter().collect(),
             Settle::Workflow(i) => self.screens.upgrade.cur.sel = i,
         }
@@ -1255,6 +1263,7 @@ impl Target for ServerTarget {
 
     fn colon(
         &mut self,
+        _line: &str,
         cmd: &str,
         arg: Option<&str>,
         _sh: &Shared,
@@ -1280,9 +1289,10 @@ impl Host for ServerTarget {
     }
 
     fn begin_run(
-        &self,
+        &mut self,
         entry: &Entry,
         vars: BTreeMap<String, String>,
+        _sh: &Shared,
     ) -> Result<Box<dyn WfRun>, String> {
         match workflow::begin(entry, &self.remote, vars) {
             Ok(s) => Ok(Box::new(s)),

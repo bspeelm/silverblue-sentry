@@ -44,10 +44,7 @@ pub const SCREENS: ScreenSet = ScreenSet {
 /// The app with this server as its one target.
 pub fn app(remote: Remote, tx: Sender<Event>) -> App {
     let id = ServerTarget::id_of(&remote.name);
-    let mut app = App::new(tx, &id, |mail| Box::new(ServerTarget::new(remote, mail)));
-    // Until the workflows are read: where the seeded ones are.
-    app.slot_mut().shared.wf_dir = "~/.config/sentry/server-workflows/".into();
-    app
+    App::new(tx, &id, |mail| Box::new(ServerTarget::new(remote, mail)))
 }
 
 pub fn run(remote: Remote) -> anyhow::Result<()> {

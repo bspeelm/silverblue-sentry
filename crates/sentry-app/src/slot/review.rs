@@ -7,6 +7,12 @@ impl Slot {
             .is_some_and(|w| w.review.is_some() && w.running())
     }
 
+    pub(crate) fn writing_plan(&self, item: &str) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| w.review.is_none() && w.item == item && w.running())
+    }
+
     /// Claude writes (a plan or a review) in the background; its view opens.
     pub(crate) fn start_writer(
         &mut self,
@@ -29,6 +35,7 @@ impl Slot {
             }
             None => {}
         }
+        wr.place = self.ways.writer_place;
         let profile = if wr.review.is_some() {
             if !wr.quiet {
                 self.review_view
@@ -102,7 +109,9 @@ impl Slot {
 
     /// What a review is sent.
     pub(crate) fn review_prompt(&self, w: &Win) -> String {
-        let changes = self.with_known(w, |k| sentry_core::maint::changes::request_section(k, true));
+        let changes = self.with_known(w, |k| {
+            sentry_core::maint::changes::request_section(k, self.ways.server_changes)
+        });
         self.target
             .review_request(None, &changes, &self.shared, &cx!(self, w))
     }
@@ -128,7 +137,9 @@ impl Slot {
         if !claude::available() || self.writer.as_ref().is_some_and(|w| w.running()) {
             return;
         }
-        let changes = self.with_known(w, |k| sentry_core::maint::changes::request_section(k, true));
+        let changes = self.with_known(w, |k| {
+            sentry_core::maint::changes::request_section(k, self.ways.server_changes)
+        });
         let ask = match &run {
             Some(r) => review::run_ask(r),
             None => review::start_ask(),
@@ -167,10 +178,15 @@ impl Slot {
             run = l.clone();
         }
         let now = jiff::Timestamp::now();
+        let audited = if self.ways.due_counts_audit {
+            self.target.records(&self.shared, &cx!(self, w)).1
+        } else {
+            None
+        };
         let due = self
             .all_tasks()
             .iter()
-            .any(|t| sentry_core::maint::tasks::due(t, &self.shared.log, None, now));
+            .any(|t| sentry_core::maint::tasks::due(t, &self.shared.log, audited, now));
         if due {
             self.review_auto(w, Some(run));
         }
@@ -328,7 +344,7 @@ impl Slot {
         // What changed on the target's side: it takes that in; else its lists are read again.
         let fx = own.done();
         if !fx.is_empty() {
-            self.apply(w, fx, Instant::now());
+            self.apply(w, fx, w.at);
         } else if !w.offline {
             self.refresh(w, Why::Lists);
         }
@@ -399,14 +415,19 @@ impl Slot {
             self.shared.log.insert(0, entry.clone());
         }
         self.last_change_at = Some(jiff::Timestamp::now());
-        w.input = Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new());
+        // It's done whatever happens next; Esc only skips the note.
+        w.input = if self.ways.task_note {
+            Input::Prompt(Prompt::TaskNote(Box::new(entry), title), String::new())
+        } else {
+            Input::Prompt(Prompt::LogNote(Box::new(entry)), String::new())
+        };
     }
 
     /// After a turn: what Claude asked to read that only the user can allow, if the target
     /// has such a thing. `waiting`: the answer waits for them.
     pub fn offer_reads(&mut self, w: &mut Win, to: ReadsFor, waiting: bool) {
         let e = self.target.offer_reads(to, waiting, &cx!(self, w));
-        self.apply(w, e, Instant::now());
+        self.apply(w, e, w.at);
     }
 
     /// The writer's turn ended: save its answer as the plan, then any reads it asked for.
@@ -481,7 +502,17 @@ impl Slot {
             wr.doing = "waiting for reads that need root".into();
             return self.offer_reads(w, ReadsFor::Plan, true);
         }
+        let answer = match (&wr.answer, &wr.err) {
+            (Some(a), _) if !a.trim().is_empty() => Ok(a.as_str()),
+            (_, err) => Err(err.as_deref()),
+        };
+        // The target's own way with a plan's answer, if it has one.
+        let own = self.target.plan_written(&mut doc, answer);
+        let Some(wr) = self.writer.as_mut() else {
+            return;
+        };
         let msg = match (&wr.answer, &wr.err) {
+            _ if own.is_some() => own.unwrap_or_default(),
             (Some(a), _) if !a.trim().is_empty() => {
                 doc.take_answer(a);
                 match doc.head.status {
