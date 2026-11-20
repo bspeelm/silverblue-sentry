@@ -706,7 +706,7 @@ fn restart_asks_first_then_streams() {
     assert!(s.contains("$ sudo systemctl restart app.service"), "{s}");
     assert!(
         a.root_cmd_for_test("sudo systemctl restart app.service")
-            .contains("command sudo -n"),
+            .contains("SENTRY_A=-n"),
     );
     assert!(s.contains("C-c  terminate"), "{s}");
     run_msg(
@@ -2143,6 +2143,140 @@ fn live_password_step() {
             .unwrap();
     println!("{ledger}");
     assert!(ledger.contains("apt mirror was slow") && ledger.contains("result:abandoned"));
+    println!("ok");
+}
+
+/// Against a disposable sshd (either sudo variant, never the real server): a sudo step that
+/// is stopped leaves nothing of root's running. Twice over: as the app streams it over ssh
+/// (its terminal hangs up when the local client is killed), and as on this machine, where a
+/// step has no terminal: the same wrapper started in the container without one and sent
+/// TERM. The second is run with sudo's `use_pty` on (the container's default) and off.
+/// `scripts/live-container.sh test nopasswd|password live_sudo_stop`
+#[test]
+#[ignore]
+fn live_sudo_stop() {
+    sentry_core::paths::use_real_dirs();
+    use sentry_core::apply::sudo;
+    use sentry_core::exec::{StreamMsg, sh_quote};
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    let pw = std::env::var_os("SENTRY_SERVER_SCRATCH_PASSWORD").map(|_| live_password());
+    let (file, _) = crate::config::load().unwrap();
+    let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
+    let r = Remote::new(n, s);
+    let count = |r: &Remote, user: &str| -> usize {
+        r.sh(&format!("pgrep -u {user} -x sleep | wc -l"))
+            .output()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    // What sudo starts and what that starts: a root shell, a sleep in its background and
+    // one it waits for.
+    let step = "echo started; sudo sh -c 'sleep 600 & sleep 600; wait'";
+    assert_eq!(count(&r, "root"), 0, "a clean container");
+
+    // 1. Streamed over ssh, as the app runs a step: the local client is stopped.
+    let cmd = match &pw {
+        Some(pw) => r
+            .sh(&sudo::wrap_ready(step))
+            .input_after(sudo::READY, format!("{pw}\n")),
+        None => r.sh(&sudo::no_prompt(step)),
+    }
+    .timeout(None);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pid = cmd
+        .stream(move |m| {
+            let _ = tx.send(m);
+        })
+        .unwrap();
+    let until = Instant::now() + std::time::Duration::from_secs(15);
+    while count(&r, "root") < 2 {
+        assert!(Instant::now() < until, "the step never started");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    sentry_app::app::kill_for_test(pid);
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(StreamMsg::Exit { .. }) => break,
+            Ok(_) => {}
+            Err(_) => panic!("the stream never ended"),
+        }
+    }
+    // (The wrapper there ends root's processes after the client is gone.)
+    let until = Instant::now() + std::time::Duration::from_secs(10);
+    while count(&r, "root") > 0 && Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(count(&r, "root"), 0, "over ssh: root's sleeps are gone");
+    println!("over ssh, streamed: stopped, nothing of root's left");
+
+    // 2. No terminal, TERM to the wrapper: what stopping a step on this machine is.
+    let wrapper = match &pw {
+        Some(_) => sudo::wrap(step),
+        None => sudo::no_prompt(step),
+    };
+    let feed = if pw.is_some() {
+        "printf '%s\\n' \"$P\" | "
+    } else {
+        ""
+    };
+    let local = format!(
+        "IFS= read -r P\n\
+         {feed}sh -c {} > /tmp/sentry-stop.out 2>&1 &\n\
+         pid=$!\n\
+         n=0\n\
+         while [ \"$(pgrep -u root -x sleep | wc -l)\" -lt 2 ] && [ $n -lt 75 ]; do sleep 0.2; n=$((n+1)); done\n\
+         echo \"before=$(pgrep -u root -x sleep | wc -l)\"\n\
+         kill -TERM $pid\n\
+         wait $pid\n\
+         echo \"exit=$?\"\n\
+         echo \"after=$(pgrep -x sleep | wc -l)\"\n\
+         echo \"sudo=$(pgrep -x sudo | wc -l)\"\n\
+         echo \"dirs=$(ls -d /tmp/tmp.* 2>/dev/null | wc -l)\"\n\
+         cat /tmp/sentry-stop.out; rm -f /tmp/sentry-stop.out",
+        sh_quote(&wrapper)
+    );
+    let secret = format!("{}\n", pw.clone().unwrap_or_default());
+    let root = |r: &Remote, line: &str| {
+        let c = match &pw {
+            Some(_) => r.sh(&sudo::wrap(line)).input(secret.clone()),
+            None => r.sh(&sudo::no_prompt(line)),
+        };
+        c.timeout(None).output().unwrap()
+    };
+    for pty in [true, false] {
+        if !pty {
+            root(
+                &r,
+                "sudo sh -c 'echo \"Defaults !use_pty\" > /etc/sudoers.d/zz-nopty; chmod 440 /etc/sudoers.d/zz-nopty'",
+            );
+        }
+        let out = r
+            .sh(&local)
+            .input(secret.clone())
+            .timeout(None)
+            .output()
+            .unwrap();
+        println!("--- no terminal, use_pty {pty}\n{out}---");
+        if !pty {
+            root(&r, "sudo rm -f /etc/sudoers.d/zz-nopty");
+        }
+        assert!(out.contains("before=2"), "it started: {out}");
+        assert!(
+            out.contains("exit=129"),
+            "the wrapper ended as stopped: {out}"
+        );
+        assert!(out.contains("after=0"), "no sleep is left: {out}");
+        assert!(out.contains("sudo=0"), "no sudo is left: {out}");
+        assert!(out.contains("dirs=0"), "its temp dir is gone: {out}");
+        if let Some(pw) = &pw {
+            assert!(!out.contains(pw.as_str()), "the password isn't printed");
+        }
+    }
+    assert_eq!(count(&r, "root"), 0);
     println!("ok");
 }
 
@@ -4189,7 +4323,7 @@ fn kill_of_another_users_process_goes_through_sudo() {
         ran.contains("sudo kill -TERM 1502") && ran.contains("14100"),
         "{ran}"
     );
-    assert!(a.root_cmd_for_test(&ran).contains("command sudo -n"));
+    assert!(a.root_cmd_for_test(&ran).contains("SENTRY_A=-n"));
     key(&mut a, KeyCode::Esc);
     // sudo asks for a password: asked for in the key bar, then the same pane.
     let mut a = app();

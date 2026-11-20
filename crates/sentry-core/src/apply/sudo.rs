@@ -164,10 +164,9 @@ pub fn uses_sudo(cmd: &str) -> bool {
 /// can't print it by printing its own, and it is gone when the script ends, however it ends.
 ///
 /// The step, and everything sudo starts for it, gets nothing on stdin (`/dev/null`): a
-/// command that reads it (`head`, `cat`) ends at once instead of waiting. sudo with no
-/// terminal on stdin outlives a hangup, so when the step is stopped from here (the terminal
-/// it has over ssh hangs up, which the script hears because it only waits for the step) the
-/// script ends each sudo it started, with sudo, then the rest of the step.
+/// command that reads it (`head`, `cat`) ends at once instead of waiting. Stopping the step
+/// from here (TERM to the script on this machine; over ssh its terminal hangs up) ends what
+/// sudo started too: see `rooted`.
 pub fn wrap(cmd: &str) -> String {
     format!("IFS= read -r SENTRY_P\n{}", wrapped(cmd))
 }
@@ -188,57 +187,125 @@ pub fn wrap_ready(cmd: &str) -> String {
 }
 
 fn wrapped(cmd: &str) -> String {
-    format!(
-        "SENTRY_SUDO=$(command -v sudo) || {{ echo 'sudo not found' >&2; exit 127; }}\n\
-         SENTRY_D=$(mktemp -d) || exit 1\n\
-         trap 'rm -rf \"$SENTRY_D\"' EXIT\n\
-         mkfifo -m 600 \"$SENTRY_D/p\" || exit 1\n\
-         exec 9<>\"$SENTRY_D/p\" || exit 1\n\
-         printf '%s\\n' \"$SENTRY_P\" \"$SENTRY_P\" \"$SENTRY_P\" \"$SENTRY_P\" >&9\n\
-         unset SENTRY_P\n\
-         export SENTRY_SUDO SENTRY_D\n\
-         printf '%s\\n' '#!/bin/sh' \
-         'case \"$1\" in -n*|-S*|-A*|-k|-K|-V|-h) exec \"$SENTRY_SUDO\" \"$@\";; esac' \
-         'SENTRY_M=\"$SENTRY_D/m.$$\"' \
-         ': > \"$SENTRY_M\"' \
-         'export SENTRY_M' \
-         'SUDO_ASKPASS=\"$SENTRY_D/ask\" \"$SENTRY_SUDO\" -A \"$@\" </dev/null &' \
-         'echo $! >> \"$SENTRY_D/pids\"' \
-         'wait $!' > \"$SENTRY_D/sudo\"\n\
-         printf '%s\\n' '#!/bin/sh' \
-         '[ -e \"$SENTRY_M\" ] || exit 1' \
-         'rm -f \"$SENTRY_M\"' \
-         'IFS= read -r p < \"$SENTRY_D/p\" || exit 1' \
-         'printf \"%s\\\\n\" \"$p\" > \"$SENTRY_D/p\"' \
-         'printf \"%s\\\\n\" \"$p\"' > \"$SENTRY_D/ask\"\n\
-         chmod 700 \"$SENTRY_D/sudo\" \"$SENTRY_D/ask\"\n\
-         PATH=\"$SENTRY_D:$PATH\"\n\
-         export PATH\n\
-         trap 'trap \"\" HUP TERM; for p in $(cat \"$SENTRY_D/pids\" 2>/dev/null); do \"$SENTRY_D/sudo\" kill -TERM \"$p\" 2>/dev/null; done; kill -HUP 0 2>/dev/null; exit 129' HUP TERM\n\
-         exec </dev/null\n\
-         (\n\
-         exec 9>&-\n\
-         {cmd}\n\
-         ) &\n\
-         wait $!\n"
-    )
+    rooted(true, cmd)
 }
 
-/// A sudo command run without a password to give: its `sudo` fails at once instead of
-/// waiting on a prompt nobody sees. Nothing on stdin either, so (as in `wrap`) a hangup ends
-/// what sudo started through sudo, then the rest.
+/// The script both `wrap` and `no_prompt` run a step in. `password`: the first line of
+/// stdin was the password (in `SENTRY_P`), and each sudo gets it through the askpass helper;
+/// without one every sudo is `sudo -n`.
+///
+/// Stopping it has to reach what runs as root, which the user can't signal and which, with
+/// no terminal (on this machine there never is one), no hangup reaches either. So each sudo
+/// is started in a session of its own (`setsid`, through the `own` helper, which writes its
+/// process group to a file the stand-in removes when it ends), and on HUP, TERM or INT the
+/// script signals every group still listed, as root, through the same stand-in (the password
+/// is still in the fifo), then the rest of the step (everything it started; its whole
+/// process group only when the group is its own, as over ssh: on this machine the group is
+/// the program's); it waits a few seconds for root's processes to go and kills what's left.
+/// Without `setsid` the one sudo process is signalled, as before.
+fn rooted(password: bool, cmd: &str) -> String {
+    const HEAD: &str = r#"SENTRY_SUDO=$(command -v sudo) || { echo 'sudo not found' >&2; exit 127; }
+SENTRY_SETSID=$(command -v setsid) || SENTRY_SETSID=
+SENTRY_D=$(mktemp -d) || exit 1
+trap 'rm -rf "$SENTRY_D"' EXIT
+"#;
+    const FIFO: &str = r#"mkfifo -m 600 "$SENTRY_D/p" || exit 1
+exec 9<>"$SENTRY_D/p" || exit 1
+printf '%s\n' "$SENTRY_P" "$SENTRY_P" "$SENTRY_P" "$SENTRY_P" >&9
+unset SENTRY_P
+cat > "$SENTRY_D/ask" <<'SENTRY_EOF'
+#!/bin/sh
+[ -e "$SENTRY_M" ] || exit 1
+rm -f "$SENTRY_M"
+IFS= read -r p < "$SENTRY_D/p" || exit 1
+printf '%s\n' "$p" > "$SENTRY_D/p"
+printf '%s\n' "$p"
+SENTRY_EOF
+"#;
+    // How the stand-in calls the real sudo: with the askpass helper (once per call: the
+    // marker), unless the step chose for itself; or never asking.
+    const ASKS: &str = r#"case "$1" in -n*|-S*|-A*|-k|-K|-V|-h) SENTRY_A=;; *) SENTRY_A=-A; SENTRY_M="$SENTRY_D/m.$$"; : > "$SENTRY_M"; export SENTRY_M;; esac"#;
+    const NEVER: &str = "SENTRY_A=-n";
+    const REST: &str = r#"export SENTRY_SUDO SENTRY_SETSID SENTRY_D
+cat > "$SENTRY_D/sudo" <<'SENTRY_EOF'
+#!/bin/sh
+{HOW}
+SENTRY_G="$SENTRY_D/k.$$"
+export SENTRY_A SENTRY_G
+${SENTRY_SETSID:+"$SENTRY_SETSID"} "$SENTRY_D/own" "$@" </dev/null &
+wait $!
+SENTRY_R=$?
+rm -f "$SENTRY_G"
+exit $SENTRY_R
+SENTRY_EOF
+cat > "$SENTRY_D/own" <<'SENTRY_EOF'
+#!/bin/sh
+if [ -n "$SENTRY_SETSID" ]; then echo "-$$"; else echo "$$"; fi > "$SENTRY_G"
+SUDO_ASKPASS="$SENTRY_D/ask" exec "$SENTRY_SUDO" $SENTRY_A "$@"
+SENTRY_EOF
+chmod 700 "$SENTRY_D/sudo" "$SENTRY_D/own"
+[ ! -e "$SENTRY_D/ask" ] || chmod 700 "$SENTRY_D/ask"
+PATH="$SENTRY_D:$PATH"
+export PATH
+sentry_each() {
+  for SENTRY_F in "$SENTRY_D"/k.*; do
+    [ -e "$SENTRY_F" ] || continue
+    IFS= read -r SENTRY_T < "$SENTRY_F" || continue
+    "$SENTRY_D/sudo" kill "-$1" -- "$SENTRY_T" 2>/dev/null
+  done
+}
+sentry_left() {
+  for SENTRY_F in "$SENTRY_D"/k.*; do
+    [ -e "$SENTRY_F" ] || continue
+    IFS= read -r SENTRY_T < "$SENTRY_F" || continue
+    case "$SENTRY_T" in
+      -*) pgrep -g "${SENTRY_T#-}" >/dev/null 2>&1 && return 0 ;;
+      *) [ -d "/proc/$SENTRY_T" ] && return 0 ;;
+    esac
+  done
+  return 1
+}
+sentry_tree() {
+  for SENTRY_C in $(pgrep -P "$1" 2>/dev/null); do sentry_tree "$SENTRY_C"; done
+  [ "$1" = "$$" ] || kill -HUP "$1" 2>/dev/null
+}
+sentry_end() {
+  trap '' HUP TERM INT
+  sentry_each TERM
+  sentry_tree "$$"
+  kill -HUP "$SENTRY_STEP" 2>/dev/null
+  if [ "$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')" = "$$" ]; then kill -HUP 0 2>/dev/null; fi
+  SENTRY_N=0
+  while [ "$SENTRY_N" -lt 25 ] && sentry_left; do sleep 0.2; SENTRY_N=$((SENTRY_N + 1)); done
+  if sentry_left; then sentry_each KILL; fi
+  exit 129
+}
+trap sentry_end HUP TERM INT
+exec </dev/null
+(
+{CLOSE}{CMD}
+) &
+SENTRY_STEP=$!
+wait "$SENTRY_STEP"
+"#;
+    let mut s = String::from(HEAD);
+    if password {
+        s.push_str(FIFO);
+    }
+    s.push_str(
+        &REST
+            .replace("{HOW}", if password { ASKS } else { NEVER })
+            .replace("{CLOSE}", if password { "exec 9>&-\n" } else { "" })
+            .replace("{CMD}", cmd),
+    );
+    s
+}
+
+/// A sudo command run without a password to give: its `sudo`, however nested, fails at once
+/// (`-n`) instead of waiting on a prompt nobody sees. Nothing on stdin either, and stopping
+/// it ends what sudo started, as in `wrap`.
 pub fn no_prompt(cmd: &str) -> String {
-    format!(
-        "exec </dev/null\n\
-         SENTRY_K=$(mktemp) || exit 1\n\
-         sudo() {{ command sudo -n \"$@\" & echo $! >> \"$SENTRY_K\"; wait $!; }}\n\
-         trap 'rm -f \"$SENTRY_K\"' EXIT\n\
-         trap 'trap \"\" HUP TERM; for p in $(cat \"$SENTRY_K\" 2>/dev/null); do command sudo -n kill -TERM \"$p\" 2>/dev/null; done; kill -HUP 0 2>/dev/null; exit 129' HUP TERM\n\
-         (\n\
-         {cmd}\n\
-         ) &\n\
-         wait $!\n"
-    )
+    rooted(false, cmd)
 }
 
 /// A command sentry runs for Claude or as a step, with nothing on stdin: over ssh a streamed
@@ -444,6 +511,101 @@ mod tests {
         assert_eq!(p.stdin(), b"hunter2\n");
         p.clear();
         assert!(p.is_empty());
+    }
+
+    /// A stand-in for the real sudo that runs the command as whoever runs the test (root
+    /// isn't to be had in a unit test): what the wrapper does around it is the same.
+    fn fake_sudo() -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sentry-fake-root-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sudo"),
+            "#!/bin/sh\nwhile [ \"$1\" = -A ] || [ \"$1\" = -n ]; do shift; done\nexec \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(dir.join("sudo"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn stopping_a_sudo_step_ends_what_sudo_started() {
+        use crate::exec::{Cmd, StreamMsg};
+        let running = |mark: &str| {
+            Cmd::local("pgrep")
+                .args(["-f", mark])
+                .run()
+                .map(|o| o.stdout.trim().to_string())
+                .unwrap_or_default()
+        };
+        // What sudo starts, and what that starts (a shell with two children, one in the
+        // background): none of it may be left, with a password held and without.
+        for (i, password) in [true, false].into_iter().enumerate() {
+            let fake = fake_sudo();
+            let mark = format!("3{}{i}", std::process::id());
+            let step = format!("echo started; sudo sh -c 'sleep {mark} & sleep {mark}; wait'");
+            let script = format!(
+                "PATH={}:$PATH; export PATH\n{}",
+                fake.display(),
+                if password {
+                    wrap_ready(&step)
+                } else {
+                    no_prompt(&step)
+                }
+            );
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut cmd = Cmd::local("sh").args(["-c", &script]).timeout(None);
+            if password {
+                cmd = cmd.input_after(READY, "pw-9\n");
+            }
+            let pid = cmd
+                .stream(move |m| {
+                    let _ = tx.send(m);
+                })
+                .unwrap();
+            let wait = std::time::Duration::from_secs(10);
+            match rx.recv_timeout(wait) {
+                Ok(StreamMsg::Line { text, .. }) => assert_eq!(text, "started"),
+                other => panic!("no first line: {other:?}"),
+            }
+            // (The two sleeps are up a moment after the line.)
+            let until = std::time::Instant::now() + wait;
+            while running(&format!("sleep {mark}")).lines().count() < 2 {
+                assert!(std::time::Instant::now() < until, "the step never started");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Cmd::local("kill")
+                .args(["-TERM", &pid.to_string()])
+                .run()
+                .unwrap();
+            let code = loop {
+                match rx.recv_timeout(wait) {
+                    Ok(StreamMsg::Exit { code, .. }) => break code,
+                    Ok(_) => {}
+                    Err(_) => panic!("the wrapper didn't end (password: {password})"),
+                }
+            };
+            assert_eq!(code, 129, "password: {password}");
+            let left = running(&format!("sleep {mark}"));
+            assert!(
+                left.is_empty(),
+                "left running (password: {password}): {left}"
+            );
+            let _ = std::fs::remove_dir_all(&fake);
+        }
+        // The script says how: each sudo in a session of its own, its group signalled as
+        // root when the step is stopped, and killed if it stays.
+        let s = no_prompt("sudo x");
+        assert!(s.contains("${SENTRY_SETSID:+\"$SENTRY_SETSID\"} \"$SENTRY_D/own\""));
+        assert!(s.contains("\"$SENTRY_D/sudo\" kill \"-$1\" -- \"$SENTRY_T\""));
+        assert!(s.contains("trap sentry_end HUP TERM INT") && s.contains("sentry_each KILL"));
+        assert!(s.contains("SENTRY_A=-n") && !s.contains("mkfifo"));
+        assert!(wrap("sudo x").contains("SENTRY_A=-A") && wrap("sudo x").contains("mkfifo"));
     }
 
     #[test]

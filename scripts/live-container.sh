@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A disposable sshd container for sentry-server's mutating live tests (`#[ignore]`):
-#   nopasswd  live_actions, live_workflow         (sudo -n works)
-#   password  live_password_step, live_inventory, live_claude_reads
+#   nopasswd  live_actions, live_workflow, live_sudo_stop   (sudo -n works)
+#   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop
 #             (sudo asks; the tests type the password into the TUI's own prompt)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
@@ -39,8 +39,8 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow" ;;
-    password) echo "live_password_step live_inventory live_claude_reads" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop" ;;
+    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
