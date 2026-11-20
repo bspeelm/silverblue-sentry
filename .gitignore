@@ -13,3 +13,4 @@ server_config.yaml
 *.server.yaml
 /servers/
 tests/fixtures/server/local/
+tests/fixtures/network/local/
