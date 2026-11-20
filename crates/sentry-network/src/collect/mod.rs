@@ -1,8 +1,13 @@
 //! What is read from the router: each kind a pure `parse()` (fixture-tested) and a `collect()`
 //! (one ssh exec + parse). A command that isn't on the router is `Unavailable`, never a panic.
 
+pub mod cert;
+pub mod clients;
 pub mod ifaces;
+pub mod listeners;
 pub mod probe;
+pub mod services;
+pub mod uci;
 
 use sentry_app::remote::{Error, Remote};
 
@@ -61,7 +66,15 @@ pub fn sections(text: &str) -> Vec<(&str, &str)> {
 }
 
 /// The kinds `sentry-network collect` knows.
-pub const KINDS: &[&str] = &["probe", "ifaces"];
+pub const KINDS: &[&str] = &[
+    "probe",
+    "ifaces",
+    "clients",
+    "listeners",
+    "uci",
+    "cert",
+    "services",
+];
 
 /// One kind, read now, as JSON (`sentry-network collect`).
 pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, CollectError> {
@@ -71,6 +84,11 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, Collect
     match kind {
         "probe" => json(serde_json::to_value(probe::collect(r)?)),
         "ifaces" => json(serde_json::to_value(ifaces::collect(r)?)),
+        "clients" => json(serde_json::to_value(clients::collect(r)?)),
+        "listeners" => json(serde_json::to_value(listeners::collect(r)?)),
+        "uci" => json(serde_json::to_value(uci::collect(r)?)),
+        "cert" => json(serde_json::to_value(cert::collect(r)?)),
+        "services" => json(serde_json::to_value(services::collect(r)?)),
         other => Err(CollectError::Failed(format!(
             "no collector `{other}` (there are: {})",
             KINDS.join(", ")
@@ -123,6 +141,6 @@ mod tests {
             sentry_app::remote::Privilege::Root,
         );
         let e = collect_json(&r, "nope").unwrap_err();
-        assert!(e.to_string().contains("probe, ifaces"), "{e}");
+        assert!(e.to_string().contains("probe, ifaces, clients"), "{e}");
     }
 }

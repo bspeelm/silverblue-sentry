@@ -57,6 +57,9 @@ pub struct Interface {
     /// `address/mask`.
     pub ipv4: Vec<String>,
     pub ipv6: Vec<String>,
+    /// The router's own addresses in the prefixes assigned to this interface (no mask).
+    #[serde(default)]
+    pub local6: Vec<String>,
     /// Prefixes delegated to it (`2001:db8::/56`).
     pub prefixes: Vec<String>,
     pub gateway: Option<String>,
@@ -278,6 +281,12 @@ fn interface(v: &Value) -> Interface {
         uptime_s: n(v, "uptime"),
         ipv4: addrs(&v["ipv4-address"]),
         ipv6: addrs(&v["ipv6-address"]),
+        local6: v["ipv6-prefix-assignment"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a["local-address"]["address"].as_str().map(str::to_string))
+            .collect(),
         prefixes: addrs(&v["ipv6-prefix"]),
         gateway: default("0.0.0.0"),
         gateway6: default("::"),

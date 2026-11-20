@@ -1,0 +1,124 @@
+@@leases
+1793037600 00:00:5e:00:53:10 192.0.2.10 nas 01:00:00:5e:00:53:10
+1793030400 00:00:5e:00:53:11 192.0.2.11 * 01:00:00:5e:00:53:11
+1793052000 02:00:5e:00:53:20 192.0.2.20 my-phone 01:02:00:5e:00:53:20
+1793019600 02:00:5e:00:53:21 192.0.2.21 * *
+1793044800 02:00:5e:00:53:22 192.0.2.22 * 01:02:00:5e:00:53:22
+1793048400 00:00:5e:00:53:12 192.0.2.12 panel *
+1793055600 00:00:5e:00:53:30 203.0.113.93 web 01:00:00:5e:00:53:30
+1793016900 00:00:5e:00:53:13 192.0.2.13 old-printer *
+@@leases6
+# br-lan 0003000100005e005310 0 nas 1793037000 114 128 2001:db8:1200::114/128 fd00:db8:1::114/128
+# br-lan 0003000102005e005321 0 - 1793019000 601 128 2001:db8:1200::601/128
+# br-lan 0004a1b2c3d4e5f60718293a4b5c6d7e8f90 d968f69 - 1793040000 c40 128 2001:db8:1200::c40/128 fd00:db8:1::c40/128
+# br-lan 000101002f0a1b2c0200deadbe01 2ae0e258 my-phone 1793050000 cc8 128 2001:db8:1200::cc8/128
+@@neigh
+192.0.2.10 dev br-lan lladdr 00:00:5e:00:53:10 ref 1 used 0/0/0 probes 1 REACHABLE
+192.0.2.11 dev br-lan lladdr 00:00:5e:00:53:11 used 0/0/0 probes 1 STALE
+192.0.2.168 dev br-lan  used 0/0/0 probes 6 FAILED
+192.0.2.20 dev br-lan lladdr 02:00:5e:00:53:20 ref 1 used 0/0/0 probes 1 DELAY
+192.0.2.22 dev br-lan lladdr 02:00:5e:00:53:22 used 0/0/0 probes 1 STALE
+203.0.113.93 dev lan4 lladdr 00:00:5e:00:53:30 ref 1 used 0/0/0 probes 1 REACHABLE
+198.51.100.1 dev eth1 lladdr 00:00:5e:00:53:fe ref 1 used 0/0/0 probes 1 REACHABLE
+192.0.2.166 dev br-lan  used 0/0/0 probes 6 FAILED
+fe80::200:5eff:fe00:5310 dev br-lan lladdr 00:00:5e:00:53:10 used 0/0/0 probes 1 STALE
+2001:db8:1200::114 dev br-lan lladdr 00:00:5e:00:53:10 used 0/0/0 probes 1 STALE
+fe80::200:5eff:fe00:53fe dev eth1 lladdr 00:00:5e:00:53:fe router ref 1 used 0/0/0 probes 1 REACHABLE
+192.0.2.50 dev br-lan lladdr 00:00:5e:00:53:14 used 0/0/0 probes 1 STALE
+192.0.2.77 dev br-lan lladdr 02:00:5e:00:53:77 used 0/0/0 probes 1 STALE
+@@ports
+br-lan lan1 0x1
+br-lan lan2 0x2
+br-lan lan3 0x3
+br-lan phy0-ap0 0x4
+br-lan phy1-ap0 0x5
+@@fdb
+@bridge br-lan
+port no	mac addr		is local?	ageing timer
+  1	00:00:5e:00:53:10	no		   0.84
+  2	00:00:5e:00:53:11	no		  14.35
+  2	02:00:5e:00:53:22	no		   1.27
+  2	00:00:5e:00:53:14	no		  19.10
+  1	02:00:5e:00:53:a0	yes		   0.00
+  1	02:00:5e:00:53:a0	yes		   0.00
+  4	02:00:5e:00:53:a2	yes		   0.00
+  5	02:00:5e:00:53:a3	yes		   0.00
+  4	02:00:5e:00:53:21	no		   0.22
+  4	00:00:5e:00:53:12	no		   7.12
+  5	02:00:5e:00:53:20	no		   0.00
+@@hostapd.phy0-ap0
+{
+	"freq": 2412,
+	"clients": {
+		"02:00:5e:00:53:21": {
+			"auth": true,
+			"assoc": true,
+			"authorized": true,
+			"preauth": false,
+			"wds": false,
+			"wmm": true,
+			"ht": true,
+			"vht": false,
+			"he": false,
+			"aid": 1,
+			"bytes": {
+				"rx": 3203955,
+				"tx": 7427393
+			},
+			"rate": {
+				"rx": 7220000,
+				"tx": 6500000
+			},
+			"signal": -63,
+			"capabilities": {
+				
+			}
+		},
+		"00:00:5e:00:53:12": {
+			"auth": true,
+			"assoc": true,
+			"authorized": true,
+			"aid": 2,
+			"rate": {
+				"rx": 65000000,
+				"tx": 72200000
+			},
+			"signal": -81
+		}
+	}
+}
+@@iw.phy0-ap0
+Station 02:00:5e:00:53:21 (on phy0-ap0)
+	inactive time:	1330 ms
+	rx bytes:	3203955
+	signal:  	-63 [-64, -70] dBm
+	tx bitrate:	6.5 MBit/s
+	connected time:	412 seconds
+	current time:	1793016000000 ms
+Station 00:00:5e:00:53:12 (on phy0-ap0)
+	inactive time:	20 ms
+	signal:  	-81 [-82, -88] dBm
+	connected time:	273600 seconds
+@@hostapd.phy1-ap0
+{
+	"freq": 5200,
+	"clients": {
+		"02:00:5e:00:53:20": {
+			"auth": true,
+			"assoc": true,
+			"authorized": true,
+			"he": true,
+			"aid": 1,
+			"rate": {
+				"rx": 864800000,
+				"tx": 1200900000
+			},
+			"signal": -46
+		}
+	}
+}
+@@iw.phy1-ap0
+Station 02:00:5e:00:53:20 (on phy1-ap0)
+	inactive time:	0 ms
+	signal:  	-46 [-54, -59, -48, -51] dBm
+	connected time:	39149 seconds

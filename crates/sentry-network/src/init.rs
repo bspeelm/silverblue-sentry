@@ -4,119 +4,13 @@
 //! a lease as a device still to be named. The draft is pure ([`draft`]); nothing is written on
 //! the router.
 
-use std::collections::BTreeMap;
-
+use crate::collect::clients::{Lease, leases};
 use crate::collect::ifaces::{self, Ifaces};
+use crate::collect::uci::{Section, show as uci};
 use crate::collect::{CollectError, sections};
 use crate::config;
 use crate::rates;
 use crate::remote::Router;
-
-/// One `uci` section: its name (`@zone[0]`, `web_https`), its type and its options.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Section {
-    pub name: String,
-    pub kind: String,
-    pub opts: BTreeMap<String, Vec<String>>,
-}
-
-impl Section {
-    fn one(&self, k: &str) -> Option<&str> {
-        self.opts.get(k)?.first().map(String::as_str)
-    }
-    fn list(&self, k: &str) -> Vec<String> {
-        // A list written as one option holds its words.
-        self.opts.get(k).map_or(Vec::new(), |v| {
-            v.iter()
-                .flat_map(|x| x.split_whitespace().map(str::to_string))
-                .collect()
-        })
-    }
-}
-
-/// The quoted values after `=`: `'wan' 'wan6'` (a list) or `'it'\''s'` (one, with a quote).
-fn values(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    let mut any = false;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                quoted = !quoted;
-                any = true;
-            }
-            '\\' if !quoted => {
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                }
-            }
-            c if c.is_whitespace() && !quoted => {
-                if any {
-                    out.push(std::mem::take(&mut cur));
-                    any = false;
-                }
-            }
-            c => {
-                cur.push(c);
-                any = true;
-            }
-        }
-    }
-    if any {
-        out.push(cur);
-    }
-    out
-}
-
-/// `uci show <config>`: `pkg.section=type`, then `pkg.section.option='value'`.
-pub fn uci(text: &str) -> Vec<Section> {
-    let mut out: Vec<Section> = Vec::new();
-    for line in text.lines() {
-        let Some((key, val)) = line.split_once('=') else {
-            continue;
-        };
-        let mut parts = key.splitn(3, '.');
-        let (Some(_pkg), Some(section)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        match parts.next() {
-            None => out.push(Section {
-                name: section.to_string(),
-                kind: values(val).into_iter().next().unwrap_or_default(),
-                opts: BTreeMap::new(),
-            }),
-            Some(opt) => {
-                if let Some(s) = out.iter_mut().rev().find(|s| s.name == section) {
-                    s.opts.insert(opt.to_string(), values(val));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// A dnsmasq lease: `<expiry> <mac> <address> <hostname or *> <client id or *>`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Lease {
-    pub mac: String,
-    pub addr: String,
-    pub hostname: Option<String>,
-}
-
-pub fn leases(text: &str) -> Vec<Lease> {
-    text.lines()
-        .filter_map(|l| {
-            let w: Vec<&str> = l.split_whitespace().collect();
-            Some(Lease {
-                mac: config::mac(w.get(1)?)?,
-                addr: w.get(2)?.to_string(),
-                hostname: w.get(3).filter(|h| **h != "*").map(|h| h.to_string()),
-            })
-        })
-        .collect()
-}
 
 /// What the router reported.
 #[derive(Debug, Clone, Default)]
@@ -456,8 +350,6 @@ not a lease
         assert_eq!(fw[4].name, "web_https");
         // A quote inside a value, as uci writes it.
         assert_eq!(fw[5].one("name"), Some("game it's"));
-        assert_eq!(values("'a b' 'c'"), ["a b", "c"]);
-        assert_eq!(values("''"), [""]);
     }
 
     #[test]

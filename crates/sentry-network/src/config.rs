@@ -63,6 +63,9 @@ pub struct Expect {
     pub forwards: Vec<Forward>,
     /// What may listen on the router, `proto:port@zone` (`tcp:22@lan`).
     pub listeners: Vec<String>,
+    /// Services that must be running, besides dnsmasq, dropbear and uhttpd (watched
+    /// wherever they are installed): names as `ubus call service list` has them.
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

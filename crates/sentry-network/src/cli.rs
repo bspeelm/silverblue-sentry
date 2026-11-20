@@ -100,6 +100,40 @@ pub fn collect(kind: Option<&str>, name: Option<&str>) -> u8 {
     }
 }
 
+/// `audit [name]`: what needs attention on the router, written to a report.
+pub fn audit(name: Option<&str>) -> u8 {
+    let (n, cfg) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    match super::audit::run(&Router::new(&n, &cfg)) {
+        Ok((report, path)) => {
+            for f in report.open() {
+                println!("{:<6} {}  ({})", f.severity.as_str(), f.message, f.id);
+            }
+            let expected = report.findings.iter().filter(|f| f.expected).count();
+            if report.open().next().is_none() {
+                println!("✓ nothing needs attention");
+            }
+            if expected > 0 {
+                println!("· {expected} expected finding(s) hidden");
+            }
+            for (section, e) in &report.snapshot.errors {
+                println!("· {section}: {e}");
+            }
+            println!("report: {}", path.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("sentry-network audit: {e}");
+            1
+        }
+    }
+}
+
 /// The commands the network target uses, now or soon: which are there is worth knowing
 /// before anything depends on them.
 const TOOLS: &[&str] = &[
@@ -240,6 +274,68 @@ pub fn check(name: Option<&str>) -> u8 {
             );
         }
     }
+    // What the Clients and Network screens and the audit read: each one exec, timed.
+    let mut timed = |what: &str, res: Result<String, CollectError>, t: Instant| match res {
+        Ok(said) => println!("✓ {what}: {said} ({} ms)", t.elapsed().as_millis()),
+        Err(CollectError::Unavailable(bin)) => println!("· {what}: {bin} isn't on the router"),
+        Err(e) => no(format!("{what}: {e}")),
+    };
+    let t = Instant::now();
+    timed(
+        "clients",
+        collect::clients::collect(&r).map(|c| {
+            format!(
+                "{} IPv4 and {} IPv6 leases · {} neighbours · {} on wired ports · {} on Wi-Fi",
+                c.leases.len(),
+                c.leases6.len(),
+                c.neigh.iter().filter(|n| n.mac.is_some()).count(),
+                c.fdb.len().saturating_sub(c.stations.len()),
+                c.stations.len()
+            )
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "listeners",
+        collect::listeners::collect(&r).map(|l| format!("{} sockets", l.len())),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "config",
+        collect::uci::collect(&r).map(|u| {
+            format!(
+                "{} configs · {} zones · {} forwards · {} staged line(s)",
+                u.configs.len(),
+                u.zones().len(),
+                u.forwards().len(),
+                u.staged.len()
+            )
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "certificate",
+        collect::cert::collect(&r).map(|c| match c {
+            Some(c) => format!("valid until {}", c.not_after.strftime("%Y-%m-%d")),
+            None => "the web interface has none".to_string(),
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "services",
+        collect::services::collect(&r).map(|s| {
+            format!(
+                "{} of {} running",
+                s.0.values().filter(|x| x.running > 0).count(),
+                s.0.len()
+            )
+        }),
+        t,
+    );
     let problems = config::lint(&n, &cfg);
     problems.iter().for_each(|p| println!("· config: {p}"));
     u8::from(bad > 0)

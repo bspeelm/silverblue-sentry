@@ -28,6 +28,8 @@ networks:
         - { name: game, proto: udp, port: 8000-8010, to: 192.0.2.20 }
       # What may listen on the router itself: proto:port@zone.
       listeners: [ "tcp:22@lan", "tcp:443@lan", "udp:53@lan" ]
+      # Services that must be running besides dnsmasq, dropbear and uhttpd (optional).
+      services: [ odhcpd ]
 
     # The devices you know, by MAC. One that randomises its MAC (a phone's "private
     # address") is known by the hostname it gives instead. `leave_alone`: nothing sentry or
