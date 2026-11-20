@@ -14,7 +14,7 @@ pub mod target;
 
 pub use app::{App, Event, Win};
 pub use effect::Effect;
-pub use slot::Slot;
+pub use slot::{Needs, Slot};
 pub use target::Target;
 
 #[cfg(test)]

@@ -26,3 +26,12 @@ sentry-server.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+sentry-core = { workspace = true, features = ["testing"] }
+sentry-app = { workspace = true, features = ["testing"] }
+sentry-local = { workspace = true, features = ["testing"] }
+sentry-server = { workspace = true, features = ["testing"] }
+ratatui.workspace = true
+jiff.workspace = true
+insta.workspace = true

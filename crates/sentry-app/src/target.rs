@@ -53,6 +53,9 @@ pub struct Ident {
     pub scope: String,
     /// What it is in a sentence: "the server", "this machine".
     pub place: &'static str,
+    /// Its kind's `:` command, which gives it the window: `local`, `server` (with a name
+    /// when there are several: `:server my`).
+    pub word: &'static str,
     /// The program's chip in the top bar, and what Claude is told runs its workflows.
     pub app: &'static str,
     pub screens: &'static ScreenSet,
@@ -288,6 +291,9 @@ pub struct Cx<'a> {
     pub root: bool,
     /// Auto mode is on for the target.
     pub auto: bool,
+    /// The target has the window: its screen is the one in view, and what that screen polls
+    /// may be fetched. Out of view a target fetches only what its own work waits for.
+    pub focused: bool,
     /// What the target is called (the top bar's name for it).
     pub target: &'a str,
 }

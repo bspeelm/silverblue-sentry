@@ -109,6 +109,6 @@ pub fn main(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some(Command::Workflow { what, server }) => cli::workflow(&what, server.as_deref()),
         Some(Command::Exec { server, argv }) => cli::exec(&server, &argv),
         Some(Command::Run { server, line }) => cli::run(&server, &line),
-        None => cli::tui(cli.server.as_deref()),
+        None => crate::tui::run(Some(cli.server.as_deref())),
     })
 }

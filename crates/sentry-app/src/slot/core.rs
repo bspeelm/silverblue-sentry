@@ -22,7 +22,9 @@ impl Slot {
                 &cfg.retention,
                 jiff::Timestamp::now(),
             );
-            self.run = self.target.resume_run();
+            if self.run.is_none() {
+                self.run = self.target.resume_run();
+            }
             // A run left in progress: show it (its auto steps wait until it's open).
             if self.run.is_some() && self.ways.resume_opens_run {
                 self.screen = ScreenId::Upgrade;
@@ -59,6 +61,12 @@ impl Slot {
                 s.arm();
             }
         }
+        // Out of view nothing is fetched for a screen: that waits until the target has the
+        // window again (`Slot::shown`).
+        if !w.focused {
+            w.dirty = true;
+            return;
+        }
         let e = self.target.enter(from, now, &self.shared, &cx!(self, w));
         self.apply(w, e, now);
         self.tick(w, now);
@@ -75,11 +83,11 @@ impl Slot {
     }
 
     pub(crate) fn tick(&mut self, w: &mut Win, now: Instant) {
-        if self.talking() {
-            w.dirty = true;
+        // It never had the window: nothing of it runs yet.
+        if self.asleep {
+            return;
         }
-        if w.toast.as_ref().is_some_and(|t| t.over(now)) {
-            w.toast = None;
+        if self.talking() && w.focused {
             w.dirty = true;
         }
         if self.screen == ScreenId::Upgrade && self.ways.auto_in_view {
@@ -111,10 +119,25 @@ impl Slot {
     }
 
     /// When this slot next has something to do by itself.
-    pub(crate) fn next_due(&self, w: &Win, now: Instant) -> Option<Instant> {
-        let mut due = self.target.next_due(now, &cx!(self, w));
+    pub(crate) fn next_due(&self, w: &Win, now: Instant, focused: bool) -> Option<Instant> {
+        if self.asleep {
+            return None;
+        }
+        let mut cx = cx!(self, w);
+        cx.focused = focused;
+        let mut due = self.target.next_due(now, &cx);
+        // Out of view the target's screen sets no pace: a running step still has its limit.
+        if !focused
+            && let Some(t) = self
+                .run
+                .as_ref()
+                .and_then(|r| r.live())
+                .and_then(|l| l.deadline)
+        {
+            due = Some(due.map_or(t, |d| d.min(t)));
+        }
         // (A request running out of view still has its time limit.)
-        if self.talking() || self.apply.as_ref().is_some_and(|s| s.limited()) {
+        if (focused && self.talking()) || self.apply.as_ref().is_some_and(|s| s.limited()) {
             let t = now + Duration::from_secs(1);
             due = Some(due.map_or(t, |d| d.min(t)));
         }
@@ -473,7 +496,8 @@ impl Slot {
                     &w.theme,
                     self.target.ident().quit.clone(),
                     Effect::Quit,
-                ))
+                ));
+                w.quit_asked = true;
             }
             Action::Command => w.input = Input::Command(String::new()),
             Action::Filter if self.strip(w).1 => {
@@ -760,10 +784,12 @@ impl Slot {
             // A screen, by sentry's names (and the ones the tabs had).
             (Some(name), None) => match self.target.ident().screens.from_name(name) {
                 Some(id) => self.enter(w, id, now),
-                None => w.toast(&format!("unknown command :{c}")),
+                // Not this target's: the window's, if it names a target (`:local`).
+                None => w.target_cmd = Some(c.to_string()),
             },
             _ if c.is_empty() => {}
-            _ => w.toast(&format!("unknown command :{c}")),
+            // (`:server <name>`.)
+            _ => w.target_cmd = Some(c.to_string()),
         }
     }
 

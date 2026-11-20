@@ -26,6 +26,10 @@ rustix.workspace = true
 signal-hook.workspace = true
 serde-saphyr.workspace = true
 
+[features]
+# Test support for the window's own tests (`crates/sentry`).
+testing = ["sentry-core/testing", "sentry-app/testing"]
+
 [dev-dependencies]
 sentry-core = { workspace = true, features = ["testing"] }
 sentry-app = { workspace = true, features = ["testing"] }

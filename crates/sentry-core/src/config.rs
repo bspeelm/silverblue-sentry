@@ -24,6 +24,35 @@ pub struct Config {
     pub retention: Retention,
     pub maintenance: Maintenance,
     pub review: Review,
+    pub targets: Targets,
+}
+
+/// Which targets the window opens (`[targets]`): this machine is `local`, a server
+/// `srv:<name>`. Left out: all of them, this machine first.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Targets {
+    /// The targets shown, in the strip's order.
+    pub show: Option<Vec<String>>,
+}
+
+impl Targets {
+    /// `all` (every target there is, as ids: `local`, `srv:<name>`) as `show` orders and
+    /// limits it, and the entries of `show` that name nothing.
+    pub fn pick(&self, all: &[String]) -> (Vec<String>, Vec<String>) {
+        let Some(show) = &self.show else {
+            return (all.to_vec(), Vec::new());
+        };
+        let (mut picked, mut unknown) = (Vec::new(), Vec::new());
+        for s in show {
+            if !all.contains(s) {
+                unknown.push(s.clone());
+            } else if !picked.contains(s) {
+                picked.push(s.clone());
+            }
+        }
+        (picked, unknown)
+    }
 }
 
 /// The reviews sentry starts by itself (both programs). Each is one Claude turn in the
@@ -363,6 +392,23 @@ reports = 100
 [maintenance]
 notes = []
 "#;
+
+    #[test]
+    fn targets_are_all_unless_show_orders_or_hides_them() {
+        let all: Vec<String> = ["local", "srv:a", "srv:b"].map(String::from).to_vec();
+        let (cfg, w) = Config::parse("").unwrap();
+        assert!(w.is_empty());
+        assert_eq!(cfg.targets.pick(&all), (all.clone(), vec![]));
+        let (cfg, _) =
+            Config::parse("[targets]\nshow = [\"srv:b\", \"local\", \"srv:x\"]").unwrap();
+        assert_eq!(
+            cfg.targets.pick(&all),
+            (
+                vec!["srv:b".to_string(), "local".to_string()],
+                vec!["srv:x".to_string()]
+            )
+        );
+    }
 
     #[test]
     fn spec_example_parses_without_warnings() {

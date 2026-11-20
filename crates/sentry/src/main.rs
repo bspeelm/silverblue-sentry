@@ -3,8 +3,11 @@
 //! `sentry server …`, it is that command.
 
 mod server;
+#[cfg(test)]
+mod tests;
+mod tui;
 
-use sentry_local::{checks, collectors, config, jobs, paths, recorder, status, tui, workflows};
+use sentry_local::{checks, collectors, config, jobs, paths, recorder, status, workflows};
 
 use std::process::ExitCode;
 
@@ -135,7 +138,9 @@ fn main() -> ExitCode {
         return server::main(args);
     }
     let cli = Cli::parse();
-    init_logging();
+    if cli.cmd.is_some() {
+        init_logging();
+    }
     match cli.cmd {
         // (Taken before the parse: `as_server`.)
         Some(Command::Server { args }) => server::main(
@@ -143,13 +148,7 @@ fn main() -> ExitCode {
                 .chain(args.into_iter().map(Into::into))
                 .collect(),
         ),
-        None => match tui::run() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("sentry: {e:#}");
-                ExitCode::FAILURE
-            }
-        },
+        None => ExitCode::from(tui::run(None)),
         Some(Command::Collect { name, json: _ }) => {
             let (cfg, warnings) = config::Config::load();
             warnings.iter().for_each(|w| eprintln!("{w}"));

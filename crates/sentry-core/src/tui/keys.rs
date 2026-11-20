@@ -37,6 +37,11 @@ pub enum Action {
     Interrupt,
     /// Ask Claude about the selected thing.
     Ask,
+    /// Give a target the window: the one at this place in the target strip (from 0), the
+    /// next, the one before. The window's own keys, taken before any screen sees them.
+    Target(u8),
+    NextTarget,
+    PrevTarget,
     /// Unbound key, passed to the active screen.
     Char(char),
 }
@@ -120,6 +125,15 @@ fn action_by_name(name: &str, set: &ScreenSet) -> Named {
         "log_down" => LogDown,
         "log_up" => LogUp,
         "ask" => Ask,
+        "target.next" => NextTarget,
+        "target.prev" => PrevTarget,
+        n if n.strip_prefix("target.").is_some_and(|i| {
+            i.parse::<u8>()
+                .is_ok_and(|i| (1..=TARGET_KEYS).contains(&i))
+        }) =>
+        {
+            Target(n["target.".len()..].parse::<u8>().unwrap_or(1) - 1)
+        }
         n => {
             let is = |s: &ScreenId| format!("screen.{}", s.slug()) == n;
             match set.ids.iter().copied().find(|s| is(s)) {
@@ -131,6 +145,10 @@ fn action_by_name(name: &str, set: &ScreenSet) -> Named {
     })
 }
 
+/// How many places in the target strip have a key of their own (`F1`…, `target.1`…).
+pub const TARGET_KEYS: u8 = 12;
+
+#[derive(Clone, Default)]
 pub struct Keymap {
     map: HashMap<Key, Action>,
     pending_g: Option<Instant>,
@@ -191,8 +209,13 @@ impl Keymap {
             (ctl('k'), LogUp),
             (ctl('c'), Interrupt),
             (ch('A'), Ask),
+            (ch('{'), PrevTarget),
+            (ch('}'), NextTarget),
         ] {
             map.insert(k, a);
+        }
+        for i in 0..TARGET_KEYS {
+            map.insert(code(KeyCode::F(i + 1)), Target(i));
         }
         let mut warnings = Vec::new();
         for (name, spec) in overrides {
@@ -217,6 +240,51 @@ impl Keymap {
         )
     }
 
+    /// The key as one of the window's target keys, if it's bound to one: (the action, whether
+    /// the key is a character an input line would take as text). Nothing else is resolved,
+    /// and a pending `g` stays pending.
+    pub fn target(&self, e: &KeyEvent) -> Option<(Action, bool)> {
+        let k = Key::from_event(e);
+        let a = *self.map.get(&k)?;
+        matches!(
+            a,
+            Action::Target(_) | Action::NextTarget | Action::PrevTarget
+        )
+        .then_some((a, matches!(k.code, KeyCode::Char(_)) && !k.ctrl))
+    }
+
+    /// The key bound to an action, as `[keys]` would spell it (the strip names its keys).
+    pub fn key_of(&self, a: Action) -> Option<String> {
+        let mut keys: Vec<String> = self
+            .map
+            .iter()
+            .filter(|(_, v)| **v == a)
+            .map(|(k, _)| {
+                let name = match k.code {
+                    KeyCode::F(n) => format!("F{n}"),
+                    KeyCode::Char(' ') => "Space".into(),
+                    KeyCode::Char(c) => c.to_string(),
+                    KeyCode::Tab => "Tab".into(),
+                    KeyCode::BackTab => "S-Tab".into(),
+                    KeyCode::Enter => "Enter".into(),
+                    KeyCode::Esc => "Esc".into(),
+                    KeyCode::PageDown => "PgDn".into(),
+                    KeyCode::PageUp => "PgUp".into(),
+                    KeyCode::Up => "Up".into(),
+                    KeyCode::Down => "Down".into(),
+                    KeyCode::Left => "Left".into(),
+                    KeyCode::Right => "Right".into(),
+                    KeyCode::Home => "Home".into(),
+                    KeyCode::End => "End".into(),
+                    _ => "?".into(),
+                };
+                if k.ctrl { format!("C-{name}") } else { name }
+            })
+            .collect();
+        keys.sort();
+        keys.into_iter().next()
+    }
+
     /// Resolve a key event. `gg` (two `g` within 1 s) is Top.
     pub fn resolve(&mut self, e: &KeyEvent) -> Option<Action> {
         let k = Key::from_event(e);
@@ -236,7 +304,13 @@ impl Keymap {
             return None;
         }
         self.pending_g = None;
-        if let Some(a) = self.map.get(&k) {
+        // (A target key is the window's, asked for with `target`: here it is an ordinary key.)
+        if let Some(a) = self.map.get(&k).filter(|a| {
+            !matches!(
+                a,
+                Action::Target(_) | Action::NextTarget | Action::PrevTarget
+            )
+        }) {
             return Some(*a);
         }
         match k.code {
@@ -269,6 +343,50 @@ mod tests {
         ],
         aliases: &[],
     };
+
+    #[test]
+    fn target_keys_are_the_windows_and_rebindable() {
+        let (km, w) = Keymap::new(&LOCAL, &BTreeMap::new());
+        assert!(w.is_empty());
+        let key = |c| ev(c, KeyModifiers::NONE);
+        // F-keys by place; the braces are characters (an input line keeps them).
+        assert_eq!(
+            km.target(&key(KeyCode::F(1))),
+            Some((Action::Target(0), false))
+        );
+        assert_eq!(
+            km.target(&key(KeyCode::F(12))),
+            Some((Action::Target(11), false))
+        );
+        assert_eq!(
+            km.target(&key(KeyCode::Char('}'))),
+            Some((Action::NextTarget, true))
+        );
+        assert_eq!(
+            km.target(&key(KeyCode::Char('{'))),
+            Some((Action::PrevTarget, true))
+        );
+        // Not a target key: nothing, whatever else it is bound to.
+        assert_eq!(km.target(&key(KeyCode::Char('q'))), None);
+        assert_eq!(km.target(&key(KeyCode::Tab)), None);
+        assert_eq!(km.key_of(Action::Target(1)).as_deref(), Some("F2"));
+        let mut o = BTreeMap::new();
+        o.insert("target.next".to_string(), "C-n".to_string());
+        o.insert("target.2".to_string(), "F9".to_string());
+        o.insert("target.13".to_string(), "F10".to_string());
+        let (km, w) = Keymap::new(&LOCAL, &o);
+        assert_eq!(w, ["[keys]: unknown action `target.13`"]);
+        assert_eq!(km.target(&key(KeyCode::Char('}'))), None);
+        assert_eq!(
+            km.target(&ev(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            Some((Action::NextTarget, false))
+        );
+        assert_eq!(
+            km.target(&key(KeyCode::F(9))),
+            Some((Action::Target(1), false))
+        );
+        assert_eq!(km.target(&key(KeyCode::F(2))), None);
+    }
 
     #[test]
     fn a_set_binds_only_its_screens() {

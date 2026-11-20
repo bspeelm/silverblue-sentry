@@ -155,12 +155,16 @@ impl Slot {
         let (facts, state) = self.target.top(&cx!(self, w));
         let now = w.now().to_zoned(jiff::tz::TimeZone::system());
         frame::Top {
-            app: self.app,
+            // One program, whichever of its targets is in view; alone, a target's own name
+            // for it (`sentry-server`).
+            app: if w.several() { "sentry" } else { self.app },
             subject: self.title.clone(),
             auto: self.auto,
             facts,
             state,
             clock: frame::clock(&now),
+            targets: w.strip.clone(),
+            focus: w.strip_focus,
         }
     }
 
@@ -201,9 +205,15 @@ impl Slot {
         let layer = frame::layer(&self.open(w));
         // The sudo password, asked for here: the same line a session asks on.
         if let Some(u) = &self.unlock {
+            // With several targets open, whose password it is.
+            let what = if w.several() {
+                format!("{} · {}", self.title, u.what)
+            } else {
+                u.what.clone()
+            };
             let line = sentry_core::tui::applyview::password_line(
                 &w.theme,
-                &u.what,
+                &what,
                 u.typed.len(),
                 u.tries,
                 u.checking.is_some(),

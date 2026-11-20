@@ -12,13 +12,13 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 
 use crate::effect::{Effect, Modal, Prompt};
-use crate::slot::Slot;
+use crate::slot::{Needs, Slot};
 use crate::target::{Mail, Target, TargetId};
 use sentry_core::exec::{Cmd, ExecError, StreamMsg};
 use sentry_core::tui::ScreenId;
 use sentry_core::tui::frame;
 use sentry_core::tui::input::Input;
-use sentry_core::tui::keys::Keymap;
+use sentry_core::tui::keys::{Action, Keymap};
 use sentry_core::tui::theme::Theme;
 
 pub enum Event {
@@ -46,7 +46,9 @@ impl From<sentry_core::tui::Input> for Event {
     }
 }
 
-/// What belongs to the window, handed to a slot's flows beside the slot itself.
+/// What belongs to the window, handed to a slot's flows beside the slot itself. While a
+/// slot's flow runs, the keymap and the input line here are that slot's own (`Slot::park`),
+/// whichever target has the window.
 pub struct Win {
     pub theme: Theme,
     pub keys: Keymap,
@@ -65,16 +67,38 @@ pub struct Win {
     pub offline: bool,
     /// Something wrong in `[keys]`, said once the TUI is up.
     pub(crate) keys_warning: Option<String>,
+    /// The slot whose flow runs has the window: its screen is the one in view.
+    pub focused: bool,
+    /// The slot whose flow runs isn't the one in view: its toasts say whose they are.
+    pub(crate) speaker: Option<String>,
+    /// The target strip (empty with one target), and which entry is in view.
+    pub(crate) strip: Vec<frame::TargetTab>,
+    pub(crate) strip_focus: usize,
+    /// The other targets that are at work now, by name (this machine's reboot waits for
+    /// them).
+    pub(crate) others_working: Vec<String>,
+    /// A `:` command no slot knew: the window's, if it names a target.
+    pub(crate) target_cmd: Option<String>,
+    /// The quit box was just opened: with several targets it lists what each has going.
+    pub(crate) quit_asked: bool,
 }
 
 impl Win {
     pub fn toast(&mut self, s: &str) {
-        self.toast = Some(frame::Toast::new(s));
+        self.toast = Some(frame::Toast::new(match &self.speaker {
+            Some(who) => format!("{who} · {s}"),
+            None => s.to_string(),
+        }));
         self.dirty = true;
     }
 
     pub fn now(&self) -> jiff::Timestamp {
         self.now_override.unwrap_or_else(jiff::Timestamp::now)
+    }
+
+    /// More than one target is open.
+    pub fn several(&self) -> bool {
+        self.strip.len() > 1
     }
 }
 
@@ -83,25 +107,25 @@ pub struct App {
     /// The slot that has the keys and is drawn.
     pub focus: usize,
     pub win: Win,
+    tx: Sender<Event>,
+    /// Stream ids, unique in the window.
+    seq: Arc<AtomicU64>,
+    /// `[keys]`: each target's keymap is the defaults for its screens with these on top.
+    key_overrides: std::collections::BTreeMap<String, String>,
+    /// The slot whose command has the terminal.
+    handed: Option<usize>,
 }
 
 impl App {
     /// The window with one target in it. `make` builds the target around the `Mail` its
-    /// threads answer through.
+    /// threads answer through. More targets: [`App::add`].
     pub fn new(tx: Sender<Event>, id: &str, make: impl FnOnce(Mail) -> Box<dyn Target>) -> Self {
-        let mail = Mail::new(tx, id, Arc::new(AtomicU64::new(0)));
-        let target = make(mail.clone());
-        // The same `[keys]` for every program (another program's screens in it are skipped).
-        let (keys, warnings) = Keymap::new(
-            target.ident().screens,
-            &sentry_core::config::Config::load().0.keys,
-        );
-        Self {
-            slots: vec![Slot::new(target, mail)],
+        let mut app = Self {
+            slots: Vec::new(),
             focus: 0,
             win: Win {
                 theme: Theme::detect(),
-                keys,
+                keys: Keymap::default(),
                 toast: None,
                 input: Input::None,
                 modal: None,
@@ -110,9 +134,40 @@ impl App {
                 at: Instant::now(),
                 now_override: None,
                 offline: false,
-                keys_warning: warnings.into_iter().next(),
+                keys_warning: None,
+                focused: true,
+                speaker: None,
+                strip: Vec::new(),
+                strip_focus: 0,
+                others_working: Vec::new(),
+                target_cmd: None,
+                quit_asked: false,
             },
+            tx,
+            seq: Arc::new(AtomicU64::new(0)),
+            // The same `[keys]` for every target (another target's screens in it are skipped).
+            key_overrides: sentry_core::config::Config::load().0.keys,
+            handed: None,
+        };
+        app.add(id, make);
+        app
+    }
+
+    /// One more target in the window, after the ones there: its place in the strip. It
+    /// costs nothing until it first has the window (`App::focus`).
+    pub fn add(&mut self, id: &str, make: impl FnOnce(Mail) -> Box<dyn Target>) -> usize {
+        let mail = Mail::new(self.tx.clone(), id, self.seq.clone());
+        let target = make(mail.clone());
+        let (keys, warnings) = Keymap::new(target.ident().screens, &self.key_overrides);
+        let mut slot = Slot::new(target, mail);
+        if self.slots.is_empty() {
+            self.win.keys = keys;
+            self.win.keys_warning = warnings.into_iter().next();
+        } else {
+            slot.keys = keys;
         }
+        self.slots.push(slot);
+        self.slots.len() - 1
     }
 
     /// The slot in view.
@@ -126,12 +181,155 @@ impl App {
 
     /// The slot in view and the window, to run one of its flows.
     pub fn parts(&mut self) -> (&mut Slot, &mut Win) {
+        self.win.focused = true;
         (&mut self.slots[self.focus], &mut self.win)
     }
 
-    fn of(&mut self, id: &TargetId) -> Option<(&mut Slot, &mut Win)> {
-        let s = self.slots.iter_mut().find(|s| s.mail.id() == id)?;
-        Some((s, &mut self.win))
+    /// Where the target with this id is in the strip.
+    pub fn place(&self, id: &str) -> Option<usize> {
+        self.slots.iter().position(|s| s.mail.id() == id)
+    }
+
+    /// What slot `i` waits for or is doing, wherever its input line is now.
+    pub fn needs(&self, i: usize) -> Needs {
+        let s = &self.slots[i];
+        s.needs(if i == self.focus {
+            &self.win.input
+        } else {
+            &s.line
+        })
+    }
+
+    /// Run one of slot `i`'s flows: with the window as that slot sees it (its own keymap and
+    /// input line; its toasts named when it isn't the one in view), and afterwards, for a
+    /// slot out of view, its strip entry flagged if it now waits for the user.
+    pub fn with<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {
+        let focus = self.focus;
+        if self.slots.len() > 1 {
+            self.win.others_working = (0..self.slots.len())
+                .filter(|j| *j != i && !self.slots[*j].reboot_waits())
+                .filter(|j| self.needs(*j) == Needs::Working)
+                .map(|j| self.slots[j].title().to_string())
+                .collect();
+        }
+        if i != focus {
+            self.slots[focus].park(&mut self.win);
+            self.slots[i].park(&mut self.win);
+            self.win.speaker = Some(self.slots[i].title().to_string());
+        }
+        self.win.focused = i == focus;
+        let r = f(&mut self.slots[i], &mut self.win);
+        self.win.focused = true;
+        if i != focus {
+            self.win.speaker = None;
+            self.slots[i].park(&mut self.win);
+            self.slots[focus].park(&mut self.win);
+            self.flag(i);
+        }
+        r
+    }
+
+    /// A slot out of view came to something only the user can answer: said once, with the
+    /// target's name (its strip entry says so for as long as it waits).
+    fn flag(&mut self, i: usize) {
+        match self.needs(i) {
+            Needs::You(what) if self.slots[i].flagged != Some(what) => {
+                self.slots[i].flagged = Some(what);
+                let say = format!("{} · needs you: {what}", self.slots[i].title());
+                self.win.toast(&say);
+            }
+            Needs::You(_) => {}
+            _ => self.slots[i].flagged = None,
+        }
+    }
+
+    /// Give slot `to` the window. The first time, the target starts (its records are read,
+    /// its first fetches go out, its review at start may follow); after that its screen
+    /// comes back into view and is fetched again.
+    pub fn focus(&mut self, to: usize, now: Instant) {
+        if to >= self.slots.len() || to == self.focus {
+            return;
+        }
+        self.win.at = now;
+        // What the one left waits for has been seen: it isn't announced again.
+        let old = self.focus;
+        self.slots[old].flagged = match self.needs(old) {
+            Needs::You(what) => Some(what),
+            _ => None,
+        };
+        self.slots[old].park(&mut self.win);
+        self.slots[to].park(&mut self.win);
+        self.focus = to;
+        self.slots[to].flagged = None;
+        // Help was about the other target's screen.
+        self.win.modal = None;
+        self.win.dirty = true;
+        self.with(to, |s, w| s.shown(w, now));
+    }
+
+    /// Before the TUI is up: the target that has the window when it opens.
+    pub fn focus_at_start(&mut self, to: usize) {
+        if to < self.slots.len() && to != self.focus {
+            self.slots[self.focus].park(&mut self.win);
+            self.slots[to].park(&mut self.win);
+            self.focus = to;
+        }
+    }
+
+    /// One of the window's target keys.
+    fn target_key(&mut self, a: Action, now: Instant) {
+        let n = self.slots.len();
+        let to = match a {
+            Action::Target(i) => i as usize,
+            Action::NextTarget => (self.focus + 1) % n,
+            Action::PrevTarget => (self.focus + n - 1) % n,
+            _ => return,
+        };
+        self.focus(to, now);
+    }
+
+    /// `:local`, `:server <name>`…: the target of that kind whose name starts so (the first
+    /// of its kind without a name).
+    fn target_cmd(&mut self, line: &str, now: Instant) {
+        let mut parts = line.split_whitespace();
+        let (word, arg) = (parts.next().unwrap_or(""), parts.next());
+        let hit = self.slots.iter().position(|s| {
+            let id = s.target.ident();
+            let name = id.id.split_once(':').map_or("", |(_, n)| n);
+            id.word == word && arg.is_none_or(|a| !name.is_empty() && name.starts_with(a))
+        });
+        match hit {
+            Some(i) => self.focus(i, now),
+            None => self.win.toast(&format!("unknown command :{line}")),
+        }
+    }
+
+    /// The quit box, with several targets open: what each still has going is listed.
+    fn quit_box(&mut self) {
+        let t = self.win.theme;
+        let going: Vec<(String, Vec<String>)> = self
+            .slots
+            .iter()
+            .map(|s| (s.title().to_string(), s.going()))
+            .filter(|(_, g)| !g.is_empty())
+            .collect();
+        let Some(m) = self.win.modal.as_mut() else {
+            return;
+        };
+        m.lines = vec![ratatui::text::Line::styled(
+            "Quit sentry? Nothing keeps running after exit.",
+            t.fg(),
+        )];
+        for (title, lines) in going {
+            m.lines.push(ratatui::text::Line::raw(""));
+            m.lines
+                .push(ratatui::text::Line::styled(title, t.s(t.cyan)));
+            m.lines.extend(
+                lines
+                    .into_iter()
+                    .map(|l| ratatui::text::Line::styled(format!("  {l}"), t.dim())),
+            );
+        }
     }
 
     /// Something to say once the TUI is up, ahead of a `[keys]` warning.
@@ -139,10 +337,18 @@ impl App {
         self.win.keys_warning = Some(s);
     }
 
+    /// The TUI is up: the target in view starts. The others wait for their first turn in
+    /// view, except that a run left in progress is picked up for each now.
     pub fn start(&mut self, now: Instant) {
         self.win.at = now;
-        for s in &mut self.slots {
-            s.start(&mut self.win, now);
+        for i in 0..self.slots.len() {
+            self.with(i, |s, w| {
+                if w.focused {
+                    s.start(w, now)
+                } else {
+                    s.pickup(w)
+                }
+            });
         }
         if let Some(w) = self.win.keys_warning.take() {
             self.win.toast(&w);
@@ -151,26 +357,33 @@ impl App {
 
     pub fn enter(&mut self, id: ScreenId, now: Instant) {
         self.win.at = now;
-        let (s, w) = self.parts();
-        s.enter(w, id, now);
+        self.with(self.focus, |s, w| s.enter(w, id, now));
     }
 
     pub fn apply(&mut self, effects: Vec<Effect>, now: Instant) {
         self.win.at = now;
-        let (s, w) = self.parts();
-        s.apply(w, effects, now);
+        self.with(self.focus, |s, w| s.apply(w, effects, now));
     }
 
+    /// Every slot's own time: its run, its session and what they wait for go on whatever is
+    /// in view; only the slot in view polls for its screen.
     pub fn tick(&mut self, now: Instant) {
         self.win.at = now;
-        let (s, w) = self.parts();
-        s.tick(w, now);
+        if self.win.toast.as_ref().is_some_and(|t| t.over(now)) {
+            self.win.toast = None;
+            self.win.dirty = true;
+        }
+        for i in 0..self.slots.len() {
+            self.with(i, |s, w| s.tick(w, now));
+        }
     }
 
     pub fn next_due(&self, now: Instant) -> Instant {
         let mut due = now + Duration::from_secs(60);
-        if let Some(t) = self.slot().next_due(&self.win, now) {
-            due = due.min(t);
+        for (i, s) in self.slots.iter().enumerate() {
+            if let Some(t) = s.next_due(&self.win, now, i == self.focus) {
+                due = due.min(t);
+            }
         }
         if let Some(t) = &self.win.toast {
             due = due.min(t.until());
@@ -182,49 +395,81 @@ impl App {
         self.win.at = now;
         match ev {
             Event::Key(k) => {
-                let (s, w) = self.parts();
-                s.on_key(w, k, now);
+                // The window's own keys: F-keys wherever the keys are; a character only
+                // where it wouldn't be typed (a message, a prompt, the password).
+                if let Some((a, text)) = self.win.keys.target(&k)
+                    && !(text && self.slots[self.focus].takes_text(&self.win))
+                {
+                    return self.target_key(a, now);
+                }
+                self.with(self.focus, |s, w| s.on_key(w, k, now));
+                if let Some(line) = self.win.target_cmd.take() {
+                    self.target_cmd(&line, now);
+                }
+                if std::mem::take(&mut self.win.quit_asked) && self.slots.len() > 1 {
+                    self.quit_box();
+                }
             }
-            Event::Paste(text) => {
-                let (s, w) = self.parts();
-                s.on_paste(w, &text);
-            }
+            Event::Paste(text) => self.with(self.focus, |s, w| s.on_paste(w, &text)),
             Event::Resize => self.win.dirty = true,
             Event::Signal => self.win.quit = true,
             // Whatever is in view, it lands in its own slot.
             Event::Data(id, data) => {
-                if let Some((s, w)) = self.of(&id) {
-                    s.on_data(w, data);
+                if let Some(i) = self.place(&id) {
+                    self.with(i, |s, w| s.on_data(w, data));
                 }
             }
             Event::Stream(id, sid, m) => {
-                if let Some((s, w)) = self.of(&id) {
-                    s.on_run(w, sid, m);
+                if let Some(i) = self.place(&id) {
+                    self.with(i, |s, w| s.on_run(w, sid, m));
                 }
             }
             Event::Text(id, tid, res) => {
-                if let Some((s, w)) = self.of(&id) {
-                    s.on_text(w, tid, res);
+                if let Some(i) = self.place(&id) {
+                    self.with(i, |s, w| s.on_text(w, tid, res));
                 }
             }
         }
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
-        let (s, w) = self.parts();
-        s.draw(w, f);
+        self.win.strip = if self.slots.len() > 1 {
+            (0..self.slots.len())
+                .map(|i| frame::TargetTab {
+                    key: self.win.keys.key_of(Action::Target(i as u8)),
+                    name: self.slots[i].title().to_string(),
+                    mark: match self.needs(i) {
+                        Needs::Nothing => frame::Mark::None,
+                        Needs::Working => frame::Mark::Working,
+                        Needs::You(_) => frame::Mark::You,
+                    },
+                    auto: self.slots[i].auto,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.win.strip_focus = self.focus;
+        self.with(self.focus, |s, w| s.draw(w, f));
     }
 
+    /// A command waiting for the terminal: the slot in view's only (one out of view waits
+    /// until it's looked at; its strip entry says it needs you).
     pub fn take_suspend(&mut self) -> Option<(Cmd, String)> {
         self.win.at = Instant::now();
-        let (s, w) = self.parts();
-        s.take_suspend(w)
+        let r = self.with(self.focus, |s, w| s.take_suspend(w));
+        if r.is_some() {
+            self.handed = Some(self.focus);
+        }
+        r
     }
 
+    /// The terminal is back. (What the other slots' threads sent meanwhile is queued, and
+    /// handled next.)
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
         self.win.at = Instant::now();
-        let (s, w) = self.parts();
-        s.after_suspend(w, status);
+        let i = self.handed.take().unwrap_or(self.focus);
+        self.with(i, |s, w| s.after_suspend(w, status));
     }
 }
 
@@ -284,6 +529,59 @@ impl App {
             .collect();
         s.shared.wf_entries = e;
         s.settle(w, crate::target::Settle::Lists);
+    }
+    /// The same for the slot at `i`, in view or not.
+    pub fn set_wf_entries_at(&mut self, i: usize, e: Vec<sentry_core::workflows::Entry>) {
+        self.with(i, |s, w| {
+            s.shared.workflows = e.iter().map(|x| x.name.clone()).collect();
+            s.shared.wf_list = e
+                .iter()
+                .cloned()
+                .map(|entry| sentry_core::tui::wflist::WfInfo { entry, last: None })
+                .collect();
+            s.shared.wf_entries = e;
+            s.settle(w, crate::target::Settle::Lists);
+        });
+    }
+    /// Effects for the slot at `i`, as if one of its own events brought them.
+    pub fn apply_at(&mut self, i: usize, effects: Vec<Effect>) {
+        let now = Instant::now();
+        self.with(i, |s, w| s.apply(w, effects, now));
+    }
+    /// The running step of the run in slot `i` ends (nothing ran).
+    pub fn run_step_exit_at(&mut self, i: usize, code: i32) {
+        let s = &self.slots[i];
+        let id = s
+            .run
+            .as_ref()
+            .and_then(|r| r.live())
+            .map(|l| l.id)
+            .expect("no step running");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// The sudo password being asked for in slot `i`: (what for, characters typed).
+    pub fn unlock_at(&self, i: usize) -> Option<(String, usize)> {
+        let u = self.slots[i].unlock.as_ref()?;
+        Some((u.what.clone(), u.typed.len()))
+    }
+    /// The toast on screen.
+    pub fn toast_for_test(&self) -> Option<&str> {
+        self.win.toast.as_ref().map(|t| t.msg())
+    }
+    /// Whether the slot at `i` has started (it had the window at least once).
+    pub fn started_at(&self, i: usize) -> bool {
+        !self.slots[i].asleep_for_test()
     }
     /// What the review window on its brief would send, or the brief of a conversation just
     /// opened.

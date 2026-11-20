@@ -78,6 +78,7 @@ macro_rules! cx {
             chat_running: $s.chat.as_ref().is_some_and(|c| c.running()),
             root: $s.secret_ok,
             auto: $s.auto,
+            focused: $w.focused,
             target: &$s.title,
             finding: $s.apply.as_ref().and_then(|a| a.chat.ask.finding()),
         }
@@ -209,6 +210,24 @@ pub struct Slot {
     auto_held: Option<(PathBuf, usize, bool, Option<jiff::Timestamp>)>,
     /// The run about to begin got its values from auto (noted in its state once it exists).
     auto_took_values: bool,
+    /// This slot's keymap and input line while another slot's flow runs or is in view; in
+    /// their place while this one's does, whatever the window had (`Slot::park`).
+    pub(crate) keys: sentry_core::tui::keys::Keymap,
+    pub(crate) line: Input<Prompt>,
+    /// Not started yet: it never had the window (`App::start` only picked up its run).
+    asleep: bool,
+    /// What it waits for out of view, once said (`App::flag`).
+    pub(crate) flagged: Option<&'static str>,
+}
+
+/// What a slot is doing, for its entry in the target strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Needs {
+    Nothing,
+    /// A run, a session, a series or Claude is at work.
+    Working,
+    /// It waits for the user: what for.
+    You(&'static str),
 }
 
 impl Slot {
@@ -265,7 +284,167 @@ impl Slot {
             auto_again: false,
             auto_held: None,
             auto_took_values: false,
+            keys: Default::default(),
+            line: Input::None,
+            asleep: false,
+            flagged: None,
         }
+    }
+
+    /// What the target is called.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Swap this slot's keymap and input line with the window's: the window's are the slot's
+    /// own while its flow runs or it is in view, and are kept here meanwhile.
+    pub(crate) fn park(&mut self, w: &mut Win) {
+        std::mem::swap(&mut self.keys, &mut w.keys);
+        std::mem::swap(&mut self.line, &mut w.input);
+    }
+
+    /// The slot is in view (again): the first time it starts; after that its screen is
+    /// fetched as on entering it.
+    pub(crate) fn shown(&mut self, w: &mut Win, now: Instant) {
+        if std::mem::take(&mut self.asleep) {
+            self.start(w, now);
+        } else {
+            self.enter(w, self.screen, now);
+        }
+    }
+
+    /// At start, for a target not in view: nothing of it is read or fetched until it is,
+    /// except a run left in progress, which is picked up (it waits to be opened, as ever).
+    pub(crate) fn pickup(&mut self, w: &mut Win) {
+        self.asleep = true;
+        if !w.offline {
+            self.run = self.target.resume_run();
+        }
+    }
+
+    /// Whether a character typed now is text (a message, a prompt's line, the password).
+    pub(crate) fn takes_text(&self, w: &Win) -> bool {
+        matches!(
+            frame::layer(&self.open(w)),
+            Layer::Unlock | Layer::Apply | Layer::Chat | Layer::Input
+        )
+    }
+
+    /// Where the slot stands, for the strip: waiting for the user (what for), at work, or
+    /// neither. `line`: its input line, wherever that is now.
+    pub fn needs(&self, line: &Input<Prompt>) -> Needs {
+        use sentry_core::tui::stepview::State;
+        if self.unlock.as_ref().is_some_and(|u| u.checking.is_none()) {
+            return Needs::You("the sudo password");
+        }
+        if self.modal.as_ref().is_some_and(|m| m.yes.is_some()) || self.choice.is_some() {
+            return Needs::You("a question to answer");
+        }
+        if self.suspend.is_some() {
+            return Needs::You("a command for the terminal");
+        }
+        match line {
+            Input::Prompt(Prompt::WfVar(_), _) => return Needs::You("a workflow's values"),
+            Input::Prompt(Prompt::Own(o), _) if o.workflow.is_some() => {
+                return Needs::You("a workflow's values");
+            }
+            Input::Prompt(Prompt::LogNote(_), _) => {
+                return Needs::You("a note for the log (the run ended)");
+            }
+            Input::Prompt(..) => return Needs::You("a line to type"),
+            _ => {}
+        }
+        // The run first: a session that waits for its workflow stands where the run does.
+        let mut working = false;
+        if let Some(r) = self.run.as_ref().filter(|r| !r.done()) {
+            if r.live().is_some() {
+                working = true;
+            } else {
+                match *r.next() {
+                    Next::Run(_) if r.armed() => working = true,
+                    Next::Run(_) => return Needs::You("a run to carry on"),
+                    Next::Confirm(_) => return Needs::You("a step to confirm"),
+                    Next::Reboot {
+                        requested: true, ..
+                    } => working = true,
+                    Next::Reboot { .. } => return Needs::You("a reboot to start"),
+                    Next::Shell(_) => return Needs::You("a shell step"),
+                    Next::Manual { failed: false, .. } => {
+                        return Needs::You("a step to do by hand");
+                    }
+                    Next::Manual { .. } | Next::Stopped(_) => return Needs::You("a failed step"),
+                    Next::Done => {}
+                }
+            }
+        }
+        if let Some(s) = self.apply.as_ref() {
+            match sentry_core::tui::applyview::state(s) {
+                State::You(_) if working && s.waiting_workflow().is_some() => {}
+                State::You(_) => {
+                    return Needs::You(match s.enter_word() {
+                        Some("apply the plan") => "a plan to approve",
+                        Some("allow it") => "a request to allow",
+                        Some("start") => "a session to start",
+                        Some("go on with the next") => "the next row to go on to",
+                        Some("open the workflow") => "a workflow to start",
+                        _ => "a session to look at",
+                    });
+                }
+                State::Running | State::Working(_) => working = true,
+                State::Done | State::Failed | State::Stopped | State::Idle => {}
+            }
+        }
+        working = working
+            || self.series.is_some()
+            || self.writer.as_ref().is_some_and(|w| w.running())
+            || self.chat.as_ref().is_some_and(|c| c.running())
+            || self.pane.as_ref().is_some_and(|p| p.done.is_none())
+            || self.unlock.is_some()
+            || !self.reads.is_empty();
+        if working {
+            Needs::Working
+        } else {
+            Needs::Nothing
+        }
+    }
+
+    /// What quitting now would cut short here, a line each.
+    pub(crate) fn going(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if let Some(r) = self.run.as_ref().filter(|r| !r.done()) {
+            v.push(format!(
+                "{} is in progress: its state is saved, and it carries on next time",
+                r.wf().name
+            ));
+        }
+        if let Some(sr) = &self.series {
+            v.push(format!("{}: what's left stays to do", sr.line()));
+        }
+        if let Some(s) = self.apply.as_ref().filter(|s| s.busy()) {
+            v.push(format!(
+                "{}: stopped where it is",
+                sentry_core::tui::applyview::banner(s)
+            ));
+        }
+        if self.chat.as_ref().is_some_and(|c| c.running())
+            || self.writer.as_ref().is_some_and(|w| w.running())
+        {
+            v.push("Claude is answering: stopped".into());
+        }
+        if let Some(p) = self.pane.as_ref().filter(|p| p.done.is_none()) {
+            v.push(format!("{} is running", p.title));
+        }
+        v
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn asleep_for_test(&self) -> bool {
+        self.asleep
+    }
+
+    /// This target's reboot waits for the other targets' work to settle.
+    pub(crate) fn reboot_waits(&self) -> bool {
+        false
     }
 
     /// The id the next stream would get (tests: the last one started is this minus one).

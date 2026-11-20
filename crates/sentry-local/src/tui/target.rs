@@ -276,6 +276,7 @@ impl LocalTarget {
                 title: format!("silverblue {}", data.os_version),
                 scope: Self::ID.to_string(),
                 place: "this machine",
+                word: "local",
                 app: "sentry",
                 screens: &SCREENS,
                 runs: crate::workflows::state::root(),
@@ -723,7 +724,10 @@ impl Target for LocalTarget {
     fn due(&mut self, now: Instant, cx: &Cx) -> bool {
         let mut dirty = false;
         let first_sample = self.data.sys.is_none();
+        // Only while this machine has the window: out of view nothing is sampled or fetched
+        // for a screen.
         match cx.screen {
+            _ if !cx.focused => {}
             ScreenId::Dash => {
                 if now >= self.sched.sys {
                     self.data.sample_system();
@@ -786,6 +790,7 @@ impl Target for LocalTarget {
             now + Duration::from_secs(60 - (jiff::Timestamp::now().as_second() % 60) as u64);
         let mut at = |t: Instant| due = due.min(t);
         match cx.screen {
+            _ if !cx.focused => {}
             ScreenId::Dash => {
                 at(self.sched.sys);
                 at(self.sched.counts);

@@ -200,6 +200,7 @@ impl ServerTarget {
                 title: name.clone(),
                 scope: name.clone(),
                 place: "the server",
+                word: "server",
                 app: APP,
                 screens: &SCREENS,
                 runs: workflow::root(&name),
@@ -744,7 +745,10 @@ impl Target for ServerTarget {
             self.fetch(Kind::Probe, cx);
             self.reboot_probe = Some(now + Duration::from_secs(2));
         }
-        // Only what the screen in view polls.
+        // Only what the screen in view polls, and only while the server has the window.
+        if !cx.focused {
+            return false;
+        }
         for p in Screens::polls(cx.screen, &self.remote.cfg) {
             if let Some(every) = p.every
                 && self.due.get(&p.kind).is_none_or(|t| now >= *t)
@@ -756,8 +760,9 @@ impl Target for ServerTarget {
         false
     }
 
-    fn next_due(&self, _now: Instant, _cx: &Cx) -> Option<Instant> {
-        let mut due = self.due.values().copied().min();
+    fn next_due(&self, _now: Instant, cx: &Cx) -> Option<Instant> {
+        // Out of view only the wait for a reboot sets a time.
+        let mut due = self.due.values().copied().min().filter(|_| cx.focused);
         if let Some(t) = self.reboot_probe.filter(|_| self.reboot_wait.is_some()) {
             due = Some(due.map_or(t, |d| d.min(t)));
         }
