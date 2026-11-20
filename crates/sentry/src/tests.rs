@@ -854,3 +854,138 @@ fn live_two_targets() {
     assert_eq!(logged(""), ["two-echoes"]);
     assert_eq!(logged(n), ["auto-one"]);
 }
+
+// ---- The network target beside the other two.
+
+const NETWORK: &str = "home";
+
+fn fixture(name: &str) -> String {
+    std::fs::read_to_string(format!(
+        "{}/../../tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+}
+
+/// This machine (in view), `myserver`, and the network `home`.
+fn three() -> App {
+    let mut a = two();
+    a.add(
+        &sentry_network::tui::id_of(NETWORK),
+        sentry_network::tui::target(sentry_network::remote::Router::new(
+            NETWORK,
+            &Default::default(),
+        )),
+    );
+    a
+}
+
+#[test]
+fn the_strip_has_a_network_as_its_third_target() {
+    let mut a = three();
+    insta::assert_snapshot!("strip_three_targets_158", top(&mut a, 158));
+    // F3: the network, with its own screens and nothing of the others'.
+    key(&mut a, KeyCode::F(3));
+    assert_eq!(a.focus, 2);
+    let s = screen(&mut a);
+    let tabs = s.lines().nth(1).unwrap();
+    assert!(
+        tabs.contains("1 Dashboard") && !tabs.contains("Processes") && !tabs.contains("Maint"),
+        "{s}"
+    );
+    assert_eq!(a.slot().screen, ScreenId::Dash);
+    // What a probe and the interfaces read bring is drawn in its slot.
+    a.on_event(
+        sentry_network::tui::testing::ifaces_ev(NETWORK, &fixture("network/ifaces.txt")),
+        Instant::now(),
+    );
+    a.on_event(
+        sentry_network::tui::testing::probe_ev(NETWORK, &fixture("network/probe.txt")),
+        Instant::now(),
+    );
+    insta::assert_snapshot!("strip_network_in_view_158", top(&mut a, 158));
+    let s = screen(&mut a);
+    assert!(s.contains("Example Router AX") && s.contains("● 1G"), "{s}");
+    // The digits are the network's: 2, 3, 5 and 6 are nothing there (yet).
+    for c in ['2', '3', '5', '6', '0'] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
+    }
+    // } goes round all three.
+    key(&mut a, KeyCode::Char('}'));
+    assert_eq!(a.focus, 0);
+    key(&mut a, KeyCode::Char('{'));
+    assert_eq!(a.focus, 2);
+    insta::assert_snapshot!("strip_three_targets_80", top(&mut a, 80));
+}
+
+#[test]
+fn net_with_a_name_is_the_network_and_alone_the_screen() {
+    let mut a = three();
+    // On this machine `:net` is its Network screen, as it always was.
+    typed(&mut a, ":net");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!((a.focus, a.slot().screen), (0, ScreenId::Net));
+    // With a name (or the start of one) it is the network of that name.
+    typed(&mut a, ":net ho");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, 2);
+    assert_eq!(a.slot().target.ident().word, "net");
+    typed(&mut a, ":net zz");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, 2);
+    assert_eq!(a.toast_for_test(), Some("unknown command :net zz"));
+    // From the server too: its own Network screen without a name, the network with one.
+    typed(&mut a, ":server my");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, 1);
+    typed(&mut a, ":net");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!((a.focus, a.slot().screen), (1, ScreenId::Net));
+    typed(&mut a, ":net home");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, 2);
+    // And back.
+    typed(&mut a, ":local");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, 0);
+}
+
+#[test]
+fn a_network_is_asleep_until_it_first_has_the_window() {
+    use sentry_network::tui::testing::asked;
+    let mut a = three();
+    let now = Instant::now();
+    a.start(now);
+    assert!(a.started_at(0) && !a.started_at(1) && !a.started_at(2));
+    // Time passes, this machine's screens come and go: the network asks for nothing (no
+    // ssh), sets no time to be woken at, and shows nothing going on.
+    for i in 1..=5 {
+        a.tick(now + std::time::Duration::from_secs(i));
+    }
+    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Char('0'));
+    assert!(asked(&a, 2).is_empty(), "{:?}", asked(&a, 2));
+    assert!(!a.started_at(2));
+    assert_eq!(a.needs(2), Needs::Nothing);
+    // The server in view: still nothing of the network's.
+    key(&mut a, KeyCode::F(2));
+    assert!(asked(&a, 2).is_empty() && !a.started_at(2));
+    // It gets the window: it starts, and reads what its Dashboard shows.
+    let t1 = Instant::now();
+    a.focus(2, t1);
+    assert!(a.started_at(2));
+    assert_eq!(asked(&a, 2), ["probe", "ifaces"]);
+    a.tick(t1 + std::time::Duration::from_millis(1100));
+    assert_eq!(asked(&a, 2), ["probe", "ifaces", "probe"]);
+    // Out of view again it stops polling at once, and comes back reading.
+    let t2 = t1 + std::time::Duration::from_secs(2);
+    a.focus(0, t2);
+    for i in 1..=5 {
+        a.tick(t2 + std::time::Duration::from_secs(i));
+    }
+    assert_eq!(asked(&a, 2).len(), 3);
+    let t3 = t2 + std::time::Duration::from_secs(10);
+    a.focus(2, t3);
+    assert_eq!(&asked(&a, 2)[3..], ["probe", "ifaces"]);
+}

@@ -1553,6 +1553,7 @@ dependencies = [
  "sentry-app",
  "sentry-core",
  "sentry-local",
+ "sentry-network",
  "sentry-server",
  "serde_json",
  "tracing-subscriber",

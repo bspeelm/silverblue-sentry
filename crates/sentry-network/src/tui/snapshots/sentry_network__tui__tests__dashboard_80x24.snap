@@ -1,0 +1,28 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
+ 1 Dashboard
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Router · home ─────────────┐┌ Ports · 6 of 7 up ─────────────────────────────┐
+│ release  OpenWrt 25.12.3   ││ port     net link       ↓ bit/s ↑ bit/s        │
+│ board    Example Router AX ││ eth1     wan ● 1G        12.0 M   2.0 M    ███ │
+│ up       15d 18:36         ││ lan1     lan ● 1G         1.8 M  11.6 M    ███ │
+│ load     0.42 0.31 0.18    ││ lan2     lan ● 100M           0     1 k    ▁▁▁ │
+│ memory   █░░░  21% of 986M ││ lan3     lan ○ no link        0       0        │
+│ flash    ░░░░   6% of 7.2G ││ lan4     dmz ● 1G             0       0        │
+└────────────────────────────┘│ phy0-ap0 lan ● wifi           0       0        │
+┌ WAN · up 40m ──────────────┐│ phy1-ap0 lan ● wifi       160 k   400 k    ███ │
+│ address  198.51.100.23/24  ││                                                │
+│ gateway  198.51.100.1      ││                                                │
+│ lease    2h · 1h 20m left  ││                                                │
+│ dns      198.51.100.53, 1… ││                                                │
+│ IPv6     prefix 2001:db8:… ││                                                │
+└────────────────────────────┘│                                                │
+                              │                                                │
+                              │                                                │
+                              └────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ r  read again   A  ask Claude   ?  help   q  quit

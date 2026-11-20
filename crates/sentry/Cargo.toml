@@ -12,8 +12,9 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
-# The one program. `sentry-server` is the same executable under that name (a symlink beside
-# it: `make install-binary`), and `sentry server …` the same thing.
+# The one program. `sentry-server` and `sentry-network` are the same executable under those
+# names (symlinks beside it: `make install-binary`), and `sentry server …` / `sentry network …`
+# the same things.
 [[bin]]
 name = "sentry"
 path = "src/main.rs"
@@ -23,6 +24,7 @@ sentry-core.workspace = true
 sentry-app.workspace = true
 sentry-local.workspace = true
 sentry-server.workspace = true
+sentry-network.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
@@ -32,6 +34,7 @@ sentry-core = { workspace = true, features = ["testing"] }
 sentry-app = { workspace = true, features = ["testing"] }
 sentry-local = { workspace = true, features = ["testing"] }
 sentry-server = { workspace = true, features = ["testing"] }
+sentry-network = { workspace = true, features = ["testing"] }
 ratatui.workspace = true
 jiff.workspace = true
 insta.workspace = true
