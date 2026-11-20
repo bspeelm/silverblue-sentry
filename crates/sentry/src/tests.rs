@@ -890,7 +890,11 @@ fn the_strip_has_a_network_as_its_third_target() {
     let s = screen(&mut a);
     let tabs = s.lines().nth(1).unwrap();
     assert!(
-        tabs.contains("1 Dashboard") && !tabs.contains("Processes") && !tabs.contains("Maint"),
+        tabs.contains("1 Dashboard")
+            && tabs.contains("2 Clients")
+            && tabs.contains("6 Maintenance")
+            && !tabs.contains("Processes")
+            && !tabs.contains("Upgrade"),
         "{s}"
     );
     assert_eq!(a.slot().screen, ScreenId::Dash);
@@ -906,10 +910,20 @@ fn the_strip_has_a_network_as_its_third_target() {
     insta::assert_snapshot!("strip_network_in_view_158", top(&mut a, 158));
     let s = screen(&mut a);
     assert!(s.contains("Example Router AX") && s.contains("● 1G"), "{s}");
-    // The digits are the network's: 2, 3, 5 and 6 are nothing there (yet).
-    for c in ['2', '3', '5', '6', '0'] {
+    // The digits are the network's: 2 is its Clients, 3 its own Network, 6 its
+    // Maintenance; 4, 5 and 0 are nothing there (yet).
+    for c in ['4', '5', '0'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
+    }
+    for (c, id) in [
+        ('2', ScreenId::Clients),
+        ('3', ScreenId::Net),
+        ('6', ScreenId::Maint),
+        ('1', ScreenId::Dash),
+    ] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.slot().screen, id, "{c}");
     }
     // } goes round all three.
     key(&mut a, KeyCode::Char('}'));
@@ -975,17 +989,62 @@ fn a_network_is_asleep_until_it_first_has_the_window() {
     let t1 = Instant::now();
     a.focus(2, t1);
     assert!(a.started_at(2));
-    assert_eq!(asked(&a, 2), ["probe", "ifaces"]);
+    assert_eq!(asked(&a, 2), ["probe", "ifaces", "services", "report"]);
     a.tick(t1 + std::time::Duration::from_millis(1100));
-    assert_eq!(asked(&a, 2), ["probe", "ifaces", "probe"]);
+    assert_eq!(asked(&a, 2).len(), 5);
+    assert_eq!(asked(&a, 2)[4], "probe");
     // Out of view again it stops polling at once, and comes back reading.
     let t2 = t1 + std::time::Duration::from_secs(2);
     a.focus(0, t2);
     for i in 1..=5 {
         a.tick(t2 + std::time::Duration::from_secs(i));
     }
-    assert_eq!(asked(&a, 2).len(), 3);
+    assert_eq!(asked(&a, 2).len(), 5);
     let t3 = t2 + std::time::Duration::from_secs(10);
     a.focus(2, t3);
-    assert_eq!(&asked(&a, 2)[3..], ["probe", "ifaces"]);
+    assert_eq!(
+        &asked(&a, 2)[5..],
+        ["probe", "ifaces", "services", "report"]
+    );
+}
+
+#[test]
+fn claude_is_offered_only_where_it_answers() {
+    // Claude Code is there (as tests have it): this machine and the server offer it in the
+    // key bar, on a screen that names no `A` of its own; the network, which has no Claude
+    // yet, doesn't, and neither does its `?`.
+    let mut a = three();
+    let bar = |a: &mut App| screen(a).lines().last().unwrap().to_string();
+    key(&mut a, KeyCode::Char('1'));
+    assert!(bar(&mut a).contains("A  ask Claude"), "{}", bar(&mut a));
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('1'));
+    assert!(bar(&mut a).contains("A  ask Claude"), "{}", bar(&mut a));
+    key(&mut a, KeyCode::Char('?'));
+    assert!(screen(&mut a).contains("ask Claude about the selected thing"));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::F(3));
+    for c in ['1', '2', '3', '6'] {
+        key(&mut a, KeyCode::Char(c));
+        let b = bar(&mut a);
+        assert!(!b.contains("Claude") && !b.contains("claude"), "{c}: {b}");
+        assert!(!b.contains("auto"), "{c}: {b}");
+    }
+    key(&mut a, KeyCode::Char('?'));
+    let help = screen(&mut a);
+    assert!(
+        help.contains("Maintenance:") && !help.contains("Claude") && !help.contains("auto mode"),
+        "{help}"
+    );
+    key(&mut a, KeyCode::Esc);
+    // And A there says why, whatever is installed.
+    key(&mut a, KeyCode::Char('A'));
+    assert_eq!(
+        a.toast_for_test(),
+        Some("Claude isn't set up for a network yet")
+    );
+    // Back on this machine, Maintenance still names its own.
+    key(&mut a, KeyCode::F(1));
+    key(&mut a, KeyCode::Char('6'));
+    assert!(bar(&mut a).contains("A  claude"), "{}", bar(&mut a));
 }

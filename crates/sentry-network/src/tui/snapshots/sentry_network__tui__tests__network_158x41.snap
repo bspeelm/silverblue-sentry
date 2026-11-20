@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   6 Maintenance
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Zones · 3 · as expected ───────────────────────────────────────────────────┐  ┌ Forwards · 2 · as expected ────────────────────────────────────────────────┐
+│ zone    interfaces      input   forward                                    │  │ forward                     port        to                                 │
+│ lan     lan             accept  accept  ✓                                  │  │ web                     tcp 443         203.0.113.93:443        ✓          │
+│ wan     wan wan6        reject  drop    ✓                                  │  │ game                    udp 8000-8010   192.0.2.20:8000-8010    ✓          │
+│ dmz     dmz             reject  reject  ✓                                  │  │ old-cam                 tcp 8554        192.0.2.50:8554         off        │
+│ let in from outside: udp 68 · icmp                                         │  │                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘  └────────────────────────────────────────────────────────────────────────────┘
+┌ Listening · netstat -lntup · 24 · 0 new ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PROTO LOCAL                                                                               PROCESS                                                 STATUS   │
+│ tcp   0.0.0.0:443                                                                         uhttpd (2101)                                           baseline │
+│ tcp   127.0.0.1:53                                                                        dnsmasq (2202)                                          local    │
+│ tcp   0.0.0.0:22                                                                          dropbear (1711)                                         baseline │
+│ tcp   203.0.113.1:53                                                                      dnsmasq (2202)                                          baseline │
+│ tcp   0.0.0.0:80                                                                          uhttpd (2101)                                           baseline │
+│ tcp   127.0.0.1:5053                                                                      https-dns-prox (3404)                                   local    │
+│ tcp   192.0.2.1:53                                                                        dnsmasq (2202)                                          baseline │
+│ tcp   [2001:db8:1200::1]:53                                                               dnsmasq (2202)                                          baseline │
+│ tcp   [::]:443                                                                            uhttpd (2101)                                           baseline │
+│ tcp   [fe80::5eff:fe00:53a0]:53                                                           dnsmasq (2202)                                          baseline │
+│ tcp   [::]:22                                                                             dropbear (1711)                                         baseline │
+│ tcp   [::]:80                                                                             uhttpd (2101)                                           baseline │
+│ tcp   [::1]:53                                                                            dnsmasq (2202)                                          local    │
+│ udp   127.0.0.1:5053                                                                      https-dns-prox (3404)                                   local    │
+│ udp   0.0.0.0:51234                                                                       ntpd (2550)                                             client   │
+│ udp   127.0.0.1:53                                                                        dnsmasq (2202)                                          local    │
+│ udp   203.0.113.1:53                                                                      dnsmasq (2202)                                          baseline │
+│ udp   192.0.2.1:53                                                                        dnsmasq (2202)                                          baseline │
+│ udp   0.0.0.0:67                                                                          dnsmasq (2202)                                          baseline │
+│ udp   [::]:546                                                                            odhcp6c (10432)                                         client   │
+│ udp   [::]:547                                                                            odhcpd (1890)                                           baseline │
+│ udp   [::1]:53                                                                            dnsmasq (2202)                                          local    │
+│ udp   [fe80::5eff:fe00:53a0]:53                                                           dnsmasq (2202)                                          baseline │
+│ udp   [2001:db8:1200::1]:53                                                               dnsmasq (2202)                                          baseline │
+│                                                                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   b  expected on/off   /  filter   r  refresh   ?  help   q  quit

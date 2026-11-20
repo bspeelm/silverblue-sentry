@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Maintenance › Audit report  Esc back
+┌ Findings · 2026-10-26-120000 ────────────────────────────────────────────────┐  ┌ Changes · first report ──────────────────────────────────────────────────┐
+│ Worth a look on this network.                                                │  │ Nothing to compare against yet. The next audit is compared with this on… │
+│ b = expected on/off · B = all like it · c = audit again                      │  │                                                                          │
+│        AREA      FINDING                                                     │  │                                                                          │
+│ check  firewall  udp port 8000-8010 is forwarded to 192.0.2.20 (game)        │  │                                                                          │
+│ check  listeners udp port 1900 on the router is open to the internet (the ke │  │                                                                          │
+│ review clients   unknown device 00:00:5e:00:53:11 on wired port lan2         │  │                                                                          │
+│ review clients   unknown device 02:00:5e:00:53:22 on wired port lan2         │  │                                                                          │
+│ review firewall  the forward cam (tcp 8554 → 192.0.2.50) is switched off     │  │                                                                          │
+│ review access    the web interface answers over plain HTTP                   │  │                                                                          │
+│ review access    ssh accepts passwords                                       │  │                                                                          │
+│ review firewall  zone dmz isn't in expect.zones (it holds dmz)               │  │                                                                          │
+│ info   listeners tcp port 53 listens on the router (dnsmasq)                 │  │                                                                          │
+│ info   listeners udp port 53 listens on the router (dnsmasq)                 │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│                                                                              │  │                                                                          │
+│ 2 to check · 6 to review · 2 info                                            │  │                                                                          │
+│ ──────────────────────────────────────────────────────────────────────────── │  │                                                                          │
+│ What   The firewall sends this port from outside to a device inside, and     │  │                                                                          │
+│        expect.forwards doesn't have it.                                      │  │                                                                          │
+│ Why    Anyone on the internet can reach that device on this port.            │  │                                                                          │
+│ To do  If you meant it, add it to expect.forwards in network_config.yaml (or │  │                                                                          │
+│        press b); otherwise remove the redirect.                              │  │                                                                          │
+│        firewall.@redirect[0] · wan → 192.0.2.20:8000-8010                    │  │                                                                          │
+│        net:forward:udp:8000-8010                                             │  │                                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  select   b  expected on/off   B  all like it   c  run audit   [ ]  browse reports   C-h/l  focus   ?  help   q  quit

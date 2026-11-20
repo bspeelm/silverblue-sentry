@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   H History
+ 1 Dashboard   2 Clients   3 Network   6 Maintenance   H History
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ History · last 24h · every 10s · metrics/ring.bin 3.2 MiB ─────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -42,4 +42,4 @@ expression: s
 │ ○ recorded while the Dashboard is open · sentry-network record home to keep going                                                                          │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- [ ]  window   ←→  scrub   r  reload   A  ask Claude   ?  help   q  quit
+ [ ]  window   ←→  scrub   r  reload   ?  help   q  quit

@@ -1,4 +1,5 @@
-//! A network in sentry's TUI: its router's Dashboard and History, everything fetched over ssh
+//! A network in sentry's TUI: its router's Dashboard, Clients, Network, Maintenance and
+//! History, everything fetched over ssh
 //! while you watch (the window itself is opened by the `sentry` binary, with the network as
 //! one of its targets). The app (the frame, sessions, records, the workflow run) is
 //! `sentry_app`'s; what's here is the network as its target ([`target::NetworkTarget`]).
@@ -15,12 +16,23 @@ use sentry_core::tui::{ScreenId, ScreenSet};
 pub use sentry_app::{App, Event};
 pub use target::NetworkTarget;
 
-/// The network target's screens, with sentry's numbers and names: `1` Dashboard and `H`
-/// History (in the strip once something was recorded). Clients (`2`), Network (`3`),
-/// Maintenance (`6`) and Upgrade (`0`) join as they are built.
+/// The network target's screens, with sentry's numbers and names: `1` Dashboard, `2`
+/// Clients, `3` Network, `6` Maintenance and `H` History (in the strip once something was
+/// recorded). Upgrade (`0`) joins when a network has workflows.
 pub const SCREENS: ScreenSet = ScreenSet {
-    ids: &[ScreenId::Dash, ScreenId::Hist],
-    aliases: &[("overview", ScreenId::Dash), ("router", ScreenId::Dash)],
+    ids: &[
+        ScreenId::Dash,
+        ScreenId::Clients,
+        ScreenId::Net,
+        ScreenId::Maint,
+        ScreenId::Hist,
+    ],
+    aliases: &[
+        ("overview", ScreenId::Dash),
+        ("router", ScreenId::Dash),
+        ("devices", ScreenId::Clients),
+        ("firewall", ScreenId::Net),
+    ],
 };
 
 /// A network's id as a target (`[targets]` calls it the same: `net:<name>`).
@@ -76,6 +88,13 @@ pub mod testing {
                 Kind::Probe => "probe",
                 Kind::Ifaces => "ifaces",
                 Kind::History => "history",
+                Kind::Clients => "clients",
+                Kind::Listeners => "listeners",
+                Kind::Uci => "uci",
+                Kind::Cert => "cert",
+                Kind::Services => "services",
+                Kind::Audit => "audit",
+                Kind::Report | Kind::ReportAt(_) => "report",
             })
             .collect()
     }

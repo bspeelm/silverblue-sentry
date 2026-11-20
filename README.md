@@ -283,27 +283,42 @@ Headless: `sentry-server audit`, `record [server]` (metrics every 10 s into the 
 
 ## sentry-network: a home network through its router
 
-`sentry-network` is the same program under a third name (`sentry network …` is the same thing), for the router of a network you run: OpenWrt, reached with `ssh` as root (a GL.iNet GL-MT6000 on OpenWrt 25.12 is what it was built against). The same rules hold: nothing is installed on the router, nothing runs there between two looks, and it is read-only. This is the first part of it: the Dashboard and History. Clients, the firewall and listeners, maintenance and backups are not built yet.
+`sentry-network` is the same program under a third name (`sentry network …` is the same thing), for the router of a network you run: OpenWrt, reached with `ssh` as root (a GL.iNet GL-MT6000 on OpenWrt 25.12 is what it was built against). The same rules hold: nothing is installed on the router, nothing runs there between two looks, and it is read-only: sentry looks, compares with what you said to expect, and tells you. Built so far: the Dashboard, who is on the network, the firewall and what listens, an audit with its findings on Maintenance, and History. Updates, config backups, Claude and anything that changes the router are not built yet.
 
 ```sh
 sentry-network init myrouter     # look at the router (read-only) and write a starter network_config.yaml
 sentry-network lint              # the file, checked without contacting the router
 sentry-network check             # reachable as root? the release and board, the ports, the uplink, the tools
+sentry-network audit             # what needs attention, written to a report
 sentry-network                   # the TUI (or: sentry-network home)
 ```
 
-**The network is described in one file you write,** `~/.config/sentry/network_config.yaml` ([sample](assets/network_config.example.yaml)): the router's ssh name, what the firewall should look like (zones, port forwards, what may listen), the devices you know (by MAC, or by hostname for one with a private MAC), thresholds, who can decrypt a config backup, and what maintenance to keep up. `init` drafts it from what the router reports, with every device holding a lease listed for you to name, and never touches a file that is already there. sentry never rewrites it. Only the router and the load and memory thresholds are used so far; the rest is read and checked, so the file won't change shape as the other screens arrive.
+**The network is described in one file you write,** `~/.config/sentry/network_config.yaml` ([sample](assets/network_config.example.yaml)): the router's ssh name, what the firewall should look like (zones, port forwards, what may listen), the devices you know (by MAC, or by hostname for one with a private MAC), thresholds, who can decrypt a config backup, and what maintenance to keep up. `init` drafts it from what the router reports, with every device holding a lease listed for you to name, and never touches a file that is already there. sentry never rewrites it. `backup`, `maintenance`, `notes` and `claude` are read and checked but not used yet, so the file won't change shape as those parts arrive.
 
 Once a network is configured, `sentry` shows it in the target strip after the servers (`F3`, `}`, or `:net home`); `sentry-network [name]` opens the same window on it. Nothing is read from a router until its target first has the window.
 
 | Screen | Shows | Keys |
 |---|---|---|
 | `1` Dashboard | the router (release, board, uptime, load, CPU, temperature, memory, flash in use), the uplink (address, gateway, the DHCP lease, DNS, the IPv6 prefix; "down" when it is), and a row per port and Wi-Fi radio: which network it belongs to, link and speed, and how fast it moves data in and out now, with the last minutes as a sparkline when there's room | `r` read again |
+| `2` Clients | every device on the network, once: its name (from `devices:`, else the hostname it gives, else its MAC; `~` marks a private, randomised MAC), how it's connected (the wired port, the radio with signal bars and dBm, or a routed port such as a DMZ), its address, how long its lease runs, when it was last seen. Unknown ones first, marked `NEW`. Read every 10 s while in view. No key does anything to a device | `Enter` details and the line that names it in the config, `s` sort (name, link, signal, lease), `b` expected on/off, `/` filter |
+| `3` Network | the firewall's zones and port forwards beside what `expect:` says, differences marked; under them every listening socket on the router with its status: `local`, `client`, `baseline` (expected) or `NEW` | `b` expected on/off, `/` filter, `r` read again |
+| `6` Maintenance | what the audit found, most pressing first, and the tasks due (`tasks.toml`, done by hand); beside it what the last audit looked at. Entering it audits again when the last report is a week old | `Enter` the finding in the report, `x`/`b` expected, `B` all like it, `z` later, `o` what can wait too, `d`/`e`/`m` on a task, `r` audit, `F` the report, `v` records |
 | `H` History | what was recorded for the router, as sentry's graphs over 6h / 24h / 72h. The ring is on this machine (`~/.local/share/sentry/networks/<name>/metrics/ring.bin`) and is written only while sentry samples the router: its Dashboard open, or `sentry-network record <name>` in a spare terminal (foreground, until Ctrl-C). In the strip once there's a ring | `[` `]` window, `←` `→` scrub, `r` reload |
 
 A rate is the router's own byte counters over its own clock (`Δbytes · 8 / Δuptime`), so a slow ssh round trip doesn't bend it; a port shows `–` until there are two samples, and after a counter reset or a reboot. The lease line is exact only until the lease is first renewed: after that the router says only how long the lease is, so it reads "renewed, 1h–2h left". While the Dashboard is in view the router is asked once a second (one ssh exec, about 4 ms of shell there) and its interfaces every 30 s; out of view, nothing.
 
-Headless: `sentry-network collect [probe|ifaces] [name]` (JSON; both without a kind), `record [name]`.
+**The audit** reads the firewall, what listens, how ssh and the web interface are set up, the web interface's certificate, who is on the network and which services run (six reads, about a fifth of a second), and lists what differs from `expect:` or is worth knowing:
+
+- a port forward you didn't list, or one you listed that is gone or switched off; a zone whose interfaces differ, or an uplink zone that accepts what nobody asked for;
+- something listening on the router that the internet can reach (high), or that only the inside can reach and `expect.listeners` doesn't have (low: shown with `o`);
+- ssh accepting passwords, the web interface answering over plain HTTP, its certificate at its end;
+- config changes staged with `uci set` and never committed;
+- a device nobody named. A phone's private (randomised) MAC on Wi-Fi is never one: it holds the passphrase. A vendor's MAC that isn't under `devices:` with a `name:`, or any unnamed MAC on a wired or DMZ port, is, once it has held a lease two reads running;
+- the uplink down, dnsmasq / dropbear / uhttpd (and `expect.services`) not running, memory or load over the thresholds.
+
+`b` marks a finding, a listener or a device expected (the network's `baseline.toml`; `b` again, or Records › Later, takes it back); naming a device is a line in the config. Secrets never leave the read that found them: every `uci` option that holds one (a Wi-Fi passphrase, a PPPoE password, a private key) is replaced by a tag as it is parsed, keyed with a random salt kept in `~/.config/sentry/networks/<name>/salt`, so a report can say a passphrase *changed* and never what it is.
+
+Headless: `sentry-network collect [probe|ifaces|clients|listeners|uci|cert|services] [name]` (JSON; all without a kind), `audit [name]`, `record [name]`.
 
 ## Config
 

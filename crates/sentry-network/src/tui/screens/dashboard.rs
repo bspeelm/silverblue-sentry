@@ -23,9 +23,100 @@ pub fn hints() -> Hints {
 
 pub fn handle(a: Action) -> Vec<Effect> {
     match a {
-        Action::Refresh | Action::Check => vec![Own::fetch(Kind::Probe), Own::fetch(Kind::Ifaces)],
+        Action::Refresh | Action::Check => vec![
+            Own::fetch(Kind::Probe),
+            Own::fetch(Kind::Ifaces),
+            Own::fetch(Kind::Services),
+            Own::fetch(Kind::Report),
+        ],
         _ => Vec::new(),
     }
+}
+
+/// The Status panel: what is known cheaply besides the load. Who is on the network (from
+/// the last time the clients were read), the services the network depends on, the last
+/// audit, and the web interface's certificate. A row is there once its part was read.
+fn status_lines(v: &View, w: usize) -> Vec<Line<'static>> {
+    let t = v.t;
+    let s = v.s;
+    let room = w.saturating_sub(9);
+    let mut lines = Vec::new();
+    if let Some((there, wired, wifi, new)) = super::clients::counts(v) {
+        let mut sp = vec![
+            label(t, "clients"),
+            Span::styled(
+                fit(
+                    &format!("{there}"),
+                    &format!(" · {wired} wired · {wifi} Wi-Fi"),
+                    room.saturating_sub(8),
+                ),
+                t.fg(),
+            ),
+        ];
+        if new > 0 {
+            sp.push(Span::styled(format!(" · {new} new"), t.s(t.yellow)));
+        }
+        lines.push(Line::from(sp));
+    }
+    if let Some(sv) = &s.services.value {
+        use crate::collect::services::State;
+        let mut sp = vec![label(t, "services")];
+        let mut used = 0;
+        for name in sv.watched(&v.cfg.expect.services) {
+            let (dot, c) = match sv.state(name) {
+                State::Running | State::NotADaemon => ("●", t.green),
+                State::Down | State::Missing => ("○", t.red),
+            };
+            used += name.chars().count() + 3;
+            if used > room {
+                break;
+            }
+            sp.push(Span::styled(format!("{dot} "), t.s(c)));
+            sp.push(Span::styled(format!("{name} "), t.fg()));
+        }
+        lines.push(Line::from(sp));
+    }
+    if let Some(rep) = &s.report.value {
+        let line = match rep.as_deref() {
+            None => Line::from(vec![label(t, "audit"), Span::styled("none yet", t.dim())]),
+            Some(r) => {
+                let open = |sev| r.open().filter(|f| f.severity == sev).count();
+                use sentry_core::finding::Sev;
+                let (check, review) = (open(Sev::High), open(Sev::Medium));
+                let (said, c) = match (check, review) {
+                    (0, 0) => ("✓ nothing to check".to_string(), t.green),
+                    (0, n) => (format!("{n} to review"), t.yellow),
+                    (n, 0) => (format!("{n} to check"), t.red),
+                    (n, m) => (format!("{n} to check · {m} to review"), t.red),
+                };
+                let when = r.snapshot.taken_at.map_or(String::new(), |at| {
+                    format!(" · {}", fmt::ago(v.secs_since(at)))
+                });
+                Line::from(vec![
+                    label(t, "audit"),
+                    Span::styled(said.clone(), t.s(c)),
+                    Span::styled(
+                        fit("", &when, room.saturating_sub(said.chars().count())),
+                        t.dim(),
+                    ),
+                ])
+            }
+        };
+        lines.push(line);
+    }
+    if let Some(Some(c)) = &s.cert.value {
+        let days = c.days_left(v.now);
+        let (said, color) = match days {
+            d if d < 0 => (format!("ended {} days ago", -d), t.red),
+            d if d <= v.cfg.thresholds.cert_days as i64 => (format!("ends in {d} days"), t.yellow),
+            d => (format!("{d} days left"), t.fg),
+        };
+        lines.push(Line::from(vec![
+            label(t, "cert"),
+            Span::styled(said, t.s(color)),
+        ]));
+    }
+    lines
 }
 
 /// One row of the Ports panel.
@@ -418,12 +509,25 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
     } else {
         wan.len() as u16 + 2
     };
-    let [router_a, wan_a, rest] = Layout::vertical([
+    let status = status_lines(v, w);
+    let status_h = if status.is_empty() {
+        0
+    } else {
+        status.len() as u16 + 2
+    };
+    let [router_a, wan_a, status_a, rest] = Layout::vertical([
         Constraint::Length(router_h),
         Constraint::Length(wan_h),
+        Constraint::Length(status_h),
         Constraint::Fill(1),
     ])
     .areas(left);
+    if status_h > 0 {
+        let b = panel(t, "Status", "");
+        let r = inner(&b, status_a);
+        f.render_widget(b, status_a);
+        f.render_widget(Paragraph::new(status), r);
+    }
     let b = panel(t, "Router", v.name.to_string());
     let r = inner(&b, router_a);
     f.render_widget(b, router_a);

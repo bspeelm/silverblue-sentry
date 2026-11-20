@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   6 Maintenance 8
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Clients · 8 here · 5 wired · 3 Wi-Fi · 2 new · by name · read just now ────────────────────────────────────────────────────────────────────────────────────┐
+│ NAME ▼                                                           LINK                  ADDRESS                                    LEASE    SEEN            │
+│  00:00:5e:00:53:11                                               lan2                  192.0.2.11                                 4h       now    NEW      │
+│ ~02:00:5e:00:53:22                                               lan2                  192.0.2.22                                 8h       now    NEW      │
+│  (an IPv6 lease)                                                 –                     2001:db8:1200::c40                         6h       –               │
+│ ~02:00:5e:00:53:21                                               phy0-ap0 ▂▄▆  -63     192.0.2.21                                 1h       now             │
+│  cam                                                             lan2                  192.0.2.50                                 –        now             │
+│  nas                                                             lan1                  192.0.2.10                                 6h       now             │
+│  panel  (leave alone)                                            phy0-ap0 ▂    -81     192.0.2.12                                 9h       now             │
+│ ~phone                                                           phy1-ap0 ▂▄▆█ -46     192.0.2.20                                 10h      now             │
+│  printer                                                         –                     192.0.2.13                                 15m      0s              │
+│  web                               ┌ 00:00:5e:00:53:11 ───────────────────────────────────────────────────────────────┐           11h      now             │
+│                                    │                                                                                  │                                    │
+│                                    │ MAC        00:00:5e:00:53:11 · vendor prefix 00:00:5e                            │                                    │
+│                                    │ link       wired port lan2                                                       │                                    │
+│                                    │ addresses  192.0.2.11                                                            │                                    │
+│                                    │ lease      4h left                                                               │                                    │
+│                                    │ first seen 2026-10-26 12:00                                                      │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ Unknown: nothing names it. b marks it expected; to name it, under devices:       │                                    │
+│                                    │   - { name: a-name, mac: "00:00:5e:00:53:11" }                                   │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │  Enter  close                                                                    │                                    │
+│                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+│                                                                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  details   s  sort   b  expected on/off   /  filter   r  read again   ?  help   q  quit
