@@ -536,7 +536,7 @@ impl Slot {
                     sess.chat.hidden = false;
                 } else if let Some(c) = self.chat.as_mut().filter(|c| c.hidden) {
                     c.hidden = false;
-                } else if !claude::available() {
+                } else if !self.target.offered() || !claude::available() {
                     w.toast(self.ways.no_claude);
                 } else {
                     if self.screen == ScreenId::Maint
@@ -743,6 +743,7 @@ impl Slot {
                 globals: id.help_globals,
                 app: id.app,
                 commands: id.commands,
+                claude: self.target.offered(),
                 footer: &[
                     "Destructive actions: preview → confirm → streamed output.",
                     &id.help_footer,

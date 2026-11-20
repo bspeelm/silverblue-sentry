@@ -601,6 +601,8 @@ pub struct Help<'a> {
     pub app: &'a str,
     /// The `:` commands, on one line.
     pub commands: &'a str,
+    /// Claude and auto mode are there to offer (off: their lines are left out).
+    pub claude: bool,
     pub footer: &'a [&'a str],
 }
 
@@ -614,14 +616,16 @@ pub fn help_modal<E>(t: &Theme, h: &Help) -> Modal<E> {
         l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
     ];
     // The screen names its own `A` when it has one.
-    if !h.hints.iter().any(|(k, _)| *k == "A") {
+    if h.claude && !h.hints.iter().any(|(k, _)| *k == "A") {
         lines.push(l(
             "A         ask Claude about the selected thing (you see what's sent first)",
         ));
     }
-    lines.push(l(
-        "C-f       forget the sudo password    C-a  auto mode: routine steps need no key",
-    ));
+    if h.claude {
+        lines.push(l(
+            "C-f       forget the sudo password    C-a  auto mode: routine steps need no key",
+        ));
+    }
     lines.push(l(h.commands));
     let mut grid = |title: &str, hints: &[(&str, &str)]| {
         lines.push(Line::raw(""));
@@ -1101,6 +1105,7 @@ mod tests {
                 globals: &[("I", "read what needs root")],
                 app: "sentry-server",
                 commands: ":q  :<screen>",
+                claude: true,
                 footer: &["Nothing keeps running."],
             },
         );

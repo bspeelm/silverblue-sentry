@@ -513,6 +513,12 @@ pub trait Upkeep {
 
 /// What Claude is asked, told and allowed.
 pub trait Asks {
+    /// Claude can be asked about this target, and it has work auto mode could carry. A
+    /// kind of target that has neither yet says no: the key bar and `?` then offer
+    /// neither, and `A` says `Ways::no_claude`.
+    fn offered(&self) -> bool {
+        true
+    }
     /// About the screen in view (its selected row, the run), or why there's nothing.
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String>;
     /// Applying the selected Maintenance row.

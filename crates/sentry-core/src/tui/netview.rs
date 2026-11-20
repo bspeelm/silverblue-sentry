@@ -53,6 +53,37 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, n: &NetView) -> usize {
         Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)])
             .spacing(2)
             .areas(area);
+    let page = draw_listening(f, left, t, n);
+    let block = panel(t, "Established", n.established.len().to_string());
+    let er = inner(&block, right);
+    f.render_widget(block, right);
+    let body: Vec<Row> = n
+        .established
+        .iter()
+        .map(|c| {
+            Row::new(vec![
+                Cell::from(c.peer.clone()),
+                Cell::from(c.process.clone().unwrap_or_else(|| "?".into())).style(t.dim()),
+            ])
+        })
+        .collect();
+    table(
+        f,
+        er,
+        t,
+        TableSpec {
+            header: vec!["PEER", "PROCESS"],
+            widths: vec![Constraint::Fill(1), Constraint::Length(18)],
+            rows: body,
+            selected: None,
+        },
+    );
+    page
+}
+
+/// The Listening panel by itself (a router has no connections of its own worth a panel).
+/// Returns the table's height, for paging.
+pub fn draw_listening(f: &mut Frame, left: Rect, t: &Theme, n: &NetView) -> usize {
     let rows = n.listen.as_deref().unwrap_or_default();
     let new = rows
         .iter()
@@ -113,29 +144,5 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, n: &NetView) -> usize {
         );
     }
 
-    let block = panel(t, "Established", n.established.len().to_string());
-    let er = inner(&block, right);
-    f.render_widget(block, right);
-    let body: Vec<Row> = n
-        .established
-        .iter()
-        .map(|c| {
-            Row::new(vec![
-                Cell::from(c.peer.clone()),
-                Cell::from(c.process.clone().unwrap_or_else(|| "?".into())).style(t.dim()),
-            ])
-        })
-        .collect();
-    table(
-        f,
-        er,
-        t,
-        TableSpec {
-            header: vec!["PEER", "PROCESS"],
-            widths: vec![Constraint::Fill(1), Constraint::Length(18)],
-            rows: body,
-            selected: None,
-        },
-    );
     r.height as usize
 }

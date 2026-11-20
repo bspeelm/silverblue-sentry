@@ -258,7 +258,9 @@ impl Slot {
             _ => {
                 let mut h = self.target.hints(false, &self.shared, &cx!(self, w));
                 // Where work is started and followed: auto mode's key.
-                if matches!(self.screen, ScreenId::Maint | ScreenId::Upgrade) {
+                if self.target.offered()
+                    && matches!(self.screen, ScreenId::Maint | ScreenId::Upgrade)
+                {
                     h.push(self.auto_hint());
                 }
                 // A hidden conversation waiting takes `A` over.
@@ -279,7 +281,7 @@ impl Slot {
                             .filter(|c| c.hidden)
                             .map(|c| c.hidden_word())
                     });
-                frame::with_globals(h, hidden, claude::available())
+                frame::with_globals(h, hidden, self.target.offered() && claude::available())
             }
         };
         frame::draw_keybar(f, area, &w.theme, &frame::KeyBar::Hints(hints), toast);

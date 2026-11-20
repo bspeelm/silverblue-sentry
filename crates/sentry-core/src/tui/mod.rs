@@ -7,6 +7,7 @@
 
 pub mod applyview;
 pub mod chat;
+pub mod clientview;
 pub mod docview;
 pub mod frame;
 pub mod input;
