@@ -230,7 +230,12 @@ impl Session {
                 .arg(&self.r.name)
                 .args(rest.split_whitespace().skip(1))
                 .timeout(None),
-            None => self.r.sh(&cmd).timeout(None),
+            // Nothing on stdin: the step's terminal (it has one, so stopping it here stops
+            // it there) would never end for a command that reads it.
+            None => self
+                .r
+                .sh(&sentry_core::apply::sudo::detached(&cmd))
+                .timeout(None),
         };
         // A root login has no sudo to ask or to refuse. Anything else that uses sudo is the
         // app's to run: with the server's password when sudo wants one (asked once, there).

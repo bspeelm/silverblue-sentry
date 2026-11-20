@@ -36,6 +36,7 @@ pub fn edit_target(file: &str) -> Result<Owner, String> {
     let mine = Grant {
         access: Access::Write,
         path: crate::maint::real_path(Path::new(file)),
+        ..Default::default()
     };
     let why = match crate::claude::grantable(&mine) {
         Ok(()) => return Ok(Owner::You),
@@ -162,9 +163,11 @@ pub fn uses_sudo(cmd: &str) -> bool {
 /// So the password is in no command line, no file and no environment: what the step runs
 /// can't print it by printing its own, and it is gone when the script ends, however it ends.
 ///
-/// sudo's stdin is the step's: a terminal when the step has one (over ssh it does), which is
-/// what makes sudo end its command when that terminal hangs up, i.e. when the step is stopped
-/// from here. With no terminal the step gets nothing on stdin.
+/// The step, and everything sudo starts for it, gets nothing on stdin (`/dev/null`): a
+/// command that reads it (`head`, `cat`) ends at once instead of waiting. sudo with no
+/// terminal on stdin outlives a hangup, so when the step is stopped from here (the terminal
+/// it has over ssh hangs up, which the script hears because it only waits for the step) the
+/// script ends each sudo it started, with sudo, then the rest of the step.
 pub fn wrap(cmd: &str) -> String {
     format!("IFS= read -r SENTRY_P\n{}", wrapped(cmd))
 }
@@ -199,7 +202,9 @@ fn wrapped(cmd: &str) -> String {
          'SENTRY_M=\"$SENTRY_D/m.$$\"' \
          ': > \"$SENTRY_M\"' \
          'export SENTRY_M' \
-         'SUDO_ASKPASS=\"$SENTRY_D/ask\" exec \"$SENTRY_SUDO\" -A \"$@\"' > \"$SENTRY_D/sudo\"\n\
+         'SUDO_ASKPASS=\"$SENTRY_D/ask\" \"$SENTRY_SUDO\" -A \"$@\" </dev/null &' \
+         'echo $! >> \"$SENTRY_D/pids\"' \
+         'wait $!' > \"$SENTRY_D/sudo\"\n\
          printf '%s\\n' '#!/bin/sh' \
          '[ -e \"$SENTRY_M\" ] || exit 1' \
          'rm -f \"$SENTRY_M\"' \
@@ -209,18 +214,38 @@ fn wrapped(cmd: &str) -> String {
          chmod 700 \"$SENTRY_D/sudo\" \"$SENTRY_D/ask\"\n\
          PATH=\"$SENTRY_D:$PATH\"\n\
          export PATH\n\
-         [ -t 0 ] || exec </dev/null\n\
+         trap 'trap \"\" HUP TERM; for p in $(cat \"$SENTRY_D/pids\" 2>/dev/null); do \"$SENTRY_D/sudo\" kill -TERM \"$p\" 2>/dev/null; done; kill -HUP 0 2>/dev/null; exit 129' HUP TERM\n\
+         exec </dev/null\n\
          (\n\
          exec 9>&-\n\
          {cmd}\n\
-         )\n"
+         ) &\n\
+         wait $!\n"
     )
 }
 
 /// A sudo command run without a password to give: its `sudo` fails at once instead of
-/// waiting on a prompt nobody sees.
+/// waiting on a prompt nobody sees. Nothing on stdin either, so (as in `wrap`) a hangup ends
+/// what sudo started through sudo, then the rest.
 pub fn no_prompt(cmd: &str) -> String {
-    format!("sudo() {{ command sudo -n \"$@\"; }}\n{cmd}")
+    format!(
+        "exec </dev/null\n\
+         SENTRY_K=$(mktemp) || exit 1\n\
+         sudo() {{ command sudo -n \"$@\" & echo $! >> \"$SENTRY_K\"; wait $!; }}\n\
+         trap 'rm -f \"$SENTRY_K\"' EXIT\n\
+         trap 'trap \"\" HUP TERM; for p in $(cat \"$SENTRY_K\" 2>/dev/null); do command sudo -n kill -TERM \"$p\" 2>/dev/null; done; kill -HUP 0 2>/dev/null; exit 129' HUP TERM\n\
+         (\n\
+         {cmd}\n\
+         ) &\n\
+         wait $!\n"
+    )
+}
+
+/// A command sentry runs for Claude or as a step, with nothing on stdin: over ssh a streamed
+/// command has a terminal there, which never ends, so `head` or `cat` with no file would
+/// wait on it for ever.
+pub fn detached(cmd: &str) -> String {
+    format!("exec </dev/null\n{cmd}")
 }
 
 /// The check of a password: sudo accepts it (and nothing else runs). `-k`: a ticket from
@@ -419,5 +444,65 @@ mod tests {
         assert_eq!(p.stdin(), b"hunter2\n");
         p.clear();
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn nothing_run_for_claude_waits_on_stdin() {
+        use crate::exec::{Cmd, StreamMsg};
+        // `head` with no file reads stdin: it must see the end of it at once, streamed (as
+        // a session's command and a step are) and with a password fed first.
+        for script in [
+            detached("head -5; echo after"),
+            no_prompt("head -5; echo after"),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            Cmd::local("sh")
+                .args(["-c", &script])
+                .timeout(None)
+                .stream(move |m| {
+                    let _ = tx.send(m);
+                })
+                .unwrap();
+            let mut lines = Vec::new();
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                    Ok(StreamMsg::Line { text, .. }) => lines.push(text),
+                    Ok(StreamMsg::Exit { code, .. }) => {
+                        assert_eq!(code, 0);
+                        break;
+                    }
+                    Err(_) => panic!("still waiting on stdin: {script}"),
+                }
+            }
+            assert_eq!(lines, ["after"], "{script}");
+        }
+        // Through the sudo wrapper: the password line is the wrapper's, never the step's.
+        let out = Cmd::local("sh")
+            .args(["-c", &wrap("head -5; echo after")])
+            .input("pw-9\nmore\n")
+            .output()
+            .unwrap();
+        assert_eq!(out, "after\n");
+        let (tx, rx) = std::sync::mpsc::channel();
+        Cmd::local("sh")
+            .args(["-c", &wrap_ready("cat; echo after")])
+            .input_after(READY, "pw-9\n")
+            .timeout(None)
+            .stream(move |m| {
+                let _ = tx.send(m);
+            })
+            .unwrap();
+        let mut lines = Vec::new();
+        while let Ok(m) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            match m {
+                StreamMsg::Line { text, .. } => lines.push(text),
+                StreamMsg::Exit { .. } => break,
+            }
+        }
+        assert_eq!(
+            lines,
+            ["after"],
+            "the ready line and the password aren't output"
+        );
     }
 }

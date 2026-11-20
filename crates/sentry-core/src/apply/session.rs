@@ -180,6 +180,8 @@ pub struct Session {
     /// The current run is what Claude asked for and the user allowed: its result goes back
     /// to Claude to carry on (not to verify). What else was allowed with it, in words.
     asked: Option<String>,
+    /// The running step was stopped for taking longer than a request may (`ASKED_LIMIT`).
+    timed_out: bool,
     /// Its place in a series of ticked rows (2, 5): it starts by itself, and hands on when
     /// it's done.
     pub series: Option<(usize, usize)>,
@@ -211,6 +213,7 @@ impl Session {
             brief_open: false,
             audit_for: None,
             asked: None,
+            timed_out: false,
             series: None,
             seed: None,
         }
@@ -535,16 +538,32 @@ impl Session {
                     .err()
                     .unwrap_or("not in a server's session");
                 not.push(format!("{} {}: {why}", g.word(), g.path));
-            } else if g.access == Access::Run && crate::claude::workflow_only(&g.path) {
+            } else if g.access == Access::Run && crate::claude::workflow_only(g.line()) {
                 not.push(format!(
                     "run {}: upgrades, rebases, rollbacks and reboots are run by sentry's \
                      workflows (a `workflow` step in your plan), never as a command",
-                    g.path
+                    g.line()
                 ));
+            } else if g.access == Access::Run && g.remote != self.remote() {
+                // The gateway's refusal is a line for the server; Claude Code's own is a
+                // command on this machine. Neither is ever run on the other.
+                if g.remote {
+                    not.push(format!("run {}: this isn't a server's session", g.line()));
+                } else if g.changes() {
+                    not.push(format!(
+                        "run {}: that would change this machine, and this session changes \
+                         only the server (call the server's through the gateway; my files \
+                         here are `edit` steps)",
+                        g.line()
+                    ));
+                } else {
+                    // It only reads, here: a grant, and Claude runs it itself.
+                    rest.push(g);
+                }
             } else if g.access == Access::Run && (g.changes() || self.chat.acts) {
                 // In a session whatever was refused is run here: a grant couldn't lift the
-                // rule that refused it.
-                run.push(g.path);
+                // rule that refused it. All of it, as Claude wrote it.
+                run.push(g.line().to_string());
             } else if g.access == Access::Write {
                 match crate::claude::backup(&g.path) {
                     Ok(b) => {
@@ -808,6 +827,31 @@ impl Session {
         }
     }
 
+    /// A command Claude asked for and the user allowed is running: it only looks or does one
+    /// small thing, so one that hasn't ended after this long is stopped (as the gateway
+    /// stops what it runs), and Claude is told. A plan's own steps have no limit.
+    pub const ASKED_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// The running step is past its limit: stop it (the pid to end), once.
+    pub fn overdue(&mut self) -> Option<u32> {
+        let (_, pid) = self.job?;
+        if self.asked.is_none() || self.timed_out || self.job_started?.elapsed() < Self::ASKED_LIMIT
+        {
+            return None;
+        }
+        self.timed_out = true;
+        self.step_line(format!(
+            "stopped by sentry: no end after {} s",
+            Self::ASKED_LIMIT.as_secs()
+        ));
+        Some(pid)
+    }
+
+    /// The running step is a request with a time limit (the window says so).
+    pub fn limited(&self) -> bool {
+        self.asked.is_some() && self.job.is_some()
+    }
+
     /// The step's command started (`id`, `pid`), printed a line, ended.
     pub fn step_started(&mut self, id: u64, pid: u32) {
         self.job = Some((id, pid));
@@ -823,6 +867,7 @@ impl Session {
 
     pub fn step_ended(&mut self, code: i32) -> Vec<Fx> {
         self.job = None;
+        self.timed_out = false;
         let out = plan::tail(&self.output.join("\n"), 15);
         let mut note = if self.stopping {
             "stopped".to_string()
@@ -1787,10 +1832,12 @@ mod tests {
             Grant {
                 access: Access::Read,
                 path: "/etc/hosts".into(),
+                ..Default::default()
             },
             Grant {
                 access: Access::Write,
                 path: "/etc/hosts".into(),
+                ..Default::default()
             },
         ];
         assert!(s.can_grant());
@@ -1808,6 +1855,7 @@ mod tests {
         s.chat.requests = vec![Grant {
             access: Access::Read,
             path: "/etc/os-release".into(),
+            ..Default::default()
         }];
         s.phase = Phase::Review;
         s.chat.input.push('x');
@@ -1820,6 +1868,7 @@ mod tests {
         let run = |c: &str| Grant {
             access: Access::Run,
             path: c.into(),
+            ..Default::default()
         };
         // A session's Claude runs what it likes, so what was refused is under a rule no
         // grant lifts: sentry runs it, read-only or not, and tells Claude what it printed.
@@ -1873,9 +1922,71 @@ mod tests {
         ));
         let fx = key(&mut s, KeyCode::Enter);
         answer(&mut s, &fx, "It needs root; I asked.");
-        s.chat.requests = vec![run("sudo smartctl -a /dev/sda")];
+        // (The gateway refused it: it's a line for the server.)
+        let gateway = |c: &str| crate::claude::Grant {
+            remote: true,
+            ..run(c)
+        };
+        s.chat.requests = vec![gateway("sudo smartctl -a /dev/sda")];
         assert!(s.can_grant());
         assert_eq!(key(&mut s, KeyCode::Enter), vec![Fx::CheckSudo]);
+        // What Claude Code refused of a command on this machine never goes to the server:
+        // one that only reads becomes a grant (Claude runs it here itself), one that
+        // changes something is refused, with why.
+        let mut s3 = Session::new(s.chat.ask.clone());
+        let fx = key(&mut s3, KeyCode::Enter);
+        answer(&mut s3, &fx, "Asked.");
+        s3.chat.requests = vec![run("journalctl -b -p 3"), run("touch /tmp/x")];
+        let fx = key(&mut s3, KeyCode::Enter);
+        let [Fx::Turn { prompt, .. }] = &fx[..] else {
+            panic!("{fx:?}")
+        };
+        assert!(s3.runs.is_empty(), "nothing is run over ssh");
+        assert!(
+            prompt.contains("I've granted you: run journalctl -b -p 3")
+                && prompt.contains("run touch /tmp/x: that would change this machine"),
+            "{prompt}"
+        );
+        assert_eq!(s3.chat.grants.len(), 1);
+        // And a server's line is never run here.
+        let mut s4 = session();
+        let fx = key(&mut s4, KeyCode::Enter);
+        answer(&mut s4, &fx, "Asked.");
+        s4.chat.requests = vec![gateway("sudo true")];
+        let fx = key(&mut s4, KeyCode::Enter);
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.contains("isn't a server's session")),
+            "{fx:?}"
+        );
+        assert!(s4.runs.is_empty());
+        // A piece of a pipeline is never run by itself: the command as Claude wrote it is.
+        let mut s5 = session();
+        let fx = key(&mut s5, KeyCode::Enter);
+        answer(&mut s5, &fx, "Asked.");
+        s5.chat.requests = vec![
+            crate::claude::requested(
+                "Bash",
+                "journalctl -b | head -20; echo ---; git -C /x status --short 2>&1",
+                "denied: This Bash command contains multiple operations. The following part \
+                 requires approval: head -20; echo ---; git -C /x status --short 2>&1",
+            )
+            .unwrap(),
+        ];
+        let fx = key(&mut s5, KeyCode::Enter);
+        assert_eq!(
+            fx,
+            [Fx::Command {
+                cmd: "journalctl -b | head -20; echo ---; git -C /x status --short 2>&1".into(),
+                sudo: false
+            }]
+        );
+        // A request that hasn't ended after two minutes is stopped; a plan's step isn't.
+        s5.step_started(4, 44);
+        assert!(s5.limited() && s5.overdue().is_none());
+        s5.job_started = std::time::Instant::now().checked_sub(Session::ASKED_LIMIT);
+        assert_eq!(s5.overdue(), Some(44));
+        assert_eq!(s5.overdue(), None, "once");
+        assert!(s5.output.last().unwrap().contains("no end after 120 s"));
         // A file on the laptop still isn't a server session's to edit.
         let mut s2 = Session::new(s.chat.ask.clone());
         let fx = key(&mut s2, KeyCode::Enter);
@@ -1883,6 +1994,7 @@ mod tests {
         s2.chat.requests = vec![Grant {
             access: Access::Write,
             path: crate::paths::home().join("notes.md").display().to_string(),
+            ..Default::default()
         }];
         assert!(!s2.can_grant());
 
@@ -1953,6 +2065,7 @@ mod tests {
         s.chat.requests = vec![Grant {
             access: Access::Write,
             path: path.clone(),
+            ..Default::default()
         }];
         let fx = key(&mut s, KeyCode::Enter);
         assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("edit")));

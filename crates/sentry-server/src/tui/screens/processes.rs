@@ -148,7 +148,9 @@ impl Processes {
         let line = kill_script(p.pid, tick.start, how);
         let run = Own::run(RunSpec {
             title: "Kill process".into(),
-            cmd: r.sh(&line).timeout(None),
+            cmd: r
+                .sh(&sentry_core::apply::sudo::detached(&line))
+                .timeout(None),
             then: vec![Kind::Procs],
             reboot: false,
             root: root.then_some(line),

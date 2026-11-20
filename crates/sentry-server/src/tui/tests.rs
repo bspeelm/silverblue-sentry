@@ -958,6 +958,28 @@ fn live_actions() {
     );
     println!("✓ killing the local ssh client stopped the remote command (local exit {exit})");
 
+    // 1b. Nothing run for Claude or as a step waits on stdin: `head` with no file would
+    // read the terminal a streamed command has, for ever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    r.sh(&sentry_core::apply::sudo::detached(
+        "head -5; echo after-head",
+    ))
+    .timeout(None)
+    .stream(move |m| {
+        let _ = tx.send(m);
+    })
+    .unwrap();
+    let mut got = Vec::new();
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(StreamMsg::Line { text, .. }) => got.push(text),
+            Ok(StreamMsg::Exit { .. }) => break,
+            Err(_) => panic!("still waiting on stdin over ssh"),
+        }
+    }
+    assert_eq!(got, ["after-head"]);
+    println!("✓ a command that reads stdin ends at once");
+
     // 2. A custom action through the app (they're on the Dashboard): confirm, stream.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = super::app(r.clone(), tx);
@@ -1045,7 +1067,7 @@ fn live_workflow() {
         vec![Effect::StartWorkflow("apt-maintenance".into())],
         Instant::now(),
     );
-    assert!(screen(&mut a).contains("Start apt-maintenance"));
+    assert!(wf(&a).is_some(), "started by that: no box");
     // Drive it: Enter on confirm steps, skip the optional one, mark what can't pass in a
     // container (its kernel is the host's) done by hand.
     for _ in 0..30 {

@@ -339,7 +339,9 @@ fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {
             },
         );
     }
-    let cmd = r.sh(&a.run).timeout(None);
+    let cmd = r
+        .sh(&sentry_core::apply::sudo::detached(&a.run))
+        .timeout(None);
     let mut lines = vec![
         Line::styled(format!("Your action `{}`.", a.id), t.fg()),
         Line::raw(""),

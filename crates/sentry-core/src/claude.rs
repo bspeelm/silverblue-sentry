@@ -651,8 +651,9 @@ thread_local! {
 }
 
 /// What a grant lets Claude do with one file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Access {
+    #[default]
     Read,
     Write,
     /// Run one exact command (not on the read-only allowlist).
@@ -660,15 +661,27 @@ pub enum Access {
 }
 
 /// One file Claude may use for the rest of a conversation, because the user said so.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grant {
     pub access: Access,
     /// The real path (symlinks resolved), as Claude Code checks it.
-    /// For `Run`: the exact command.
+    /// For `Run`: the exact command (of a compound one, the part that needs approving).
     pub path: String,
+    /// `Run`: the whole command as Claude wrote it, when `path` is only a part of it. What
+    /// sentry runs (or shows) is this: a part cut out of a pipeline means something else.
+    pub whole: Option<String>,
+    /// `Run`: a server's gateway refused it (`sentry-server run`): it's a line for the
+    /// server. Otherwise Claude Code refused a command on this machine, which never goes
+    /// over ssh.
+    pub remote: bool,
 }
 
 impl Grant {
+    /// A `Run`'s command as it's run and shown: all of it.
+    pub fn line(&self) -> &str {
+        self.whole.as_deref().unwrap_or(&self.path)
+    }
+
     pub fn word(&self) -> &'static str {
         match self.access {
             Access::Read => "read",
@@ -683,7 +696,7 @@ impl Grant {
         match self.access {
             Access::Read => false,
             Access::Write => true,
-            Access::Run => !only_reads(&self.path),
+            Access::Run => !only_reads(self.line()),
         }
     }
 }
@@ -821,17 +834,38 @@ fn reads(cmd: &str) -> bool {
 
 /// A refused tool call → what it asked for: the tool and its input (Read, Edit, Write,
 /// MultiEdit, NotebookEdit carry a file path), else the path in the refusal itself.
+/// How a server's gateway words a command it holds for the user (`remote::gateway::run_cli`).
+pub const GATEWAY_ASKS: &str = ": this needs root and requires approval: ";
+
 pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     // A command: the part Claude Code wants approved, else the whole command.
     if name == "Bash" && !refusal.contains("permissions to read") && !refusal.contains("to write") {
-        // (A server's gateway says the same of a command that needs root: one line.)
-        let cmd = refusal
+        // A server's gateway says so of a command that needs root: one line, the line for
+        // the server.
+        if let Some((_, line)) = refusal.split_once(GATEWAY_ASKS) {
+            let line = line.lines().next().unwrap_or(line).trim();
+            return (!line.is_empty()).then(|| Grant {
+                access: Access::Run,
+                path: line.to_string(),
+                whole: None,
+                remote: true,
+            });
+        }
+        // Claude Code names the part of a compound command it wants approved. That part is
+        // what a grant is for; what sentry runs is the command as written (a piece of a
+        // pipeline reads something else, or waits on stdin).
+        let input = input.trim();
+        let part = refusal
             .split_once("requires approval: ")
-            .map_or(input, |(_, part)| part.lines().next().unwrap_or(part))
-            .trim();
-        return (!cmd.is_empty()).then(|| Grant {
+            .map(|(_, part)| part.lines().next().unwrap_or(part).trim())
+            .filter(|p| !p.is_empty() && *p != input);
+        return (!input.is_empty() || part.is_some()).then(|| Grant {
             access: Access::Run,
-            path: cmd.to_string(),
+            path: part.unwrap_or(input).to_string(),
+            whole: part
+                .filter(|_| !input.is_empty())
+                .map(|_| input.to_string()),
+            remote: false,
         });
     }
     let access = match name {
@@ -863,6 +897,7 @@ pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     Some(Grant {
         access,
         path: crate::maint::real_path(&path),
+        ..Default::default()
     })
 }
 
@@ -1412,6 +1447,7 @@ mod tests {
             (g.access, g.path.as_str()),
             (Access::Run, "sudo smartctl -a /dev/sda")
         );
+        assert!(g.remote && g.whole.is_none(), "a line for the server");
         assert!(refused("this needs root and requires approval: sudo x"));
         assert!(!refused("sentry-server run: not run: it names `shadow`"));
     }
@@ -1497,6 +1533,24 @@ mod tests {
             (g.access, g.path.as_str()),
             (Access::Run, "ostree admin status 2>&1")
         );
+        // The part is what a grant is for; what's shown and run is all of it, never a
+        // piece of the pipeline.
+        assert_eq!(
+            g.line(),
+            "rpm-ostree status; ostree admin status 2>&1 | head"
+        );
+        assert!(!g.remote);
+        let tail = requested(
+            "Bash",
+            "journalctl -b | head -20; echo ---; git -C /x status --short 2>&1",
+            "denied: This Bash command contains multiple operations. The following part \
+             requires approval: head -20; echo ---; git -C /x status --short 2>&1",
+        )
+        .unwrap();
+        assert!(tail.line().starts_with("journalctl -b | head -20;"));
+        // Not compound: the command is the request, with nothing more to it.
+        let one = requested("Bash", "rpm -V a", "denied: This command requires approval").unwrap();
+        assert_eq!((one.line(), one.whole.as_deref()), ("rpm -V a", None));
         assert!(grantable(&g).is_ok());
         let g = requested(
             "Bash",
@@ -1511,11 +1565,13 @@ mod tests {
         let out = Grant {
             access: Access::Run,
             path: "rpm -qa > /tmp/x".into(),
+            ..Default::default()
         };
         assert!(grantable(&out).is_ok() && out.changes(), "writes a file");
         let p = Profile::local().with_grants(&[Grant {
             access: Access::Run,
             path: "ostree admin status".into(),
+            ..Default::default()
         }]);
         assert!(p.allowed.iter().any(|a| a == "Bash(ostree admin status)"));
     }
@@ -1541,6 +1597,7 @@ mod tests {
         let g = |access, p: std::path::PathBuf| Grant {
             access,
             path: p.display().to_string(),
+            ..Default::default()
         };
         assert!(grantable(&g(Access::Read, home.join(".ssh/id_ed25519"))).is_err());
         assert!(grantable(&g(Access::Write, "/etc/hosts".into())).is_err());
@@ -1557,6 +1614,7 @@ mod tests {
         let run = |c: &str| Grant {
             access: Access::Run,
             path: c.into(),
+            ..Default::default()
         };
         assert!(grantable(&run("cat ~/.ssh/id_ed25519")).is_err());
         assert!(grantable(&run("rm -rf /tmp/x")).is_ok());
@@ -1637,6 +1695,7 @@ mod tests {
         let p = Profile::local().with_grants(&[Grant {
             access: Access::Write,
             path: "/home/u/notes/up.md".into(),
+            ..Default::default()
         }]);
         for r in [
             "Read(//home/u/notes/up.md)",
@@ -1655,6 +1714,7 @@ mod tests {
         let r = Profile::local().with_grants(&[Grant {
             access: Access::Read,
             path: "/home/u/a.md".into(),
+            ..Default::default()
         }]);
         assert!(!r.allowed.iter().any(|a| a.starts_with("Edit(")));
         let w = Profile::local().without_edits();

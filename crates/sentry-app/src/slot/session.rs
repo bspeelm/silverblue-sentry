@@ -112,7 +112,11 @@ impl Slot {
                     let c = if sudo && self.secret_ok {
                         self.root_cmd(&cmd, true)
                     } else {
-                        self.target.command(&cmd).timeout(None)
+                        // Nothing sentry runs for Claude waits on stdin (over ssh the
+                        // command's is a terminal, which never ends).
+                        self.target
+                            .command(&sentry_core::apply::sudo::detached(&cmd))
+                            .timeout(None)
                     };
                     let id = self.mail.next();
                     let r = if w.offline {

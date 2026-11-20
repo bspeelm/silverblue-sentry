@@ -452,10 +452,15 @@ fn step_lines(
             push(
                 &mut l,
                 &format!(
-                    "… running {}:{:02}{}",
+                    "… running {}:{:02}{}{}",
                     e / 60,
                     e % 60,
-                    if n == 0 { ", no output yet" } else { "" }
+                    if n == 0 { ", no output yet" } else { "" },
+                    if s.limited() {
+                        " · stopped at 2:00 · C-c stops it now"
+                    } else {
+                        " · C-c stops it"
+                    }
                 ),
                 t.s(t.cyan),
             );

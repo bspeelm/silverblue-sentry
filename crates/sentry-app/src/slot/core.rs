@@ -85,6 +85,11 @@ impl Slot {
         if self.screen == ScreenId::Upgrade && self.ways.auto_in_view {
             self.wf_auto(w);
         }
+        // A command run for Claude that doesn't end is stopped (its exit goes back to it).
+        if let Some(pid) = self.apply.as_mut().and_then(|s| s.overdue()) {
+            let _ = kill(pid);
+            w.dirty = true;
+        }
         // A step that takes too long is stopped.
         if let Some(s) = self.run.as_mut()
             && let Some(l) = s.live()
@@ -108,7 +113,8 @@ impl Slot {
     /// When this slot next has something to do by itself.
     pub(crate) fn next_due(&self, w: &Win, now: Instant) -> Option<Instant> {
         let mut due = self.target.next_due(now, &cx!(self, w));
-        if self.talking() {
+        // (A request running out of view still has its time limit.)
+        if self.talking() || self.apply.as_ref().is_some_and(|s| s.limited()) {
             let t = now + Duration::from_secs(1);
             due = Some(due.map_or(t, |d| d.min(t)));
         }

@@ -144,8 +144,8 @@ gate = "auto"
 
 [[steps]]
 id = "again"
-title = "sudo again, nested: nothing is asked"
-run = "sh -c 'sudo sh -c \"sudo id -un\"' | sed 's/$/-again/'"
+title = "sudo again, nested: nothing is asked, and nothing waits on stdin"
+run = "head -5; sudo head -5; sh -c 'sudo sh -c \"sudo id -un\"' | sed 's/$/-again/'"
 gate = "auto"
 
 [[steps]]

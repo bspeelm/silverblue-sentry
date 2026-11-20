@@ -144,7 +144,7 @@ impl Chat {
                     format!(
                         "  {} {}{}",
                         g.word(),
-                        g.path,
+                        g.line(),
                         match g.access {
                             crate::claude::Access::Write => "  (backed up first)",
                             crate::claude::Access::Run => "  (that exact command)",
@@ -154,7 +154,7 @@ impl Chat {
                     t.fg(),
                 )),
                 Err(why) => l.push(Line::styled(
-                    format!("  {} {}  · not granted: {why}", g.word(), g.path),
+                    format!("  {} {}  · not granted: {why}", g.word(), g.line()),
                     t.s(t.red),
                 )),
             }
@@ -345,7 +345,7 @@ impl Chat {
                 .requests
                 .iter()
                 .filter(|g| self.allowed(g).is_ok())
-                .map(|g| format!("{} {}", g.word(), g.path))
+                .map(|g| format!("{} {}", g.word(), g.line()))
                 .collect();
             if !what.is_empty() {
                 self.push(
@@ -357,7 +357,7 @@ impl Chat {
                 if let Err(why) = self.allowed(&g) {
                     self.push(
                         Kind::Info,
-                        format!("Claude asked to {} {} · {why}", g.word(), g.path),
+                        format!("Claude asked to {} {} · {why}", g.word(), g.line()),
                     );
                 }
             }
@@ -806,6 +806,7 @@ mod tests {
         c.grants.push(Grant {
             access: Access::Write,
             path: path.clone(),
+            ..Default::default()
         });
         assert!(c.changed().is_empty());
         std::fs::write(&tmp, "a\nb\n").unwrap();
