@@ -29,7 +29,7 @@ pub enum Kind {
         old: String,
         new: String,
     },
-    /// A command that changes something (sudo: the terminal is handed over).
+    /// A command that changes something (sudo: with the password, asked once).
     Run(String),
     /// A command that must exit 0, or the plan stops.
     Check(String),

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A disposable sshd container for sentry-server's mutating live tests (`#[ignore]`):
 #   nopasswd  live_actions, live_workflow         (sudo -n works)
-#   password  live_password_step, live_inventory  (sudo asks; a pty types the password)
+#   password  live_password_step, live_inventory, live_claude_reads
+#             (sudo asks; the tests type the password into the TUI's own prompt)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
 #   scripts/live-container.sh test [nopasswd|password]  run that variant's tests against it
@@ -39,7 +40,7 @@ die() {
 tests_of() {
   case "$1" in
     nopasswd) echo "live_actions live_workflow" ;;
-    password) echo "live_password_step live_inventory" ;;
+    password) echo "live_password_step live_inventory live_claude_reads" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
@@ -127,7 +128,7 @@ servers:
 EOF
   cat >"$x/config/sentry/server-workflows/pw-check.toml" <<'EOF'
 name = "pw-check"
-description = "A sudo step with the terminal handed over, an auto step after it, a long step to abandon"
+description = "A sudo step (the password is asked for), an auto step and another sudo step after it, a long sudo step to abandon"
 
 [[steps]]
 id = "update"
@@ -142,9 +143,15 @@ run = "echo after-ok"
 gate = "auto"
 
 [[steps]]
+id = "again"
+title = "sudo again, nested: nothing is asked"
+run = "sh -c 'sudo sh -c \"sudo id -un\"' | sed 's/$/-again/'"
+gate = "auto"
+
+[[steps]]
 id = "long"
 title = "A long step, to abandon"
-run = "sleep 600"
+run = "sudo sleep 600"
 gate = "confirm"
 EOF
 }
@@ -153,6 +160,8 @@ env_of() {
   local dir=$1 t=$2 x="$1/xdg/$2"
   printf 'SENTRY_SSH_CONFIG=%q SENTRY_SERVER_SCRATCH=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' \
     "$dir/ssh_config" "$SERVER" "$x/config" "$x/data" "$x/cache"
+  # The file that holds the container's sudo password (never the password itself).
+  [[ ! -f "$dir/password" ]] || printf ' SENTRY_SERVER_SCRATCH_PASSWORD=%q' "$dir/password"
 }
 
 up() {
@@ -212,28 +221,8 @@ EOF
     echo "  $(env_of "$dir" "$t") \\"
     echo "    cargo test -p sentry-server $t -- --ignored --nocapture"
   done
-  if [[ $mode == password ]]; then
-    echo "These hand over the terminal: type the sudo password ($(cat "$dir/password"))"
-    echo "when asked, or let \`$0 test password\` type it under a pty."
-  fi
   echo "Remove it:       $0 down"
 }
-
-# Runs a command under a pty and types the sudo password whenever sudo asks for it.
-PTY='
-import os, pty, sys
-pw = open(sys.argv[1]).read().strip().encode() + b"\n"
-seen = b""
-def read(fd):
-    global seen
-    data = os.read(fd, 4096)
-    seen = (seen + data)[-200:]
-    if b"password for " in seen:
-        os.write(fd, pw)
-        seen = b""
-    return data
-sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[2:], read)))
-'
 
 run_tests() {
   local mode=$1 c dir t rc=0
@@ -251,12 +240,9 @@ run_tests() {
       "XDG_CONFIG_HOME=$dir/xdg/$t/config" "XDG_DATA_HOME=$dir/xdg/$t/data"
       "XDG_CACHE_HOME=$dir/xdg/$t/cache"
       cargo test -q -p sentry-server "$t" -- --ignored --nocapture --test-threads=1)
-    if [[ $mode == password ]]; then
-      command -v python3 >/dev/null 2>&1 || die "python3 (for the pty that types the password) not found"
-      python3 -I -c "$PTY" "$dir/password" "${cmd[@]}" || rc=$?
-    else
-      "${cmd[@]}" || rc=$?
-    fi
+    # The tests type the password into the TUI's prompt: no terminal is involved.
+    [[ $mode != password ]] || cmd=(env "SENTRY_SERVER_SCRATCH_PASSWORD=$dir/password" "${cmd[@]}")
+    "${cmd[@]}" </dev/null || rc=$?
     [[ $rc -eq 0 ]] && echo "=== $t: ok" || { echo "=== $t: FAILED (exit $rc)"; return "$rc"; }
   done
 }

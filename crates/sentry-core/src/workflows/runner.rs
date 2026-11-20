@@ -339,7 +339,8 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// `sudo` needs a terminal for its password prompt: such steps run with the TUI suspended.
+/// The step uses `sudo` on the host: in the TUI it runs with the password (asked once, in
+/// the key bar); `sentry workflow` in a terminal lets sudo ask there.
 /// `sudo` inside a container (`toolbox run … sudo dnf`) is passwordless and doesn't count.
 pub fn needs_tty(cmd: &str) -> bool {
     cmd.split([';', '&', '|', '\n']).any(|seg| {

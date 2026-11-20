@@ -38,7 +38,10 @@ impl Slot {
         }
         if sess.job.is_some_and(|(jid, _)| jid == id) {
             match m {
-                StreamMsg::Line { text, .. } => sess.step_line(text.clone()),
+                StreamMsg::Line { text, .. } => {
+                    sess.step_line(text.clone());
+                    self.saw_line(w, text);
+                }
                 StreamMsg::Exit { code, .. } => {
                     let fx = sess.step_ended(*code);
                     self.apply_fx(w, fx);
@@ -51,7 +54,14 @@ impl Slot {
             if let StreamMsg::Exit { code, .. } = m {
                 self.apply_aux = None;
                 let fx = match (password, sess.phase) {
-                    (true, Phase::Password { .. }) => sess.password_checked(*code == 0),
+                    // Accepted: held here from now on, for everything on this target.
+                    (true, Phase::Password { .. }) if *code == 0 => {
+                        let typed = sess.take_typed();
+                        let fx = sess.password_checked(true);
+                        self.hold(typed);
+                        fx
+                    }
+                    (true, Phase::Password { .. }) => sess.password_checked(false),
                     (false, Phase::SudoCheck) => sess.sudo_checked(*code != 0),
                     _ => Vec::new(),
                 };
@@ -96,17 +106,14 @@ impl Slot {
                     let _ = kill(pid);
                 }
                 Fx::Command { cmd, sudo } => {
-                    let Some(sess) = self.apply.as_ref() else {
+                    if self.apply.is_none() {
                         return;
-                    };
-                    let c = if sudo && sess.secret_ok {
-                        self.target
-                            .command(&sentry_core::apply::sudo::wrap(&cmd))
-                            .input(sess.secret.stdin())
-                    } else {
-                        self.target.command(&cmd)
                     }
-                    .timeout(None);
+                    let c = if sudo && self.secret_ok {
+                        self.root_cmd(&cmd, true)
+                    } else {
+                        self.target.command(&cmd).timeout(None)
+                    };
                     let id = self.mail.next();
                     let r = if w.offline {
                         Ok(0)
@@ -167,6 +174,13 @@ impl Slot {
                             self.apply(w, vec![Effect::PlanDoneByHand(item)], w.at)
                         }
                         _ => {}
+                    }
+                }
+                // The password is held already: nothing is asked or checked.
+                Fx::CheckSudo if self.secret_ok => {
+                    if let Some(sess) = self.apply.as_mut() {
+                        let fx = sess.password_held();
+                        self.apply_fx(w, fx);
                     }
                 }
                 Fx::CheckSudo | Fx::CheckPassword => {
@@ -395,6 +409,7 @@ impl Slot {
             }
             let mut sess = sentry_core::apply::session::Session::new(ask);
             sess.chat.privacy = self.target.ident().session_privacy.clone();
+            sess.secret_ok = self.secret_ok;
             self.apply = Some(sess);
             return;
         }
@@ -426,6 +441,7 @@ impl Slot {
         let profile = self.target.profile(ProfileFor::Session, grants);
         let id = self.mail.next();
         if w.offline {
+            self.last_prompt = Some(prompt.to_string());
             return Ok((id, 0));
         }
         let cmd = claude::turn_cmd_with(prompt, resume, &profile);
@@ -524,6 +540,7 @@ impl Slot {
                 {
                     let mut sess = sentry_core::apply::session::Session::from_chat(c, apply);
                     sess.chat.privacy = self.target.ident().session_privacy.clone();
+                    sess.secret_ok = self.secret_ok;
                     self.apply = Some(sess);
                 }
             }

@@ -83,16 +83,21 @@ pub fn exe() -> String {
 
 /// The command that executes a step (`bash -c` on the host, output tee'd to the step log).
 pub fn step_cmd(run: &Run, id: &str, rendered: &str) -> Cmd {
-    let log = run.log_path(id);
     Cmd::host("bash")
         .arg("-c")
-        .arg(runner::script(
-            rendered,
-            &exe(),
-            &run.dir.display().to_string(),
-            &log.display().to_string(),
-        ))
+        .arg(step_script(run, id, rendered))
         .timeout(None)
+}
+
+/// The bash script a step's command runs in (its output tee'd to the step's log).
+pub fn step_script(run: &Run, id: &str, rendered: &str) -> String {
+    let log = run.log_path(id);
+    runner::script(
+        rendered,
+        &exe(),
+        &run.dir.display().to_string(),
+        &log.display().to_string(),
+    )
 }
 
 pub fn reboot_cmd() -> Cmd {

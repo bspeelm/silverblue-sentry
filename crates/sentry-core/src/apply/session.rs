@@ -148,7 +148,8 @@ pub struct Session {
     root: Option<RootWrite>,
     /// C-c on a step: it ends as stopped, nothing sent.
     stopping: bool,
-    /// The sudo password, once given and accepted (`secret_ok`); wiped when it settles.
+    /// The sudo password as it's typed here; once sudo accepts it the program takes it
+    /// (`take_typed`) and holds it for its target, and `secret_ok` says it does.
     pub secret: Secret,
     pub secret_ok: bool,
     /// The plan needs no password (sudo didn't ask).
@@ -162,8 +163,8 @@ pub struct Session {
     /// The current run is what Claude asked for and the user allowed: its result goes back
     /// to Claude to carry on (not to verify). What else was allowed with it, in words.
     asked: Option<String>,
-    /// Its place in a series of ticked rows (2, 5): it starts by itself, keeps the password
-    /// for the series, and hands on when it's done.
+    /// Its place in a series of ticked rows (2, 5): it starts by itself, and hands on when
+    /// it's done.
     pub series: Option<(usize, usize)>,
 }
 
@@ -606,17 +607,10 @@ impl Session {
         self.turn(Turn::Investigate, prompt, Some(shown))
     }
 
-    /// Start without Enter, as row `pos` of a series (its Enter was the start), with the
-    /// password the series already has. Nothing once it has begun.
-    pub fn start_in_series(
-        &mut self,
-        pos: (usize, usize),
-        secret: sudo::Secret,
-        secret_ok: bool,
-    ) -> Vec<Fx> {
+    /// Start without Enter, as row `pos` of a series (its Enter was the start). Nothing once
+    /// it has begun.
+    pub fn start_in_series(&mut self, pos: (usize, usize)) -> Vec<Fx> {
         self.series = Some(pos);
-        self.secret = secret;
-        self.secret_ok = secret_ok;
         self.chat.push(
             Kind::Info,
             format!("{} of {} in the series · it starts by itself", pos.0, pos.1),
@@ -627,10 +621,25 @@ impl Session {
         }
     }
 
-    /// The password, back to the series when this row is over (accepted or not).
-    pub fn take_secret(&mut self) -> (sudo::Secret, bool) {
-        let ok = std::mem::take(&mut self.secret_ok);
-        (std::mem::take(&mut self.secret), ok)
+    /// The password just typed, for the program to check and then hold.
+    pub fn take_typed(&mut self) -> sudo::Secret {
+        self.secret.take()
+    }
+
+    /// The program holds the target's password already: nothing is asked.
+    pub fn password_held(&mut self) -> Vec<Fx> {
+        self.secret_ok = true;
+        if self.phase != Phase::SudoCheck {
+            return Vec::new();
+        }
+        self.start()
+    }
+
+    /// The program forgot the password (the key for it, or sudo refused it): the next step
+    /// that needs it asks again.
+    pub fn password_gone(&mut self) {
+        self.secret_ok = false;
+        self.sudo_free = false;
     }
 
     // ── Applying ────────────────────────────────────────────────────────────────────────
@@ -678,6 +687,8 @@ impl Session {
             return Vec::new();
         };
         if ok {
+            // The program took what was typed before it said so.
+            self.secret.clear();
             self.secret_ok = true;
             return self.start();
         }
@@ -1187,11 +1198,7 @@ impl Session {
 
     fn settle_with(&mut self, end: End, verdict: Option<&str>) -> Vec<Fx> {
         self.phase = Phase::Settled(end);
-        // In a series the password is the series' to keep or wipe (the program takes it back).
-        if self.series.is_none() {
-            self.secret.clear();
-            self.secret_ok = false;
-        }
+        self.secret.clear();
         let mut fx = self.log_runs(verdict);
         if end == End::Done
             && let Some(p) = self.chat.ask.applying().and_then(|a| a.plan.clone())
@@ -1402,37 +1409,29 @@ mod tests {
     }
 
     #[test]
-    fn in_a_series_it_starts_by_itself_keeps_the_password_and_hands_on() {
+    fn in_a_series_it_starts_by_itself_and_hands_on() {
         const DONE: &str = "```sentry-verdict\nstatus = \"done\"\nsummary = \"fixed\"\n```";
-        let pw = || {
-            let mut p = Secret::default();
-            p.push('p');
-            p
-        };
         let mut s = session();
         // No Enter: the series' Enter was the start.
-        let fx = s.start_in_series((2, 5), pw(), true);
+        let fx = s.start_in_series((2, 5));
         assert!(matches!(&fx[..], [Fx::Turn { shown: Some(q), .. }] if q == "Do this for me."));
-        assert!(s.start_in_series((2, 5), pw(), true).is_empty(), "once");
+        assert!(s.start_in_series((2, 5)).is_empty(), "once");
         // The plan is still the user's to approve.
         let fx = answer(&mut s, &fx, &plan(CHECKS));
         assert!(fx.is_empty() && s.enter_word() == Some("apply the plan"));
         key(&mut s, KeyCode::Enter);
         s.step_ended(0);
         let fx = s.step_ended(0);
-        // Done: logged, then on to the next by itself; the password goes back to the series.
+        // Done: logged, then on to the next by itself.
         let fx = answer(&mut s, &fx, DONE);
         assert!(
             matches!(&fx[..], [Fx::Log { ok: true, .. }, Fx::Next]),
             "{fx:?}"
         );
-        let (secret, ok) = s.take_secret();
-        assert!(ok && !secret.is_empty());
-        assert!(s.secret.is_empty() && !s.secret_ok);
 
         // One that doesn't end well waits: Enter goes on, Esc closes (the series stops).
         let mut s = session();
-        let fx = s.start_in_series((1, 2), Secret::default(), false);
+        let fx = s.start_in_series((1, 2));
         let fx = answer(&mut s, &fx, &plan(CHECKS));
         assert!(fx.is_empty());
         key(&mut s, KeyCode::Enter);
@@ -1449,19 +1448,16 @@ mod tests {
         assert_eq!(key(&mut s, KeyCode::Enter), [Fx::Next]);
         assert_eq!(key(&mut s, KeyCode::Esc), [Fx::Close]);
 
-        // Outside a series nothing changes: Done waits for its close, the password is wiped.
+        // Outside a series nothing changes: Done waits for its close.
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
         let fx = answer(&mut s, &fx, &plan(CHECKS));
         assert!(fx.is_empty());
-        s.secret = pw();
-        s.secret_ok = true;
         key(&mut s, KeyCode::Enter);
         s.step_ended(0);
         let fx = s.step_ended(0);
         let fx = answer(&mut s, &fx, DONE);
         assert!(!fx.contains(&Fx::Next), "{fx:?}");
-        assert!(s.secret.is_empty() && !s.secret_ok);
         assert_eq!(s.enter_word(), Some("close"));
     }
 
@@ -1530,6 +1526,8 @@ mod tests {
         assert!(s.secret.is_empty() && matches!(s.phase, Phase::Password { tries: 1, .. }));
         type_in(&mut s, "ok");
         key(&mut s, KeyCode::Enter);
+        // Accepted: the program takes it, to hold for everything on this target.
+        assert_eq!(s.take_typed().stdin(), b"ok\n");
         assert_eq!(
             s.password_checked(true),
             [Fx::Command {
@@ -1538,14 +1536,33 @@ mod tests {
             }]
         );
         assert!(s.secret_ok);
-        // C-c on the step: stopped, logged, nothing sent; the password gone.
+        // C-c on the step: stopped, logged, nothing sent.
         s.step_started(3, 33);
         let k = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(s.key(k), [Fx::Kill(33)]);
         let fx = s.step_ended(-1);
         assert_eq!(s.phase, Phase::Settled(End::Stopped));
         assert!(matches!(&fx[..], [Fx::Log { ok: false, .. }]), "{fx:?}");
-        assert!(s.secret.is_empty() && !s.secret_ok);
+        assert!(s.secret.is_empty());
+        // The next plan with sudo in it asks nothing: the program holds the password.
+        let mut s = session();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(
+            &mut s,
+            &fx,
+            &plan("[[step]]\ntitle = \"r\"\nrun = \"sudo true\"\n"),
+        );
+        assert_eq!(key(&mut s, KeyCode::Enter), [Fx::CheckSudo]);
+        assert_eq!(
+            s.password_held(),
+            [Fx::Command {
+                cmd: "sudo true".into(),
+                sudo: true
+            }]
+        );
+        // Forgotten (the key, or sudo refused it): asked again at the next plan.
+        s.password_gone();
+        assert!(!s.secret_ok);
     }
 
     #[test]

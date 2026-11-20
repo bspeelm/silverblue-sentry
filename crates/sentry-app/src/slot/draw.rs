@@ -181,6 +181,17 @@ impl Slot {
     pub(crate) fn draw_keybar(&self, w: &Win, f: &mut Frame, area: ratatui::layout::Rect) {
         let toast = w.toast.as_ref().map(|t| t.msg());
         let layer = frame::layer(&self.open(w));
+        // The sudo password, asked for here: the same line a session asks on.
+        if let Some(u) = &self.unlock {
+            let line = sentry_core::tui::applyview::password_line(
+                &w.theme,
+                &u.what,
+                u.typed.len(),
+                u.tries,
+                u.checking.is_some(),
+            );
+            return frame::draw_keybar(f, area, &w.theme, &frame::KeyBar::Password(line), toast);
+        }
         // A box or a conversation over the line: its keys, not the line's.
         if layer == Layer::Input
             && let Some(mut bar) = w.input.bar()
@@ -196,6 +207,7 @@ impl Slot {
             return frame::draw_keybar(f, area, &w.theme, &bar, toast);
         }
         let hints: frame::Hints = match layer {
+            Layer::Unlock => Vec::new(),
             Layer::Run => frame::run_hints(self.pane.as_ref().is_some_and(|p| p.done.is_some())),
             Layer::Choice => frame::CHOICE_HINTS.to_vec(),
             Layer::Modal

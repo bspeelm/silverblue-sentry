@@ -50,7 +50,7 @@ impl From<ExecError> for Error {
 pub enum SudoMode {
     /// `sudo -n` works: no password needed.
     NoPasswd,
-    /// sudo exists but asks for a password: maintenance hands over the terminal.
+    /// sudo exists but asks for a password: it's asked for once, in the TUI, and held.
     Password,
     /// No sudo for this user.
     Absent,

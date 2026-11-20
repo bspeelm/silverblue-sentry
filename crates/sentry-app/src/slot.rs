@@ -4,7 +4,8 @@
 //! they run on the slot with the window (`Win`) beside it, and ask the target only for what
 //! this kind of host alone can say.
 //!
-//! `core` is events, keys, the input line and the terminal handed over; `effects` what an
+//! `core` is events, keys, the input line and the terminal handed over (an editor, a
+//! shell); `root` the sudo password and everything that runs with it; `effects` what an
 //! effect does; `session` the apply session and the chat; `wf` the workflow run; `series`
 //! the ticked rows; `review` the writer, reviews and tasks; `records` Records and plans;
 //! `draw` the frame.
@@ -14,6 +15,7 @@ mod draw;
 mod effects;
 mod records;
 mod review;
+mod root;
 mod series;
 mod session;
 mod wf;
@@ -73,6 +75,7 @@ macro_rules! cx {
             modal: $s.modal.is_some(),
             pane: $s.pane.as_ref().map(|p| p.done.is_none()),
             chat_running: $s.chat.as_ref().is_some_and(|c| c.running()),
+            root: $s.secret_ok,
             finding: $s.apply.as_ref().and_then(|a| a.chat.ask.finding()),
         }
     };
@@ -147,8 +150,6 @@ pub struct Slot {
     suspend_own: Option<Own>,
     /// It's an editor: what the file holds is read again afterwards.
     suspend_edit: bool,
-    /// A step running with the terminal handed over, and where its output is captured.
-    suspend_step: Option<(usize, String)>,
     /// A shell step's shell has the terminal.
     suspend_shell: Option<usize>,
     /// Where this program's flows go their own way (the target's, fixed).
@@ -186,6 +187,16 @@ pub struct Slot {
     pub(crate) apply: Option<sentry_core::apply::session::Session>,
     /// sudo's check for the session running (stream id; true: the password's check).
     pub(crate) apply_aux: Option<(u64, bool)>,
+    /// The target's sudo password, once sudo accepted it: held while the window is open,
+    /// for everything on this target that needs root (`slot/root.rs`). Wiped when dropped.
+    pub(crate) secret: sentry_core::apply::sudo::Secret,
+    pub(crate) secret_ok: bool,
+    /// The password being asked for in the key bar.
+    pub(crate) unlock: Option<root::Unlock>,
+    /// What's being read as root for the target (by the id its output comes back under).
+    reads: HashMap<u64, crate::effect::Own>,
+    /// Tests (nothing is sent): what the last turn of a session would have sent Claude.
+    pub last_prompt: Option<String>,
 }
 
 impl Slot {
@@ -214,7 +225,6 @@ impl Slot {
             suspend: None,
             suspend_own: None,
             suspend_edit: false,
-            suspend_step: None,
             suspend_shell: None,
             ways,
             series: None,
@@ -234,7 +244,18 @@ impl Slot {
             chat: None,
             apply: None,
             apply_aux: None,
+            secret: Default::default(),
+            secret_ok: false,
+            unlock: None,
+            reads: HashMap::new(),
+            last_prompt: None,
         }
+    }
+
+    /// The id the next stream would get (tests: the last one started is this minus one).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn mail_next_for_test(&self) -> u64 {
+        self.mail.next()
     }
 
     /// Have the target read something again; what it says to that is done.
@@ -262,8 +283,10 @@ impl Slot {
         )
     }
 
-    /// Don't leave a streamed command running on the host.
+    /// Don't leave a streamed command running on the host, nor the password in memory.
     pub(crate) fn shutdown(&mut self) {
+        self.forget();
+        self.unlock = None;
         if self.ways.exit_kills_run {
             if let Some(pid) = self.pane.as_ref().and_then(|p| p.pid) {
                 let _ = kill(pid);

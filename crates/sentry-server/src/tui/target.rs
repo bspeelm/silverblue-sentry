@@ -25,7 +25,7 @@ use crate::maint::plan::PlanDoc;
 use crate::maint::tracked::{self, Tracked};
 use crate::remote::{Remote, SudoMode};
 use crate::workflow::{self, Session};
-use sentry_app::effect::{self, ReadsFor, Suspend};
+use sentry_app::effect::{self, ReadsFor};
 use sentry_app::run::{Exec, LogKind, WfRun};
 use sentry_app::shared::Shared;
 use sentry_app::target::{
@@ -55,6 +55,9 @@ pub struct RunSpec {
     pub then: Vec<Kind>,
     /// It reboots the server: wait for it to come back.
     pub reboot: bool,
+    /// It needs root: this line (with sudo in it) is what runs, with the server's password
+    /// when sudo wants one.
+    pub root: Option<String>,
 }
 
 /// What only a server has, as effects: they travel through the app wrapped
@@ -71,10 +74,8 @@ pub enum Own {
         what: String,
         on: bool,
     },
-    /// Read what needs root, with the terminal handed over for the password (after a confirm).
+    /// Read what needs root (`I`), with the server's password when sudo wants one.
     Inventory,
-    /// Run the reads Claude asked for with sudo (after a confirm), and send it the output.
-    SudoReads(Vec<Vec<String>>, ReadsFor),
     /// The user skipped the reads a plan waits for: Claude writes it without them.
     ReadsSkipped,
     /// Track what discovery found (written to servers/<name>/items.toml).
@@ -95,12 +96,10 @@ pub enum Own {
     ItemsChanged(Tracked),
     /// A streamed reboot command exited: wait for the server to come back.
     RebootWait,
-    /// The terminal is back: the inventory was read.
+    /// The inventory was read: its output comes back with this.
     AfterInventory,
-    /// The terminal is back: Claude's reads ran.
+    /// Claude's reads ran: their output comes back with this.
     AfterReads(Vec<Vec<String>>, ReadsFor),
-    /// The terminal is back from a reboot command (the boot id it had, if a workflow's).
-    Rebooting(Option<String>),
 }
 
 impl From<Own> for Effect {
@@ -150,16 +149,7 @@ impl Own {
             reboot: spec.reboot,
             queue: Vec::new(),
             end: None,
-        })
-    }
-    /// Hand the terminal to a command (sudo password prompts), then refresh. `reboot`: it's
-    /// a reboot, so wait for the server to come back afterwards.
-    pub fn suspend(cmd: Cmd, banner: String, then: Vec<Kind>, reboot: bool) -> Effect {
-        Effect::Suspend(Suspend {
-            cmd,
-            banner,
-            then: then.into_iter().map(Own::fetch).collect(),
-            own: reboot.then(|| effect::Own(std::rc::Rc::new(Own::Rebooting(None)))),
+            root: spec.root,
         })
     }
     /// The server's own effect inside one that came back.
@@ -218,7 +208,7 @@ impl ServerTarget {
                 wf_dir: "~/.config/sentry/server-workflows/".into(),
                 ways: Default::default(),
                 quit: format!("Quit sentry-server? Nothing keeps running on {name} after exit."),
-                help_globals: &[("I", "read what needs root, once, with your sudo password")],
+                help_globals: &[("I", "read what needs root (your sudo password, asked once)")],
                 commands: ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
                 help_footer: format!("Nothing keeps running on {name} after sentry-server exits."),
                 privacy: format!(
@@ -508,42 +498,23 @@ impl ServerTarget {
     }
 
     /// After a run that changed the server: what Maintenance and Containers show was read
-    /// with sudo before it; offer to read it again.
-    fn reread_box(&mut self, cx: &Cx) -> Vec<Effect> {
+    /// with sudo before it. With the password held it's read again by itself (a read);
+    /// without, `I` does it.
+    fn reread(&mut self, cx: &Cx) -> Vec<Effect> {
         if !std::mem::take(&mut self.offer_reread) {
             return Vec::new();
         }
-        let t = cx.theme;
-        let when = self.inventory_at.map_or("earlier".into(), |a| {
-            a.to_zoned(jiff::tz::TimeZone::system())
-                .strftime("%H:%M")
-                .to_string()
-        });
-        vec![Effect::Confirm(Modal {
-            title: "Read the server again".into(),
-            color: t.cyan,
-            lines: vec![
-                Line::styled(
-                    format!(
-                        "Maintenance and Containers show what was read with sudo at {when}, \
-                         before this change, so they still show the old versions."
-                    ),
-                    t.fg(),
-                ),
-                Line::raw(""),
-                Line::styled(
-                    "Read it again now? One sudo, read-only (the terminal is handed over for \
-                     the password). Or later: I.",
-                    t.dim(),
-                ),
-            ],
-            yes: Some(("read".into(), vec![Own::Inventory.into()])),
-        })]
+        if cx.root {
+            return vec![Own::Inventory.into()];
+        }
+        vec![Effect::Toast(
+            "what was read with sudo is from before this change · I reads it again".into(),
+        )]
     }
 
-    /// `I`: what it reads and why, then the terminal for the password.
-    fn inventory_box(&mut self, mode: Option<SudoMode>, cx: &Cx) -> Vec<Effect> {
-        let t = cx.theme;
+    /// `I`: read what needs root, once (the password is asked for if sudo wants one and
+    /// none is held; they are all reads, so nothing else is asked).
+    fn inventory(&mut self, mode: Option<SudoMode>) -> Vec<Effect> {
         let toast = |s: &str| vec![Effect::Toast(s.to_string())];
         match mode {
             Some(SudoMode::NoPasswd) => {
@@ -552,62 +523,21 @@ impl ServerTarget {
             Some(SudoMode::Absent) => return toast("this login has no sudo on the server"),
             _ => {}
         }
-        let script = crate::inventory::script(&self.remote);
-        if script.is_empty() {
+        if crate::inventory::script(&self.remote).is_empty() {
             return toast("nothing to read: no sudo: entries in server_config.yaml");
         }
-        let mut lines = vec![
-            Line::styled(
-                format!(
-                    "sudo on {} asks for a password, so these can't be read in the background:",
-                    self.remote.name
-                ),
-                t.fg(),
-            ),
-            Line::raw(""),
-        ];
-        let mut seen = Vec::new();
-        for l in script.lines().filter(|l| l.ends_with(" 2>/dev/null")) {
-            let cmd = l.trim_end_matches(" 2>/dev/null").trim();
-            if !seen.contains(&cmd) {
-                seen.push(cmd);
-                lines.push(Line::styled(format!("  {cmd}"), t.dim()));
-            }
-        }
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "All read-only, in one sudo: the terminal is handed over for your password. Containers,              SMART, the journal and the audit then use this read (its age is shown) until you read again.",
-            t.s(t.yellow),
-        ));
-        vec![Effect::Confirm(Modal {
-            title: "Read with sudo".into(),
-            color: t.yellow,
-            lines,
-            yes: Some(("read".into(), vec![Own::Inventory.into()])),
-        })]
+        vec![Own::Inventory.into()]
     }
 
-    fn after_inventory(&mut self, status: Result<ExitStatus, ExecError>, cx: &Cx) -> Vec<Effect> {
+    fn after_inventory(&mut self, out: Result<String, String>, cx: &Cx) -> Vec<Effect> {
         let toast = |s: String| vec![Effect::Toast(s)];
-        match status {
-            Ok(st) if st.success() => {}
-            Ok(st) => {
-                let _ = self.remote.output(
-                    &self
-                        .remote
-                        .sh("rm -f \"$HOME/.cache/sentry-server/inventory.out\""),
-                );
-                return toast(format!(
-                    "the read didn't finish (exit {}): nothing changed",
-                    st.code().unwrap_or(-1)
-                ));
-            }
-            Err(e) => return toast(e.to_string()),
-        }
-        let inv = match crate::inventory::read_back(&self.remote) {
-            Ok(i) => i,
-            Err(e) => return toast(format!("couldn't read it back: {e}")),
+        let inv = match out {
+            Ok(text) => crate::inventory::parse(&text),
+            Err(e) => return toast(format!("the read didn't finish: {e}")),
         };
+        if inv.outputs.is_empty() {
+            return toast("nothing was read: nothing changed".into());
+        }
         let n = inv.outputs.len();
         match crate::inventory::save(&self.remote.name, &inv) {
             Ok(at) => self.inventory_at = Some(at),
@@ -638,50 +568,27 @@ impl ServerTarget {
         self.store.sudo.value
     }
 
-    fn reads_box(&self, reads: Vec<Vec<String>>, to: ReadsFor, cx: &Cx) -> Vec<Effect> {
-        let t = cx.theme;
-        let mut lines = vec![
-            Line::styled(
-                format!(
-                    "Claude asks to read these on {}, which need root (sudo asks for your password):",
-                    self.remote.name
-                ),
-                t.fg(),
-            ),
-            Line::raw(""),
-        ];
-        for argv in &reads {
-            lines.push(Line::styled(
-                format!(
-                    "  $ sudo {}",
-                    argv.iter()
-                        .map(|a| sentry_core::exec::sh_quote(a))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-                t.fg(),
-            ));
-        }
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "All on the read-only list. One sudo, the terminal handed over for the password; the \
-             output goes back to Claude, which then continues.",
-            t.s(t.yellow),
-        ));
-        let skip = match to {
-            // The plan waits for an answer either way.
-            ReadsFor::Plan => vec![Own::ReadsSkipped.into()],
-            ReadsFor::Chat => Vec::new(),
+    /// The reads Claude asked for that need root: all on the gateway's read-only list, so
+    /// with the password held they run by themselves; without, the one prompt covers them.
+    fn root_reads(&self, reads: Vec<Vec<String>>, to: ReadsFor) -> Vec<Effect> {
+        let first = reads
+            .first()
+            .map(|argv| argv.iter().take(2).cloned().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        let what = match reads.len() {
+            1 => format!("for Claude's read: {first}"),
+            n => format!("for Claude's {n} reads: {first}, …"),
         };
-        vec![Effect::ConfirmOr(
-            Modal {
-                title: "Claude asks to read with sudo".into(),
-                color: t.yellow,
-                lines,
-                yes: Some(("read".into(), vec![Own::SudoReads(reads, to).into()])),
+        vec![Effect::RootRead(effect::RootRead {
+            what,
+            line: crate::inventory::root_line(&crate::inventory::reads_script(&reads)),
+            skipped: match to {
+                // The plan waits for an answer either way.
+                ReadsFor::Plan => vec![Own::ReadsSkipped.into()],
+                ReadsFor::Chat => Vec::new(),
             },
-            skip,
-        )]
+            own: effect::Own(std::rc::Rc::new(Own::AfterReads(reads, to))),
+        })]
     }
 
     /// The reads ran: send their output back to Claude.
@@ -689,20 +596,16 @@ impl ServerTarget {
         &mut self,
         reads: &[Vec<String>],
         to: ReadsFor,
-        status: Result<ExitStatus, ExecError>,
+        out: Result<String, String>,
         cx: &Cx,
     ) -> Vec<Effect> {
-        const CAPTURE: &str = ".cache/sentry-server/claude-reads.out";
         let toast = |s: String| vec![Effect::Toast(s)];
-        if let Err(e) = status {
-            return toast(e.to_string());
-        }
-        let inv = match crate::inventory::read_capture(&self.remote, CAPTURE) {
-            Ok(i) => i,
-            Err(e) => return toast(format!("couldn't read it back: {e}")),
+        let inv = match out {
+            Ok(text) => crate::inventory::parse(&text),
+            Err(e) => return toast(format!("the reads didn't run: {e}")),
         };
         if inv.outputs.is_empty() {
-            return toast("nothing was read (wrong password?)".into());
+            return toast("nothing was read".into());
         }
         let mut text = String::from(
             "Here is the output of the commands you asked to read with sudo (I ran them):\n",
@@ -736,36 +639,6 @@ impl ServerTarget {
             }
             // Said by the app if the conversation was closed meanwhile.
             ReadsFor::Chat => vec![Effect::ChatTurn(text)],
-        }
-    }
-
-    /// The terminal is back from a reboot command.
-    fn after_reboot_cmd(
-        &mut self,
-        old: Option<String>,
-        status: Result<ExitStatus, ExecError>,
-    ) -> Vec<Effect> {
-        // ssh drops (255) as the server goes down; a quick non-zero exit is sudo refusing.
-        let old = old.unwrap_or_else(|| self.boot_id());
-        match &status {
-            Ok(st) if st.code() != Some(255) && !st.success() => vec![
-                Effect::Toast(format!(
-                    "reboot didn't start (exit {})",
-                    st.code().unwrap_or(-1)
-                )),
-                Effect::RunNote("✗ the reboot didn't start".into(), LogKind::Err),
-            ],
-            Err(e) => vec![Effect::Toast(e.to_string())],
-            Ok(_) => {
-                self.reboot_wait = Some((Instant::now(), old));
-                vec![
-                    Effect::RunNote(
-                        "… waiting for the server to come back".into(),
-                        LogKind::Info,
-                    ),
-                    Effect::Toast(format!("waiting for {} to come back…", self.remote.name)),
-                ]
-            }
         }
     }
 
@@ -1006,38 +879,12 @@ impl Target for ServerTarget {
             Own::ListenExpected { keys, id, what, on } => {
                 self.listen_expected(keys, id, what, *on, sh, cx)
             }
-            Own::Inventory => {
-                let cmd = self
-                    .remote
-                    .sh(&crate::inventory::wrapper(&self.remote))
-                    .timeout(None);
-                vec![Effect::Suspend(Suspend {
-                    cmd,
-                    banner: format!("sentry-server · reading {name} with sudo"),
-                    then: Vec::new(),
-                    own: Some(effect::Own(std::rc::Rc::new(Own::AfterInventory))),
-                })]
-            }
-            Own::SudoReads(reads, to) => {
-                let script = crate::inventory::reads_script(reads);
-                let cmd = self
-                    .remote
-                    .sh(&crate::inventory::sudo_wrapper(
-                        &script,
-                        ".cache/sentry-server/claude-reads.out",
-                        &format!("Reading for Claude on {name} (nothing is changed)…"),
-                    ))
-                    .timeout(None);
-                vec![Effect::Suspend(Suspend {
-                    cmd,
-                    banner: format!("sentry-server · reading {name} with sudo for Claude"),
-                    then: Vec::new(),
-                    own: Some(effect::Own(std::rc::Rc::new(Own::AfterReads(
-                        reads.clone(),
-                        *to,
-                    )))),
-                })]
-            }
+            Own::Inventory => vec![Effect::RootRead(effect::RootRead {
+                what: format!("to read what needs root on {name}"),
+                line: crate::inventory::root_line(&crate::inventory::script(&self.remote)),
+                skipped: Vec::new(),
+                own: effect::Own(std::rc::Rc::new(Own::AfterInventory)),
+            })],
             Own::ReadsSkipped => {
                 let review = cx.writer.is_some_and(|w| w.review.is_some());
                 vec![Effect::WriterFollow(planview::reads_skipped(review))]
@@ -1130,30 +977,40 @@ impl Target for ServerTarget {
                     "… waiting for the server to come back".into(),
                 )]
             }
-            // These come back through `after_suspend`.
-            Own::AfterInventory | Own::AfterReads(..) | Own::Rebooting(_) => Vec::new(),
+            // These come back through `root_read`.
+            Own::AfterInventory | Own::AfterReads(..) => Vec::new(),
         }
     }
 
-    fn after_suspend(
+    fn root_read(
         &mut self,
         own: &effect::Own,
-        status: Result<ExitStatus, ExecError>,
+        out: Result<String, String>,
         _sh: &mut Shared,
         cx: &Cx,
     ) -> Vec<Effect> {
         match own.0.downcast_ref::<Own>() {
-            Some(Own::AfterReads(reads, to)) => self.after_reads(reads, *to, status, cx),
-            Some(Own::AfterInventory) => self.after_inventory(status, cx),
-            Some(Own::Rebooting(old)) => self.after_reboot_cmd(old.clone(), status),
+            Some(Own::AfterReads(reads, to)) => self.after_reads(reads, *to, out, cx),
+            Some(Own::AfterInventory) => self.after_inventory(out, cx),
             _ => Vec::new(),
         }
+    }
+
+    /// Nothing of the server's has the terminal: sudo never does.
+    fn after_suspend(
+        &mut self,
+        _own: &effect::Own,
+        _status: Result<ExitStatus, ExecError>,
+        _sh: &mut Shared,
+        _cx: &Cx,
+    ) -> Vec<Effect> {
+        Vec::new()
     }
 
     fn handle(&mut self, a: Action, sh: &Shared, cx: &Cx) -> Vec<Effect> {
         if a == Action::Char('I') {
             let m = self.fresh_sudo(cx);
-            return self.inventory_box(m, cx);
+            return self.inventory(m);
         }
         // The rest is the screen's: moving, Enter, r, c and its own letters.
         let id = cx.screen;
@@ -1176,7 +1033,7 @@ impl Target for ServerTarget {
             keys.extend(super::actions::hints(cx.screen));
             // sudo asks for a password: say where the root-only data comes from.
             if self.store.sudo.value == Some(SudoMode::Password) {
-                keys.push(("I", "read with sudo"));
+                keys.push(("I", "read as root"));
             }
             return keys;
         }
@@ -1283,6 +1140,15 @@ impl Host for ServerTarget {
         self.remote.sh(line)
     }
 
+    fn sudo_asks(&mut self, cx: &Cx) -> Result<bool, String> {
+        match self.fresh_sudo(cx) {
+            Some(SudoMode::NoPasswd | SudoMode::Root) => Ok(false),
+            Some(SudoMode::Password) => Ok(true),
+            Some(SudoMode::Absent) => Err("this login has no sudo on the server".into()),
+            None => Err("couldn't check how sudo works on the server".into()),
+        }
+    }
+
     fn workflows(&self) -> (Vec<Entry>, std::path::PathBuf) {
         let name = &self.remote.name;
         (workflow::list_for(name), workflow::dir_for(name))
@@ -1329,20 +1195,9 @@ impl Host for ServerTarget {
         }
     }
 
-    fn reboot(&mut self, cmd: Cmd, tty: bool, old_boot: String, cx: &Cx) -> Vec<Effect> {
+    fn reboot(&mut self, cmd: Cmd, old_boot: String, cx: &Cx) -> Vec<Effect> {
         let id = self.mail.next();
         self.wf_reboot_id = Some(id);
-        if tty {
-            // sudo asks for the password; the wait starts once the terminal is back.
-            return vec![Effect::Suspend(Suspend {
-                cmd,
-                banner: format!("sentry-server · rebooting {}", self.remote.name),
-                then: Vec::new(),
-                own: Some(effect::Own(std::rc::Rc::new(Own::Rebooting(Some(
-                    old_boot,
-                ))))),
-            })];
-        }
         self.reboot_wait = Some((Instant::now(), old_boot));
         if !cx.offline {
             let _ = self.mail.stream(id, &cmd);
@@ -1430,13 +1285,5 @@ pub mod testing {
     pub fn turn_ended_online_for_reads(a: &mut App) {
         let (s, w) = a.parts();
         s.offer_reads(w, ReadsFor::Chat, false);
-    }
-
-    /// The reads waiting for a yes, if that box is open.
-    pub fn take_reads_box(a: &mut App) -> Option<Vec<Vec<String>>> {
-        match Own::of(a.box_yes_for_test()?.first()?)? {
-            Own::SudoReads(r, _) => Some(r.clone()),
-            _ => None,
-        }
     }
 }

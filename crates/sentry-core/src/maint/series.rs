@@ -2,13 +2,11 @@
 //! itself when the one before ended well; one that didn't waits for the user. Pure: the
 //! program opens what each row needs and says how it ended.
 
-use crate::apply::sudo::Secret;
-
 /// How a row of the series ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Done,
-    /// Not done, and nothing to decide (it left the list, its plan says wait): why.
+    /// Not done, and nothing to decide (it left the list, Claude says it can wait): why.
     Skipped(String),
     /// It didn't end well: why.
     Failed(String),
@@ -42,10 +40,6 @@ pub struct Series {
     pub items: Vec<Entry>,
     /// The row being done.
     pub at: usize,
-    /// The sudo password, once accepted: handed to each session in turn, wiped when the
-    /// series ends or stops.
-    pub secret: Secret,
-    pub secret_ok: bool,
     pub wait: Wait,
 }
 
@@ -136,12 +130,6 @@ impl Series {
         }
         s
     }
-
-    /// Forget the password (the series ends, stops, or waits on the user).
-    pub fn wipe(&mut self) {
-        self.secret.clear();
-        self.secret_ok = false;
-    }
 }
 
 #[cfg(test)]
@@ -176,14 +164,5 @@ mod tests {
             s.summary(),
             "series: 1 of 3 done · 2 not: exit 1, no longer needed"
         );
-    }
-
-    #[test]
-    fn the_password_goes_when_it_is_wiped() {
-        let mut s = Series::new(rows(&["a"]));
-        s.secret.push('x');
-        s.secret_ok = true;
-        s.wipe();
-        assert!(s.secret.is_empty() && !s.secret_ok);
     }
 }

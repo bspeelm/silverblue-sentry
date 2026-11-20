@@ -20,28 +20,31 @@ pub enum LogKind {
     Err,
 }
 
+/// How a step's command is run.
+#[derive(Clone, Debug)]
+pub enum How {
+    /// As it is.
+    Plain(Cmd),
+    /// A command line for the host's shell that uses sudo: the app runs it with the target's
+    /// password (asked once, in the key bar, when sudo wants one), never with the terminal
+    /// handed over.
+    Root(String),
+}
+
 /// What the app runs for the session.
 pub enum Exec {
     /// Stream into the log. `dry`: a dry run of the step, before the real one; `timeout`:
     /// stopped when it takes longer.
     Stream {
-        cmd: Cmd,
+        how: How,
         idx: usize,
         dry: bool,
         timeout: Option<Duration>,
     },
-    /// Hand over the terminal (sudo that asks for a password). The output is also written to
-    /// `capture` on the host, read back into the step's log afterwards (`tty_output`).
-    Tty {
-        cmd: Cmd,
-        idx: usize,
-        capture: String,
-    },
     /// An interactive shell for the step, with the terminal handed over.
     Shell { idx: usize },
-    /// The host reboots; what follows is the target's (`Host::reboot`). `tty`: sudo asks for
-    /// a password, so the terminal is handed over for it.
-    Reboot { cmd: Cmd, tty: bool },
+    /// The host reboots; what follows is the target's (`Host::reboot`).
+    Reboot { how: How },
 }
 
 /// The step that's running.
@@ -80,16 +83,6 @@ pub trait WfRun: Any {
     fn spawn_failed(&mut self, idx: usize, _dry: bool, err: &str) {
         self.push(format!("✗ {err}"), LogKind::Err);
         self.on_exit(idx, 127);
-    }
-    /// A step that had the terminal ended; `read`: its captured output is read back first.
-    fn tty_ended(&mut self, idx: usize, capture: &str, code: i32, read: bool);
-    /// The command that had the terminal couldn't be run at all.
-    fn tty_failed(&mut self, idx: usize, capture: &str, _err: &str, read: bool) {
-        self.tty_ended(idx, capture, -1, read);
-    }
-    /// What's printed above a step that gets the terminal (None: the app's line).
-    fn tty_banner(&self, _cmd: &Cmd) -> Option<String> {
-        None
     }
     /// The shell of a shell step exited.
     fn after_shell(&mut self, _idx: usize) {}

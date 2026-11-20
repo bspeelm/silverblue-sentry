@@ -701,7 +701,13 @@ fn restart_asks_first_then_streams() {
         s.contains("Restart") && s.contains("⠿ running"),
         "sentry's run box: {s}"
     );
-    assert!(s.contains("$ sudo -n systemctl restart app.service"), "{s}");
+    // The pane shows the command asked for; no password is held, so its sudo can't wait
+    // on a prompt (-n).
+    assert!(s.contains("$ sudo systemctl restart app.service"), "{s}");
+    assert!(
+        a.root_cmd_for_test("sudo systemctl restart app.service")
+            .contains("command sudo -n"),
+    );
     assert!(s.contains("C-c  terminate"), "{s}");
     run_msg(
         &mut a,
@@ -770,7 +776,7 @@ fn reboot_waits_for_a_new_boot_id() {
 }
 
 #[test]
-fn password_sudo_hands_over_the_terminal() {
+fn password_sudo_is_asked_once_in_the_key_bar_and_then_held() {
     let mut a = app();
     data(
         &mut a,
@@ -780,16 +786,94 @@ fn password_sudo_hands_over_the_terminal() {
     key(&mut a, KeyCode::Char(ScreenId::Svc.key()));
     key(&mut a, KeyCode::Char('R'));
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("terminal is handed over"), "{s}");
+    assert!(!s.contains("handed over"), "{s}");
     key(&mut a, KeyCode::Char('y'));
-    let (cmd, _banner) = a.take_suspend().expect("suspends");
-    assert!(
-        cmd.remote_line()
-            .contains("sudo systemctl restart app.service"),
-        "{}",
-        cmd.remote_line()
+    assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
+    // Asked inline, on the session's own line; nothing runs yet.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo password (for restart) › ▏"), "{s}");
+    assert!(a.pane_for_test().is_none());
+    // A key is typed, never an action; a paste too.
+    key(&mut a, KeyCode::Char('q'));
+    a.on_event(sentry_app::Event::Paste("uiet\n".into()), Instant::now());
+    assert_eq!(a.unlock_for_test().map(|u| u.1), Some(5));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("› ●●●●●▏") && !s.contains("quiet"), "{s}");
+    // Wrong: asked again, with what was typed gone.
+    key(&mut a, KeyCode::Enter);
+    a.unlock_exit_for_test(1);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo refused it · 2 of 3"), "{s}");
+    assert_eq!(a.unlock_for_test().map(|u| (u.1, u.2)), Some((0, 1)));
+    assert!(!a.holds_password_for_test() && a.pane_for_test().is_none());
+    // Right: held, and what waited runs, through the wrapper that hands it to sudo.
+    type_line(&mut a, "hunter2");
+    a.unlock_exit_for_test(0);
+    assert!(a.holds_password_for_test() && a.unlock_for_test().is_none());
+    assert_eq!(
+        a.pane_cmd_for_test().as_deref(),
+        Some("sudo systemctl restart app.service")
     );
-    assert!(!cmd.remote_line().contains("sudo -n"));
+    let argv = a.root_cmd_for_test("sudo systemctl restart app.service");
+    assert!(
+        argv.contains("@@sentry-ready") && argv.contains("SUDO_ASKPASS"),
+        "{argv}"
+    );
+    // Never drawn, never in a command line.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("hunter2") && !argv.contains("hunter2"), "{s}");
+    a.close_pane_for_test();
+    // The next root action asks nothing.
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Char('y'));
+    assert!(a.unlock_for_test().is_none() && a.pane_for_test().is_some());
+    a.close_pane_for_test();
+    // The inventory and the reads Claude queues run by themselves too.
+    key(&mut a, KeyCode::Char('I'));
+    assert!(a.unlock_for_test().is_none());
+    assert_eq!(a.root_reads_for_test(), 1);
+    a.root_read_for_test(Ok(
+        "\n@@sentry-cmd docker ps -aq\nabc\n\n@@sentry-rc 0\n".to_string()
+    ));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("read 1 command(s) with sudo"), "{s}");
+    // sudo refusing the held password (it changed): forgotten, asked again next time.
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Char('y'));
+    let id = a.slot().mail_next_for_test() - 1;
+    a.on_event(
+        run_ev(
+            &a,
+            id,
+            sentry_core::exec::StreamMsg::Line {
+                stderr: true,
+                text: "sudo: 1 incorrect password attempt".into(),
+            },
+        ),
+        Instant::now(),
+    );
+    assert!(!a.holds_password_for_test());
+    a.close_pane_for_test();
+    // C-f forgets it wherever the keys are.
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Char('y'));
+    type_line(&mut a, "hunter2");
+    a.unlock_exit_for_test(0);
+    a.close_pane_for_test();
+    assert!(a.holds_password_for_test());
+    a.on_event(
+        sentry_app::Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('f'),
+            ratatui::crossterm::event::KeyModifiers::CONTROL,
+        )),
+        Instant::now(),
+    );
+    assert!(!a.holds_password_for_test());
+    assert!(render_to_string(&mut a, 158, 41).contains("the sudo password is forgotten"));
+    key(&mut a, KeyCode::Char('R'));
+    key(&mut a, KeyCode::Char('y'));
+    assert!(a.unlock_for_test().is_some(), "asked again");
+    key(&mut a, KeyCode::Esc);
     data(
         &mut a,
         Kind::Sudo,
@@ -874,41 +958,25 @@ fn live_actions() {
     );
     println!("✓ killing the local ssh client stopped the remote command (local exit {exit})");
 
-    // 2. Refresh lists through the app: confirm, stream, exit 0, apt re-read.
+    // 2. A custom action through the app (they're on the Dashboard): confirm, stream.
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = super::app(r.clone(), tx);
     a.start(Instant::now());
-    let pump = |a: &mut App, secs: u64| {
-        let until = Instant::now() + std::time::Duration::from_secs(secs);
-        while Instant::now() < until {
-            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                a.on_event(ev, Instant::now());
-            }
-        }
-    };
+    let pump = |a: &mut App, secs: u64| pump_for(a, &rx, secs);
     pump(&mut a, 3);
-    key(&mut a, KeyCode::Char('6'));
-    pump(&mut a, 8);
-    key(&mut a, KeyCode::Char('C'));
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("$ sudo apt-get update"), "{s}");
-    key(&mut a, KeyCode::Char('y'));
-    pump(&mut a, 40);
-    let s = render_to_string(&mut a, 158, 41);
-    println!("{s}");
-    assert!(s.contains("Refresh package lists · done"), "{s}");
-    // 3. A custom action without sudo (they're on the Dashboard).
-    key(&mut a, KeyCode::Esc);
-    key(&mut a, KeyCode::Char('1'));
     key(&mut a, KeyCode::Char('a'));
     key(&mut a, KeyCode::Char('1'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("$ echo \"hello from"), "{s}");
     key(&mut a, KeyCode::Char('y'));
     pump(&mut a, 3);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("hello from"), "{s}");
-    println!("✓ actions ran: apt-get update, custom action");
-    // 4. x on Processes ends one of the login's own processes: a sleep started for this.
+    println!("✓ the custom action ran");
+    // 3. x on Processes ends one of the login's own processes: a sleep started for this.
     key(&mut a, KeyCode::Esc);
+    // None left by an earlier run that stopped half way.
+    let _ = r.sh("pkill -xf 'sleep 613' || true").output();
     let (stx, _srx) = std::sync::mpsc::channel();
     let sleeper = r
         .cmd("sleep")
@@ -920,12 +988,24 @@ fn live_actions() {
         .unwrap();
     let sleeping = |r: &Remote| r.sh("pgrep -xf 'sleep 613' | wc -l").output().unwrap();
     key(&mut a, KeyCode::Char('2'));
-    pump(&mut a, 5);
-    assert_eq!(sleeping(&r).trim(), "1", "remote sleep started");
     for c in "/sleep 613".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
+    // The screen samples every two seconds: wait for one that has the sleep in it.
+    let mut listed = false;
+    for _ in 0..20 {
+        pump(&mut a, 1);
+        // A row of the table (the strip shows the filter, which says the same).
+        let row = render_to_string(&mut a, 158, 41)
+            .lines()
+            .any(|l| l.contains("sleep 613") && !l.contains("Processes"));
+        if row && sleeping(&r).trim() == "1" {
+            listed = true;
+            break;
+        }
+    }
+    assert!(listed, "{}", render_to_string(&mut a, 158, 41));
     key(&mut a, KeyCode::Char('x'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("$ kill -TERM"), "{s}");
@@ -1047,6 +1127,113 @@ fn fixing_a_finding_on_the_server_is_an_apply_session() {
     );
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
     assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+}
+
+#[test]
+fn one_password_serves_a_session_a_workflow_step_and_the_reads() {
+    use sentry_core::apply::session::Phase;
+    const PW: &str = "correct horse";
+    let mut a = app();
+    data(
+        &mut a,
+        Kind::Sudo,
+        Payload::Sudo(crate::remote::SudoMode::Password),
+    );
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(vec![Own::maint_find("finding:".into())], Instant::now());
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "Start it.\n```sentry-apply\nsummary = \"start db\"\n[[step]]\ntitle = \"Start\"\n\
+         run = \"sudo docker start db\"\n```",
+    );
+    key(&mut a, KeyCode::Enter);
+    // sudo -n is refused: the session asks, on its own line; a wrong one is asked again.
+    a.apply_exit_for_test(1);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo password (for step 1) › ▏"), "{s}");
+    type_line(&mut a, "wrong");
+    a.apply_exit_for_test(1);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo refused it · 2 of 3"), "{s}");
+    assert!(!a.holds_password_for_test());
+    type_line(&mut a, PW);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("●●●●●●●●●●●●●") && !s.contains(PW), "{s}");
+    a.apply_exit_for_test(0);
+    // Accepted: the app holds it, the session keeps none, and the step runs with it.
+    assert!(a.holds_password_for_test());
+    assert!(a.apply_session().unwrap().secret.is_empty());
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
+    a.apply_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
+    // Not in what's drawn, what Claude was sent, or the log entry.
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains(PW), "{s}");
+    let sent = a.slot().last_prompt.clone().expect("the verify turn");
+    assert!(
+        sent.contains("sudo docker start db") && !sent.contains(PW),
+        "{sent}"
+    );
+    let entry = a.slot().shared.log.first().expect("logged").to_md();
+    assert!(entry.contains("start db") && !entry.contains(PW), "{entry}");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.apply_session().is_none());
+    // A second session's sudo step: nothing is asked.
+    a.apply(vec![Own::maint_find("finding:".into())], Instant::now());
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"again\"\n[[step]]\ntitle = \"Start\"\n\
+         run = \"sudo docker start db\"\n```",
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
+    a.apply_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"up\"\n```");
+    key(&mut a, KeyCode::Esc);
+    // A workflow's sudo step: its confirm is still asked, the password isn't.
+    let _turn = startable(&mut a, "one-password-apt-maintenance.toml");
+    a.apply(
+        vec![Effect::StartWorkflow("apt-maintenance".into())],
+        Instant::now(),
+    );
+    start_box_yes(&mut a);
+    // The preview (auto, no sudo) ends; the update step waits for its confirm.
+    let live = wf(&a).unwrap().live.expect("the preview runs");
+    run_msg(
+        &mut a,
+        live.id,
+        sentry_core::exec::StreamMsg::Exit {
+            code: 0,
+            elapsed: std::time::Duration::ZERO,
+        },
+    );
+    assert!(wf(&a).unwrap().live.is_none(), "the confirm step waits");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.unlock_for_test().is_none() && a.take_suspend().is_none());
+    let w = wf(&a).unwrap();
+    assert!(w.live.is_some(), "running");
+    let log: Vec<&str> = w.log.iter().map(|(l, _)| l.as_str()).collect();
+    assert!(log.contains(&"$ sudo apt-get update"), "{log:?}");
+    assert!(
+        !log.iter().any(|l| l.contains(PW) || l.contains("SENTRY_")),
+        "{log:?}"
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains(PW), "{s}");
+    // And what only root can read.
+    key(&mut a, KeyCode::Char(ScreenId::Dash.key()));
+    key(&mut a, KeyCode::Char('I'));
+    assert!(a.unlock_for_test().is_none());
+    assert_eq!(a.root_reads_for_test(), 1);
+}
+
+/// A workflow's start box, where there still is one: yes.
+fn start_box_yes(a: &mut App) {
+    if a.box_yes_for_test().is_some() {
+        key(a, KeyCode::Char('y'));
+    }
 }
 
 #[test]
@@ -1385,7 +1572,8 @@ fn help_is_laid_out_like_sentrys() {
         ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
         "Dashboard:",
         "sentry-server:",
-        "read what needs root, once, with your sudo password",
+        "read what needs root (your sudo password, asked once)",
+        "C-f       forget the sudo password",
         "Nothing keeps running on myserver after sentry-server exits.",
     ] {
         assert!(s.contains(has), "{has} not in: {s}");
@@ -1797,10 +1985,41 @@ fn ask_works_on_the_updates_recommendation() {
     );
 }
 
+/// The disposable container's sudo password: `scripts/live-container.sh` keeps it in a file
+/// and names the file (never the password) in the environment.
+fn live_password() -> String {
+    let file = std::env::var("SENTRY_SERVER_SCRATCH_PASSWORD")
+        .expect("SENTRY_SERVER_SCRATCH_PASSWORD: the file with the container's sudo password");
+    std::fs::read_to_string(file)
+        .expect("the password file")
+        .trim()
+        .to_string()
+}
+
+/// Type `text` and Enter, as keys.
+fn type_line(a: &mut App, text: &str) {
+    for c in text.chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+}
+
+/// Handle what arrives for `secs` seconds, ticking as the event loop does.
+fn pump_for(a: &mut App, rx: &std::sync::mpsc::Receiver<sentry_app::Event>, secs: u64) {
+    let until = Instant::now() + std::time::Duration::from_secs(secs);
+    while Instant::now() < until {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+    }
+}
+
 /// Against a disposable sshd whose sudo asks for a password (never the real server): a sudo
-/// step hands over the terminal and its output lands in the step log; abandoning a running
-/// step stops it on the server. Run under a pty that types the password:
-/// `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_password_step -- --ignored --nocapture`
+/// step asks for the password in the key bar, once (a wrong one is asked again), and its
+/// output lands in the step log; the next sudo step asks nothing; abandoning a running step
+/// stops it on the server; the password is in none of what's drawn or written.
+/// `scripts/live-container.sh test password live_password_step`
 #[test]
 #[ignore]
 fn live_password_step() {
@@ -1808,20 +2027,13 @@ fn live_password_step() {
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
+    let pw = live_password();
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
-    let pump = |a: &mut App, secs: u64| {
-        let until = Instant::now() + std::time::Duration::from_secs(secs);
-        while Instant::now() < until {
-            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                a.on_event(ev, Instant::now());
-            }
-            a.tick(Instant::now());
-        }
-    };
+    let pump = |a: &mut App, secs: u64| pump_for(a, &rx, secs);
     pump(&mut a, 2);
     a.apply(
         vec![Effect::StartWorkflow("pw-check".into())],
@@ -1829,13 +2041,20 @@ fn live_password_step() {
     );
     key(&mut a, KeyCode::Char('y'));
     key(&mut a, KeyCode::Enter);
-    let (cmd, banner) = a
-        .take_suspend()
-        .expect("the password step hands over the terminal");
-    println!("{banner}");
-    let status = cmd.interactive();
-    a.after_suspend(status);
-    pump(&mut a, 3);
+    assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
+    let (what, ..) = a.unlock_for_test().expect("the password is asked for");
+    assert!(what.contains("pw-check"), "{what}");
+    // A wrong one first: asked again, nothing ran.
+    type_line(&mut a, "not-the-password");
+    pump(&mut a, 6);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo refused it · 2 of 3"), "{s}");
+    assert!(!a.holds_password_for_test());
+    type_line(&mut a, &pw);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("sudo password (") && !s.contains(&pw), "{s}");
+    pump(&mut a, 8);
+    assert!(a.holds_password_for_test() && a.unlock_for_test().is_none());
     let w = wf(&a).unwrap();
     let log = std::fs::read_to_string(w.run.log_path("update")).unwrap();
     println!("--- steps/update.log\n{log}---");
@@ -1843,11 +2062,24 @@ fn live_password_step() {
         log.contains("Reading package lists"),
         "apt's output is in the log"
     );
-    assert!(!log.contains("password"), "the prompt isn't");
+    assert!(!log.contains(&pw), "the password isn't");
     let after = std::fs::read_to_string(w.run.log_path("after")).unwrap();
     assert!(
         after.contains("after-ok"),
         "the auto step ran next: {after}"
+    );
+    // The next sudo step (a nested one, sudo asking every time): nothing was asked.
+    let again = std::fs::read_to_string(w.run.log_path("again")).unwrap();
+    assert!(again.contains("root-again"), "{again}");
+    assert!(
+        !again.contains(&pw) && !again.contains("SENTRY_P"),
+        "{again}"
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains(&pw), "{s}");
+    assert!(
+        !a.root_cmd_for_test("sudo true").contains(&pw),
+        "nor in a command line"
     );
     // The long step: start it, abandon, and nothing is left running there.
     key(&mut a, KeyCode::Enter);
@@ -1858,7 +2090,7 @@ fn live_password_step() {
     pump(&mut a, 2);
     let left = srv(&a)
         .remote
-        .output(&srv(&a).remote.sh("pgrep -fx 'sleep 600' || true"))
+        .output(&srv(&a).remote.sh("pgrep -x sleep || true"))
         .unwrap();
     assert!(
         left.trim().is_empty(),
@@ -1897,8 +2129,7 @@ fn live_password_step() {
 }
 
 #[test]
-fn reboot_with_a_password_waits_after_the_terminal_comes_back() {
-    use std::os::unix::process::ExitStatusExt;
+fn reboot_with_a_password_asks_for_it_in_the_key_bar() {
     let mut a = app();
     data(
         &mut a,
@@ -1907,19 +2138,25 @@ fn reboot_with_a_password_waits_after_the_terminal_comes_back() {
     );
     key(&mut a, KeyCode::Char('B'));
     key(&mut a, KeyCode::Char('y'));
-    let (cmd, _) = a
-        .take_suspend()
-        .expect("hands over the terminal for the password");
-    assert!(cmd.remote_line().ends_with("sudo systemctl reboot"));
-    // ssh drops (255) as the server goes down: that's the reboot, so wait for it.
-    a.after_suspend(Ok(std::process::ExitStatus::from_raw(255 << 8)));
-    assert!(render_to_string(&mut a, 158, 41).contains("waiting for myserver to come back"));
-    // A wrong password (sudo exits 1) isn't a reboot.
+    assert!(a.take_suspend().is_none(), "the terminal isn't handed over");
+    let (what, ..) = a.unlock_for_test().expect("the password is asked for");
+    assert_eq!(what, "for reboot the server");
+    // Esc: nothing ran.
+    key(&mut a, KeyCode::Esc);
+    assert!(a.pane_for_test().is_none());
+    assert!(render_to_string(&mut a, 158, 41).contains("Reboot the server: not run"));
+    // Typed and accepted: the reboot is streamed, and the pane shows the command asked for.
     key(&mut a, KeyCode::Char('B'));
     key(&mut a, KeyCode::Char('y'));
-    a.take_suspend().unwrap();
-    a.after_suspend(Ok(std::process::ExitStatus::from_raw(1 << 8)));
-    assert!(render_to_string(&mut a, 158, 41).contains("reboot didn't start (exit 1)"));
+    type_line(&mut a, "hunter2");
+    a.unlock_exit_for_test(0);
+    assert!(a.holds_password_for_test());
+    assert_eq!(
+        a.pane_cmd_for_test().as_deref(),
+        Some("sudo systemctl reboot")
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("hunter2"), "{s}");
 }
 
 /// Read-only against the real server: start a workflow, let its auto steps run, stop at the
@@ -1958,10 +2195,10 @@ fn live_preflight() {
     a.apply(vec![Effect::Wf(WfCmd::Abandon)], Instant::now());
 }
 
-/// Against a disposable sshd whose sudo asks for a password: `I` reads what needs root once,
-/// and Containers then shows it (with its age) although `sudo -n docker` is refused. Run under
-/// a pty that types the password:
-/// `SENTRY_SSH_CONFIG=… SENTRY_SERVER_SCRATCH=<name> XDG_*=scratch cargo test live_inventory -- --ignored --nocapture`
+/// Against a disposable sshd whose sudo asks for a password: `I` asks for the password once
+/// and reads what needs root, and Containers then shows it (with its age) although
+/// `sudo -n docker` is refused; `I` again asks nothing.
+/// `scripts/live-container.sh test password live_inventory`
 #[test]
 #[ignore]
 fn live_inventory() {
@@ -1969,20 +2206,13 @@ fn live_inventory() {
     let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
         return;
     };
+    let pw = live_password();
     let (file, _) = crate::config::load().unwrap();
     let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let mut a = super::app(Remote::new(n, s), tx);
     a.start(Instant::now());
-    let pump = |a: &mut App, secs: u64| {
-        let until = Instant::now() + std::time::Duration::from_secs(secs);
-        while Instant::now() < until {
-            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                a.on_event(ev, Instant::now());
-            }
-            a.tick(Instant::now());
-        }
-    };
+    let pump = |a: &mut App, secs: u64| pump_for(a, &rx, secs);
     key(&mut a, KeyCode::Char(ScreenId::Cont.key()));
     pump(&mut a, 3);
     let before = render_to_string(&mut a, 158, 41);
@@ -1992,20 +2222,26 @@ fn live_inventory() {
         "refused before"
     );
     key(&mut a, KeyCode::Char('I'));
-    let s = render_to_string(&mut a, 158, 41);
-    println!("{s}");
-    assert!(s.contains("docker inspect $ids") && s.contains("cat /srv/stack/compose.yaml"));
-    key(&mut a, KeyCode::Char('y'));
-    let (cmd, _) = a.take_suspend().expect("hands over the terminal");
-    let st = cmd.interactive();
-    a.after_suspend(st);
-    pump(&mut a, 3);
+    assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
     let s = render_to_string(&mut a, 158, 41);
     println!("{s}");
     assert!(
-        s.contains("read with sudo") && s.contains("│ web"),
+        s.contains("sudo password (to read what needs root on"),
+        "{s}"
+    );
+    type_line(&mut a, &pw);
+    pump(&mut a, 8);
+    let s = render_to_string(&mut a, 158, 41);
+    println!("{s}");
+    assert!(
+        s.contains("read as root") && s.contains("│ web"),
         "containers from the read"
     );
+    assert!(!s.contains(&pw));
+    // Held now: reading again asks nothing.
+    key(&mut a, KeyCode::Char('I'));
+    assert!(a.unlock_for_test().is_none() && a.root_reads_for_test() == 1);
+    pump(&mut a, 5);
     let inv = crate::inventory::load("scratch").unwrap().data;
     assert!(
         inv.outputs["cat /srv/stack/compose.yaml"]
@@ -2015,6 +2251,7 @@ fn live_inventory() {
     // A workflow condition never uses it: it must see the server as it is now.
     let plain = Remote::new("scratch", &srv(&a).remote.cfg);
     assert!(crate::collect::docker::collect(&plain).is_err());
+    // Nothing is left on the server: the read came back on the command's own output.
     let left = srv(&a)
         .remote
         .output(
@@ -2023,10 +2260,7 @@ fn live_inventory() {
                 .sh("ls -A ~/.cache/sentry-server 2>/dev/null || true"),
         )
         .unwrap();
-    assert!(
-        left.trim().is_empty(),
-        "the read is deleted on the server: {left}"
-    );
+    assert!(left.trim().is_empty(), "nothing kept there: {left}");
 }
 
 #[test]
@@ -2665,7 +2899,7 @@ fn a_password_sudo_says_press_i() {
         s.contains("Press  I  to read them once with your password"),
         "{s}"
     );
-    assert!(s.contains(" I  read with sudo"), "key bar: {s}");
+    assert!(s.contains(" I  read as root"), "key bar: {s}");
 }
 
 #[test]
@@ -2738,10 +2972,10 @@ fn live_plan() {
         pump(&mut a, 3);
         // Claude stopped for reads that need root: skip them here (no password in a test);
         // it then writes the plan without them.
-        if let Some(reads) = take_reads_box(&mut a) {
-            println!("Claude asked to read with sudo first: {reads:?}");
+        if let Some((what, ..)) = a.unlock_for_test() {
+            println!("Claude asked to read with sudo first: {what}");
             asked = true;
-            key(&mut a, KeyCode::Char('n'));
+            key(&mut a, KeyCode::Esc);
             continue;
         }
         if !a.writing() && a.slot().shared.plans.contains_key(&item) {
@@ -2790,20 +3024,42 @@ fn live_claude_reads() {
     let argv: Vec<String> = ["docker", "ps", "-aq"].map(String::from).to_vec();
     let code = crate::gateway::exec_cli(&r, &argv);
     assert_ne!(code, 0);
-    let (tx, _rx) = std::sync::mpsc::channel();
+    let pw = live_password();
+    let (tx, rx) = std::sync::mpsc::channel();
     let mut a = super::app(r, tx);
     a.open_chat(sentry_core::tui::chat::Chat::new(
         sentry_core::claude::Ask::new("s", "c", "q"),
     ));
+    a.start(Instant::now());
+    pump_for(&mut a, &rx, 2);
     turn_ended_online_for_reads(&mut a);
-    let reads = take_reads_box(&mut a).expect("the box lists the read");
+    // Not held yet: the one prompt covers the read (it names it), no box.
+    let (what, ..) = a.unlock_for_test().expect("the password is asked for");
     println!("{}", render_to_string(&mut a, 158, 41));
-    assert_eq!(reads, [argv]);
-    key(&mut a, KeyCode::Char('y'));
-    let (cmd, _) = a.take_suspend().expect("hands over the terminal");
-    let st = cmd.interactive();
-    a.win.offline = true; // the follow-up is shown, not sent
-    a.after_suspend(st);
+    assert_eq!(what, "for Claude's read: docker ps");
+    type_line(&mut a, &pw);
+    // sudo checks it and the read runs; its output comes back as a follow-up, which is
+    // shown, not sent (no claude process here).
+    for _ in 0..100 {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        if a.holds_password_for_test() {
+            a.win.offline = true;
+        }
+        if a.holds_password_for_test() && a.root_reads_for_test() == 0 {
+            break;
+        }
+    }
+    assert!(a.holds_password_for_test());
+    // Held: the next read Claude queues runs by itself.
+    a.win.offline = false;
+    assert_ne!(crate::gateway::exec_cli(&srv(&a).remote.clone(), &argv), 0);
+    turn_ended_online_for_reads(&mut a);
+    assert!(a.unlock_for_test().is_none() && a.root_reads_for_test() == 1);
+    a.win.offline = true;
+    pump_for(&mut a, &rx, 6);
+    assert_eq!(a.root_reads_for_test(), 0);
     let sent = a
         .chat_mut()
         .unwrap()
@@ -2814,7 +3070,7 @@ fn live_claude_reads() {
         .map(|(_, t)| t.clone())
         .unwrap();
     println!("{sent}");
-    assert!(sent.contains("$ sudo docker ps -aq   (exit 0)") && sent.contains("aaa111"));
+    assert!(sent.contains("$ sudo docker ps -aq   (exit 0)") && sent.contains("aaa1"));
 }
 
 #[test]
@@ -3997,29 +4253,32 @@ fn kill_of_another_users_process_goes_through_sudo() {
     key(&mut a, KeyCode::Enter);
     let ran = a.pane_cmd_for_test().expect("streamed");
     assert!(
-        ran.contains("sudo -n kill -TERM 1502") && ran.contains("14100"),
+        ran.contains("sudo kill -TERM 1502") && ran.contains("14100"),
         "{ran}"
     );
+    assert!(a.root_cmd_for_test(&ran).contains("command sudo -n"));
     key(&mut a, KeyCode::Esc);
-    // sudo asks for a password: the terminal is handed over.
+    // sudo asks for a password: asked for in the key bar, then the same pane.
     let mut a = app();
     data(&mut a, Kind::Sudo, Payload::Sudo(SudoMode::Password));
     procs_on(&mut a, "checkpointer");
     key(&mut a, KeyCode::Char('x'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("$ sudo kill -TERM 1502") && s.contains("terminal is handed over"),
+        s.contains("$ sudo kill -TERM 1502") && !s.contains("handed over"),
         "{s}"
     );
     key(&mut a, KeyCode::Enter);
-    let (cmd, banner) = a.take_suspend().expect("suspends");
-    assert!(
-        cmd.remote_line().contains("sudo kill -TERM 1502")
-            && !cmd.remote_line().contains("sudo -n"),
-        "{}",
-        cmd.remote_line()
+    assert!(a.take_suspend().is_none());
+    assert_eq!(
+        a.unlock_for_test().map(|u| u.0).as_deref(),
+        Some("for kill process")
     );
-    assert!(banner.contains("kill 1502 on myserver"), "{banner}");
+    type_line(&mut a, "pw");
+    a.unlock_exit_for_test(0);
+    let ran = a.pane_cmd_for_test().expect("streamed");
+    assert!(ran.contains("sudo kill -TERM 1502"), "{ran}");
+    a.close_pane_for_test();
     // No sudo at all: said, nothing offered.
     data(&mut a, Kind::Sudo, Payload::Sudo(SudoMode::Absent));
     key(&mut a, KeyCode::Char('x'));

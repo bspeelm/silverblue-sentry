@@ -42,28 +42,10 @@ pub fn pick_dir(own: PathBuf, generic: PathBuf) -> PathBuf {
     if tomls(&own).is_empty() { generic } else { own }
 }
 
-pub use crate::run::{Exec, Live, LogKind};
-
-/// A streamed step can't answer a password prompt: its `sudo` fails at once instead of
-/// waiting on a prompt nobody sees.
-pub fn no_prompt(cmd: &str) -> String {
-    format!("sudo() {{ command sudo -n \"$@\"; }}\n{cmd}")
-}
-
-/// A step run with the terminal handed over: its output still goes to the terminal, and to
-/// `capture` (under the login's home on the server) so it lands in the step's log. The exit
-/// code is the command's, not tee's.
-pub fn tee_to(cmd: &str, capture: &str) -> String {
-    format!(
-        "f=\"$HOME/{capture}\"; mkdir -p \"${{f%/*}}\" || exit 1\n\
-         {{ ( {cmd}\n) 2>&1; echo $? >\"$f.rc\"; }} | tee \"$f\"\n\
-         exit \"$(cat \"$f.rc\" 2>/dev/null || echo 1)\""
-    )
-}
+pub use crate::run::{Exec, How, Live, LogKind};
 
 /// What a step that sudo refused says on its card.
-pub const SUDO_REFUSED: &str =
-    "sudo asked for a password · r retries with the terminal handed over";
+pub const SUDO_REFUSED: &str = "sudo asked for a password · r retries, and asks for it here";
 
 const LOG_LINES: usize = 2000;
 
@@ -250,41 +232,19 @@ impl Session {
                 .timeout(None),
             None => self.r.sh(&cmd).timeout(None),
         };
-        // A root login has no sudo to ask or to refuse.
+        // A root login has no sudo to ask or to refuse. Anything else that uses sudo is the
+        // app's to run: with the server's password when sudo wants one (asked once, there).
         let uses_sudo = here.is_none() && runner::needs_tty(&cmd) && sudo != Some(SudoMode::Root);
         self.sudo_refused = false;
-        Some(if uses_sudo && sudo == Some(SudoMode::Password) {
-            self.push(
-                "(sudo asks for a password: the terminal is handed over)",
-                LogKind::Info,
-            );
-            let capture = format!(
-                ".cache/{}/{}-{id}.out",
-                self.prog,
-                self.run
-                    .dir
-                    .file_name()
-                    .map_or("run".into(), |n| n.to_string_lossy())
-            );
-            Exec::Tty {
-                cmd: self.r.sh(&tee_to(&cmd, &capture)).timeout(None),
-                idx,
-                capture,
-            }
-        } else if uses_sudo {
-            Exec::Stream {
-                cmd: self.r.sh(&no_prompt(&cmd)).timeout(None),
-                idx,
-                dry: false,
-                timeout: None,
-            }
-        } else {
-            Exec::Stream {
-                cmd: full,
-                idx,
-                dry: false,
-                timeout: None,
-            }
+        Some(Exec::Stream {
+            how: if uses_sudo {
+                How::Root(cmd)
+            } else {
+                How::Plain(full)
+            },
+            idx,
+            dry: false,
+            timeout: None,
         })
     }
 
@@ -321,17 +281,12 @@ impl Session {
                     ),
                     LogKind::Info,
                 );
-                let tty = !sudo.is_some_and(SudoMode::unattended);
-                let cmd = if tty {
-                    self.r.cmd("sudo").args(["systemctl", "reboot"])
-                } else if sudo == Some(SudoMode::Root) {
-                    self.r.cmd("systemctl").arg("reboot")
-                } else {
-                    self.r.cmd("sudo").args(["-n", "systemctl", "reboot"])
-                };
                 Ok(Some(Exec::Reboot {
-                    cmd: cmd.timeout(None),
-                    tty,
+                    how: if sudo == Some(SudoMode::Root) {
+                        How::Plain(self.r.cmd("systemctl").arg("reboot").timeout(None))
+                    } else {
+                        How::Root("sudo systemctl reboot".into())
+                    },
                 }))
             }
             Next::Shell(_) => Err("shell steps aren't supported on servers".into()),
@@ -466,28 +421,6 @@ impl Session {
         self.sudo_refused
     }
 
-    /// After a step that had the terminal: read its output back from the server into the
-    /// step's log, and delete it there.
-    pub fn tty_output(&mut self, idx: usize, capture: &str) {
-        let id = self.wf.steps[idx].id.clone();
-        let r = &self.r;
-        let script =
-            format!("f=\"$HOME/{capture}\"; cat \"$f\" 2>/dev/null; rm -f \"$f\" \"$f.rc\"");
-        match r.output(&r.sh(&script)) {
-            Ok(text) => {
-                for l in sentry_core::exec::clean_lines(&text) {
-                    self.run.append_log(&id, &l);
-                    self.push(l, LogKind::Out);
-                }
-            }
-            Err(e) => {
-                let msg = format!("(couldn't read the step's output back: {e})");
-                self.run.append_log(&id, &msg);
-                self.push(msg, LogKind::Err);
-            }
-        }
-    }
-
     /// While a reboot step waits: the app saw a new boot id, so check again.
     pub fn after_reboot(&mut self) {
         let before = self.next.clone();
@@ -584,12 +517,6 @@ impl crate::run::WfRun for Session {
     fn on_exit(&mut self, idx: usize, code: i32) {
         Session::on_exit(self, idx, code);
     }
-    fn tty_ended(&mut self, idx: usize, capture: &str, code: i32, read: bool) {
-        if read {
-            self.tty_output(idx, capture);
-        }
-        Session::on_exit(self, idx, code);
-    }
     fn skip(&mut self, force: bool) -> Result<(), String> {
         Session::skip(self, force)
     }
@@ -642,24 +569,11 @@ mod tests {
 
     #[test]
     fn streamed_sudo_never_prompts() {
-        let (code, out, _) = run_sh(&no_prompt("sudo apt-get update && echo next"));
+        let (code, out, _) = run_sh(&sentry_core::apply::sudo::no_prompt(
+            "sudo apt-get update && echo next",
+        ));
         assert_eq!(code, 0);
         assert_eq!(out, "sudo got: -n apt-get update\nnext\n");
-    }
-
-    #[test]
-    fn handed_over_steps_keep_output_and_exit_code() {
-        let cap = ".cache/sentry-server/run-1-update.out";
-        let (code, out, home) = run_sh(&tee_to("echo out; echo err >&2\nexit 3", cap));
-        assert_eq!(code, 3, "the command's exit code, not tee's");
-        assert!(out.contains("out") && out.contains("err"), "{out}");
-        let saved = std::fs::read_to_string(home.join(cap)).unwrap();
-        assert!(
-            saved.contains("out\n") && saved.contains("err\n"),
-            "{saved}"
-        );
-        let (code, _, _) = run_sh(&tee_to("true", cap));
-        assert_eq!(code, 0);
     }
 
     #[test]

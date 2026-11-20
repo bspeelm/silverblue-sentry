@@ -151,30 +151,87 @@ pub fn uses_sudo(cmd: &str) -> bool {
 
 /// The script a sudo command runs in (POSIX sh, here or on a server): the first line of
 /// stdin is the password. A `sudo` stand-in goes first on PATH for the step, in a private temp
-/// dir removed when it ends: it hands the password to the real sudo (`-S`, no prompt). Being
-/// on PATH, it's the `sudo` of everything the step starts, however nested (`sh -c '… sudo …'`,
-/// `xargs sudo`, a script): a shell function wouldn't reach those, and the real sudo, with no
-/// terminal, would fail. The password is in the step's environment while it runs, never in a
-/// command line or a file. The command itself runs with nothing more on stdin.
+/// dir removed when it ends: it runs the real sudo with an askpass helper beside it (`-A`, no
+/// prompt). Being on PATH, it's the `sudo` of everything the step starts, however nested
+/// (`sh -c '… sudo …'`, `xargs sudo`, a script): a shell function wouldn't reach those, and
+/// the real sudo, with nobody to ask, would fail.
+///
+/// The helper takes the password from a fifo in that dir, which only this script holds open
+/// (descriptor 9, closed for the step itself), and puts it back for the next call; it answers
+/// once for each sudo, so a password that stopped working is one failed attempt, not three.
+/// So the password is in no command line, no file and no environment: what the step runs
+/// can't print it by printing its own, and it is gone when the script ends, however it ends.
+///
+/// sudo's stdin is the step's: a terminal when the step has one (over ssh it does), which is
+/// what makes sudo end its command when that terminal hangs up, i.e. when the step is stopped
+/// from here. With no terminal the step gets nothing on stdin.
 pub fn wrap(cmd: &str) -> String {
+    format!("IFS= read -r SENTRY_P\n{}", wrapped(cmd))
+}
+
+/// A line a streamed sudo command prints when it is ready for the password (`wrap_ready`).
+pub const READY: &str = "@@sentry-ready";
+
+/// `wrap` for a command that is streamed (`Cmd::input_after(READY, …)`): it may have a
+/// terminal, whose echo is turned off before the password is asked for, and back on after.
+pub fn wrap_ready(cmd: &str) -> String {
     format!(
-        "IFS= read -r SENTRY_P\n\
-         SENTRY_SUDO=$(command -v sudo) || {{ echo 'sudo not found' >&2; exit 127; }}\n\
-         export SENTRY_P SENTRY_SUDO\n\
-         SENTRY_D=$(mktemp -d) || exit 1\n\
-         trap 'rm -rf \"$SENTRY_D\"' EXIT\n\
-         printf '%s\\n' '#!/bin/sh' 'printf \"%s\\\\n\" \"$SENTRY_P\" | \"$SENTRY_SUDO\" -S -p \"\" \"$@\"' > \"$SENTRY_D/sudo\"\n\
-         chmod 700 \"$SENTRY_D/sudo\"\n\
-         PATH=\"$SENTRY_D:$PATH\"\n\
-         export PATH\n\
-         exec </dev/null\n\
-         {cmd}\n"
+        "stty -echo 2>/dev/null\n\
+         echo {READY}\n\
+         IFS= read -r SENTRY_P\n\
+         stty echo 2>/dev/null\n{}",
+        wrapped(cmd)
     )
 }
 
-/// The check of a password: sudo accepts it (and nothing else runs).
+fn wrapped(cmd: &str) -> String {
+    format!(
+        "SENTRY_SUDO=$(command -v sudo) || {{ echo 'sudo not found' >&2; exit 127; }}\n\
+         SENTRY_D=$(mktemp -d) || exit 1\n\
+         trap 'rm -rf \"$SENTRY_D\"' EXIT\n\
+         mkfifo -m 600 \"$SENTRY_D/p\" || exit 1\n\
+         exec 9<>\"$SENTRY_D/p\" || exit 1\n\
+         printf '%s\\n' \"$SENTRY_P\" \"$SENTRY_P\" \"$SENTRY_P\" \"$SENTRY_P\" >&9\n\
+         unset SENTRY_P\n\
+         export SENTRY_SUDO SENTRY_D\n\
+         printf '%s\\n' '#!/bin/sh' \
+         'case \"$1\" in -n*|-S*|-A*|-k|-K|-V|-h) exec \"$SENTRY_SUDO\" \"$@\";; esac' \
+         'SENTRY_M=\"$SENTRY_D/m.$$\"' \
+         ': > \"$SENTRY_M\"' \
+         'export SENTRY_M' \
+         'SUDO_ASKPASS=\"$SENTRY_D/ask\" exec \"$SENTRY_SUDO\" -A \"$@\"' > \"$SENTRY_D/sudo\"\n\
+         printf '%s\\n' '#!/bin/sh' \
+         '[ -e \"$SENTRY_M\" ] || exit 1' \
+         'rm -f \"$SENTRY_M\"' \
+         'IFS= read -r p < \"$SENTRY_D/p\" || exit 1' \
+         'printf \"%s\\\\n\" \"$p\" > \"$SENTRY_D/p\"' \
+         'printf \"%s\\\\n\" \"$p\"' > \"$SENTRY_D/ask\"\n\
+         chmod 700 \"$SENTRY_D/sudo\" \"$SENTRY_D/ask\"\n\
+         PATH=\"$SENTRY_D:$PATH\"\n\
+         export PATH\n\
+         [ -t 0 ] || exec </dev/null\n\
+         (\n\
+         exec 9>&-\n\
+         {cmd}\n\
+         )\n"
+    )
+}
+
+/// A sudo command run without a password to give: its `sudo` fails at once instead of
+/// waiting on a prompt nobody sees.
+pub fn no_prompt(cmd: &str) -> String {
+    format!("sudo() {{ command sudo -n \"$@\"; }}\n{cmd}")
+}
+
+/// The check of a password: sudo accepts it (and nothing else runs). `-k`: a ticket from
+/// earlier doesn't count, so a wrong password is refused whatever was typed before.
 pub fn check_script() -> &'static str {
-    "IFS= read -r SENTRY_P\nprintf '%s\\n' \"$SENTRY_P\" | command sudo -S -p '' true"
+    "IFS= read -r SENTRY_P\nprintf '%s\\n' \"$SENTRY_P\" | command sudo -k -S -p '' true"
+}
+
+/// sudo saying the password it was handed is wrong.
+pub fn wrong_password(line: &str) -> bool {
+    line.contains("incorrect password attempt") || line.contains("Sorry, try again")
 }
 
 /// A sudo password, typed into the session. Never shown (Debug says how long it is), wiped
@@ -208,6 +265,11 @@ impl Secret {
     /// What goes to the script's stdin: the password and a newline.
     pub fn stdin(&self) -> Vec<u8> {
         format!("{}\n", self.0).into_bytes()
+    }
+
+    /// The password, moved out (what's left is empty).
+    pub fn take(&mut self) -> Secret {
+        std::mem::take(self)
     }
 
     pub fn clear(&mut self) {
@@ -299,45 +361,56 @@ mod tests {
         assert!(uses_sudo("a && sudo systemctl restart x"));
         assert!(uses_sudo("(sudo true)"));
         assert!(!uses_sudo("echo pseudo; grep sudoers /etc/x"));
-        // The wrapped script, with a fake "real" sudo first on PATH: every sudo the step runs,
-        // nested in `sh -c` too, gets the password on its stdin with -S; the command itself
-        // gets nothing on stdin; the stand-in's dir is gone afterwards.
+        // The wrapped script, with a fake "real" sudo first on PATH (it asks its askpass
+        // helper, as sudo -A does, twice to see the second answer refused): every sudo the
+        // step runs, nested in `sh -c` too, gets the password; the command itself gets
+        // nothing on stdin; the password is in no environment; the dir is gone afterwards.
         let fake = std::env::temp_dir().join(format!("sentry-fake-sudo-{}", std::process::id()));
         std::fs::create_dir_all(&fake).unwrap();
         std::fs::write(
             fake.join("sudo"),
-            "#!/bin/sh\nIFS= read -r pw\necho \"sudo $* (pw=$pw)\"\n",
+            "#!/bin/sh\npw=none\nif [ \"$1\" = -A ]; then shift; pw=$(\"$SUDO_ASKPASS\"); \
+             \"$SUDO_ASKPASS\" >/dev/null && pw=twice; fi\necho \"sudo $* (pw=$pw)\"\n",
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(fake.join("sudo"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
-        let step = "sudo -S -p '' true\nsudo ls\nsh -c 'sudo id -u'\nread -r x || echo stdin-empty\necho \"dir=$SENTRY_D\"";
+        let step = "sudo -n true\nsudo ls\nsh -c 'sudo id -u'\nread -r x || echo stdin-empty\necho \"dir=$SENTRY_D\"\nenv | grep -c pw-9 || true";
         let script = format!("PATH={}:$PATH; export PATH\n{}", fake.display(), wrap(step));
         // POSIX only: servers run it with dash.
         let posix = crate::exec::Cmd::local("bash")
             .args(["--posix", "-c", &script])
-            .input("pw\n")
+            .input("pw-9\n")
             .output()
             .unwrap();
-        assert!(posix.contains("sudo -S -p  id -u (pw=pw)"), "{posix}");
+        assert!(posix.contains("sudo id -u (pw=pw-9)"), "{posix}");
         let out = crate::exec::Cmd::local("sh")
             .arg("-c")
             .arg(script)
-            .input("pw\n")
+            .input("pw-9\n")
             .output()
             .unwrap();
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[1], "sudo -S -p  ls (pw=pw)", "{out}");
-        assert_eq!(lines[2], "sudo -S -p  id -u (pw=pw)", "nested: {out}");
+        // `sudo -n` stays what it is: no password is offered to it.
+        assert_eq!(lines[0], "sudo -n true (pw=none)", "{out}");
+        assert_eq!(lines[1], "sudo ls (pw=pw-9)", "{out}");
+        assert_eq!(lines[2], "sudo id -u (pw=pw-9)", "nested: {out}");
         assert_eq!(lines[3], "stdin-empty", "{out}");
         let dir = lines[4].trim_start_matches("dir=");
         assert!(
             !dir.is_empty() && !std::path::Path::new(dir).exists(),
             "{out}"
         );
+        // Not in the step's environment, however many times sudo was called.
+        assert_eq!(lines[5], "0", "{out}");
         let _ = std::fs::remove_dir_all(&fake);
-        assert!(!wrap("sudo ls").contains("pw"));
+        assert!(!wrap("sudo ls").contains("pw-9"));
+        // Streamed: the password is read after the ready line, and the step is the same.
+        let ready = wrap_ready("echo hi");
+        assert!(ready.starts_with("stty -echo 2>/dev/null\necho @@sentry-ready\nIFS= read -r"));
+        assert!(wrong_password("sudo: 1 incorrect password attempt"));
+        assert!(!wrong_password("Reading package lists..."));
         let mut p = Secret::default();
         for c in "hunter2".chars() {
             p.push(c);

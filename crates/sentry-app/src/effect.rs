@@ -43,8 +43,14 @@ pub enum Effect {
     ConfirmOr(Modal, Vec<Effect>),
     /// Stream a command's output into the pane (after a confirm).
     Run(RunSpec),
-    /// Hand the terminal to a command (sudo password prompts, an editor).
+    /// Hand the terminal to a command (an editor, a shell, a pager): never for sudo.
     Suspend(Suspend),
+    /// Read something as root, quietly: the line (with sudo in it) is run with the target's
+    /// password when sudo wants one (asked first if it isn't held), and its output goes to
+    /// the target (`Target::root_read`).
+    RootRead(RootRead),
+    /// Forget the sudo password held for this target (`C-f`).
+    Forget,
     /// Read-only output, fetched once, shown in the scrollable pane.
     Logs(String, Cmd),
     /// Pick one of several (digits 1-9).
@@ -281,6 +287,21 @@ pub struct RunSpec {
     pub queue: Vec<Cmd>,
     /// When the last one exits, the target hears how (`Target::pane_ended`).
     pub end: Option<Own>,
+    /// It needs root: this command line (with sudo in it) is run in place of `cmd`, with the
+    /// target's password when sudo wants one (asked first, once, if it isn't held).
+    pub root: Option<String>,
+}
+
+/// Something read as root for the target.
+#[derive(Clone, Debug)]
+pub struct RootRead {
+    /// What the password is for, if it has to be asked: "to read what needs root".
+    pub what: String,
+    pub line: String,
+    /// Whose it is: it gets the output.
+    pub own: Own,
+    /// What follows when the password isn't given (Esc).
+    pub skipped: Vec<Effect>,
 }
 
 /// A command that gets the terminal.

@@ -174,6 +174,18 @@ impl Slot {
                 }
                 Effect::Suspend(s) => self.suspend = Some(s),
                 Effect::Run(spec) => self.start_run(w, spec),
+                Effect::RootRead(r) => {
+                    let what = r.what.clone();
+                    self.with_root(w, what, root::Waiting::Read(r));
+                }
+                Effect::Forget => {
+                    let held = self.forget();
+                    w.toast(if held {
+                        "the sudo password is forgotten"
+                    } else {
+                        "no sudo password is held"
+                    });
+                }
                 Effect::Logs(title, cmd) => {
                     let id = self.mail.next();
                     self.pane = Some(Pane::new(id, title, cmd.display()));
@@ -216,7 +228,19 @@ impl Slot {
         w.dirty = true;
     }
 
+    /// A command for the pane: one that needs root first gets it (the password is asked for
+    /// once, if sudo wants one and none is held).
     pub(crate) fn start_run(&mut self, w: &mut Win, spec: RunSpec) {
+        if spec.root.is_some() {
+            let what = format!("for {}", spec.title.to_lowercase());
+            return self.with_root(w, what, root::Waiting::Run(spec));
+        }
+        self.start_pane(w, spec, None);
+    }
+
+    /// `shown`: the command line the pane shows, when it isn't the command's own (one run
+    /// through the sudo wrapper shows what was asked for, never the wrapper).
+    pub(crate) fn start_pane(&mut self, w: &mut Win, spec: RunSpec, shown: Option<String>) {
         if spec.reboot {
             let e = sentry_core::maint::log::LogEntry::event(
                 &self.scope,
@@ -230,7 +254,7 @@ impl Slot {
             self.log_event(w, e);
         }
         let id = self.mail.next();
-        let mut pane = Pane::new(id, spec.title, spec.cmd.display());
+        let mut pane = Pane::new(id, spec.title, shown.unwrap_or_else(|| spec.cmd.display()));
         pane.then = spec.then;
         pane.queue = spec.queue.into();
         pane.end = spec.end;

@@ -428,9 +428,9 @@ fn needs_password(v: &View, what: &str) -> Vec<Line<'static>> {
             Span::styled("Press ", t.fg()),
             Span::styled(" I ", Style::new().fg(t.chip_fg).bg(t.dim)),
             Span::styled(
-                " to read them once with your password: one sudo, read-only. The terminal is \
-                 handed over for the password, then this screen shows that read (with its age) until \
-                 you read again.",
+                " to read them once with your password: one sudo, read-only. It's asked for \
+                 here (once, for everything on this server), then this screen shows that read \
+                 (with its age) until you read again.",
                 t.fg(),
             ),
         ]),

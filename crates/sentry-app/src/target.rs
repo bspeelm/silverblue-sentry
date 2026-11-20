@@ -287,6 +287,8 @@ pub struct Cx<'a> {
     pub chat_running: bool,
     /// The finding the apply session is fixing.
     pub finding: Option<&'a str>,
+    /// The target's sudo password is held: what needs root runs without asking.
+    pub root: bool,
 }
 
 /// Why a target should read something again.
@@ -404,6 +406,16 @@ pub trait Target: Upkeep + Asks + Host {
         _end: &Own,
         _code: i32,
         _tail: &[String],
+        _sh: &mut Shared,
+        _cx: &Cx,
+    ) -> Vec<Effect> {
+        Vec::new()
+    }
+    /// Something read as root for it (`Effect::RootRead`) came back: its output, or why not.
+    fn root_read(
+        &mut self,
+        _own: &Own,
+        _out: Result<String, String>,
         _sh: &mut Shared,
         _cx: &Cx,
     ) -> Vec<Effect> {
@@ -553,6 +565,9 @@ pub trait Asks {
 pub trait Host {
     /// The line as a command on the host (its shell over ssh, this machine's bash).
     fn command(&self, line: &str) -> Cmd;
+    /// Whether sudo there asks for a password right now (looked up again each time: it can
+    /// change while this is open). Err: there's no sudo to use, and why.
+    fn sudo_asks(&mut self, cx: &Cx) -> Result<bool, String>;
     /// The workflows there are, and where they come from.
     fn workflows(&self) -> (Vec<Entry>, PathBuf);
     /// The workflow as it is now, when the list read earlier isn't to be trusted for it.
@@ -599,5 +614,5 @@ pub trait Host {
     /// A streamed step ended.
     fn step_ended(&mut self, _run: &dyn WfRun, _cx: &Cx) {}
     /// A workflow's reboot step: what rebooting this host means is the target's.
-    fn reboot(&mut self, cmd: Cmd, tty: bool, old_boot: String, cx: &Cx) -> Vec<Effect>;
+    fn reboot(&mut self, cmd: Cmd, old_boot: String, cx: &Cx) -> Vec<Effect>;
 }

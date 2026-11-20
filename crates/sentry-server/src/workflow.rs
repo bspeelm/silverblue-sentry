@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use super::collect::{apt, docker, units};
 use super::remote::{Remote, SrvError};
 pub use sentry_app::remote::workflow::{
-    Exec, Live, LogKind, SUDO_REFUSED, Session, no_prompt, own_dir, pick_dir, root, tee_to, tomls,
+    Exec, Live, LogKind, SUDO_REFUSED, Session, own_dir, pick_dir, root, tomls,
 };
 use sentry_core::paths;
 use sentry_core::workflows::runner::Env;

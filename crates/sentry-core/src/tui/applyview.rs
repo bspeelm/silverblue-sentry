@@ -185,26 +185,41 @@ fn input_line(s: &Session, t: &Theme, width: usize) -> Line<'static> {
         Phase::Settled(_) => typed("type to ask Claude more"),
         Phase::Password { tries, checking } => {
             let steps: Vec<String> = s.sudo_steps().iter().map(|n| n.to_string()).collect();
-            let mut v = vec![
-                Span::styled(
-                    format!("sudo password (for step {}) › ", steps.join(", ")),
-                    t.s(t.yellow),
-                ),
-                Span::styled("●".repeat(s.secret.len()), t.fg()),
-            ];
-            if !checking {
-                v.push(Span::styled("▏", t.s(t.cyan)));
-            }
-            if tries > 0 {
-                v.push(Span::styled(
-                    format!("   sudo refused it · {} of 3", tries + 1),
-                    t.s(t.red),
-                ));
-            }
-            Line::from(v)
+            password_line(
+                t,
+                &format!("for step {}", steps.join(", ")),
+                s.secret.len(),
+                tries,
+                checking,
+            )
         }
         _ => Line::styled("  (working · C-c stops it · Esc hides this)", t.dim()),
     }
+}
+
+/// The sudo password being typed, wherever it's asked for (a session's input line, the key
+/// bar): what it's for, a dot for each character, and how often sudo refused it.
+pub fn password_line(
+    t: &Theme,
+    what: &str,
+    len: usize,
+    tries: u8,
+    checking: bool,
+) -> Line<'static> {
+    let mut v = vec![
+        Span::styled(format!("sudo password ({what}) › "), t.s(t.yellow)),
+        Span::styled("●".repeat(len), t.fg()),
+    ];
+    if !checking {
+        v.push(Span::styled("▏", t.s(t.cyan)));
+    }
+    if tries > 0 {
+        v.push(Span::styled(
+            format!("   sudo refused it · {} of 3", tries + 1),
+            t.s(t.red),
+        ));
+    }
+    Line::from(v)
 }
 
 pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {

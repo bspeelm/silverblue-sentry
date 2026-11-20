@@ -483,36 +483,11 @@ impl Slot {
     pub(crate) fn wf_exec(&mut self, w: &mut Win, e: Exec) {
         match e {
             Exec::Stream {
-                cmd,
+                how,
                 idx,
                 dry,
                 timeout,
-            } => {
-                let id = self.mail.next();
-                let mut pid = None;
-                let live = |pid| Live {
-                    id,
-                    idx,
-                    pid,
-                    started: Instant::now(),
-                    dry,
-                    deadline: timeout.map(|t| Instant::now() + t),
-                };
-                if !w.offline {
-                    match self.mail.stream(id, &cmd) {
-                        Ok(p) => pid = Some(p),
-                        Err(err) => {
-                            if let Some(s) = self.run.as_mut() {
-                                s.spawn_failed(idx, dry, &err.to_string());
-                            }
-                            return;
-                        }
-                    }
-                }
-                if let Some(s) = self.run.as_mut() {
-                    s.set_live(Some(live(pid)));
-                }
-            }
+            } => self.wf_how(w, how, idx, dry, timeout),
             Exec::Shell { idx } => {
                 let sh = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
                 let cmd = sentry_core::exec::Cmd::local(&sh).timeout(None);
@@ -524,22 +499,9 @@ impl Slot {
                     own: None,
                 });
             }
-            Exec::Tty { cmd, idx, capture } => {
-                let _ = self.mail.next();
-                self.suspend_step = Some((idx, capture));
-                let own = self.run.as_ref().and_then(|s| s.tty_banner(&cmd));
-                let banner = own
-                    .unwrap_or_else(|| format!("{} · workflow step on {}", self.app, self.title));
-                self.suspend = Some(Suspend {
-                    cmd,
-                    banner,
-                    then: Vec::new(),
-                    own: None,
-                });
-            }
             // What rebooting this host means (waiting for it, or the end of the TUI) is the
             // target's.
-            Exec::Reboot { cmd, tty } => {
+            Exec::Reboot { how } => {
                 let old = self
                     .run
                     .as_ref()
@@ -549,10 +511,53 @@ impl Slot {
                             .and_then(|i| s.run().state.steps[i].boot_id.clone())
                     })
                     .unwrap_or_default();
-                let e = self.target.reboot(cmd, tty, old, &cx!(self, w));
-                self.apply(w, e, w.at);
+                match how {
+                    crate::run::How::Plain(cmd) => {
+                        let e = self.target.reboot(cmd, old, &cx!(self, w));
+                        self.apply(w, e, w.at);
+                    }
+                    crate::run::How::Root(line) => {
+                        let what = format!("to reboot {}", self.title);
+                        self.with_root(w, what, root::Waiting::Reboot(line, old));
+                    }
+                }
             }
         }
+    }
+
+    /// Start the step's command; its lines and exit arrive as the run's live step.
+    pub(crate) fn wf_stream(
+        &mut self,
+        w: &mut Win,
+        cmd: sentry_core::exec::Cmd,
+        idx: usize,
+        dry: bool,
+        timeout: Option<Duration>,
+    ) {
+        let id = self.mail.next();
+        let mut pid = None;
+        if !w.offline {
+            match self.mail.stream(id, &cmd) {
+                Ok(p) => pid = Some(p),
+                Err(err) => {
+                    if let Some(s) = self.run.as_mut() {
+                        s.spawn_failed(idx, dry, &err.to_string());
+                    }
+                    return;
+                }
+            }
+        }
+        if let Some(s) = self.run.as_mut() {
+            s.set_live(Some(Live {
+                id,
+                idx,
+                pid,
+                started: Instant::now(),
+                dry,
+                deadline: timeout.map(|t| Instant::now() + t),
+            }));
+        }
+        w.dirty = true;
     }
 
     /// The start box for a workflow: what it does, then `start`.

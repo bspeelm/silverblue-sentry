@@ -19,6 +19,9 @@ pub enum Effect {
     Toast(String),
     Confirm(Modal),
     Run(RunSpec),
+    /// The same, for a command line that uses sudo: it runs in place of the spec's command,
+    /// with the password when sudo wants one (asked once, in the key bar).
+    RunRoot(RunSpec, String),
     /// Start a GUI program / new terminal window, detached.
     Detach(Cmd, String),
     /// Run in this terminal with the TUI suspended.

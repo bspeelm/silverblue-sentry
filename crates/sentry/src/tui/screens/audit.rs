@@ -131,25 +131,12 @@ pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
     let to_effects = |x: &fix::Fix| -> Result<Vec<Effect>, String> {
         let reaudit = if x.inspect { vec![] } else { vec![audit_run()] };
         Ok(match &x.act {
-            Act::Shell { cmd, sudo: true } => {
-                if let Some(why) = crate::workflows::runner::tty_blocker() {
-                    return Err(why.into());
-                }
-                let mut then = reaudit;
-                if x.inspect {
-                    then.push(Effect::Toast("done".into()));
-                }
-                vec![Effect::Interactive(
-                    Cmd::host("bash").args(["-c", cmd]).timeout(None),
-                    then,
-                )]
-            }
-            Act::Shell { cmd, sudo: false } => {
+            Act::Shell { cmd, sudo } => {
                 let mut queue = Vec::new();
                 if !x.inspect {
                     queue.push(sentry_cmd(&["job", "audit"]));
                 }
-                vec![Effect::Run(RunSpec {
+                let spec = RunSpec {
                     title: x.label.clone(),
                     cmd: Cmd::host("bash").args(["-c", cmd]).timeout(None),
                     queue,
@@ -160,7 +147,13 @@ pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
                         "fixed · audited again".into()
                     },
                     log: None,
-                })]
+                };
+                // With sudo: the same pane, the password asked once (never the terminal).
+                vec![if *sudo {
+                    Effect::RunRoot(spec, cmd.clone())
+                } else {
+                    Effect::Run(spec)
+                }]
             }
             Act::Edit { path, line } => {
                 let editor = std::env::var("VISUAL")
@@ -192,7 +185,7 @@ pub fn fix_effects(v: &View, f: &Finding) -> Vec<Effect> {
                 ));
                 if *sudo {
                     l.push(Line::styled(
-                        "Needs sudo: sentry hands this terminal over for your password.",
+                        "Needs sudo: your password is asked for here, once.",
                         t.dim(),
                     ));
                 }

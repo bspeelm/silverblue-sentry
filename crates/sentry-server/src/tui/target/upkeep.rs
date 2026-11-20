@@ -200,7 +200,7 @@ impl Upkeep for ServerTarget {
     }
 
     fn settled(&mut self, cx: &Cx) -> Vec<Effect> {
-        self.reread_box(cx)
+        self.reread(cx)
     }
 }
 
@@ -426,7 +426,7 @@ impl Asks for ServerTarget {
         }
         let reads = crate::gateway::take_reads(&self.remote.name);
         if !reads.is_empty() {
-            return self.reads_box(reads, to, cx);
+            return self.root_reads(reads, to);
         }
         if waiting {
             // Nothing queued after all: have it write what it was writing.

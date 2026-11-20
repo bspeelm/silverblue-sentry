@@ -60,10 +60,10 @@ impl Slot {
                 }
                 Some(SeriesStep::Session(ask)) => {
                     sr.wait = Wait::Session;
-                    let (secret, ok) = (std::mem::take(&mut sr.secret), sr.secret_ok);
                     let mut sess = sentry_core::apply::session::Session::new(ask);
                     sess.chat.privacy = self.target.ident().session_privacy.clone();
-                    let fx = sess.start_in_series(pos, secret, ok);
+                    sess.secret_ok = self.secret_ok;
+                    let fx = sess.start_in_series(pos);
                     if self.ways.series_closes_plan {
                         self.plan_view = None;
                     }
@@ -133,13 +133,12 @@ impl Slot {
     pub(crate) fn series_next(&mut self, w: &mut Win) {
         use sentry_core::apply::session::{End, Phase};
         use sentry_core::maint::series::Outcome;
-        let Some(mut sess) = self.apply.take() else {
+        let Some(sess) = self.apply.take() else {
             return;
         };
         let Some(sr) = self.series.as_mut() else {
             return;
         };
-        (sr.secret, sr.secret_ok) = sess.take_secret();
         sr.ended(match sess.phase {
             Phase::Settled(End::Done) => Outcome::Done,
             Phase::Settled(End::Failed) => Outcome::Failed("it failed".into()),
@@ -221,10 +220,9 @@ impl Slot {
     /// Through: what's done leaves the ticks, the rest is said; then what a run would have
     /// asked for by itself (what the target offers then, the review).
     pub(crate) fn series_end(&mut self, w: &mut Win) {
-        let Some(mut sr) = self.series.take() else {
+        let Some(sr) = self.series.take() else {
             return;
         };
-        sr.wipe();
         self.settle(w, Settle::Ticks(sr.left().into_iter().collect()));
         w.toast(&sr.summary());
         self.settled(w);
@@ -233,10 +231,9 @@ impl Slot {
 
     /// Stopped before its end (a row closed or failed to start): what's left stays ticked.
     pub(crate) fn series_stop(&mut self, w: &mut Win) {
-        let Some(mut sr) = self.series.take() else {
+        let Some(sr) = self.series.take() else {
             return;
         };
-        sr.wipe();
         self.settle(w, Settle::Ticks(sr.left().into_iter().collect()));
         w.toast(&sr.stopped());
         self.settled(w);

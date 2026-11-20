@@ -10,21 +10,17 @@ use crate::workflows::runner::{self, Env, Next};
 use crate::workflows::state::{Run, RunStatus, StepStatus};
 use crate::workflows::{Entry, Kind, Workflow, dry_run_of};
 
-pub use sentry_app::run::{Live, LogKind};
+pub use sentry_app::run::{How, Live, LogKind};
 
 /// Something the app has to execute for the session.
 pub enum Exec {
-    /// Stream into the log pane (`dry` = the rpm-ostree dry-run sibling).
+    /// Stream into the log pane (`dry` = the rpm-ostree dry-run sibling). A step that uses
+    /// sudo is `How::Root`: the app runs it with the password, asked once in the key bar.
     Stream {
-        cmd: Cmd,
+        how: How,
         idx: usize,
         dry: bool,
         timeout: Option<Duration>,
-    },
-    /// Run with the terminal handed over (sudo password prompts).
-    Tty {
-        cmd: Cmd,
-        idx: usize,
     },
     /// Interactive `$SHELL` for a `kind = "shell"` step.
     Shell {
@@ -217,12 +213,6 @@ impl Session {
                 return None;
             }
         };
-        if runner::needs_tty(&cmd)
-            && let Some(why) = runner::tty_blocker()
-        {
-            self.error = Some(why.into());
-            return None;
-        }
         let id = self.wf.steps[idx].id.clone();
         let timeout = self.wf.steps[idx].timeout.map(|d| d.0);
         let n = self.wf.steps.len();
@@ -232,20 +222,17 @@ impl Session {
         runner::start(&mut self.run.state, idx, RealEnv.boot_id());
         self.save();
         self.run.append_log(&id, &format!("$ {cmd}"));
-        let cmd_full = cli::step_cmd(&self.run, &id, &cmd);
-        Some(if runner::needs_tty(&cmd) {
-            self.push(
-                "(sudo: the terminal is handed over for the password prompt)",
-                LogKind::Info,
-            );
-            Exec::Tty { cmd: cmd_full, idx }
+        // sudo in it: the app runs the same script with the password (asked once, there).
+        let how = if runner::needs_tty(&cmd) {
+            How::Root(cli::step_script(&self.run, &id, &cmd))
         } else {
-            Exec::Stream {
-                cmd: cmd_full,
-                idx,
-                dry: false,
-                timeout,
-            }
+            How::Plain(cli::step_cmd(&self.run, &id, &cmd))
+        };
+        Some(Exec::Stream {
+            how,
+            idx,
+            dry: false,
+            timeout,
         })
     }
 
@@ -286,7 +273,7 @@ impl Session {
                     self.push(format!("$ {dry}"), LogKind::Cmd);
                     self.run.append_log(&id, &format!("$ {dry}   (dry run)"));
                     return Ok(Some(Exec::Stream {
-                        cmd: cli::step_cmd(&self.run, &id, &dry),
+                        how: How::Plain(cli::step_cmd(&self.run, &id, &dry)),
                         idx: i,
                         dry: true,
                         timeout: Some(Duration::from_secs(1800)),
@@ -522,15 +509,6 @@ impl sentry_app::run::WfRun for Session {
     }
     fn spawn_failed(&mut self, idx: usize, dry: bool, err: &str) {
         Session::on_exit(self, idx, dry, 127, Some(err.to_string()));
-    }
-    fn tty_ended(&mut self, idx: usize, _capture: &str, code: i32, _read: bool) {
-        Session::on_exit(self, idx, false, code, None);
-    }
-    fn tty_failed(&mut self, idx: usize, _capture: &str, err: &str, _read: bool) {
-        Session::on_exit(self, idx, false, 127, Some(err.to_string()));
-    }
-    fn tty_banner(&self, cmd: &Cmd) -> Option<String> {
-        Some(format!("$ {}", cmd.display()))
     }
     fn after_shell(&mut self, idx: usize) {
         Session::after_shell(self, idx);

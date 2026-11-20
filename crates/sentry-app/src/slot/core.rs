@@ -125,6 +125,11 @@ impl Slot {
 
     /// Output fetched for the pane (logs).
     pub(crate) fn on_text(&mut self, w: &mut Win, id: u64, res: Result<String, String>) {
+        if self.reads.contains_key(&id) {
+            self.read_back(w, id, res);
+            w.dirty = true;
+            return;
+        }
         if let Some(p) = self.pane.as_mut().filter(|p| p.id == id) {
             match res {
                 Ok(text) => p.lines.extend(text.lines().map(str::to_string)),
@@ -160,6 +165,10 @@ impl Slot {
                     self.writer_turn_ended(w);
                 }
             }
+            w.dirty = true;
+            return;
+        }
+        if self.unlock_stream(w, id, &m) {
             w.dirty = true;
             return;
         }
@@ -200,7 +209,10 @@ impl Slot {
         {
             let idx = l.idx;
             match m {
-                StreamMsg::Line { stderr, text } => s.on_line(&text, stderr),
+                StreamMsg::Line { stderr, text } => {
+                    s.on_line(&text, stderr);
+                    self.saw_line(w, &text);
+                }
                 StreamMsg::Exit { code, .. } => {
                     s.on_exit(idx, code);
                     // What the step's end means for the host (sudo changed under us…).
@@ -226,7 +238,8 @@ impl Slot {
                 if p.lines.len() == self.ways.pane_lines {
                     p.lines.pop_front();
                 }
-                p.lines.push_back(text);
+                p.lines.push_back(text.clone());
+                self.saw_line(w, &text);
             }
             StreamMsg::Exit { code, elapsed } => {
                 let mut code = code;
@@ -271,6 +284,7 @@ impl Slot {
     /// the key bar names.
     pub(crate) fn open(&self, w: &Win) -> frame::Open {
         frame::Open {
+            unlock: self.unlock.is_some(),
             run: self.pane.is_some(),
             choice: self.choice.is_some(),
             modal: self.modal.is_some() || w.modal.is_some(),
@@ -286,6 +300,7 @@ impl Slot {
     pub(crate) fn on_paste(&mut self, w: &mut Win, text: &str) {
         w.dirty = true;
         match frame::layer(&self.open(w)) {
+            Layer::Unlock => self.unlock_paste(text),
             Layer::Apply => {
                 if let Some(s) = self.apply.as_mut() {
                     s.paste(text);
@@ -325,7 +340,16 @@ impl Slot {
 
     fn on_key_inner(&mut self, w: &mut Win, k: KeyEvent, now: Instant) {
         use modal::{Answer, Pick};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        // Wherever the keys are: the sudo password is forgotten.
+        if k.code == KeyCode::Char('f') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(u) = self.unlock.as_mut() {
+                u.typed.clear();
+            }
+            return self.apply(w, vec![Effect::Forget], now);
+        }
         match frame::layer(&self.open(w)) {
+            Layer::Unlock => return self.unlock_key(w, k),
             Layer::Run => return self.pane_key(w, k),
             Layer::Choice => {
                 let n = self.choice.as_ref().map_or(0, |c| c.options.len());
@@ -767,16 +791,6 @@ impl Slot {
     }
 
     pub(crate) fn after_suspend(&mut self, w: &mut Win, status: Result<ExitStatus, ExecError>) {
-        if let Some((idx, capture)) = self.suspend_step.take()
-            && let Some(s) = self.run.as_mut()
-        {
-            match &status {
-                Ok(st) => s.tty_ended(idx, &capture, st.code().unwrap_or(-1), !w.offline),
-                Err(e) => s.tty_failed(idx, &capture, &e.to_string(), !w.offline),
-            }
-            self.wf_auto(w);
-            return;
-        }
         if let Some(idx) = self.suspend_shell.take()
             && let Some(s) = self.run.as_mut()
         {

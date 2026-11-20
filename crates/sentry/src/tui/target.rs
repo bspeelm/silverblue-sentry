@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::exec::{Cmd, ExecError, StreamMsg};
 use crate::fmt;
 use sentry_app::effect::{self, Effect, OwnPrompt, Suspend, WfCmd};
-use sentry_app::run::{Exec, LogKind, WfRun};
+use sentry_app::run::{Exec, How, LogKind, WfRun};
 use sentry_app::shared::Shared;
 use sentry_app::target::{Cx, Hints, Host, Ident, Mail, Settle, TabInfo, Target, Ways, Why};
 use sentry_core::tui::ScreenId;
@@ -103,19 +103,8 @@ fn lift(e: local::Effect) -> Effect {
             Effect::Prompt(effect::Prompt::TaskEvery(id), init)
         }
         L::Prompt(p, init) => Effect::Prompt(own_prompt(p), init),
-        L::Run(spec) => Effect::Run(effect::RunSpec {
-            title: spec.title.clone(),
-            cmd: spec.cmd,
-            then: Vec::new(),
-            reboot: false,
-            queue: spec.queue,
-            end: Some(own(Own::PaneEnd {
-                title: spec.title,
-                then: spec.then,
-                ok_toast: spec.ok_toast,
-                log: spec.log,
-            })),
-        }),
+        L::Run(spec) => run_spec(spec, None),
+        L::RunRoot(spec, line) => run_spec(spec, Some(line)),
         L::Suspend(cmd) => suspend(cmd, Vec::new()),
         L::Interactive(cmd, then) => suspend(cmd, then),
         L::Wf(c) => match c {
@@ -137,6 +126,24 @@ fn lift(e: local::Effect) -> Effect {
         },
         other => Effect::own(other),
     }
+}
+
+/// A command for the pane (`root`: the line with sudo in it that runs in its place).
+fn run_spec(spec: local::RunSpec, root: Option<String>) -> Effect {
+    Effect::Run(effect::RunSpec {
+        title: spec.title.clone(),
+        cmd: spec.cmd,
+        then: Vec::new(),
+        reboot: false,
+        queue: spec.queue,
+        end: Some(own(Own::PaneEnd {
+            title: spec.title,
+            then: spec.then,
+            ok_toast: spec.ok_toast,
+            log: spec.log,
+        })),
+        root,
+    })
 }
 
 /// One of this machine's prompts, as the app holds it.
@@ -1185,6 +1192,17 @@ impl Host for LocalTarget {
         Cmd::host("bash").args(["-c", line])
     }
 
+    /// `sudo -n true`, now: a ticket from a moment ago counts as not asking. Tests: it asks.
+    fn sudo_asks(&mut self, cx: &Cx) -> Result<bool, String> {
+        if cx.offline {
+            return Ok(true);
+        }
+        match Cmd::host("sudo").args(["-n", "true"]).run() {
+            Ok(o) => Ok(o.code != 0),
+            Err(e) => Err(format!("sudo: {e}")),
+        }
+    }
+
     fn workflows(&self) -> (Vec<Entry>, std::path::PathBuf) {
         (crate::workflows::list(), crate::workflows::dir())
     }
@@ -1254,25 +1272,19 @@ impl Host for LocalTarget {
         let e = if auto { s.auto() } else { s.go()? };
         Ok(e.map(|e| match e {
             wf::Exec::Stream {
-                cmd,
+                how,
                 idx,
                 dry,
                 timeout,
             } => Exec::Stream {
-                cmd,
+                how,
                 idx,
                 dry,
                 timeout,
             },
-            wf::Exec::Tty { cmd, idx } => Exec::Tty {
-                cmd,
-                idx,
-                capture: String::new(),
-            },
             wf::Exec::Shell { idx } => Exec::Shell { idx },
             wf::Exec::Reboot => Exec::Reboot {
-                cmd: crate::workflows::cli::reboot_cmd(),
-                tty: false,
+                how: How::Plain(crate::workflows::cli::reboot_cmd()),
             },
         }))
     }
@@ -1341,7 +1353,7 @@ impl Host for LocalTarget {
 
     /// This machine's reboot: the command is run here and now (it ends the TUI with the
     /// session; with `SENTRY_NO_REBOOT` it only says what it would do).
-    fn reboot(&mut self, cmd: Cmd, _tty: bool, _old_boot: String, cx: &Cx) -> Vec<Effect> {
+    fn reboot(&mut self, cmd: Cmd, _old_boot: String, cx: &Cx) -> Vec<Effect> {
         let msg = match cmd.run() {
             // Tests never reboot the machine they run on.
             _ if cx.offline => "offline: not rebooting".to_string(),

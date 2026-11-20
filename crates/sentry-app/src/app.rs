@@ -375,6 +375,57 @@ impl App {
             Instant::now(),
         );
     }
+    /// The sudo password is being asked for in the key bar: (what for, characters typed,
+    /// times refused).
+    pub fn unlock_for_test(&self) -> Option<(String, usize, u8)> {
+        let u = self.slot().unlock.as_ref()?;
+        Some((u.what.clone(), u.typed.len(), u.tries))
+    }
+    /// sudo's check of the password typed in the key bar ended (nothing ran).
+    pub fn unlock_exit_for_test(&mut self, code: i32) {
+        let s = self.slot();
+        let id = s
+            .unlock
+            .as_ref()
+            .and_then(|u| u.checking)
+            .expect("no password being checked");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// The pane is closed, whatever it was running (nothing was).
+    pub fn close_pane_for_test(&mut self) {
+        self.slot_mut().pane = None;
+    }
+    /// Whether the target's sudo password is held.
+    pub fn holds_password_for_test(&self) -> bool {
+        self.slot().secret_ok
+    }
+    /// A command line as the app would run it as root now: its argv, shell-quoted (what
+    /// goes on its stdin isn't part of it).
+    pub fn root_cmd_for_test(&self, line: &str) -> String {
+        self.slot().root_cmd(line, true).quoted_argv()
+    }
+    /// What's being read as root came back (nothing ran): the oldest read gets `out`.
+    pub fn root_read_for_test(&mut self, out: Result<String, String>) {
+        let s = self.slot();
+        let id = *s.reads_for_test().first().expect("nothing being read");
+        let tid = s.mail.id().clone();
+        self.on_event(Event::Text(tid, id, out), Instant::now());
+    }
+    /// How many reads as root are under way.
+    pub fn root_reads_for_test(&self) -> usize {
+        self.slot().reads_for_test().len()
+    }
     /// The plan writer answered.
     pub fn writer_answered(&mut self, answer: &str) {
         let (s, w) = self.parts();

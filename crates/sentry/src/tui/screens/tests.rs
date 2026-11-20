@@ -2145,3 +2145,55 @@ fn a_series_runs_a_workflow_and_goes_on_when_it_ends_well() {
     assert!(!a.tasks_due_for_test().contains(&"fw".to_string()));
     let _ = std::fs::remove_file(&file);
 }
+
+#[test]
+fn a_sudo_step_asks_for_the_password_in_the_key_bar_never_the_terminal() {
+    use crate::tui::wf::Session;
+    use crate::workflows::parse;
+    use crate::workflows::runner::Next;
+    use crate::workflows::state::RunState;
+    let wf = parse(
+        "name = \"fix\"\ndescription = \"test\"\n[[steps]]\nid = \"repo\"\n\
+         title = \"Remove the repo file\"\nrun = \"sudo rm /etc/yum.repos.d/x.repo\"\n\
+         gate = \"confirm\"\ndry_run = false\n[[steps]]\nid = \"again\"\ntitle = \"Again\"\n\
+         run = \"sudo true\"\ngate = \"confirm\"\ndry_run = false\n",
+    )
+    .unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let st = RunState::new("fix", &ids, Default::default());
+    let mut a = app(ScreenId::Upgrade);
+    a.set_wf(Session::for_test(wf, st, Next::Confirm(0)));
+    // Enter on the confirm step: the one approval. Then the password, typed here.
+    key(&mut a, KeyCode::Enter);
+    assert!(a.take_suspend().is_none(), "the terminal stays the TUI's");
+    let (what, ..) = a.unlock_for_test().expect("the password is asked for");
+    assert_eq!(what, "for fix · step 1");
+    let s = render_to_string(&mut a, 120, 36);
+    assert!(s.contains("sudo password (for fix · step 1) › ▏"), "{s}");
+    for c in "s3cret-pw".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    a.unlock_exit_for_test(0);
+    assert!(a.holds_password_for_test() && a.unlock_for_test().is_none());
+    let s = render_to_string(&mut a, 120, 36);
+    assert!(s.contains("$ sudo rm /etc/yum.repos.d/x.repo"), "{s}");
+    assert!(!s.contains("s3cret-pw") && !s.contains("SENTRY_"), "{s}");
+    // Esc on the prompt, another time: the step isn't run, and says why.
+    let mut b = app(ScreenId::Upgrade);
+    let wf = parse(
+        "name = \"fix\"\ndescription = \"test\"\n[[steps]]\nid = \"repo\"\ntitle = \"x\"\n\
+         run = \"sudo true\"\ngate = \"confirm\"\ndry_run = false\n",
+    )
+    .unwrap();
+    let st = RunState::new("fix", &["repo".to_string()], Default::default());
+    b.set_wf(Session::for_test(wf, st, Next::Confirm(0)));
+    key(&mut b, KeyCode::Enter);
+    key(&mut b, KeyCode::Esc);
+    assert!(b.unlock_for_test().is_none() && !b.holds_password_for_test());
+    let s = render_to_string(&mut b, 120, 36);
+    assert!(
+        s.contains("sudo needs your password, which wasn't given"),
+        "{s}"
+    );
+}

@@ -285,6 +285,8 @@ pub enum KeyBar<'a> {
         note: Option<String>,
     },
     Hints(Hints<'a>),
+    /// The sudo password being typed (`applyview::password_line`).
+    Password(Line<'a>),
 }
 
 pub const CONFIRM_HINTS: [(&str, &str); 2] = [("Enter", "confirm"), ("Esc", "cancel")];
@@ -401,6 +403,10 @@ pub fn draw_keybar(f: &mut Frame, area: Rect, t: &Theme, bar: &KeyBar, toast: Op
                 )),
             }
         }
+        KeyBar::Password(line) => {
+            spans.extend(line.spans.iter().cloned());
+            spans.push(Span::styled("   Enter unlock · Esc cancel", t.dim()));
+        }
         KeyBar::Hints(hints) => {
             let room =
                 (area.width as usize).saturating_sub(toast.map_or(0, |m| m.chars().count() + 2));
@@ -432,6 +438,8 @@ pub fn draw_keybar(f: &mut Frame, area: Rect, t: &Theme, bar: &KeyBar, toast: Op
 /// hints): the first that's open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
+    /// The sudo password, typed in the key bar: nothing else takes a key meanwhile.
+    Unlock,
     /// A command's streamed output.
     Run,
     Choice,
@@ -450,6 +458,8 @@ pub enum Layer {
 /// What's open now (apply, chat: shown, not hidden).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Open {
+    /// The sudo password is being asked for in the key bar.
+    pub unlock: bool,
     pub run: bool,
     pub choice: bool,
     pub modal: bool,
@@ -461,6 +471,7 @@ pub struct Open {
 
 pub fn layer(o: &Open) -> Layer {
     [
+        (o.unlock, Layer::Unlock),
         (o.run, Layer::Run),
         (o.choice, Layer::Choice),
         (o.modal, Layer::Modal),
@@ -502,6 +513,9 @@ pub fn help_modal<E>(t: &Theme, h: &Help) -> Modal<E> {
             "A         ask Claude about the selected thing (you see what's sent first)",
         ));
     }
+    lines.push(l(
+        "C-f       forget the sudo password (asked once, held while this is open)",
+    ));
     lines.push(l(h.commands));
     let mut grid = |title: &str, hints: &[(&str, &str)]| {
         lines.push(Line::raw(""));
@@ -806,7 +820,16 @@ mod tests {
 
     #[test]
     fn layers_in_order() {
+        // The sudo password is typed before anything else gets a key.
+        let unlock = Open {
+            unlock: true,
+            run: true,
+            modal: true,
+            ..Default::default()
+        };
+        assert_eq!(layer(&unlock), Layer::Unlock);
         let all = Open {
+            unlock: false,
             run: true,
             choice: true,
             modal: true,
@@ -877,9 +900,10 @@ mod tests {
         );
         let text: Vec<String> = help.lines.iter().map(|l| l.to_string()).collect();
         // The screen has its own A, so the general line is left out.
-        assert_eq!(text[5], ":q  :<screen>");
-        assert_eq!(text[7], "Maintenance:");
-        assert_eq!(text[10], "sentry-server:");
+        assert!(text[5].starts_with("C-f       forget the sudo password"));
+        assert_eq!(text[6], ":q  :<screen>");
+        assert_eq!(text[8], "Maintenance:");
+        assert_eq!(text[11], "sentry-server:");
         assert_eq!(text.last().unwrap(), "Nothing keeps running.");
         let c: Choice<u8> = claude_choice(&t, "sentry", vec![1], vec![2]);
         assert!(c.lines[0].to_string().ends_with("sentry runs it"));

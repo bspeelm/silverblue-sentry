@@ -1,7 +1,7 @@
 //! The inventory: what needs root to read, read once on request with the user's sudo password.
 //! When sudo asks for a password, the read-only `sudo:` commands can't run in the background;
-//! this runs each of them (the collectors' own argv) in one `sudo sh -c`, with the terminal
-//! handed over for the password, and keeps their output. `Remote::output` answers a refused
+//! this runs each of them (the collectors' own argv) in one `sudo sh -c`, with the password
+//! the TUI holds for the server (asked once, in its key bar), and keeps their output. `Remote::output` answers a refused
 //! `sudo -n` from it, so the collectors and the audit work unchanged, and the TUI says how old
 //! it is. Workflow conditions never use it: they must see the server as it is now.
 
@@ -89,42 +89,10 @@ pub fn script(r: &Remote) -> String {
     s
 }
 
-/// What runs over ssh with the terminal handed over: sudo asks for the password on the
-/// terminal; the output goes to a file in the login's home, read back by `read_back`.
-pub fn wrapper(r: &Remote) -> String {
-    sudo_wrapper(
-        &script(r),
-        CAPTURE,
-        &format!(
-            "Reading what needs root on {} (nothing is changed)…",
-            r.name
-        ),
-    )
-}
-
-const CAPTURE: &str = ".cache/sentry-server/inventory.out";
-
-/// Runs `script` as root with the terminal handed over (sudo asks for the password there);
-/// its output goes to `capture` under the login's home, for `read_capture`.
-pub fn sudo_wrapper(script: &str, capture: &str, banner: &str) -> String {
-    format!(
-        "f=\"$HOME/{capture}\"; mkdir -p \"${{f%/*}}\" || exit 1\n\
-         echo {}\n\
-         sudo sh -c {} >\"$f\"",
-        sh_quote(banner),
-        sh_quote(script),
-    )
-}
-
-/// Fetch a capture and delete it on the server.
-pub fn read_capture(r: &Remote, capture: &str) -> Result<Inventory, super::remote::SrvError> {
-    let text = r.output(&r.sh(&format!("f=\"$HOME/{capture}\"; cat \"$f\"; rm -f \"$f\"")))?;
-    Ok(parse(&text))
-}
-
-/// After the wrapper ran: fetch its output and delete it on the server.
-pub fn read_back(r: &Remote) -> Result<Inventory, super::remote::SrvError> {
-    read_capture(r, CAPTURE)
+/// `script` as one command line run as root (the app gives sudo the password it holds);
+/// what it prints is what `parse` reads.
+pub fn root_line(script: &str) -> String {
+    format!("sudo sh -c {}", sh_quote(script))
 }
 
 /// Commands Claude asked to read with sudo, each framed, with its errors kept.

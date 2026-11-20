@@ -34,6 +34,8 @@ pub struct Cmd {
     timeout: Option<Duration>,
     dir: Option<PathBuf>,
     input: Option<Input>,
+    /// A streamed command reads `input` only once it has printed this line (`input_after`).
+    ready: Option<String>,
 }
 
 /// What a command reads on stdin (a sudo password among it): never shown, never logged.
@@ -140,6 +142,7 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
         }
     }
 
@@ -151,6 +154,7 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
         }
     }
 
@@ -166,6 +170,7 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
         }
     }
 
@@ -193,6 +198,16 @@ impl Cmd {
     /// /dev/null). Over ssh the remote command gets no terminal, so nothing is echoed.
     pub fn input(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.input = Some(Input(bytes.into()));
+        self
+    }
+
+    /// Bytes for a streamed command's stdin, written when it prints the line `marker` (which
+    /// isn't passed on) and not before. Over ssh the command then keeps its terminal, so
+    /// stopping the local side still hangs it up; it turns the terminal's echo off before it
+    /// prints the marker, so what's written is never echoed back.
+    pub fn input_after(mut self, marker: &str, bytes: impl Into<Vec<u8>>) -> Self {
+        self.input = Some(Input(bytes.into()));
+        self.ready = Some(marker.to_string());
         self
     }
 
@@ -399,9 +414,10 @@ impl Cmd {
         sink: impl Fn(StreamMsg) + Send + Sync + 'static,
     ) -> Result<u32, ExecError> {
         self.check()?;
+        let waits = self.ready.is_some();
         let mut child = self
             .command_tty(
-                if matches!(self.site, Site::Ssh(_)) && self.input.is_none() {
+                if matches!(self.site, Site::Ssh(_)) && (self.input.is_none() || waits) {
                     Tty::Forced
                 } else {
                     Tty::No
@@ -411,7 +427,16 @@ impl Cmd {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        self.feed(&mut child);
+        // Written when the command says it's ready; its stdin stays open until it exits.
+        let held = Arc::new(Mutex::new(None));
+        let mut ready = None;
+        if waits {
+            *held.lock().expect("stdin") = child.stdin.take();
+            ready = self.ready.clone().zip(self.input.clone());
+        } else {
+            self.feed(&mut child);
+        }
+        let ready = Arc::new(Mutex::new(ready));
         let pid = child.id();
         let sink = Arc::new(sink);
         let readers: Vec<_> = [
@@ -427,12 +452,25 @@ impl Cmd {
         .into_iter()
         .map(|(is_err, r)| {
             let sink = Arc::clone(&sink);
+            let (held, ready) = (Arc::clone(&held), Arc::clone(&ready));
             thread::spawn(move || {
                 for chunk in BufReader::new(r).split(b'\n') {
                     let Ok(chunk) = chunk else { break };
+                    let text = clean_line(&String::from_utf8_lossy(&chunk));
+                    let mut waiting = ready.lock().expect("ready");
+                    if waiting.as_ref().is_some_and(|(m, _)| *m == text.trim()) {
+                        use std::io::Write;
+                        if let (Some((_, input)), Some(w)) =
+                            (waiting.take(), held.lock().expect("stdin").as_mut())
+                        {
+                            let _ = w.write_all(&input.0).and_then(|_| w.flush());
+                        }
+                        continue;
+                    }
+                    drop(waiting);
                     sink(StreamMsg::Line {
                         stderr: is_err,
-                        text: clean_line(&String::from_utf8_lossy(&chunk)),
+                        text,
                     });
                 }
             })
@@ -444,6 +482,7 @@ impl Cmd {
                 let _ = r.join();
             }
             let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+            drop(held);
             sink(StreamMsg::Exit {
                 code,
                 elapsed: start.elapsed(),
