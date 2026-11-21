@@ -3,6 +3,6 @@ source: crates/sentry-network/src/guard.rs
 expression: armed_script(t)
 ---
 D=/tmp/sentry-guard-0123456789abcdef
-[ -e "$D/armed" ] && [ -s "$D/pid" ] && [ -s "$D/sleep.pid" ] \
+[ -e "$D/armed" ] && [ -s "$D/pid" ] && [ -s "$D/sleep.pid" ] && [ -d /etc/sentry-guard/0123456789abcdef/config ] && [ -s /etc/uci-defaults/zz-sentry-guard-0123456789abcdef ] \
   && kill -0 "$(cat "$D/pid")" 2>/dev/null && kill -0 "$(cat "$D/sleep.pid")" 2>/dev/null \
   && echo "armed $(cat "$D/pid")"

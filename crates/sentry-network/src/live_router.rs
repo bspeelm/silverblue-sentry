@@ -62,15 +62,25 @@ fn sums(r: &Router, configs: &[&str]) -> String {
     o.stdout
 }
 
-/// Nothing of a guard is left on the router: no directory, no dead-man, no sleeper.
+/// Nothing of a guard is left on the router: no directory, no snapshot or boot hook on
+/// flash, no dead-man, no sleeper.
 fn nothing_left(r: &Router, window: u64) {
     let o = on(
         r,
         &format!(
-            "ls -d /tmp/sentry-guard-* 2>/dev/null; ps w | grep -e 'deadman[.]sh' -e 'reload[.]sh' -e ' sleep {window}$' | grep -v 'ps w'; true"
+            "ls -d /tmp/sentry-guard-* /etc/sentry-guard /etc/sentry-guard/* /etc/uci-defaults/*sentry-guard* 2>/dev/null; ps w | grep -e 'deadman[.]sh' -e 'reload[.]sh' -e ' sleep {window}$' | grep -v 'ps w'; true"
         ),
     );
     assert_eq!(o.stdout.trim(), "", "left on the router: {}", o.stdout);
+}
+
+/// What the router itself says of how a guard ended.
+fn last(r: &Router) -> String {
+    on(
+        r,
+        "cat /tmp/sentry-guard.last /etc/sentry-guard.last 2>/dev/null; true",
+    )
+    .stdout
 }
 
 fn journal(r: &Router) -> Vec<serde_json::Value> {
@@ -414,7 +424,14 @@ fn live_guard_keeps() {
     assert_eq!(o, Outcome::Kept, "{said:#?}");
     assert!(said.iter().any(|l| l.starts_with("armed:")), "{said:#?}");
     assert!(said.iter().any(|l| l.starts_with("disarmed:")), "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("confirmed on a new connection, twice")),
+        "{said:#?}"
+    );
     nothing_left(&r, r.cfg.guard.window);
+    // "Kept" is what the router says too: the disarm's claim was the one that held.
+    assert!(last(&r).contains(" kept "), "{}", last(&r));
     let now = on(
         &r,
         "uci get dhcp.lan.leasetime; uci get firewall.web_https.dest_port",
@@ -442,7 +459,7 @@ fn live_guard_reverts() {
     let window = r.cfg.guard.window;
     assert!(
         window <= 10,
-        "a short window for this one (the script sets 6)"
+        "a short window for this one (the script sets 8)"
     );
     let before = sums(&r, &["dropbear", "dhcp"]);
     let c = Change::parse(
@@ -489,7 +506,7 @@ fn live_guard_wifi_asks() {
     let window = r.cfg.guard.window;
     assert!(
         window <= 10,
-        "a short window for this one (the script sets 6)"
+        "a short window for this one (the script sets 8)"
     );
     let before = sums(&r, &["wireless"]);
     // (No radio here: nothing reloads it. The config is staged and committed all the same.)
@@ -504,9 +521,13 @@ fn live_guard_wifi_asks() {
     );
     assert!(guard::pending(&r.scope).is_some());
     assert_eq!(on(&r, "uci get wireless.radio0.channel").stdout.trim(), "6");
-    // Still armed, and a second change can't start meanwhile.
-    let armed = on(&r, "ls -d /tmp/sentry-guard-*/armed").stdout;
-    assert!(armed.contains("/armed"), "{armed}");
+    // Still armed, and a second change can't start meanwhile. What a restart would
+    // restore from is on flash while it waits.
+    let armed = on(
+        &r,
+        "ls -d /tmp/sentry-guard-*/armed /etc/sentry-guard/*/config/wireless /etc/uci-defaults/zz-sentry-guard-*",
+    );
+    assert_eq!(armed.stdout.lines().count(), 3, "{}", armed.stdout);
     let (again, _) = run(&r, &c);
     assert!(matches!(again, Outcome::Stopped(_)), "{again:?}");
     // Nobody answers.
@@ -517,6 +538,337 @@ fn live_guard_wifi_asks() {
     assert!(matches!(kept, Outcome::Reverted(_)), "{kept:?}");
     assert!(guard::pending(&r.scope).is_none());
     assert_eq!(journal(&r).last().unwrap()["outcome"], "reverted");
+}
+
+/// The disarm and the dead-man meet. (1) The sleeper has the guard and is in the middle
+/// of its restore (held there for the test): a disarm arriving then loses, touches
+/// nothing, and sentry reports what the router did, not "kept". (2) A disarm sent right
+/// around the moment the timer fires, many times over: each time exactly one side has
+/// the guard, and the router's config and its own word agree with which. Also: the
+/// sleeper outlives the connection that started it (dropbear closed that session).
+#[test]
+#[ignore]
+fn live_guard_race() {
+    let Some(r) = router() else { return };
+    let before = sums(&r, &["dhcp"]);
+    let c = Change::parse("dhcp", "uci set dhcp.lan.leasetime='6h'", "dnsmasq", false).unwrap();
+    let lease = || {
+        on(&r, "uci get dhcp.lan.leasetime")
+            .stdout
+            .trim()
+            .to_string()
+    };
+    let has = |out: &str, word: &str| out.lines().any(|l| l.trim() == word);
+
+    // (1) Mid-restore.
+    let token = "ace0000000000001";
+    let arm = on(&r, &guard::arm_script_slow(&c, token, 2, 5));
+    assert_eq!(arm.code, 0, "{}", arm.stderr);
+    // A new connection: the one that armed it is closed, and the sleeper is still there.
+    let alive = on(&r, &guard::armed_script(token)).stdout;
+    assert!(
+        alive.starts_with("armed "),
+        "the sleeper died with its session: {alive}"
+    );
+    assert!(
+        on(&r, &guard::apply_script(&c, token))
+            .stdout
+            .contains("@@launched")
+    );
+    assert_eq!(lease(), "6h");
+    std::thread::sleep(Duration::from_millis(3200));
+    // It woke at 2 s, took the guard, and is held before its restore until 7 s.
+    let raw = on(&r, &guard::disarm_script(token)).stdout;
+    println!("a disarm mid-restore says: {raw:?}");
+    assert!(
+        has(&raw, "lost") && has(&raw, "restoring") && !has(&raw, "claimed"),
+        "{raw}"
+    );
+    let still = on(
+        &r,
+        &format!(
+            "ls -d /tmp/sentry-guard-{token}/claim.deadman /etc/sentry-guard/{token}/config/dhcp /etc/uci-defaults/zz-sentry-guard-{token}; kill -0 $(cat /tmp/sentry-guard-{token}/pid) && echo alive"
+        ),
+    )
+    .stdout;
+    assert_eq!(
+        still.lines().count(),
+        4,
+        "the disarm touched something: {still}"
+    );
+    assert_eq!(lease(), "6h", "nothing restored yet, nothing removed");
+    // A signal doesn't stop it half-way either.
+    on(
+        &r,
+        &format!(
+            "kill -TERM $(cat /tmp/sentry-guard-{token}/pid); kill -HUP $(cat /tmp/sentry-guard-{token}/pid); true"
+        ),
+    );
+    // sentry's own disarm at this moment: it lost, so it waits and asks.
+    let mut said = Vec::new();
+    let o = guard::disarm(&r, token, 20, Duration::from_secs(6), &mut |l| {
+        println!("  {l}");
+        said.push(l);
+    });
+    println!("→ {o:?}");
+    assert!(matches!(o, Outcome::Reverted(_)), "{o:?}");
+    assert!(
+        !said.iter().any(|l| l.starts_with("disarmed:")),
+        "{said:#?}"
+    );
+    assert_eq!(sums(&r, &["dhcp"]), before, "restored whole, byte for byte");
+    assert!(
+        last(&r).contains(&format!("{token} reverted")),
+        "{}",
+        last(&r)
+    );
+    let log = on(&r, "logread -e sentry-guard").stdout;
+    assert!(
+        log.contains(&format!("{token}: restored dhcp; reloaded dnsmasq")),
+        "the reloads were skipped: {log}"
+    );
+    nothing_left(&r, 2);
+
+    // (2) At the wire: a 1 s window, the disarm sent from just before to just after it.
+    let (mut kept, mut reverted) = (0, 0);
+    // (Put back by hand after a round that was kept, uci writes the file its own way:
+    // what "as before" is from then on.)
+    let mut base = before.clone();
+    for (i, wait_ms) in [550u64, 650, 700, 750, 800, 850, 900, 950, 1000, 1100]
+        .into_iter()
+        .enumerate()
+    {
+        let token = format!("ace00000000001{i:02x}");
+        let armed = std::time::Instant::now();
+        assert_eq!(on(&r, &guard::arm_script(&c, &token, 1)).code, 0);
+        let applied = on(&r, &guard::apply_script(&c, &token));
+        // (The sleeper may have fired before the lines were staged: then nothing was.)
+        let staged = applied.stdout.contains("@@launched");
+        std::thread::sleep(Duration::from_millis(wait_ms).saturating_sub(armed.elapsed()));
+        let raw = on(&r, &guard::disarm_script(&token)).stdout;
+        let at = armed.elapsed().as_millis();
+        std::thread::sleep(Duration::from_millis(2500));
+        let word = last(&r);
+        let claimed = has(&raw, "claimed");
+        let took_back = word.contains(&format!("{token} reverted"));
+        println!(
+            "disarm sent {wait_ms} ms after arming (answered at {at} ms): {} · router: {}",
+            if claimed { "claimed" } else { "lost" },
+            word.trim()
+        );
+        assert!(has(&raw, "claimed") != has(&raw, "lost"), "{raw}");
+        assert!(
+            claimed != took_back,
+            "both sides, or neither, had the guard: {raw} / {word}"
+        );
+        if claimed {
+            kept += 1;
+            assert!(word.contains(&format!("{token} kept")), "{word}");
+            if staged {
+                assert_eq!(lease(), "6h", "kept, and the change is in place");
+            }
+            on(&r, "uci set dhcp.lan.leasetime='12h'; uci commit dhcp");
+            base = sums(&r, &["dhcp"]);
+        } else {
+            reverted += 1;
+        }
+        assert_eq!(lease(), "12h", "round {i}");
+        assert_eq!(sums(&r, &["dhcp"]), base, "round {i}: not byte for byte");
+        assert_eq!(on(&r, "uci changes dhcp").stdout.trim(), "");
+        nothing_left(&r, 1);
+    }
+    println!("{kept} disarms had the guard, {reverted} times the sleeper did");
+    assert!(kept + reverted == 10);
+}
+
+/// A restart inside the window. The sleeper and everything in /tmp are gone with it; the
+/// snapshot and the one-shot hook are on flash, and what OpenWrt's boot does with
+/// /etc/uci-defaults (run here as `/etc/init.d/boot` has it: a container can't be
+/// rebooted) puts the configs back byte for byte and removes the hook. A change that was
+/// kept leaves neither, and a restart after it restores nothing.
+#[test]
+#[ignore]
+fn live_guard_reboot() {
+    let Some(r) = router() else { return };
+    // The boot's own lines, as this image has them: what is run below is the same.
+    let boot = on(&r, "cat /etc/init.d/boot").stdout;
+    assert!(
+        boot.contains("cd /etc/uci-defaults || return 0")
+            && boot.contains("( . \"./$(basename $file)\" ) && applied=\"$applied $file\"")
+            && boot.contains("rm -f $applied"),
+        "this image's boot doesn't run /etc/uci-defaults the way the hook expects:\n{boot}"
+    );
+    const AT_BOOT: &str = "cd /etc/uci-defaults || exit 0\nfiles=\"$(ls)\"\n[ -z \"$files\" ] && exit 0\napplied=\"\"\nfor file in $files; do\n\t( . \"./$(basename $file)\" ) && applied=\"$applied $file\"\ndone\nuci commit\nsync\nrm -f $applied\n";
+    let before = sums(&r, &["dhcp", "firewall"]);
+    let c = Change::parse(
+        "dhcp,firewall",
+        "uci set dhcp.lan.leasetime='6h'; uci set firewall.web_https.dest_port='8443'; uci add firewall rule; uci set firewall.@rule[-1].name='new'",
+        "dnsmasq",
+        false,
+    )
+    .unwrap();
+    let token = "b0070000000000aa";
+    assert_eq!(on(&r, &guard::arm_script(&c, token, 300)).code, 0);
+    assert!(
+        on(&r, &guard::apply_script(&c, token))
+            .stdout
+            .contains("@@launched")
+    );
+    assert_ne!(sums(&r, &["dhcp", "firewall"]), before, "committed");
+    // Something staged by someone else when the power goes: the boot's `uci commit`
+    // must not make it part of what is restored.
+    on(&r, "uci set dhcp.lan.limit='99'");
+    let flash = on(
+        &r,
+        &format!(
+            "ls -ld /etc/sentry-guard /etc/sentry-guard/{token} | cut -c1-10; ls /etc/sentry-guard/{token}/config; wc -c < /etc/uci-defaults/zz-sentry-guard-{token}; du -sk /etc/sentry-guard | cut -f1"
+        ),
+    )
+    .stdout;
+    println!("on flash while armed:\n{flash}");
+    assert!(
+        flash.starts_with("drwx------\ndrwx------\n") && flash.contains("dhcp\nfirewall\n"),
+        "{flash}"
+    );
+    // The restart: no process survives, /tmp is empty.
+    on(
+        &r,
+        &format!(
+            "kill -9 $(cat /tmp/sentry-guard-{token}/pid) $(cat /tmp/sentry-guard-{token}/sleep.pid); rm -rf /tmp/sentry-guard-{token} /tmp/sentry-guard.last /tmp/.uci"
+        ),
+    );
+    let o = on(&r, AT_BOOT);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert_eq!(
+        sums(&r, &["dhcp", "firewall"]),
+        before,
+        "not byte for byte after the boot hook"
+    );
+    assert!(
+        last(&r).contains(&format!("{token} reverted")) && last(&r).contains("at boot"),
+        "{}",
+        last(&r)
+    );
+    nothing_left(&r, 300);
+    // Asked afterwards, the router says so.
+    let said = on(&r, &guard::settled_script(token)).stdout;
+    assert!(said.contains(&format!("{token} reverted")), "{said}");
+    on(&r, "rm -f /etc/sentry-guard.last");
+
+    // Kept: neither the snapshot nor the hook is left, and a restart restores nothing.
+    let c = Change::parse("dhcp", "uci set dhcp.lan.leasetime='6h'", "dnsmasq", false).unwrap();
+    let (o, said) = run(&r, &c);
+    assert_eq!(o, Outcome::Kept, "{said:#?}");
+    nothing_left(&r, r.cfg.guard.window);
+    let kept = sums(&r, &["dhcp"]);
+    assert_eq!(on(&r, AT_BOOT).code, 0);
+    assert_eq!(
+        sums(&r, &["dhcp"]),
+        kept,
+        "a restart took a kept change back"
+    );
+    assert_eq!(on(&r, "uci get dhcp.lan.leasetime").stdout.trim(), "6h");
+    assert!(!last(&r).contains("at boot"), "{}", last(&r));
+}
+
+/// What an earlier guard left with nothing alive to settle it (its sleeper never
+/// started or died, and the link was gone before sentry could clear it) doesn't block
+/// the next one until a restart: applying takes back what was never confirmed and
+/// clears it. A guard whose sleeper lives is left alone.
+#[test]
+#[ignore]
+fn live_guard_stale_leftover() {
+    let Some(r) = router() else { return };
+    let before = sums(&r, &["dhcp", "firewall"]);
+    // (a) Armed, a change applied under it, and then its sleeper is gone.
+    let old = Change::parse("dhcp", "uci set dhcp.lan.leasetime='6h'", "dnsmasq", false).unwrap();
+    let token = "5ea1e00000000001";
+    assert_eq!(on(&r, &guard::arm_script(&old, token, 300)).code, 0);
+    assert!(
+        on(&r, &guard::apply_script(&old, token))
+            .stdout
+            .contains("@@launched")
+    );
+    on(
+        &r,
+        &format!(
+            "kill -9 $(cat /tmp/sentry-guard-{token}/pid) $(cat /tmp/sentry-guard-{token}/sleep.pid)"
+        ),
+    );
+    assert_eq!(on(&r, "uci get dhcp.lan.leasetime").stdout.trim(), "6h");
+    // (b) And an arm that never got that far: a directory, nothing else.
+    on(&r, "mkdir /tmp/sentry-guard-5ea1e00000000002");
+    let new = Change::parse(
+        "firewall",
+        "uci set firewall.web_https.dest_port='8443'",
+        "",
+        false,
+    )
+    .unwrap();
+    // A preview only reads: it says what applying will clear, and clears nothing.
+    let mut lines = Vec::new();
+    guard::preview(&r, &new, &mut |l| lines.push(l)).expect("it could start");
+    assert!(
+        lines.iter().any(|l| l.contains("applying clears it first")),
+        "{lines:#?}"
+    );
+    assert_eq!(
+        on(&r, "ls -d /tmp/sentry-guard-* | wc -l").stdout.trim(),
+        "2"
+    );
+    let (o, said) = run(&r, &new);
+    assert_eq!(o, Outcome::Kept, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains(token) && l.contains("put back")),
+        "{said:#?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l.contains("5ea1e00000000002") && l.contains("were cleared")),
+        "{said:#?}"
+    );
+    // The old change is taken back, the new one is in place, nothing is left.
+    assert_eq!(on(&r, "uci get dhcp.lan.leasetime").stdout.trim(), "12h");
+    assert_eq!(
+        on(&r, "uci get firewall.web_https.dest_port").stdout.trim(),
+        "8443"
+    );
+    assert_eq!(sums(&r, &["dhcp"]), sums_of(&before, "dhcp"));
+    nothing_left(&r, 300);
+
+    // (c) One whose sleeper lives isn't a leftover: nothing starts beside it, nothing
+    // clears it, and it settles by itself.
+    let token = "5ea1e00000000003";
+    assert_eq!(on(&r, &guard::arm_script(&old, token, 4)).code, 0);
+    let (o, _) = run(&r, &new);
+    let Outcome::Stopped(why) = &o else {
+        panic!("{o:?}")
+    };
+    assert!(why.contains("another guarded change is armed"), "{why}");
+    assert!(
+        on(&r, &guard::armed_script(token))
+            .stdout
+            .starts_with("armed "),
+        "the live guard was cleared"
+    );
+    std::thread::sleep(Duration::from_secs(7));
+    nothing_left(&r, 4);
+    // Two from this machine at once: the second is turned away before anything is asked.
+    let _held = guard::turn(&r.scope).expect("the lock");
+    let (o, _) = run(&r, &new);
+    assert!(
+        matches!(&o, Outcome::Stopped(w) if w.contains("one at a time")),
+        "{o:?}"
+    );
+}
+
+/// The line of `sums` for one config.
+fn sums_of(all: &str, config: &str) -> String {
+    all.lines()
+        .filter(|l| l.ends_with(&format!("/etc/config/{config}")))
+        .map(|l| format!("{l}\n"))
+        .collect()
 }
 
 /// `package-update`'s steps on this image: the preview refreshes the index and lists;

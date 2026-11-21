@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A disposable OpenWrt router for the network target's mutating live tests (`#[ignore]`):
 #   live_router_policy, live_guard_keeps, live_guard_reverts, live_guard_wifi_asks,
-#   live_guard_foreign_staged, live_guard_arm_unverified, live_router_session,
-#   live_package_update
+#   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
+#   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -52,7 +52,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_router_session live_package_update"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1
@@ -71,7 +71,7 @@ put() {
 # nothing staged, no guard left over. Run at `up` and before every test.
 seed() {
   local c=$1
-  "${P[@]}" exec "$c" sh -c 'rm -rf /tmp/.uci /tmp/sentry-guard* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
+  "${P[@]}" exec "$c" sh -c 'for p in /tmp/sentry-guard-*/pid /tmp/sentry-guard-*/sleep.pid; do [ -s "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null; done; rm -rf /tmp/.uci /tmp/sentry-guard* /etc/sentry-guard /etc/sentry-guard.last /etc/uci-defaults/zz-sentry-guard-* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
   put "$c" /etc/config/network 600 <<'EOF'
 config interface 'loopback'
 	option device 'lo'
@@ -245,7 +245,7 @@ EOF
 scratch() {
   local dir=$1 t=$2 x="$1/xdg/$2" window=20
   case "$t" in
-    live_guard_reverts | live_guard_wifi_asks) window=6 ;;
+    live_guard_reverts | live_guard_wifi_asks) window=8 ;;
   esac
   rm -rf "$x"
   mkdir -p "$x/config/sentry" "$x/data" "$x/cache"

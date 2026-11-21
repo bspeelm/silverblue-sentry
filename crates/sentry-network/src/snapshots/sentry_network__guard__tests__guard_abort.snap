@@ -2,12 +2,23 @@
 source: crates/sentry-network/src/guard.rs
 expression: abort_script(t)
 ---
-sh /tmp/sentry-guard-0123456789abcdef/restore.sh
 D=/tmp/sentry-guard-0123456789abcdef
-rm -f "$D/armed"
-[ -s "$D/sleep.pid" ] && kill "$(cat "$D/sleep.pid")" 2>/dev/null
-[ -s "$D/pid" ] && kill "$(cat "$D/pid")" 2>/dev/null
-rm -rf "$D"
-[ -e "$D" ] && echo left || echo gone
-grep -q '^0123456789abcdef reverted' /tmp/sentry-guard.last 2>/dev/null && echo reverted
+F=/etc/sentry-guard/0123456789abcdef
+H=/etc/uci-defaults/zz-sentry-guard-0123456789abcdef
+if mv "$D/armed" "$D/claim.abort" 2>/dev/null; then
+  [ -s "$D/sleep.pid" ] && kill "$(cat "$D/sleep.pid")" 2>/dev/null
+  [ -s "$D/pid" ] && kill "$(cat "$D/pid")" 2>/dev/null
+  SENTRY_GUARD_SLEEPER=1 sh "$H"
+  rm -f "$H"
+  rm -rf "$F"
+  rmdir /etc/sentry-guard 2>/dev/null
+  echo "0123456789abcdef aborted $(date +%s)" > /tmp/sentry-guard.last
+  rm -rf "$D"
+  sync
+  if [ -e "$D" ] || [ -e "$F" ] || [ -e "$H" ]; then echo left; else echo claimed; fi
+else
+  echo lost
+  [ -e "$D/claim.deadman" ] && echo restoring
+  cat /tmp/sentry-guard.last /etc/sentry-guard.last 2>/dev/null | grep -q '^0123456789abcdef reverted' && echo reverted
+fi
 true

@@ -5,38 +5,60 @@ expression: "arm_script(&c, t, 300)"
 set -e
 umask 077
 D=/tmp/sentry-guard-0123456789abcdef
-mkdir "$D" "$D/config"
+F=/etc/sentry-guard/0123456789abcdef
+H=/etc/uci-defaults/zz-sentry-guard-0123456789abcdef
+mkdir "$D"
+mkdir -p /etc/sentry-guard
+chmod 700 /etc/sentry-guard
+mkdir "$F" "$F/config"
 for c in dhcp firewall; do
-  if [ -e /etc/config/$c ]; then cp -p /etc/config/$c "$D/config/$c"; else : > "$D/config/$c.absent"; fi
+  if [ -e /etc/config/$c ]; then cp -p /etc/config/$c "$F/config/$c"; else : > "$F/config/$c.absent"; fi
 done
-cat > "$D/restore.sh" <<'SENTRY_EOF'
-#!/bin/sh
-# sentry's guard 0123456789abcdef: the configs as they were before its change.
-D=/tmp/sentry-guard-0123456789abcdef
+cat > "$H" <<'SENTRY_EOF'
+# sentry's guard 0123456789abcdef: a change that was never confirmed is taken back
+# (at the next boot by /etc/init.d/boot, which then removes this file; before
+# that, by the guard's own sleeper).
+F=/etc/sentry-guard/0123456789abcdef
+[ -d "$F/config" ] || exit 0
 for c in dhcp firewall; do
   uci -q revert $c
-  if [ -e "$D/config/$c" ]; then cp -p "$D/config/$c" /etc/config/$c
-  elif [ -e "$D/config/$c.absent" ]; then rm -f /etc/config/$c; fi
+  if [ -e "$F/config/$c" ]; then cp -p "$F/config/$c" /etc/config/$c
+  elif [ -e "$F/config/$c.absent" ]; then rm -f /etc/config/$c; fi
 done
+if [ -z "$SENTRY_GUARD_SLEEPER" ]; then
+  echo "0123456789abcdef reverted $(date +%s) at boot" > /etc/sentry-guard.last
+  logger -t sentry-guard "0123456789abcdef: not confirmed before a restart: restored dhcp firewall" 2>/dev/null
+fi
+rm -rf "$F"
+rmdir /etc/sentry-guard 2>/dev/null
+exit 0
+SENTRY_EOF
+cat > "$D/reloads.sh" <<'SENTRY_EOF'
+/etc/init.d/firewall reload >/dev/null 2>&1
+/etc/init.d/dnsmasq reload >/dev/null 2>&1
 SENTRY_EOF
 cat > "$D/deadman.sh" <<'SENTRY_EOF'
 #!/bin/sh
 # sentry's guard 0123456789abcdef: unless disarmed within 300 s, take the change back.
 D=/tmp/sentry-guard-0123456789abcdef
+H=/etc/uci-defaults/zz-sentry-guard-0123456789abcdef
 echo $$ > "$D/pid"
 sleep 300 &
 echo $! > "$D/sleep.pid"
 wait $!
-[ -e "$D/armed" ] || exit 0
-rm -f "$D/armed"
+# Take the guard: only one of this and a disarm can (a rename happens once).
+mv "$D/armed" "$D/claim.deadman" 2>/dev/null || exit 0
+# From here on nothing stops it half-way.
+trap '' HUP INT TERM
 logger -t sentry-guard "0123456789abcdef: not confirmed within 300s: restoring dhcp firewall"
-sh "$D/restore.sh"
-/etc/init.d/firewall reload >/dev/null 2>&1
-/etc/init.d/dnsmasq reload >/dev/null 2>&1
+SENTRY_GUARD_SLEEPER=1 sh "$H"
+sh "$D/reloads.sh"
 echo "0123456789abcdef reverted $(date +%s)" > /tmp/sentry-guard.last
 logger -t sentry-guard "0123456789abcdef: restored dhcp firewall; reloaded firewall dnsmasq"
+rm -f "$H"
 rm -rf "$D"
 SENTRY_EOF
 : > "$D/armed"
+sync
 setsid sh "$D/deadman.sh" </dev/null >/dev/null 2>&1 &
 echo @@snapshot

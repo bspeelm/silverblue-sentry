@@ -1,0 +1,21 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: "hook_script(&c, t)"
+---
+# sentry's guard 0123456789abcdef: a change that was never confirmed is taken back
+# (at the next boot by /etc/init.d/boot, which then removes this file; before
+# that, by the guard's own sleeper).
+F=/etc/sentry-guard/0123456789abcdef
+[ -d "$F/config" ] || exit 0
+for c in dhcp firewall; do
+  uci -q revert $c
+  if [ -e "$F/config/$c" ]; then cp -p "$F/config/$c" /etc/config/$c
+  elif [ -e "$F/config/$c.absent" ]; then rm -f /etc/config/$c; fi
+done
+if [ -z "$SENTRY_GUARD_SLEEPER" ]; then
+  echo "0123456789abcdef reverted $(date +%s) at boot" > /etc/sentry-guard.last
+  logger -t sentry-guard "0123456789abcdef: not confirmed before a restart: restored dhcp firewall" 2>/dev/null
+fi
+rm -rf "$F"
+rmdir /etc/sentry-guard 2>/dev/null
+exit 0

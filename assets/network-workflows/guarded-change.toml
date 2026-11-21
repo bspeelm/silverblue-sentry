@@ -3,12 +3,14 @@ description = "Change the config the network is reached through, with the router
 # The one way sentry changes network, firewall, wireless, dhcp, dropbear or uhttpd. Every
 # step runs on this machine (`sentry-network guard …`), which carries it out over ssh:
 #   show   reads only: what would be staged, that nothing else is staged, how the uplink is
-#   guard  snapshots the configs under /tmp on the router and arms a detached revert there
+#   guard  snapshots the configs on the router and arms a detached revert there
 #          (guard.window in network_config.yaml, 300 s) BEFORE anything changes; then stages
 #          the lines, commits, reloads the services, reconnects on a new connection and
-#          checks the router, its uplink, its default route and its firewall. All well: it
-#          disarms, and the change is kept with no key. Anything else: sentry does nothing
-#          and the router restores itself at the deadline.
+#          checks the router, its uplink, its default route and its firewall, twice a
+#          moment apart. All well: it disarms, and the change is kept with no key. Anything
+#          else: sentry does nothing and the router restores itself at the deadline. The
+#          snapshot is kept on flash with a one-shot boot hook while the guard is armed, so
+#          a restart inside the window takes the change back too; both are removed after.
 #   keep   only when the change touches Wi-Fi (or is meant to change the uplink): ssh over a
 #          cable can't tell that Wi-Fi works, so the change stays armed until you say keep.
 #          No answer within the window: the router takes it back. Auto mode never answers it.

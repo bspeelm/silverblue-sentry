@@ -3,7 +3,13 @@ source: crates/sentry-network/src/guard.rs
 expression: "state_script(&c, Some(t))"
 ---
 echo @@board; ubus call system board >/dev/null 2>&1 && echo ok
-echo @@guards; ls -d /tmp/sentry-guard-*/ 2>/dev/null
+echo @@guards
+for d in /tmp/sentry-guard-*/; do
+  [ -d "$d" ] || continue
+  d=${d%/}
+  if [ -s "$d/pid" ] && grep -q "$d/deadman.sh" "/proc/$(cat "$d/pid")/cmdline" 2>/dev/null; then echo "live $d"; else echo "dead $d"; fi
+done
+for f in /etc/sentry-guard/*/; do [ -d "$f" ] && echo "flash $f"; done
 echo @@staged; for c in dhcp firewall network; do uci -q changes $c; done
 echo @@wan; ubus call network.interface dump 2>/dev/null
 echo @@route; ip route show default 2>/dev/null; ip -6 route show default 2>/dev/null
