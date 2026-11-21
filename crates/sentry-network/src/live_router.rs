@@ -91,14 +91,41 @@ fn run(r: &Router, c: &Change) -> (Outcome, Vec<String>) {
     (o, said)
 }
 
-/// Real lines through both gateways: a read runs and comes back scrubbed; every other
-/// class is refused, and nothing of a refused line ran (a canary file none of them made).
+/// The program with the gateway's trace on: every line it sends to the router is
+/// appended to `trace`, exactly as sent.
+fn traced(trace: &std::path::Path, args: &[&str]) -> Output {
+    let me = std::env::current_exe().unwrap();
+    let bin = me
+        .ancestors()
+        .skip(1)
+        .take(7)
+        .map(|d| d.join("sentry"))
+        .find(|p| p.is_file())
+        .expect("target/debug/sentry: cargo build -p sentry");
+    Cmd::local("env")
+        .arg(format!("SENTRY_GATEWAY_TRACE={}", trace.display()))
+        .arg(bin.display().to_string())
+        .args(args.iter().copied())
+        .timeout(Some(Duration::from_secs(180)))
+        .run()
+        .unwrap()
+}
+
+/// Real lines through both gateways: a read runs, rebuilt, and comes back scrubbed; every
+/// other class is refused, and nothing of a refused line ran (a canary file none of them
+/// made, and nothing in the trace of what was sent).
 #[test]
 #[ignore]
 fn live_router_policy() {
     let Some(r) = router() else { return };
     let name = r.name.clone();
-    on(&r, "rm -f /tmp/sentry-canary");
+    on(
+        &r,
+        "rm -f /tmp/sentry-canary /tmp/sentry-proof; echo keep > /tmp/sentry-victim",
+    );
+    let trace = std::env::temp_dir().join(format!("sentry-trace-{}", std::process::id()));
+    let _ = std::fs::remove_file(&trace);
+    let sent = || std::fs::read_to_string(&trace).unwrap_or_default();
     // What the script planted, and must never come back.
     const PRIVATE: &[&str] = &[
         "correct horse battery",
@@ -109,19 +136,52 @@ fn live_router_policy() {
         "00:00:5e:00:53:77",
         "02:00:5e:00:53:01",
     ];
-    for line in [
-        "uci show wireless",
-        "uci export wireless",
-        "uci -q show wireless | grep -e key -e ssid -e sae",
-        "uci show dhcp",
-        "cat /tmp/dhcp.leases",
-        "grep -v nothing /tmp/dhcp.leases | sort | head -n 20",
-        "uci show wireless.default_radio0.key",
-        "sh -c 'uci show wireless'",
+    // (the line, what the router was sent for it)
+    for (line, router_saw) in [
+        ("uci show wireless", "uci 'show' 'wireless'"),
+        ("uci export wireless", "uci 'export' 'wireless'"),
+        (
+            "uci -q show wireless | grep -e key -e ssid -e sae",
+            "uci '-q' 'show' 'wireless'",
+        ),
+        ("uci show dhcp", "uci 'show' 'dhcp'"),
+        ("cat /tmp/dhcp.leases", "cat '/tmp/dhcp.leases'"),
+        (
+            "grep -v nothing /tmp/dhcp.leases | sort | head -n 20",
+            "cat '/tmp/dhcp.leases'",
+        ),
+        (
+            "uci show wireless.default_radio0.key",
+            "uci 'show' 'wireless.default_radio0.key'",
+        ),
+        // Cut up, but here, after the scrubbing: the router only prints the file.
+        ("cut -d' ' -f2,4 /tmp/dhcp.leases", "cat '/tmp/dhcp.leases'"),
+        (
+            "cat /tmp//./dhcp.leases | cut -c1-40",
+            "cat '/tmp/dhcp.leases'",
+        ),
+        ("ls -d /sys/class/net/*", "ls '-d' /sys/class/net/*"),
+        (
+            "cat /sys/class/net/*/address",
+            "cat /sys/class/net/*/address",
+        ),
+        (
+            "find /etc/config -name 'wire*' -type f",
+            "find '/etc/config' '-name' 'wire*' '-type' 'f'",
+        ),
+        (
+            "/etc/init.d/dropbear status",
+            "/etc/init.d/dropbear 'status'",
+        ),
+        ("logread -l 20 -e dropbear", "logread '-l' '20'"),
     ] {
-        let o = sentry(&["network", "run", &name, "--", line]);
+        let _ = std::fs::remove_file(&trace);
+        let o = traced(&trace, &["network", "run", &name, "--", line]);
         assert_eq!(o.code, 0, "{line}: {}", o.stderr);
-        assert!(!o.stdout.trim().is_empty(), "{line}: printed nothing");
+        assert_eq!(sent().trim_end(), router_saw, "{line}");
+        if !line.starts_with("logread") {
+            assert!(!o.stdout.trim().is_empty(), "{line}: printed nothing");
+        }
         for p in PRIVATE {
             assert!(
                 !o.stdout.contains(p) && !o.stderr.contains(p),
@@ -141,21 +201,110 @@ fn live_router_policy() {
             && leases.contains("‹host-"),
         "{leases}"
     );
+    // A pattern is matched on what the scrubbing left, never on the router: the planted
+    // key does start with `c`, and a grep there would have said 1.
+    let direct = on(&r, "uci show wireless | grep -c \"key='c\"");
+    assert_eq!(direct.stdout.trim(), "1", "the plant is there");
+    let _ = std::fs::remove_file(&trace);
+    let o = traced(
+        &trace,
+        &[
+            "network",
+            "run",
+            &name,
+            "--",
+            "uci show wireless | grep -c \"key='c\"",
+        ],
+    );
+    assert_eq!((o.stdout.trim(), o.code), ("0", 1), "{}", o.stderr);
+    assert_eq!(sent().trim_end(), "uci 'show' 'wireless'");
+    let o = sentry(&[
+        "network",
+        "run",
+        &name,
+        "--",
+        "grep -c 00:00:5e:00:53:77 /tmp/dhcp.leases",
+    ]);
+    assert_eq!(
+        o.stdout.trim(),
+        "0",
+        "a MAC's hidden half can't be asked for"
+    );
+
+    // These are real on this router's shell (BusyBox 1.37 ash), run directly: that is
+    // what the gateway must never pass on.
+    // Review item 6: ash does read `$'…'` (ANSI-C quoting), so the quote closes early
+    // and what follows the `;` runs.
+    on(&r, "echo $'\\'' ; touch /tmp/sentry-proof #'");
+    assert_eq!(on(&r, "ls /tmp/sentry-proof").code, 0, "ash reads $'…'");
+    on(&r, "rm -f /tmp/sentry-proof");
+    // Item 2: a `#` starts a comment, so its quote never opens.
+    on(&r, "echo x #'\ntouch /tmp/sentry-proof\n#'");
+    assert_eq!(on(&r, "ls /tmp/sentry-proof").code, 0, "ash reads comments");
+    on(&r, "rm -f /tmp/sentry-proof");
+    // Item 4: this busybox's `sort` takes `-uo<file>` without complaint (exit 0) but its
+    // `-o` isn't built in: the sorted text goes to stdout and no file is written. So the
+    // cluster wasn't a write here; it is refused all the same (another build's would be).
+    let s = on(
+        &r,
+        "sort -uo/tmp/sentry-proof /proc/uptime; echo rc=$?; ls /tmp/sentry-proof",
+    );
+    println!("sort -uo<file> on this router: {:?}", s.stdout);
+    assert!(s.stdout.contains("rc=0"), "{}", s.stdout);
+    on(&r, "rm -f /tmp/sentry-proof");
+
     // Refused, each in its class's words (126), and none of it ran.
     let asks = "requires approval";
+    let _ = std::fs::remove_file(&trace);
     for (line, says) in [
         ("touch /tmp/sentry-canary", asks),
         ("echo x > /tmp/sentry-canary", asks),
         ("nice touch /tmp/sentry-canary", asks),
         ("sh -c 'touch /tmp/sentry-canary'", asks),
         ("awk 'BEGIN{system(\"touch /tmp/sentry-canary\")}'", asks),
-        (
-            "find /tmp -maxdepth 0 -exec touch /tmp/sentry-canary \\;",
-            asks,
-        ),
         ("sort -o /tmp/sentry-canary /tmp/dhcp.leases", asks),
         ("sed -n 'w /tmp/sentry-canary' /proc/uptime", asks),
         ("ls /tmp | xargs touch /tmp/sentry-canary", asks),
+        // The review's inputs, with a canary where the dangerous half was.
+        // 1: a substitution in double quotes.
+        ("echo \"$(touch /tmp/sentry-canary)\"", asks),
+        ("echo \"`touch /tmp/sentry-canary`\"", asks),
+        ("X=\"$(touch /tmp/sentry-canary)\"", asks),
+        (
+            "echo \"$(wifi down; touch /tmp/sentry-canary)\"",
+            "guard step",
+        ),
+        ("X=\"$(touch /tmp/sentry-canary; reboot)\"", "workflow"),
+        // 2: a comment that swallows a quote.
+        ("echo x #'\ntouch /tmp/sentry-canary\n#'", asks),
+        // 3: find's second -exec, -delete, -fprint.
+        (
+            "find /tmp -maxdepth 0 -exec ls {} \x5c; -exec touch /tmp/sentry-canary \x5c;",
+            asks,
+        ),
+        ("find /tmp/sentry-victim -delete", asks),
+        ("find /etc/config -delete", "not run"),
+        ("find /tmp -maxdepth 0 -fprint /tmp/sentry-canary", asks),
+        // 4: a flag in a cluster.
+        ("sort -uo/tmp/sentry-canary /proc/uptime", asks),
+        ("sort -uo/etc/sentry-canary /proc/uptime", "not run"),
+        // 5: a change spelled as a flag.
+        ("ifconfig lo -arp", "guard step"),
+        ("arp -ns 192.0.2.9 02:00:5e:00:53:09", "guard step"),
+        // 6: ANSI-C quoting.
+        ("echo $'\\'' ; touch /tmp/sentry-canary #'", asks),
+        // 7: transforms on the router.
+        ("tr -d : < /tmp/dhcp.leases", asks),
+        ("cut -c1-9 < /tmp/dhcp.leases", asks),
+        ("awk '{print $2}' < /tmp/dhcp.leases", asks),
+        ("od -c /tmp/dhcp.leases", asks),
+        ("hexdump -C /proc/net/arp", asks),
+        // 8: `//`.
+        ("cat /etc//config/wireless", "uci show"),
+        (
+            "cat /sys//kernel/debug/ieee80211/phy0/keys/0/key",
+            "not run",
+        ),
         ("touch /tmp/sentry-canary; uci commit network", "guard step"),
         (
             "touch /tmp/sentry-canary; /etc/init.d/dropbear restart",
@@ -172,21 +321,28 @@ fn live_router_policy() {
         ("ls `touch /tmp/sentry-canary`", "not run"),
         ("uci show wireless | tee /tmp/sentry-canary", "not run"),
         ("uci show wireless > /tmp/sentry-canary", "not run"),
-        ("uci show wireless | cut -d= -f2", "not run"),
+        ("uci show wireless | tr -d \"'\"", "not run"),
         ("x=$(uci show wireless); echo ${x#*key=}", "not run"),
         ("sysupgrade -b /tmp/sentry-canary", "not run"),
+        ("sysupgrade -l", "not run"),
     ] {
-        let o = sentry(&["network", "run", &name, "--", line]);
+        let o = traced(&trace, &["network", "run", &name, "--", line]);
         assert_eq!(o.code, 126, "{line}: {} {}", o.stdout, o.stderr);
         assert!(o.stderr.contains(says), "{line}: {}", o.stderr);
         assert_eq!(o.stdout, "", "{line}");
         // The chat's gateway turns all of it down, a request too.
-        let e = sentry(&["network", "exec", &name, "--", "sh", "-c", line]);
+        let e = traced(&trace, &["network", "exec", &name, "--", "sh", "-c", line]);
         assert_eq!(e.code, 126, "exec {line}: {} {}", e.stdout, e.stderr);
         assert!(!e.stderr.contains(asks), "exec {line}: {}", e.stderr);
+        assert_eq!(sent(), "", "{line}: something was sent to the router");
     }
-    let canary = on(&r, "ls /tmp/sentry-canary /tmp/b.tgz 2>/dev/null; true");
-    assert_eq!(canary.stdout.trim(), "", "a refused line ran");
+    let canary = on(
+        &r,
+        "ls /tmp/sentry-canary /etc/sentry-canary /tmp/b.tgz 2>/dev/null; cat /tmp/sentry-victim",
+    );
+    assert_eq!(canary.stdout.trim(), "keep", "a refused line ran");
+    on(&r, "rm -f /tmp/sentry-victim");
+    let _ = std::fs::remove_file(&trace);
 }
 
 /// Someone else's staged line on a config the change would commit: stopped before

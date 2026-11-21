@@ -937,18 +937,33 @@ impl Asks for NetworkTarget {
 }
 
 impl Host for NetworkTarget {
-    /// The line as the router's shell runs it, as root (there is no sudo there). This
-    /// is how a session's steps and what the user allowed are run: whatever a plan says,
-    /// a line the policy keeps for the guard or a workflow, or never runs, is turned into
-    /// a command that only says so, here, and nothing is sent to the router.
+    /// A line of a session (a plan's step, what the user allowed), as it is run. A read
+    /// goes through the gateway, like one Claude sends itself: rebuilt by sentry, its
+    /// filters done here. A line the policy keeps for the guard or a workflow, or never
+    /// runs, becomes a command that only says so, here, and nothing is sent to the router.
+    /// Anything else is a change the user was shown and allowed: the router's shell runs
+    /// it as written, as root (there is no sudo there).
     fn command(&self, line: &str) -> Cmd {
-        match crate::policy::refuses(line) {
-            None => self.router.sh(line),
-            Some(why) => Cmd::local("sh").args([
+        use crate::policy::Class;
+        // (What `sudo::detached` puts in front: nothing here reads stdin.)
+        let inner = line.strip_prefix("exec </dev/null\n").unwrap_or(line);
+        let v = crate::policy::verdict(inner);
+        match v.class {
+            Class::Read => {
+                let exe = sentry_app::remote::workflow::exe(workflow::PROG);
+                Cmd::local(&exe[0])
+                    .args(exe[1..].iter().map(String::as_str))
+                    .args(["run", self.router.name.as_str(), "--", inner])
+            }
+            Class::Change => self.router.sh(line),
+            _ => Cmd::local("sh").args([
                 "-c",
                 "printf '%s\\n' \"$1\" >&2; exit 126",
                 "sh",
-                &format!("sentry-network: not run: {why}"),
+                &format!(
+                    "sentry-network: not run: {}",
+                    v.refusal().unwrap_or(v.why.clone())
+                ),
             ]),
         }
     }

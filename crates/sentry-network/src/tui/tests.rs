@@ -604,10 +604,27 @@ fn claude_is_offered_once_what_must_be_hidden_is_known() {
         "{:?}",
         p.allowed
     );
-    // A command line is the router's shell's, over ssh as root, streamed the dropbear way.
-    let c = t.command("logread -l 5");
-    assert_eq!(c.remote_line(), "env LC_ALL=C sh -c 'logread -l 5'");
+    // A change the user allowed is the router's shell's, over ssh as root, streamed the
+    // dropbear way, as it was shown.
+    let c = t.command("touch /tmp/x");
+    assert_eq!(c.remote_line(), "env LC_ALL=C sh -c 'touch /tmp/x'");
     assert!(c.holds_stdin());
+    // A read goes through the gateway, like Claude's own: never the line as written.
+    for line in ["logread -l 5", "exec </dev/null\nlogread -l 5"] {
+        let c = t.command(line);
+        assert_eq!(c.site(), sentry_core::exec::Site::Local);
+        assert!(
+            c.remote_line().ends_with("run home -- 'logread -l 5'"),
+            "{}",
+            c.remote_line()
+        );
+    }
+    // What is never run isn't sent anywhere.
+    for line in ["uci commit network", "reboot", "cat /etc/shadow"] {
+        let c = t.command(line);
+        assert_eq!(c.site(), sentry_core::exec::Site::Local);
+        assert!(c.remote_line().contains("not run"), "{}", c.remote_line());
+    }
     // Its records are a network's, and so are its workflows and their runs.
     let id = t.ident();
     assert_eq!(

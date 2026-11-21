@@ -2521,6 +2521,7 @@ dependencies = [
  "insta",
  "jiff",
  "ratatui",
+ "regex",
  "sentry-app",
  "sentry-core",
  "serde",

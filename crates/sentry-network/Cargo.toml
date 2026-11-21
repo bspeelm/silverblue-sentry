@@ -22,6 +22,7 @@ thiserror.workspace = true
 serde-saphyr.workspace = true
 toml.workspace = true
 age.workspace = true
+regex.workspace = true
 
 [features]
 # Test support for the window's own tests (`crates/sentry`).

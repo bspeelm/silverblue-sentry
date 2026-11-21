@@ -518,7 +518,7 @@ impl Session {
 /// The program's command: this binary when it has that name, one next to it or above it
 /// (tests run from `deps/`, or deeper under the profile's directory), the program it is a
 /// command of beside this one (`sentry-server` is `sentry server`), or PATH's.
-fn exe(prog: &str) -> Vec<String> {
+pub fn exe(prog: &str) -> Vec<String> {
     let me = std::env::current_exe().ok();
     if let Some(p) = &me
         && p.file_name().is_some_and(|n| n == prog)

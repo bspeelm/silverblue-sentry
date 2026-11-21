@@ -2,15 +2,18 @@
 //! command line Claude sends is read here first and put in one of five classes. Pure, and
 //! decided before any connection is made.
 //!
-//! A line is the worst of its parts: every command in it (`;`, `&&`, `|`, newlines,
-//! `$(…)`, backticks, `sh -c '…'`, `eval`, `xargs …`, `find -exec …`) and every
-//! redirection. Unknown means `Change`: a false "change" only asks the user, a false
-//! "read" would run unseen.
+//! `Read` is decided positively, by `read::plan`: the line parses under a small grammar,
+//! every program and flag is on a list, and what then runs on the router is rebuilt from
+//! that parse, never the line as written. Nothing else is a read.
 //!
-//! The `Never` rules about files are a list of where a router's secrets are known to live,
-//! with conservative rules around it (no patterns, no variables, no `cd` where a file is
-//! read). They are not a proof that nothing private can be read: what a command prints is
-//! scrubbed again before Claude sees it (`redact::Scrub`).
+//! Everything outside that grammar is classified by the older, conservative reading below
+//! (`legacy`), which only ever chooses between the classes that don't run by themselves: a
+//! line is the worst of its parts (every command in it, `$(…)`, backticks, `sh -c '…'`,
+//! `eval`, `xargs …`, `find -exec …`, every redirection), and a line the grammar can't
+//! even take apart is also read word by word, with every shell character a break, so that
+//! `reboot`, `uci commit` or a secret's path hidden in a quote, a comment or a
+//! substitution still decides its class. What is left is a `Change`: a request, shown to
+//! the user exactly as it would run.
 
 use sentry_app::remote::gateway::SECRET;
 
@@ -72,7 +75,7 @@ pub const UBUS_READS: &[&str] = &[
 ];
 
 /// ubus objects that read or run anything they're asked to: never through `ubus`.
-const UBUS_NEVER: &[&str] = &[
+pub(crate) const UBUS_NEVER: &[&str] = &[
     "file", "uci", "session", "rpc-sys", "luci", "luci-rpc", "rc",
 ];
 
@@ -81,6 +84,9 @@ const UBUS_NEVER: &[&str] = &[
 pub struct Verdict {
     pub class: Class,
     pub why: String,
+    /// A read as sentry understood it and carries it out (`read::Plan::shown`): what is
+    /// sent to the router is made from this, never from the line as written.
+    pub run: Option<String>,
 }
 
 impl Verdict {
@@ -88,6 +94,7 @@ impl Verdict {
         Self {
             class,
             why: why.into(),
+            run: None,
         }
     }
 
@@ -361,7 +368,7 @@ fn base(w: &str) -> &str {
 
 /// A path (or a bare file name) that holds, or may hold, a secret. `ls`: the command only
 /// lists names.
-fn secret_path(w: &str, ls: bool) -> Option<&'static str> {
+pub(crate) fn secret_path(w: &str, ls: bool) -> Option<&'static str> {
     // `if=/dev/mtd0`, `--file=/etc/shadow`: what follows the `=` is the path.
     if let Some((_, v)) = w.split_once('=')
         && v.starts_with('/')
@@ -770,7 +777,107 @@ fn worst(a: Verdict, b: Verdict) -> Verdict {
 }
 
 pub fn verdict(line: &str) -> Verdict {
-    verdict_at(line, 0)
+    match crate::read::plan(line) {
+        Ok(p) => Verdict {
+            class: Class::Read,
+            why: String::new(),
+            run: Some(p.shown()),
+        },
+        Err(outside) => not_a_read(line, &outside, crate::read::parse(line).is_err()),
+    }
+}
+
+/// The same for one command given as its words (`exec`): no word of it is syntax.
+pub fn verdict_argv(argv: &[String]) -> Verdict {
+    match crate::read::plan_argv(argv) {
+        Ok(p) => Verdict {
+            class: Class::Read,
+            why: String::new(),
+            run: Some(p.shown()),
+        },
+        Err(outside) => {
+            let line = argv
+                .iter()
+                .map(|a| sentry_core::exec::sh_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            not_a_read(&line, &outside, false)
+        }
+    }
+}
+
+/// A line that isn't a read: which of the other classes. `unparsed`: the grammar couldn't
+/// take it apart, so its words are read one by one as well.
+fn not_a_read(line: &str, outside: &str, unparsed: bool) -> Verdict {
+    let mut v = verdict_at(line, 0);
+    if unparsed {
+        v = worst(v, by_words(line));
+    }
+    if v.class == Class::Read {
+        v = Verdict::of(
+            Class::Change,
+            format!("it isn't a read that runs without asking: {outside}"),
+        );
+    }
+    v
+}
+
+/// The worst that any run of the line's words could be, were it a command: every shell
+/// character is a break, so nothing hides in a quote, a comment or a substitution. Only
+/// the classes above a request count (a false one costs a refusal, never a run).
+fn by_words(line: &str) -> Verdict {
+    let words: Vec<Word> = line
+        .split(|c: char| c.is_whitespace() || c.is_control() || ";&|()`$'\"{}<>#\\!".contains(c))
+        .filter(|w| !w.is_empty())
+        .take(400)
+        .map(|w| Word {
+            text: w.to_string(),
+            ..Default::default()
+        })
+        .collect();
+    let mut v = Verdict::read();
+    for i in 0..words.len() {
+        let one = simple(
+            &Simple {
+                words: words[i..].to_vec(),
+                ..Default::default()
+            },
+            1,
+            false,
+        );
+        if one.class > Class::Change {
+            v = worst(v, one);
+        }
+    }
+    v
+}
+
+/// A path as the kernel reads it, for the rules about where things are: `//` and `/./`
+/// are `/` (`/sys//kernel/debug`, `/etc/./config`).
+fn squash(text: &str) -> String {
+    let mut s = text.to_string();
+    while s.contains("//") || s.contains("/./") {
+        s = s.replace("//", "/").replace("/./", "/");
+    }
+    s
+}
+
+fn squashed(c: &Simple) -> Simple {
+    let each = |ws: &[Word]| -> Vec<Word> {
+        ws.iter()
+            .map(|w| Word {
+                text: squash(&w.text),
+                ..w.clone()
+            })
+            .collect()
+    };
+    Simple {
+        words: each(&c.words),
+        writes: each(&c.writes),
+        reads: each(&c.reads),
+        heredoc: c.heredoc,
+        piped: c.piped,
+    }
 }
 
 fn verdict_at(line: &str, depth: usize) -> Verdict {
@@ -964,6 +1071,7 @@ fn init_script(path: &str) -> Option<Result<&str, ()>> {
 }
 
 fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
+    let c = &squashed(c);
     let mut v = Verdict::read();
     let prog = program(&c.words);
     let name = prog.map_or("", |(_, p)| p);
@@ -1282,7 +1390,9 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
                 && a.iter()
                     .all(|x| matches!(*x, "-l" | "--list-backup" | "-h" | "--help"))
             {
-                Verdict::read()
+                never(
+                    "sentry lists a backup's files itself (Maintenance, `config-backup`): sysupgrade keeps its list at one fixed path, so only one runs at a time",
+                )
             } else {
                 wf("flashes firmware")
             }
@@ -1305,6 +1415,29 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
                     "may fetch the package index (pass --no-network to only read the one it has)",
                 ),
                 "" if has(&["--version", "--help", "-h"]) => Verdict::read(),
+                "add" | "del" | "fix" => {
+                    let names: Vec<&str> = a
+                        .iter()
+                        .copied()
+                        .filter(|x| !x.starts_with('-') && *x != sub)
+                        .map(|x| x.split(['=', '<', '>', '~', '@']).next().unwrap_or(x))
+                        .collect();
+                    let base = names.iter().any(|n| crate::workflow::base_package(n));
+                    if sub == "del" && (base || has(&["-r", "--rdepends"])) {
+                        never(
+                            "removing a base-system package (or whatever depends on one) can leave the router unreachable or unable to boot",
+                        )
+                    } else if base
+                        || sub == "fix"
+                        || has(&["-u", "--upgrade", "-l", "--latest", "--force-broken-world"])
+                    {
+                        wf(
+                            "upgrades or reinstalls packages (a base-system package only through `package-update`'s own step)",
+                        )
+                    } else {
+                        unknown()
+                    }
+                }
                 _ => unknown(),
             }
         }
@@ -1343,9 +1476,13 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
                 "add", "delete", "flush", "insert", "replace", "create", "destroy", "reset",
                 "rename", "import",
             ];
+            // Any flag but the ones that only change how a listing is printed (`-f`,
+            // `--file=…`, `-i`, `-I`, `-D`…) takes its rules from somewhere else.
             let file = words.iter().any(|x| {
-                matches!(*x, "--file" | "--interactive")
-                    || (x.starts_with('-') && !x.starts_with("--") && x.contains(['f', 'i']))
+                x.starts_with('-')
+                    && !(x.len() > 1
+                        && !x.starts_with("--")
+                        && x[1..].chars().all(|c| "ansjty".contains(c)))
             });
             let verb = words
                 .iter()
@@ -1475,17 +1612,21 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
             }
         }
         "ifconfig" => {
-            if a.iter().filter(|x| !x.starts_with('-')).count() > 1 {
-                guarded("changes an interface")
-            } else {
+            // An interface alone, or -a: anything after it (`-arp`, `down`, an address)
+            // changes it.
+            if a.len() <= 1 && a.iter().all(|x| !x.starts_with('-') || *x == "-a") {
                 Verdict::read()
+            } else {
+                guarded("changes an interface")
             }
         }
         "arp" => {
-            if has(&["-s", "-d", "-f"]) {
-                guarded("changes the neighbour table")
-            } else {
+            if a.iter()
+                .all(|x| matches!(*x, "-n" | "-a" | "-an" | "-na" | "-v"))
+            {
                 Verdict::read()
+            } else {
+                guarded("changes the neighbour table (or isn't `arp -n`, `arp -a`)")
             }
         }
         "kill" | "killall" | "pkill" => {
@@ -1494,19 +1635,39 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
                 "dropbear",
                 "dnsmasq",
                 "odhcpd",
+                "odhcp6c",
+                "udhcpc",
                 "uhttpd",
                 "hostapd",
                 "wpa_supplicant",
+                "wpad",
+                "pppd",
                 "procd",
                 "ubusd",
                 "rpcd",
                 "logd",
-                "1",
+                "init",
             ];
+            let targets: Vec<&str> = a.iter().copied().filter(|x| !x.starts_with('-')).collect();
+            // A name that is one of them, or a part of one (`pkill dropb`), or a pattern.
+            let door = |t: &str| {
+                DOORS.iter().any(|d| d.contains(t) || t.contains(d))
+                    || !t
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
+            };
             if has(&["-l", "-L"]) && a.len() == 1 {
                 Verdict::read()
-            } else if a.iter().any(|x| DOORS.contains(x)) || args.iter().any(|w| w.expands) {
-                guarded("stops a daemon the network is reached through (or one it can't name)")
+            } else if name == "kill"
+                || targets.is_empty()
+                || targets.iter().any(|t| door(t))
+                || args.iter().any(|w| w.expands)
+                || a.iter()
+                    .any(|x| x.starts_with('-') && x.len() > 1 && x[1..].contains('f'))
+            {
+                never(
+                    "a signal by process number, by pattern, or to a daemon the network is reached through can take the network or the way in down, and nothing takes it back: restart a service by its name (`/etc/init.d/<service> restart`; the network's own in a guard step)",
+                )
             } else {
                 unknown()
             }
@@ -1541,8 +1702,9 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
             }
         }
         // Reaching out to a device is asked for (some are to be left alone).
-        "ping" | "ping6" | "traceroute" | "traceroute6" | "nslookup" | "arping" | "nc"
-        | "telnet" => change("reaches out to another device"),
+        "ping" | "ping6" | "traceroute" | "traceroute6" | "nslookup" | "arping" | "telnet" => {
+            change("reaches out to another device")
+        }
         "logger" => change("writes to the log"),
         "date" => {
             if a.iter()
@@ -1561,10 +1723,29 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
             }
         }
         "sort" => {
-            if a.iter()
-                .any(|x| x.starts_with("-o") || x.starts_with("--output") || x.starts_with("-T"))
-            {
-                writes_files(&a, &shown()).unwrap_or_else(unknown)
+            // `-o` writes a file, wherever it stands in a cluster (`-uo/etc/passwd`).
+            if a.iter().any(|x| {
+                x.starts_with("--output")
+                    || (x.starts_with('-') && !x.starts_with("--") && x.contains(['o', 'T']))
+            }) {
+                // What it writes: what follows the `o` in its word, or the next word.
+                let mut targets: Vec<&str> = Vec::new();
+                for (i, x) in a.iter().enumerate() {
+                    if let Some(t) = x.strip_prefix("--output=") {
+                        targets.push(t);
+                    } else if x.starts_with('-')
+                        && !x.starts_with("--")
+                        && let Some(k) = x.find(['o', 'T'])
+                    {
+                        match &x[k + 1..] {
+                            "" => targets.extend(a.get(i + 1)),
+                            t => targets.push(t),
+                        }
+                    } else if *x == "--output" {
+                        targets.extend(a.get(i + 1));
+                    }
+                }
+                writes_files(&targets, &shown()).unwrap_or_else(unknown)
             } else {
                 Verdict::read()
             }
@@ -1679,24 +1860,52 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
             }
         }
         "find" => {
-            if let Some(i) = a
+            // Every `-exec` it has, and everything else that does more than name files.
+            let mut f = Verdict::read();
+            let roots: Vec<&str> = a
                 .iter()
-                .position(|x| matches!(*x, "-exec" | "-ok" | "-execdir" | "-okdir"))
-            {
-                let inner: Vec<&str> = a[i + 1..]
-                    .iter()
-                    .copied()
-                    .take_while(|x| !matches!(*x, ";" | "+"))
-                    .collect();
-                ran_on_unknown(&inner, depth)
-            } else if a
-                .iter()
-                .any(|x| *x == "-delete" || x.starts_with("-fprint"))
-            {
-                unknown()
-            } else {
-                Verdict::read()
+                .copied()
+                .take_while(|x| !x.starts_with('-'))
+                .collect();
+            let mut i = 0;
+            while i < a.len() {
+                match a[i] {
+                    "-exec" | "-ok" | "-execdir" | "-okdir" => {
+                        let inner: Vec<&str> = a[i + 1..]
+                            .iter()
+                            .copied()
+                            .take_while(|x| !matches!(*x, ";" | "+"))
+                            .collect();
+                        i += inner.len();
+                        f = worst(f, ran_on_unknown(&inner, depth));
+                    }
+                    "-delete" => {
+                        let top = |p: &&str| p.trim_end_matches('/').matches('/').count() <= 1;
+                        f = worst(
+                            f,
+                            if roots.is_empty() || roots.iter().any(top) {
+                                never(
+                                    "it deletes from the top of the file system, or from where it stands",
+                                )
+                            } else {
+                                writes_files(&roots, &shown())
+                                    .unwrap_or_else(|| change("deletes what it finds"))
+                            },
+                        );
+                    }
+                    x if x.starts_with("-fprint") || x == "-fls" => {
+                        let file = a.get(i + 1).copied().unwrap_or("");
+                        f = worst(
+                            f,
+                            writes_files(&[file], &shown())
+                                .unwrap_or_else(|| change("writes a file")),
+                        );
+                    }
+                    _ => {}
+                }
+                i += 1;
             }
+            f
         }
         "xargs" => {
             let inner: Vec<&str> = a
@@ -1721,6 +1930,41 @@ fn simple(c: &Simple, depth: usize, scan: bool) -> Verdict {
                 worst(
                     change("is evaluated by the shell: write the command itself"),
                     verdict_at(&a.join(" "), depth + 1),
+                )
+            }
+        }
+        // A new way in, or a listener nobody asked for.
+        "telnetd" | "httpd" | "ftpd" | "tftpd" | "inetd" | "sshd" | "dropbear" | "uhttpd"
+        | "socat" | "ncat" | "netcat" | "udpsvd" | "tcpsvd" | "stunnel"
+            if scan || a.iter().any(|x| x.starts_with('-')) =>
+        {
+            never(
+                "it starts something that listens for logins or connections: a service is its init script's to start, and a new way in is never opened from here",
+            )
+        }
+        "nc" if a
+            .iter()
+            .any(|x| x.starts_with('-') && x.contains(['l', 'e'])) =>
+        {
+            never("it listens, or hands a shell to whoever connects")
+        }
+        // The network changed where no config says so, and no guard can take it back.
+        "tc" | "rmmod" | "insmod" | "modprobe" | "hostapd_cli" | "wpa_cli" | "swconfig"
+        | "mii-tool" | "devmem" | "vconfig" | "ifenslave" | "bridge" | "udhcpc" | "pppd"
+        | "odhcp6c" | "conntrack" | "ipset" | "ubusd" | "netifd" | "hostapd" | "wpa_supplicant"
+        | "dnsmasq" | "odhcpd"
+            if scan || !a.is_empty() =>
+        {
+            never(
+                "it changes how the network runs outside the config, where nothing takes it back (a config change is uci lines in a guard step)",
+            )
+        }
+        "ethtool" => {
+            if a.len() == 1 && !a[0].starts_with('-') {
+                unknown()
+            } else {
+                never(
+                    "it changes a port's settings outside the config, where nothing takes it back",
                 )
             }
         }
@@ -1880,6 +2124,19 @@ fn uci(a: &[&str], shown: &str) -> Verdict {
     let words: Vec<&str> = a.iter().copied().filter(|x| !x.starts_with('-')).collect();
     let verb = words.first().copied().unwrap_or("");
     let cfg = words.get(1).map_or("", |w| uci_config(w));
+    if !matches!(verb, "show" | "changes" | "export" | "get" | "get_state") {
+        if matches!(cfg, "rpcd" | "ucitrack" | "luci") {
+            return Verdict::of(
+                Class::Never,
+                format!(
+                    "`{shown}`: who may log in to the router's web interface, and what it runs when a config is applied, are never changed from here"
+                ),
+            );
+        }
+        if let Some(why) = runs_or_reads(verb, words.get(1..).unwrap_or(&[])) {
+            return Verdict::of(Class::Never, format!("`{shown}`: {why}"));
+        }
+    }
     match verb {
         "show" | "changes" | "export" => Verdict::read(),
         "get" | "get_state" => {
@@ -1916,6 +2173,91 @@ fn uci(a: &[&str], shown: &str) -> Verdict {
         }
         _ => Verdict::of(Class::Change, format!("`{shown}` changes the {cfg} config")),
     }
+}
+
+/// Why a `uci` line is nobody's to send, if it sets an option whose value is a program
+/// the router then runs as root, or a file one of its daemons reads, writes or serves
+/// (`firewall.@include[-1].path`, `dhcp.@dnsmasq[0].dhcpscript`, `uhttpd.main.interpreter`,
+/// `dropbear.main.BannerFile`, `network.wan.pppd_options`, `wireless.*.hostapd_options`).
+/// `args`: what follows the verb. The names are OpenWrt's as remembered, not read from its
+/// documentation here: by pattern where a pattern is safe (anything with `script`, ending
+/// in `file` or `_options`), by name per config otherwise.
+pub fn runs_or_reads(verb: &str, args: &[&str]) -> Option<&'static str> {
+    const WHY: &str = "it names a program the router then runs as root, or a file one of its daemons reads, writes or serves: that option is yours to set by hand";
+    let first = args.first()?;
+    let (path, value) = match first.split_once('=') {
+        Some((p, v)) => (p, Some(v)),
+        None => (*first, None),
+    };
+    let mut seg = path.split('.');
+    let cfg = seg.next().unwrap_or("");
+    let _section = seg.next();
+    let option = seg.next();
+    // A firewall include is a script (or an nft file) run on every reload.
+    if cfg == "firewall"
+        && ((verb == "add" && args.get(1) == Some(&"include"))
+            || (option.is_none() && value == Some("include")))
+    {
+        return Some(WHY);
+    }
+    let o = option?.to_ascii_lowercase();
+    let o = o.as_str();
+    let generic = o.contains("script")
+        || o.contains("interpreter")
+        || o.contains("hook")
+        || o.contains("command")
+        || o.contains("handler")
+        || o.contains("plugin")
+        || o.starts_with("exec")
+        || o == "cmd"
+        || o.ends_with("_cmd")
+        || o.ends_with("file")
+        || o.ends_with("_options");
+    let named: &[&str] = match cfg {
+        "firewall" => &["path", "type", "fw4_compatible", "reload"],
+        "dhcp" => &[
+            "confdir",
+            "addnhosts",
+            "addnmount",
+            "tftp_root",
+            "enable_tftp",
+            "leasetrigger",
+            "logfacility",
+            "user",
+            "group",
+            "piofolder",
+        ],
+        "uhttpd" => &[
+            "home",
+            "cgi_prefix",
+            "lua_prefix",
+            "ucode_prefix",
+            "ubus_prefix",
+            "ubus_socket",
+            "config",
+            "cert",
+            "key",
+            "alias",
+            "no_ubusauth",
+            "no_symlinks",
+            "no_dirlists",
+            "error_page",
+            "index_page",
+        ],
+        "dropbear" => &["authkeyfile"],
+        "network" => &["connect", "disconnect"],
+        "wireless" => &[
+            "ca_cert",
+            "ca_cert2",
+            "client_cert",
+            "client_cert2",
+            "priv_key",
+            "priv_key2",
+        ],
+        "system" => &["log_ip", "log_remote"],
+        _ => &[],
+    };
+    (generic || named.contains(&o)).then_some(WHY)
 }
 
 fn ubus(a: &[&str], shown: &str) -> Verdict {
@@ -2057,8 +2399,6 @@ mod tests {
                 "apk --no-network version -l '<'",
                 "apk --no-network policy dropbear",
                 "apk --version",
-                "sysupgrade -l",
-                "sysupgrade --list-backup",
                 "owut --version",
                 "/etc/init.d/dnsmasq status",
                 "/etc/init.d/firewall enabled",
@@ -2072,27 +2412,19 @@ mod tests {
                 "grep -c lan /tmp/dhcp.leases",
                 "head -5 /proc/meminfo; df -h; free",
                 "ps w | grep dnsmasq",
-                "sed -n '1,5p' /etc/openwrt_release",
-                "awk '{print $1}' /proc/loadavg",
                 "find /etc -name '*.conf'",
                 "df -P 2>/dev/null",
                 "uptime && date",
-                "exec </dev/null\nubus call system board",
-                "env LC_ALL=C uci show dhcp",
-                "sh -c 'uci show dhcp | grep leasetime'",
                 "wifi status",
                 "ifstatus wan",
-                "hexdump -v -e '1/1 \"%02x\"' /etc/uhttpd.crt",
                 "test -e /tmp/x && echo yes",
                 "ubus call network.wireless status",
                 "uci show wireless | grep -c ssid",
                 "uci -q show dhcp | grep -v '^dhcp.lan' | sort | head -n 20",
                 "ip a",
                 "ip -o -4 addr show",
-                "ip route get 192.0.2.1",
                 "iw dev phy0-ap0 info",
                 "iw dev phy0-ap0 survey dump",
-                "route -n",
                 "date -u +%s",
                 "hostname",
                 "sort -u /tmp/dhcp.leases",
@@ -2100,15 +2432,15 @@ mod tests {
                 "logread -l 20 -e dnsmasq -t",
                 "nft -a list chain inet fw4 input",
                 "sysctl net.ipv4.ip_forward",
-                "/bin/cat /proc/uptime",
-                "busybox cat /proc/uptime",
-                "LC_ALL=C df -h",
                 "ls -la /root /etc/dropbear /tmp",
                 "stat /etc/config/wireless",
                 "grep -i model /proc/cpuinfo",
-                "cut -d' ' -f1 /proc/loadavg",
                 "wc -l /tmp/dhcp.leases",
-                "ls /tmp | xargs ls -ld",
+                // Cut up here, after the scrubbing: what is cut is already hidden.
+                "cut -d' ' -f1 /proc/loadavg",
+                "cut -d' ' -f2 /tmp/dhcp.leases",
+                "uci show wireless | cut -d= -f2",
+                "uci show wireless | grep key | cut -d\"'\" -f2",
             ],
         );
     }
@@ -2125,7 +2457,6 @@ mod tests {
                 "apk del tcpdump",
                 "apk update",
                 "apk list --upgradable",
-                "apk fix",
                 "owut check",
                 "/etc/init.d/cron restart",
                 "service sysntpd reload",
@@ -2140,6 +2471,7 @@ mod tests {
                 "ubus send foo",
                 "ubus monitor",
                 "iw dev phy0-ap0 scan",
+                "iw dev phy0-ap0 scan dump",
                 "iwinfo phy0-ap0 scan",
                 "nft monitor",
                 "ip monitor",
@@ -2151,7 +2483,6 @@ mod tests {
                 "sed -i s/a/b/ /tmp/x",
                 "cat <<EOF\nhello\nEOF",
                 "awk 'BEGIN{system(\"date\")}'",
-                "kill 4242",
                 "cat /etc/passwd",
                 "cat /etc/rc.local",
                 "cat /root/notes.txt",
@@ -2161,10 +2492,34 @@ mod tests {
                 "ping -c 3 192.0.2.1",
                 "nslookup example.org",
                 "traceroute 192.0.2.1",
-                // A read made into something sentry can't recognise, or that isn't one.
+                // Reads once, requests now: not on the list of what reads, or not written
+                // the way the grammar reads.
+                "sed -n '1,5p' /etc/openwrt_release",
+                "awk '{print $1}' /proc/loadavg",
+                "hexdump -v -e '1/1 \"%02x\"' /etc/uhttpd.crt",
+                "od -c /proc/net/fib_trie",
+                "hexdump -C /sys/class/net/br-lan/address",
+                "strings /proc/net/arp",
+                "cut -c1-9 /proc/1/cmdline",
+                "cat /proc/1/cmdline",
+                "ip route get 192.0.2.1",
+                "ip addr show to 192.0.2.0/24",
+                "route -n",
+                "env LC_ALL=C uci show dhcp",
+                "sh -c 'uci show dhcp | grep leasetime'",
+                "exec </dev/null\nubus call system board",
+                "/bin/cat /proc/uptime",
+                "busybox cat /proc/uptime",
+                "LC_ALL=C df -h",
+                "ls /tmp | xargs ls -ld",
+                "echo $HOME",
+                "cat /proc/uptime # how long",
+                "pgrep -f password",
                 "ps w | awk '{print $1}'",
                 "cat /tmp/dhcp.leases | tr : -",
-                "cut -d' ' -f2 /tmp/dhcp.leases",
+                "tr -d : < /tmp/dhcp.leases",
+                "cut -c1-9 < /tmp/dhcp.leases",
+                "awk '{print $2}' < /tmp/odhcpd.leases",
                 "sed 's/://g' /tmp/dhcp.leases",
                 "awk '{print $2}' /tmp/odhcpd.leases",
                 "logread | grep -o 'from .*'",
@@ -2174,6 +2529,7 @@ mod tests {
                 "hostname evil",
                 "hostname -F /tmp/x",
                 "sort -o /tmp/out /tmp/dhcp.leases",
+                "sort -uo /tmp/out /proc/uptime",
                 "uniq /tmp/dhcp.leases /tmp/out",
                 "tail -f /proc/uptime",
                 "tail -5f /proc/uptime",
@@ -2187,6 +2543,8 @@ mod tests {
                 "awk 'BEGIN{ARGV[1]=\"/tmp/x\";ARGC=2} {print}'",
                 "awk '{print > \"/tmp/x\"}' /proc/uptime",
                 "grep -f /tmp/patterns /proc/uptime",
+                "find /tmp -fprint /tmp/x",
+                "find /tmp/a/b -delete",
                 // Not the system's own program, or run with something set for it.
                 "/tmp/cat /proc/uptime",
                 "./ls",
@@ -2206,6 +2564,8 @@ mod tests {
                 ". /tmp/x.sh",
                 "alias x=ls",
                 "eval uci show wireless",
+                "killall tcpdump",
+                "ethtool eth0",
             ],
         );
     }
@@ -2253,6 +2613,9 @@ mod tests {
                 "nft insert rule inet fw4 input drop",
                 "nft replace rule inet fw4 input handle 3 accept",
                 "nft -f /tmp/rules",
+                "nft --file=/tmp/rules",
+                "nft --file /tmp/rules",
+                "nft -I /tmp -f rules",
                 "ip addr add 192.0.2.9/24 dev br-lan",
                 "ip link set br-lan down",
                 "ip route del default",
@@ -2266,11 +2629,17 @@ mod tests {
                 "ubus call network.interface.wan down",
                 "ubus call hostapd.phy0-ap0 del_client '{}'",
                 "ubus call service delete '{\"name\":\"dropbear\"}'",
-                "killall dropbear",
-                "kill -9 $(pidof netifd)",
                 "brctl delif br-lan lan1",
                 "route del default",
                 "ifconfig br-lan down",
+                "ifconfig br-lan -arp",
+                "ifconfig br-lan -promisc",
+                "ifconfig br-lan -multicast",
+                "ifconfig br-lan -allmulti",
+                "ifconfig br-lan 192.0.2.9",
+                "arp -s 192.0.2.9 02:00:5e:00:53:01",
+                "arp -ns 192.0.2.9 02:00:5e:00:53:01",
+                "arp -nd 192.0.2.9",
                 "iptables -F",
                 // By its worst part, however it's wrapped.
                 "uci show network; uci commit network",
@@ -2334,6 +2703,12 @@ mod tests {
                 "apk upgrade",
                 "apk upgrade dnsmasq",
                 "apk --no-network upgrade",
+                "apk fix",
+                "apk fix busybox",
+                "apk add dropbear",
+                "apk add -u tcpdump",
+                "apk add --upgrade luci-app-firewall",
+                "apk add 'netifd>1'",
                 "reboot",
                 "poweroff",
                 "halt",
@@ -2399,6 +2774,9 @@ mod tests {
                 "sysupgrade --create-backup /tmp/b.tar.gz",
                 "sysupgrade -b -",
                 "sysupgrade -b /tmp/b.tgz; cat /tmp/b.tgz",
+                // One sysupgrade at a time, and that one is sentry's own.
+                "sysupgrade -l",
+                "sysupgrade --list-backup",
                 "passwd",
                 "passwd root",
                 "dropbearkey -t ed25519 -f /tmp/k",
@@ -2497,6 +2875,9 @@ mod tests {
                 "ls /tmp/sentry-guard-0123456789abcdef",
                 "rm -rf /tmp/sentry-guard-0123456789abcdef",
                 "kill $(cat /tmp/sentry-guard-0123456789abcdef/pid)",
+                "ls /etc/sentry-guard",
+                "cat /etc/sentry-guard/0123456789abcdef/config/wireless",
+                "rm /etc/uci-defaults/zz-sentry-guard-0123456789abcdef",
                 "cat /tmp/.uci/wireless",
                 "cat /tmp/run/hostapd-phy0.conf",
                 "grep -r psk /var/run",
@@ -2522,9 +2903,7 @@ mod tests {
                 "sha256sum /etc/config/wireless",
                 "wg showconf wg0",
                 "wg show all dump",
-                // A config read that wouldn't reach sentry whole.
-                "uci show wireless | cut -d= -f2",
-                "uci show wireless | grep key | cut -d\"'\" -f2",
+                // A config read cut up on the router, where nothing is hidden yet.
                 "uci show wireless | awk -F= '{print $2}'",
                 "uci show wireless | sed 's/key/kee/'",
                 "uci show wireless | tr -d \"'\"",
@@ -2561,6 +2940,215 @@ mod tests {
         );
     }
 
+    /// The safety review's inputs, by its numbering: none is a read, and each is the
+    /// class that says what it would have done.
+    #[test]
+    fn the_review_of_2026_11() {
+        use Class::*;
+        let table: &[(&str, &str, Class)] = &[
+            // 1. A substitution inside double quotes.
+            ("1", "echo \"$(wifi down)\"", Guarded),
+            ("1", "X=\"$(reboot)\"", WorkflowOnly),
+            ("1", "echo \"`uci commit network`\"", Guarded),
+            (
+                "1",
+                "echo \"$(uci get wireless.default_radio0.key | sed 's/./&_/g')\"",
+                Never,
+            ),
+            ("1", "echo \"$(touch /tmp/sentry-canary)\"", Change),
+            // 2. A comment that swallows a quote.
+            ("2", "echo x #'\nwifi down\n#'", Guarded),
+            ("2", "echo x #'\ntouch /tmp/sentry-canary\n#'", Change),
+            // 3. find: every -exec, and what deletes or writes.
+            (
+                "3",
+                "find /tmp -maxdepth 0 -exec ls {} \\; -exec reboot \\;",
+                WorkflowOnly,
+            ),
+            (
+                "3",
+                "find /tmp -maxdepth 0 -exec ls {} \\; -exec touch /tmp/sentry-canary \\;",
+                Change,
+            ),
+            ("3", "find /etc/config -exec ls {} \\; -delete", Never),
+            ("3", "find /etc/config -delete", Never),
+            ("3", "find /tmp -fprint /etc/passwd", Never),
+            (
+                "3",
+                "find /tmp -maxdepth 0 -fprint /tmp/sentry-canary",
+                Change,
+            ),
+            // 4. A flag hidden in a cluster.
+            ("4", "sort -uo/etc/passwd /proc/uptime", Never),
+            ("4", "sort -uo/tmp/sentry-canary /proc/uptime", Change),
+            // 5. A change spelled as a flag.
+            ("5", "ifconfig br-lan -arp", Guarded),
+            ("5", "ifconfig br-lan -promisc", Guarded),
+            ("5", "arp -ns 192.0.2.9 02:00:5e:00:53:01", Guarded),
+            // 6. ANSI-C quoting.
+            ("6", "echo $'\\'' ; wifi down #'", Guarded),
+            ("6", "echo $'\\'' ; touch /tmp/sentry-canary #'", Change),
+            // 7. Transforms on the router, where nothing is scrubbed yet.
+            ("7a", "tr -d : < /tmp/dhcp.leases", Change),
+            ("7a", "cut -c1-9 < /tmp/dhcp.leases", Change),
+            ("7a", "awk '{print $2}' < /tmp/odhcpd.leases", Change),
+            ("7b", "od -c /proc/net/fib_trie", Change),
+            ("7b", "hexdump -C /proc/net/nf_conntrack", Change),
+            ("7b", "cut -c1-9 /proc/1/cmdline", Change),
+            (
+                "7b",
+                "awk '{print substr($0,1,9)}' /sys/class/net/br-lan/address",
+                Change,
+            ),
+            // 8. `//` past the rules about where things are.
+            (
+                "8",
+                "cat /sys//kernel/debug/ieee80211/phy0/keys/0/key",
+                Never,
+            ),
+            ("8", "cat /etc//config/wireless", Never),
+            ("8", "cat /etc/./config/wireless", Never),
+            ("8", "dd if=/dev//mtd0", Never),
+            ("8", "cat //etc///shadow", Never),
+            ("8", "echo x > /etc//rc.local", Never),
+            // 11. Requests that cut the network off or open a door.
+            ("11", "apk del dropbear", Never),
+            ("11", "apk del netifd", Never),
+            ("11", "apk del firewall4", Never),
+            ("11", "apk del -r libfoo", Never),
+            ("11", "kill 1234", Never),
+            ("11", "kill -9 $(pidof netifd)", Never),
+            ("11", "killall dropbear", Never),
+            ("11", "pkill dropb", Never),
+            ("11", "pkill -f sleep", Never),
+            ("11", "pkill 'net.*'", Never),
+            ("11", "tc qdisc del dev eth0 root", Never),
+            ("11", "rmmod mt7915e", Never),
+            ("11", "ethtool -s eth0 speed 10", Never),
+            ("11", "hostapd_cli disassociate 02:00:5e:00:53:01", Never),
+            ("11", "telnetd -l /bin/sh", Never),
+            ("11", "busybox telnetd -l /bin/sh", Never),
+            ("11", "dropbear -B -p 2222", Never),
+            ("11", "nc -l -p 4444 -e /bin/sh", Never),
+            ("11", "uhttpd -p 8080 -h /", Never),
+            ("11", "nft --file=/x", Guarded),
+            // 12. A config option that is a script run as root.
+            (
+                "12",
+                "uci set firewall.@include[-1].path='/tmp/x.sh'",
+                Never,
+            ),
+            ("12", "uci add firewall include", Never),
+            ("12", "uci set firewall.x=include", Never),
+            (
+                "12",
+                "uci set dhcp.@dnsmasq[0].dhcpscript='/tmp/x.sh'",
+                Never,
+            ),
+            ("12", "uci set uhttpd.main.interpreter='.sh=/bin/sh'", Never),
+            (
+                "12",
+                "uci add_list uhttpd.main.interpreter='.sh=/bin/sh'",
+                Never,
+            ),
+            ("12", "uci set uhttpd.main.home='/'", Never),
+            (
+                "12",
+                "uci set dropbear.main.BannerFile='/etc/shadow'",
+                Never,
+            ),
+            (
+                "12",
+                "uci set network.wan.pppd_options='plugin /tmp/x.so'",
+                Never,
+            ),
+            (
+                "12",
+                "uci set wireless.default_radio0.hostapd_options='x=y'",
+                Never,
+            ),
+            ("12", "uci set dhcp.@dnsmasq[0].enable_tftp='1'", Never),
+            ("12", "uci set dhcp.@odhcpd[0].leasetrigger='/tmp/x'", Never),
+            ("12", "uci set system.@system[0].log_file='/etc/x'", Never),
+            ("12", "uci set ddns.home.update_script='/tmp/x'", Never),
+            ("12", "uci set ucitrack.@network[0].exec='/tmp/x'", Never),
+            ("12", "uci set rpcd.@login[0].password='x'", Never),
+            // Low: a sysupgrade beside sentry's own.
+            ("low", "sysupgrade -l", Never),
+        ];
+        for (n, line, class) in table {
+            let v = verdict(line);
+            assert_eq!(v.class, *class, "finding {n}: {line:?}: {}", v.why);
+            assert!(v.run.is_none() && crate::read::plan(line).is_err());
+        }
+        // 7, the other way round: a private file cut up *is* a read now, because the
+        // router is only asked to print it whole, and the cutting is done on what the
+        // scrubbing left.
+        let v = verdict("cut -c1-9 /tmp/dhcp.leases");
+        assert_eq!(v.class, Read);
+        assert_eq!(
+            v.run.as_deref(),
+            Some("cat '/tmp/dhcp.leases' | cut '-c' '1-9'")
+        );
+        // A grep on the router would be a question asked of the unscrubbed text: the
+        // pattern never gets there.
+        let p = crate::read::plan("uci show wireless | grep -c \"key='a\"").unwrap();
+        assert_eq!(p.remotes().len(), 1);
+        assert_eq!(p.remotes()[0].line(), "uci 'show' 'wireless'");
+    }
+
+    #[test]
+    fn an_option_that_runs_or_reads_is_nobodys_to_set() {
+        for (verb, args) in [
+            ("set", &["firewall.@include[0].path=/tmp/x"][..]),
+            ("set", &["firewall.inc.type=script"]),
+            ("add", &["firewall", "include"]),
+            ("set", &["firewall.inc=include"]),
+            ("set", &["dhcp.@dnsmasq[0].dhcpscript=/tmp/x"]),
+            ("set", &["dhcp.@dnsmasq[0].leasefile=/etc/passwd"]),
+            ("set", &["dhcp.@dnsmasq[0].conffile=/tmp/x"]),
+            ("add_list", &["dhcp.@dnsmasq[0].addnhosts=/etc/shadow"]),
+            ("set", &["dhcp.@dnsmasq[0].tftp_root=/etc"]),
+            ("set", &["uhttpd.main.interpreter=.sh=/bin/sh"]),
+            ("set", &["uhttpd.main.cgi_prefix=/"]),
+            ("set", &["uhttpd.main.lua_handler=/tmp/x.lua"]),
+            ("set", &["uhttpd.main.home=/"]),
+            ("set", &["dropbear.main.BannerFile=/etc/shadow"]),
+            ("set", &["dropbear.main.keyfile=/tmp/k"]),
+            ("set", &["network.wan.pppd_options=plugin x.so"]),
+            ("set", &["network.wan.connect=/tmp/x"]),
+            ("set", &["network.wan.ip_up_script=/tmp/x"]),
+            ("set", &["wireless.radio0.hostapd_options=a=b"]),
+            ("set", &["wireless.default_radio0.wpa_psk_file=/tmp/x"]),
+            ("set", &["wireless.default_radio0.macfile=/tmp/x"]),
+            ("delete", &["dhcp.@dnsmasq[0].dhcpscript"]),
+            ("set", &["sqm.eth1.script=x.qos"]),
+            ("set", &["mwan3.x.exec_cmd=x"]),
+        ] {
+            assert!(runs_or_reads(verb, args).is_some(), "{verb} {args:?}");
+        }
+        for (verb, args) in [
+            ("set", &["firewall.@zone[1].input=REJECT"][..]),
+            ("add", &["firewall", "rule"]),
+            ("set", &["firewall.web=redirect"]),
+            ("set", &["dhcp.lan.leasetime=6h"]),
+            ("add_list", &["dhcp.@dnsmasq[0].server=192.0.2.5"]),
+            ("set", &["uhttpd.main.redirect_https=1"]),
+            ("add_list", &["uhttpd.main.listen_https=0.0.0.0:443"]),
+            ("set", &["dropbear.main.Port=22"]),
+            ("set", &["dropbear.main.PasswordAuth=off"]),
+            ("set", &["network.lan.ipaddr=192.0.2.1"]),
+            ("set", &["network.wan.proto=dhcp"]),
+            ("set", &["network.globals.ula_prefix=fd00::/48"]),
+            ("set", &["wireless.radio0.channel=6"]),
+            ("set", &["wireless.default_radio0.key=x"]),
+            ("set", &["system.@system[0].hostname=x"]),
+            ("delete", &["firewall.@rule[3]"]),
+        ] {
+            assert!(runs_or_reads(verb, args).is_none(), "{verb} {args:?}");
+        }
+    }
+
     #[test]
     fn what_is_refused_says_what_to_do_instead() {
         let g = verdict("uci commit network").refusal().unwrap();
@@ -2580,6 +3168,9 @@ mod tests {
         assert!(verdict("uci show dhcp").refusal().is_none());
         assert!(verdict("apk add tcpdump").refusal().is_none());
         assert!(refuses("reboot").is_some() && refuses("logger hi").is_none());
+        // A request says what kept it from being a read.
+        let c = verdict("cat /proc/uptime # how long");
+        assert!(c.class == Class::Change && c.why.contains("`#`"), "{c:?}");
         // The classes are ordered: a line is its worst part.
         assert!(Class::Read < Class::Change && Class::Change < Class::Guarded);
         assert!(Class::Guarded < Class::WorkflowOnly && Class::WorkflowOnly < Class::Never);
@@ -2588,6 +3179,25 @@ mod tests {
             Class::Never
         );
         assert_eq!(classify("uci commit network; reboot"), Class::WorkflowOnly);
+        // One command as its words: no word is syntax, and the classes are the same.
+        let argv = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            verdict_argv(&argv(&["uci", "show", "dhcp"])).class,
+            Class::Read
+        );
+        assert_eq!(
+            verdict_argv(&argv(&["uci", "show", "dhcp; reboot"])).class,
+            Class::Change
+        );
+        assert_eq!(
+            verdict_argv(&argv(&["sh", "-c", "uci commit network"])).class,
+            Class::Guarded
+        );
+        assert_eq!(verdict_argv(&argv(&["reboot"])).class, Class::WorkflowOnly);
+        assert_eq!(
+            verdict_argv(&argv(&["cat", "/etc/shadow"])).class,
+            Class::Never
+        );
     }
 
     #[test]

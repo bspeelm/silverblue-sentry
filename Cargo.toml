@@ -43,6 +43,8 @@ insta = "1.49"
 # Config backups are encrypted here, in the program: x25519 recipients only (no ssh keys, no
 # plugins, no passphrases), so nothing has to be installed on an image-based system.
 age = { version = "0.12", default-features = false }
+# The filters after a router read (grep, …) run here, on what was already scrubbed.
+regex = "1"
 
 [profile.release]
 opt-level = "s"

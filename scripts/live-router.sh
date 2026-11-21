@@ -71,7 +71,7 @@ put() {
 # nothing staged, no guard left over. Run at `up` and before every test.
 seed() {
   local c=$1
-  "${P[@]}" exec "$c" sh -c 'rm -rf /tmp/.uci /tmp/sentry-guard* /tmp/sentry-canary; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
+  "${P[@]}" exec "$c" sh -c 'rm -rf /tmp/.uci /tmp/sentry-guard* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
   put "$c" /etc/config/network 600 <<'EOF'
 config interface 'loopback'
 	option device 'lo'

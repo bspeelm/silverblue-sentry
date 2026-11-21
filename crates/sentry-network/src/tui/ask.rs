@@ -312,9 +312,11 @@ pub fn session_profile(r: &Router) -> Profile {
     let mut p = with_web(profile(r));
     p.system.push_str(&format!(
         " In this apply session you also have `sentry-network run {name} -- '<shell command \
-         line>'` (the whole line in single quotes; several commands with `;` are fine, and \
-         a pipe into grep, head, tail, sort, uniq or wc). A \
-         line that only reads runs at once, as root, its output scrubbed. A line that would \
+         line>'` (several commands with `;`, `&&` or `||` are fine, and a pipe into grep, \
+         head, tail, sort, uniq, wc or cut: those filters are done on this machine, on the \
+         scrubbed output; literal arguments only, no `$`, backticks, backslashes or \
+         comments, no redirection but `2>&1`, `2>/dev/null` and `>/dev/null`). A line that \
+         only reads is carried out at once, as root, its output scrubbed. A line that would \
          change something is NOT run: it comes back refused, and the refusal says which of \
          three things it is: a request the user is shown and may allow (then sentry runs it \
          and sends you the output), a change that belongs in the plan's guard step, or an \
