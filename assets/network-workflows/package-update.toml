@@ -2,11 +2,14 @@ name = "package-update"
 description = "Upgrade named packages on the router, after a config backup, and check the services afterwards"
 # Never every package at once: OpenWrt's packages are built against one firmware release,
 # and a blanket `apk upgrade` can leave the router unable to boot. `packages` names the ones
-# to upgrade. A list with a base-system package in it (kernel modules, base-files, busybox,
-# libc, netifd, procd, firewall4, dnsmasq, dropbear, hostapd/wpad, ubus, uci…) is the risky
-# step: auto mode never confirms that one.
+# to upgrade; apk takes along whatever those depend on, so the `plan` step asks apk what the
+# whole transaction would be (`apk upgrade --simulate`, which changes nothing) and shows it.
+# Only when every package in it is on sentry's short list of leaves (luci-app-*,
+# luci-i18n-*, luci-theme-*, a few tools) is the plain step used, which auto mode may
+# confirm; anything else (the base system, a library, a daemon) is the risky step, which
+# auto mode never confirms. The upgrade steps simulate again and refuse what doesn't fit.
 # Steps run on this machine (`sentry-network …`), which runs apk on the router over ssh.
-# Built-in: network. Condition: packages_base.
+# Built-in: network. Condition: packages_leaf.
 
 [vars.packages]
 prompt = "The packages to upgrade, by name (space-separated)"
@@ -29,19 +32,25 @@ set (backup.recipients in network_config.yaml; `sentry-network backup key <file>
 key). Retry (r) once it is, or skip (s) to upgrade without a backup."""
 
 [[steps]]
+id = "plan"
+title = "What upgrading {{ packages }} would really change (simulated)"
+run = "sentry-network packages plan -- {{ packages }}"
+gate = "auto"
+
+[[steps]]
 id = "upgrade"
 title = "Upgrade {{ packages }}"
 run = "sentry-network packages upgrade -- {{ packages }}"
 gate = "confirm"
-when = "!packages_base"
+when = "packages_leaf"
 
 [[steps]]
 id = "upgrade-base"
-title = "Upgrade {{ packages }} (base system: a bad one can stop the router from booting)"
+title = "Upgrade {{ packages }} (more than leaves: a bad base package can stop the router from booting)"
 run = "sentry-network packages upgrade base -- {{ packages }}"
 gate = "confirm"
 risky = true
-when = "packages_base"
+when = "!packages_leaf"
 
 [[steps]]
 id = "check"

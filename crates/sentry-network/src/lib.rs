@@ -22,6 +22,7 @@ pub mod init;
 #[cfg(test)]
 mod live_router;
 pub mod maint;
+pub mod packages;
 pub mod policy;
 pub mod rates;
 pub mod read;

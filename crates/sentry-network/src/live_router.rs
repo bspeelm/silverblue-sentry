@@ -519,17 +519,44 @@ fn live_guard_wifi_asks() {
     assert_eq!(journal(&r).last().unwrap()["outcome"], "reverted");
 }
 
-/// `package-update`'s steps as far as this image goes: the preview refreshes the index
-/// and lists; an upgrade without names, with a base package outside the risky step, or
-/// with something that isn't a name is refused before any connection.
+/// `package-update`'s steps on this image: the preview refreshes the index and lists;
+/// `plan` shows the whole transaction apk would make (simulated: nothing changes); an
+/// upgrade without names, of something that isn't a name, or whose transaction holds
+/// anything but leaves is refused with nothing upgraded; a leaf is upgraded, and the base
+/// package that was upgradable beside it is still as it was.
+/// (apk-tools 3.0.5 here: `apk upgrade --simulate <names>` prints `(1/1) Upgrading <name>
+/// (<old> -> <new>)` and `OK: …`, and leaves /lib/apk/db byte for byte as it was; with
+/// `--no-network` it prints only the `OK:` line, so the simulation is run without it.)
 #[test]
 #[ignore]
 fn live_package_update() {
     let Some(r) = router() else { return };
     let name = r.name.clone();
+    let run = |rest: &[&str]| {
+        let mut args = vec!["network", "packages", name.as_str()];
+        args.extend(rest);
+        sentry(&args)
+    };
+    let p = run(&["preview"]);
+    println!("{}{}", p.stdout, p.stderr);
+    assert_eq!(p.code, 0);
+    assert!(p.stdout.contains("package(s) could be upgraded"));
+    let upgradable: Vec<&str> = p
+        .stdout
+        .lines()
+        .filter(|l| l.starts_with("  "))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    let version = |pkg: &str| {
+        on(&r, &format!("apk --no-network list --installed {pkg}"))
+            .stdout
+            .trim()
+            .to_string()
+    };
+    let db = || on(&r, "sha256sum /lib/apk/db/installed").stdout;
+    let before = db();
     for (rest, says) in [
         (&["upgrade"][..], "no package named"),
-        (&["upgrade", "--", "busybox"], "base-system"),
         (
             &["upgrade", "--", "tcpdump;reboot"],
             "isn't a package's name",
@@ -538,34 +565,90 @@ fn live_package_update() {
             &["upgrade", "--", "--force-broken-world"],
             "isn't a package's name",
         ),
+        (&["plan", "--", "$(reboot)"], "isn't a package's name"),
     ] {
-        let mut args = vec!["network", "packages", name.as_str()];
-        args.extend(rest);
-        let o = sentry(&args);
+        let o = run(rest);
         assert_eq!(o.code, 3, "{rest:?}: {} {}", o.stdout, o.stderr);
         assert!(o.stderr.contains(says), "{rest:?}: {}", o.stderr);
     }
-    let p = sentry(&["network", "packages", &name, "preview"]);
-    println!("{}{}", p.stdout, p.stderr);
-    assert_eq!(p.code, 0);
-    assert!(p.stdout.contains("package(s) could be upgraded"));
-    // One that isn't the base system, if the image has one to upgrade.
-    let one = p
-        .stdout
-        .lines()
-        .filter(|l| l.starts_with("  ") && !l.contains("(base system)"))
-        .find_map(|l| l.split_whitespace().next());
-    match one {
+    // A base-system package and one that is neither: shown for what they are by `plan`,
+    // refused by the plain upgrade step, nothing changed.
+    let base = upgradable
+        .iter()
+        .copied()
+        .find(|p| crate::packages::base_package(p));
+    let other = upgradable
+        .iter()
+        .copied()
+        .find(|p| !crate::packages::base_package(p) && !crate::packages::leaf_package(p));
+    let leaf = upgradable
+        .iter()
+        .copied()
+        .find(|p| crate::packages::leaf_package(p));
+    println!("base {base:?} · other {other:?} · leaf {leaf:?}");
+    for pkg in [base, other].into_iter().flatten() {
+        let was = version(pkg);
+        let plan = run(&["plan", "--", pkg]);
+        println!("{}{}", plan.stdout, plan.stderr);
+        assert_eq!(plan.code, 0, "{pkg}");
+        assert!(
+            plan.stdout.contains(&format!("upgrading {pkg} "))
+                && plan.stdout.contains("more than leaves"),
+            "{}",
+            plan.stdout
+        );
+        let o = run(&["upgrade", "--", pkg]);
+        assert_eq!(o.code, 3, "{pkg}: {} {}", o.stdout, o.stderr);
+        assert!(
+            o.stderr.contains("isn't on the list of leaves")
+                && o.stderr.contains("Nothing was upgraded"),
+            "{}",
+            o.stderr
+        );
+        assert_eq!(version(pkg), was, "{pkg} was upgraded all the same");
+        // A leaf named beside it doesn't carry it through.
+        if let Some(leaf) = leaf {
+            let o = run(&["upgrade", "--", leaf, pkg]);
+            assert_eq!(o.code, 3, "{leaf} {pkg}: {}", o.stderr);
+            assert_eq!(version(pkg), was);
+        }
+    }
+    assert_eq!(
+        db(),
+        before,
+        "a simulation or a refusal changed the package database"
+    );
+    // The condition the workflow chooses its step by is the same simulation.
+    let leaves = |pkg: &str| {
+        crate::packages::simulate(&r, &[pkg]).is_ok_and(|tx| crate::packages::all_leaves(&tx))
+    };
+    if let Some(b) = base {
+        assert!(!leaves(b));
+    }
+    assert!(!leaves("busybox"), "nothing to do isn't a yes");
+    assert!(!leaves("no-such-package-xyz"));
+    match leaf {
         Some(pkg) => {
-            let o = sentry(&["network", "packages", &name, "upgrade", "--", pkg]);
+            assert!(leaves(pkg));
+            let base_was = base.map(version);
+            let plan = run(&["plan", "--", pkg]);
+            assert!(
+                plan.code == 0 && !plan.stdout.contains("more than leaves"),
+                "{}",
+                plan.stdout
+            );
+            let o = run(&["upgrade", "--", pkg]);
             println!("{}{}", o.stdout, o.stderr);
             assert_eq!(o.code, 0, "upgrading {pkg}");
-            let c = sentry(&["network", "packages", &name, "check"]);
+            assert_ne!(db(), before, "{pkg} wasn't upgraded");
+            assert!(!leaves(pkg), "it is as new as the index knows now");
+            if let (Some(b), Some(was)) = (base, base_was) {
+                assert_eq!(version(b), was, "the base package went along");
+            }
+            let c = run(&["check"]);
             println!("check: exit {}\n{}{}", c.code, c.stdout, c.stderr);
         }
-        None => println!(
-            "nothing but base packages to upgrade in this image: the upgrade itself wasn't run"
-        ),
+        None => println!("no leaf to upgrade in this image: the upgrade itself wasn't run"),
     }
 }
 

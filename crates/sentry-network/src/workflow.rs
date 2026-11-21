@@ -30,8 +30,9 @@ pub const WORDS: Words = Words {
 pub const BUILTINS: &[&str] = &["network"];
 
 /// `guard_waiting`: a guarded change is applied and still armed (it asks to be kept).
-/// `packages_base`: the run's `packages` names a base-system package.
-pub const CONDS: &[&str] = &["guard_waiting", "packages_base"];
+/// `packages_leaf`: upgrading the run's `packages` would touch only packages on the short
+/// list auto mode may upgrade by itself (the whole transaction, as apk simulates it).
+pub const CONDS: &[&str] = &["guard_waiting", "packages_leaf"];
 
 pub const RULES: LintRules = LintRules {
     builtins: BUILTINS,
@@ -58,62 +59,7 @@ pub const SEEDS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Packages a router doesn't boot or answer without: upgrading one of these alone, against
-/// the firmware it was built with, is the risky kind.
-pub fn base_package(name: &str) -> bool {
-    const EXACT: &[&str] = &[
-        "base-files",
-        "busybox",
-        "libc",
-        "musl",
-        "kernel",
-        "netifd",
-        "procd",
-        "firewall4",
-        "dropbear",
-        "ubus",
-        "ubusd",
-        "uci",
-        "fstools",
-        "mtd",
-        "apk-mbedtls",
-        "apk-openssl",
-        "odhcpd",
-        "odhcp6c",
-        "nftables",
-        "logd",
-        "rpcd",
-        "urngd",
-    ];
-    const STARTS: &[&str] = &[
-        "kmod-",
-        "hostapd",
-        "wpad",
-        "dnsmasq",
-        "libubox",
-        "libubus",
-        "libuci",
-        "procd-",
-        "libnftnl",
-        "nftables-",
-        "odhcpd-",
-        "libgcc",
-        "libpthread",
-        "librt",
-        "wpa-supplicant",
-    ];
-    EXACT.contains(&name) || STARTS.iter().any(|s| name.starts_with(s))
-}
-
-/// A package's name as apk takes it, and nothing a shell would read as anything else.
-pub fn package_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 80
-        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "+._-".contains(c))
-}
+pub use crate::packages::{base_package, package_name};
 
 /// The generic workflows, seeded.
 pub fn dir() -> PathBuf {
@@ -179,12 +125,16 @@ impl Env for RouterEnv {
     fn cond(&self, name: &str) -> Result<bool, String> {
         match name {
             "guard_waiting" => Ok(crate::guard::pending(&self.r.scope).is_some()),
-            // The run in progress is this one: its `packages` value.
-            "packages_base" => Ok(sentry_core::workflows::state::in_progress_in(&root(
-                &self.r.scope,
-            ))
-            .and_then(|run| run.state.vars.get("packages").cloned())
-            .is_some_and(|p| p.split_whitespace().any(base_package))),
+            // The run in progress is this one: its `packages` value, simulated on the
+            // router now. Anything that keeps it from being worked out isn't a yes.
+            "packages_leaf" => {
+                let names = sentry_core::workflows::state::in_progress_in(&root(&self.r.scope))
+                    .and_then(|run| run.state.vars.get("packages").cloned())
+                    .unwrap_or_default();
+                let names: Vec<&str> = names.split_whitespace().collect();
+                Ok(crate::packages::simulate(&self.r, &names)
+                    .is_ok_and(|tx| crate::packages::all_leaves(&tx)))
+            }
             _ => Err(format!("unknown condition `{name}`")),
         }
     }
@@ -392,8 +342,41 @@ mod change_tests {
         let p = wf("package-update");
         assert!(p.vars["packages"].default.is_none(), "never every package");
         assert!(auto(&p, "upgrade") && !auto(&p, "upgrade-base"));
-        assert_eq!(p.steps[2].cond(), Some((true, "packages_base")));
-        assert_eq!(p.steps[3].cond(), Some((false, "packages_base")));
+        let step = |id: &str| p.steps.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(step("upgrade").cond(), Some((false, "packages_leaf")));
+        assert_eq!(step("upgrade-base").cond(), Some((true, "packages_leaf")));
+        assert!(step("upgrade-base").risky && !step("upgrade").risky);
+        // The whole transaction is shown before either is asked.
+        let ids: Vec<&str> = p.steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "preview",
+                "backup",
+                "plan",
+                "upgrade",
+                "upgrade-base",
+                "check"
+            ]
+        );
+        // Whatever a workflow file says, auto never confirms an upgrade that may hold
+        // more than leaves.
+        let mut loose = step("upgrade-base").clone();
+        loose.risky = false;
+        assert!(!answers(
+            true,
+            &Asked::Step {
+                step: &loose,
+                cmd: "sentry-network packages upgrade base -- busybox"
+            }
+        ));
+        assert!(!answers(
+            true,
+            &Asked::Step {
+                step: &loose,
+                cmd: "sentry network packages home upgrade base -- busybox"
+            }
+        ));
         // No step is a bare upgrade.
         for w in [&g, &p, &wf("firmware-upgrade")] {
             for s in &w.steps {
@@ -423,61 +406,5 @@ mod change_tests {
             }
         ));
         assert!(!auto(&f, "download"), "owut download is a firmware command");
-    }
-
-    #[test]
-    fn base_packages_and_names() {
-        for b in [
-            "base-files",
-            "busybox",
-            "libc",
-            "netifd",
-            "procd",
-            "firewall4",
-            "dnsmasq",
-            "dnsmasq-full",
-            "dropbear",
-            "hostapd-common",
-            "wpad-basic-mbedtls",
-            "kmod-mt7915e",
-            "kernel",
-            "libubox20240329",
-            "uci",
-        ] {
-            assert!(base_package(b), "{b}");
-        }
-        for o in [
-            "tcpdump",
-            "luci-app-firewall",
-            "nano",
-            "adblock-fast",
-            "owut",
-            "curl",
-        ] {
-            assert!(!base_package(o), "{o}");
-        }
-        for ok in [
-            "tcpdump",
-            "luci-app-firewall",
-            "libstdcpp6",
-            "kmod-mt7915e",
-            "a.b+c_d",
-        ] {
-            assert!(package_name(ok), "{ok}");
-        }
-        for bad in [
-            "",
-            "-x",
-            "a;reboot",
-            "a b",
-            "$(reboot)",
-            "a|b",
-            "--force",
-            "a'b",
-            "a/b",
-            "*",
-        ] {
-            assert!(!package_name(bad), "{bad}");
-        }
     }
 }

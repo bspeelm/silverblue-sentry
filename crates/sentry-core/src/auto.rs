@@ -135,6 +135,14 @@ pub fn never(cmd: &str) -> Option<&'static str> {
                     if verb("firmware") && verb("flash") {
                         return Some("it flashes firmware");
                     }
+                    // A router's packages, when more than leaves may be in the
+                    // transaction (the workflow's risky step, however a file marks it).
+                    if verb("packages")
+                        && verb("upgrade")
+                        && tail.iter().take(6).any(|x| *x == "base")
+                    {
+                        return Some("it may upgrade the router's base system");
+                    }
                 }
                 ["owut", "download" | "install", ..] => return Some("it flashes firmware"),
                 ["sysupgrade" | "do-release-upgrade", ..]

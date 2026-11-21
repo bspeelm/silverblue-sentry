@@ -688,12 +688,13 @@ fn services_up(r: &Router) -> bool {
     ok
 }
 
-/// `packages <name> preview|upgrade|check [base] [-- <names>]`: what the `package-update`
-/// workflow's steps run. `upgrade` takes the names to upgrade and never upgrades
-/// everything; a base-system package is refused unless the step says `base` (the workflow's
-/// risky step).
+/// `packages <name> preview|plan|upgrade|check [base] [-- <names>]`: what the
+/// `package-update` workflow's steps run. `plan` and `upgrade` take the names to upgrade
+/// (never everything) and ask apk what the whole transaction would be: `upgrade` goes on
+/// only when every package in it is a leaf, unless the step says `base` (the workflow's
+/// risky step, never auto's).
 pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
-    use super::workflow::{base_package, package_name};
+    use super::packages::{self, all_leaves, base_package};
     let (n, cfg) = match load(Some(name)) {
         Ok(x) => x,
         Err(e) => {
@@ -702,6 +703,37 @@ pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
         }
     };
     let r = Router::new(&n, &cfg);
+    // `[base] -- <names>`. (A `--` right after the action is taken by the argument
+    // parser: then everything left is names.)
+    let split = rest.iter().position(|a| a == "--");
+    let base = split.is_some_and(|i| rest[..i].iter().any(|a| a == "base"));
+    let names: Vec<&str> = rest[split.map_or(0, |i| i + 1)..]
+        .iter()
+        .flat_map(|a| a.split_whitespace())
+        .collect();
+    // The transaction, shown: the names asked for and everything they take along.
+    let planned = || -> Result<Vec<packages::Tx>, u8> {
+        match packages::simulate(&r, &names) {
+            Ok(tx) => {
+                println!("$ {}", packages::simulate_line(&names));
+                if tx.is_empty() {
+                    println!("nothing would change: these are as new as the index knows");
+                } else {
+                    println!(
+                        "upgrading {} would change {} package(s):",
+                        names.join(" "),
+                        tx.len()
+                    );
+                    tx.iter().for_each(|t| println!("{}", t.line()));
+                }
+                Ok(tx)
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                Err(3)
+            }
+        }
+    };
     match action {
         "preview" => match collect::updates::refresh(&r) {
             Ok(u) => {
@@ -731,26 +763,32 @@ pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
                 1
             }
         },
+        "plan" => match planned() {
+            Ok(tx) => {
+                if !tx.is_empty() && !all_leaves(&tx) {
+                    println!(
+                        "more than leaves: this one asks, whatever auto mode says (the next step is the risky one)"
+                    );
+                }
+                0
+            }
+            Err(code) => code,
+        },
         "upgrade" => {
-            // `upgrade [base] -- <names>`. (A `--` right after `upgrade` is taken by the
-            // argument parser: then everything left is names.)
-            let split = rest.iter().position(|a| a == "--");
-            let base = split.is_some_and(|i| rest[..i].iter().any(|a| a == "base"));
-            let names: Vec<&str> = rest[split.map_or(0, |i| i + 1)..]
-                .iter()
-                .flat_map(|a| a.split_whitespace())
-                .collect();
-            if names.is_empty() {
-                eprintln!("no package named: sentry never upgrades every package at once");
-                return 3;
+            let tx = match planned() {
+                Ok(tx) => tx,
+                Err(code) => return code,
+            };
+            if tx.is_empty() {
+                return 0;
             }
-            if let Some(bad) = names.iter().find(|x| !package_name(x)) {
-                eprintln!("`{bad}` isn't a package's name");
-                return 3;
-            }
-            if let Some(b) = names.iter().find(|x| base_package(x)).filter(|_| !base) {
+            if !base && !all_leaves(&tx) {
+                let first = tx
+                    .iter()
+                    .find(|t| !packages::leaf_package(&t.name))
+                    .map_or("", |t| t.name.as_str());
                 eprintln!(
-                    "`{b}` is a base-system package: that is the workflow's risky step, not this one"
+                    "`{first}` would be upgraded too, and isn't on the list of leaves: that is the workflow's risky step, not this one. Nothing was upgraded"
                 );
                 return 3;
             }
@@ -778,7 +816,7 @@ pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
             if up && audited == 0 { 0 } else { 1 }
         }
         other => {
-            eprintln!("packages: `{other}` isn't preview, upgrade or check");
+            eprintln!("packages: `{other}` isn't preview, plan, upgrade or check");
             2
         }
     }

@@ -23,7 +23,7 @@ expression: "stable.join(\"\\n\")"
 │ the router armed to take it back by itself               │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│ package-update  5 steps                                  │  │                                                                                              │
+│ package-update  6 steps                                  │  │                                                                                              │
 │ Upgrade named packages on the router, after a config     │  │                                                                                              │
 │ backup, and check the services afterwards                │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
