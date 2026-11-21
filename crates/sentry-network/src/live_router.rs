@@ -614,6 +614,30 @@ fn live_real_router_scrub() {
         // (A delegated prefix is matched by its network part.)
         private.push(("an uplink address", ip.trim_end_matches("::").to_string()));
     }
+    for g in &facts.gateways {
+        if let Ok(std::net::IpAddr::V4(v)) = g.parse::<std::net::IpAddr>() {
+            private.push(("the uplink's gateway", v.to_string()));
+            // As /proc/net/route writes it.
+            let n = u32::from(v);
+            private.push(("the gateway as hex", format!("{:08X}", n.swap_bytes())));
+            private.push(("the gateway as hex", format!("{n:08X}")));
+        }
+    }
+    for a in &facts.wan {
+        if let Ok(v) = a
+            .split('/')
+            .next()
+            .unwrap_or(a)
+            .parse::<std::net::Ipv4Addr>()
+        {
+            let n = u32::from(v);
+            private.push((
+                "an uplink address as hex",
+                format!("{:08X}", n.swap_bytes()),
+            ));
+            private.push(("an uplink address mapped", format!("::ffff:{v}")));
+        }
+    }
     for s in &facts.ssids {
         private.push(("an SSID", s.clone()));
     }
@@ -623,6 +647,19 @@ fn live_real_router_scrub() {
         {
             private.push(("an unnamed MAC", m.clone()));
             private.push(("an unnamed MAC", m.to_uppercase()));
+            private.push(("an unnamed MAC, dashed", m.replace(':', "-")));
+            private.push(("an unnamed MAC, bare", m.replace(':', "")));
+            // The interface id an address is given from it (EUI-64): its last two groups.
+            let b: Vec<u16> = m
+                .split(':')
+                .filter_map(|x| u16::from_str_radix(x, 16).ok())
+                .collect();
+            if b.len() == 6 {
+                private.push((
+                    "an unnamed MAC in an address",
+                    format!("{:x}:{:x}", 0xfe00 | b[3], (b[4] << 8) | b[5]),
+                ));
+            }
             if host.len() >= 4 && !known_hosts.contains(&host.as_str()) && host != "*" {
                 private.push(("an unnamed hostname", host.clone()));
             }
@@ -654,6 +691,21 @@ fn live_real_router_scrub() {
         "ip -6 route show",
         "ip neigh show",
         "cat /proc/net/arp",
+        "cat /proc/net/route",
+        "cat /proc/net/ipv6_route",
+        "cat /proc/net/if_inet6",
+        "cat /sys/class/net/*/address",
+        "netstat -rn",
+        "ip -6 neigh show",
+        "ip route show table all",
+        "ip -6 route show table all",
+        "ifstatus wan",
+        "ubus call network.interface.wan status",
+        "top -b -n 1",
+        "dmesg",
+        "cat /tmp/hosts/odhcpd",
+        "cut -d' ' -f2,3 /tmp/dhcp.leases",
+        "uci show network | grep -e gateway -e ipaddr -e macaddr",
         "brctl showmacs br-lan",
         "iwinfo",
         "iw dev",

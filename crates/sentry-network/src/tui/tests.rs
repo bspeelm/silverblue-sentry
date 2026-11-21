@@ -1345,7 +1345,7 @@ fn a_clients_details_and_marking_one_expected() {
     assert_eq!(a.toast_for_test(), Some("marked expected (baseline.toml)"));
     assert_eq!(
         a.slot().shared.baseline.findings,
-        ["net:client:00:00:5e:00:53:11"]
+        [crate::audit::client_id("home", "00:00:5e:00:53:11")]
     );
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -1366,7 +1366,10 @@ fn a_clients_details_and_marking_one_expected() {
             .map(|f| f.id.clone())
             .collect()
     };
-    assert_eq!(open(&a), ["net:client:02:00:5e:00:53:22"]);
+    assert_eq!(
+        open(&a),
+        [crate::audit::client_id("home", "02:00:5e:00:53:22")]
+    );
     // It sorted down among the rest: find it again, and take it back.
     key(&mut a, KeyCode::Char('/'));
     for c in "53:11".chars() {

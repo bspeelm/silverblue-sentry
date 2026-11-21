@@ -53,57 +53,10 @@ pub fn scrub_of(s: &super::data::Store, r: &Router) -> Result<Scrub, String> {
     ))
 }
 
-/// `Scrub::text`, and one thing more. It reads a MAC as a word of its own, and a finding's
-/// id carries one glued to its colons (`net:client:<mac>`), as a log line may (`sta:<mac>`):
-/// there the MAC stayed whole. Whatever the scrubbing left of such a word is looked through
-/// for MACs, and each is hidden as it would be standing alone.
+/// What goes into a prompt, scrubbed (`Scrub::text`: a MAC is found wherever it stands,
+/// glued to a label's colon too).
 pub fn scrubbed(s: &Scrub, text: &str) -> String {
-    let text = s.text(text);
-    let part = |c: char| c.is_ascii_hexdigit() || c == ':' || c == '-';
-    let mut out = String::with_capacity(text.len());
-    let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if word.len() > MAC_LEN {
-            out.push_str(&glued_macs(s, word));
-        } else {
-            out.push_str(word);
-        }
-        word.clear();
-    };
-    for c in text.chars() {
-        if part(c) {
-            word.push(c);
-        } else {
-            flush(&mut word, &mut out);
-            out.push(c);
-        }
-    }
-    flush(&mut word, &mut out);
-    out
-}
-
-/// `hh:hh:hh:hh:hh:hh`.
-const MAC_LEN: usize = 17;
-
-/// A run of hex digits, colons and dashes (ASCII) with each MAC in it scrubbed: six pairs
-/// that no further hex digit touches.
-fn glued_macs(s: &Scrub, word: &str) -> String {
-    let b = word.as_bytes();
-    let mut out = String::with_capacity(word.len());
-    let mut i = 0;
-    while i < b.len() {
-        let end = i + MAC_LEN;
-        let alone = (i == 0 || !b[i - 1].is_ascii_hexdigit())
-            && (end == b.len() || (end < b.len() && !b[end].is_ascii_hexdigit()));
-        if end <= b.len() && alone && crate::config::mac(&word[i..end]).is_some() {
-            out.push_str(&s.text(&word[i..end]));
-            i = end;
-        } else {
-            out.push(b[i] as char);
-            i += 1;
-        }
-    }
-    out
+    s.text(text)
 }
 
 /// Nothing of an `Ask` leaves unscrubbed: its subject and question too (a finding's

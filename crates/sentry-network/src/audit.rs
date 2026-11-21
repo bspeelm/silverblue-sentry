@@ -57,8 +57,39 @@ pub fn listener_id(l: &Listener) -> String {
     store::listener_id(NS, l)
 }
 
-pub fn client_id(mac: &str) -> String {
-    format!("{NS}:client:{mac}")
+/// An unknown device's finding: named by a tag of its MAC (keyed with the network's salt,
+/// like a secret's), never by the MAC. An id goes where Claude reads without the
+/// scrubbing in between (the maintenance log, a task's row), and a MAC is one of the
+/// things that never leaves this machine whole.
+pub fn client_id(network: &str, mac: &str) -> String {
+    match client_salt(network) {
+        Some(salt) => format!(
+            "{NS}:client:{}",
+            salt.tag(&mac.to_ascii_lowercase())
+                .trim_start_matches("redacted:")
+        ),
+        // No salt, no name for it: every unknown device shares one finding.
+        None => format!("{NS}:client:unnamed"),
+    }
+}
+
+/// (Tests and their snapshots: one salt, so an id is the same in every run.)
+#[cfg(any(test, feature = "testing"))]
+fn client_salt(_network: &str) -> Option<crate::redact::Salt> {
+    Some(crate::redact::Salt::fixed([7; 16]))
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+fn client_salt(network: &str) -> Option<crate::redact::Salt> {
+    use std::sync::Mutex;
+    static SALTS: Mutex<Vec<(String, crate::redact::Salt)>> = Mutex::new(Vec::new());
+    let mut salts = SALTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, s)) = salts.iter().find(|(n, _)| n == network) {
+        return Some(s.clone());
+    }
+    let s = crate::redact::Salt::load(&crate::remote::scope(network)).ok()?;
+    salts.push((network.to_string(), s.clone()));
+    Some(s)
 }
 
 /// The report at `idx` (None: the newest) with the one before, read from disk.
@@ -744,7 +775,7 @@ pub fn derive(
             .as_deref()
             .map_or(String::new(), |h| format!(" ({h})"));
         out.push(
-            f(client_id(mac), Sev::Medium, "clients", format!("unknown device {mac}{named} {}", on(&c.link)))
+            f(client_id(&s.network, mac), Sev::Medium, "clients", format!("unknown device {mac}{named} {}", on(&c.link)))
                 .explain(
                     if c.private {
                         "A device with a randomised MAC is on a wired or routed port, where no passphrase vouches for it."
@@ -1359,12 +1390,21 @@ networks:
         c.devices
             .retain(|d| !matches!(d.name.as_deref(), Some("desk" | "dock" | "web")));
         let f = derive(&snap(&c), &c, None, &none());
+        // Named by a tag of the MAC, the same every time, and never by the MAC.
+        let net = snap(&c).network;
+        let id_of = |mac: &str| client_id(&net, mac);
+        assert!(
+            id_of("00:00:5e:00:53:11").len() == "net:client:".len() + 8
+                && id_of("00:00:5e:00:53:11") == id_of("00:00:5E:00:53:11")
+                && id_of("00:00:5e:00:53:11") != id_of("00:00:5e:00:53:30")
+        );
+        assert!(f.iter().all(|x| !x.id.contains("5e:00")), "{:?}", ids(&f));
         assert_eq!(
             ids(&f),
             [
-                ("net:client:00:00:5e:00:53:11", Sev::Medium),
-                ("net:client:00:00:5e:00:53:30", Sev::Medium),
-                ("net:client:02:00:5e:00:53:22", Sev::Medium)
+                (id_of("00:00:5e:00:53:11").as_str(), Sev::Medium),
+                (id_of("02:00:5e:00:53:22").as_str(), Sev::Medium),
+                (id_of("00:00:5e:00:53:30").as_str(), Sev::Medium)
             ]
         );
         assert_eq!(
@@ -1372,10 +1412,10 @@ networks:
             "unknown device 00:00:5e:00:53:11 on wired port lan2"
         );
         assert_eq!(
-            f[1].message,
+            f[2].message,
             "unknown device 00:00:5e:00:53:30 (web) on dmz (lan4)"
         );
-        assert!(f[2].what.contains("randomised MAC"));
+        assert!(f[1].what.contains("randomised MAC"));
         // The private MACs on Wi-Fi never are, named or not.
         assert!(
             !f.iter()

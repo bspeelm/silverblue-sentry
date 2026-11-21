@@ -32,7 +32,7 @@ pub fn hints() -> Hints {
 /// Marked expected: its finding is in the baseline file (by MAC, or a pattern).
 pub fn expected(v: &View, c: &Client) -> bool {
     c.mac.as_deref().is_some_and(|m| {
-        let id = audit::client_id(m);
+        let id = audit::client_id(v.name, m);
         v.sh.baseline.findings.iter().any(|g| glob(g, &id))
     })
 }
@@ -294,7 +294,7 @@ impl Clients {
                         toast("a private address on Wi-Fi is never flagged: nothing to mark")
                     }
                     (st, Some(mac)) => vec![Effect::own(Own::Expected(
-                        audit::client_id(mac),
+                        audit::client_id(v.name, mac),
                         st == Standing::Unknown,
                     ))],
                 }
