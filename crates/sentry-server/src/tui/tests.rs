@@ -5147,3 +5147,60 @@ fn auto_stops_a_series_at_a_row_that_is_not_done() {
     assert!(s.contains("· 2 ticked ·"), "{s}");
     assert!(a.apply_session().is_none());
 }
+
+#[test]
+fn the_cursor_keeps_its_row_through_a_run() {
+    let mut a = app_with_cadence();
+    let _turn = startable_as(
+        &mut a,
+        "cursor-apt-maintenance.toml",
+        "name = \"apt-maintenance\"\ndescription = \"test\"\n\
+         [[steps]]\nid = \"one\"\ntitle = \"One\"\nrun = \"echo one\"\ngate = \"auto\"\n\
+         [[steps]]\nid = \"two\"\ntitle = \"Two\"\nrun = \"echo two\"\ngate = \"auto\"\n",
+    );
+    let at = |a: &App| {
+        let m = &srv(a).screens.maint;
+        (m.cur.sel, m.sel.clone().unwrap_or_default())
+    };
+    // The cadence's task, fourth row: Enter starts its workflow, followed from Maintenance.
+    key(&mut a, KeyCode::Char('6'));
+    a.apply(
+        vec![Own::maint_find("task:cadence-apt-maintenance".into())],
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
+    key(&mut a, KeyCode::Char('6'));
+    step_exits(&mut a, 0);
+    a.tick(Instant::now());
+    let (i, row) = at(&a);
+    assert!(i == 3 && row.contains("Run apt-maintenance"), "{i} {row}");
+    step_exits(&mut a, 0);
+    a.tick(Instant::now());
+    assert!(wf(&a).unwrap().done());
+    key(&mut a, KeyCode::Esc);
+    // It's logged (tests write no log: the entry a run tagged with the task leaves) and
+    // the server is read again. The task's row is gone, and the updates' own row, which
+    // it stood for, is back at the top: the cursor stays where it was, beside where the
+    // task was, not at the top.
+    a.slot_mut().shared.log.insert(
+        0,
+        sentry_core::maint::log::LogEntry::task(
+            "myserver",
+            "cadence-apt-maintenance",
+            "Run apt-maintenance",
+            None,
+        ),
+    );
+    data(&mut a, Kind::Maint, maint_payload());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("Run apt-maintenance"), "{s}");
+    // A key on the list takes the row the cursor is on.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('k'));
+    let (i, row) = at(&a);
+    assert!(
+        i == 3 && row.contains("container db is exited"),
+        "{i} {row}\n{s}"
+    );
+}

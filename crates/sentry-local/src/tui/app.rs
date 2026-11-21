@@ -243,6 +243,11 @@ impl App {
             .expect("this machine")
     }
 
+    /// Where Maintenance's cursor is.
+    pub fn maint_cursor_for_test(&self) -> usize {
+        self.local().screens.maint.cur.sel
+    }
+
     pub fn set_chat(&mut self, c: super::chat::Chat) {
         self.open_chat(c);
     }

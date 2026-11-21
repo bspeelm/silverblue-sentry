@@ -40,6 +40,9 @@ pub struct Maint {
     pub cur: Cursor,
     /// The selected recommendation's key: the cursor follows it when the list changes.
     sel: Option<String>,
+    /// The rows' keys in order, as last seen with the selected one among them: where the
+    /// cursor waits while that row is away (the updates' row during their run).
+    order: Vec<String>,
     /// Select the first recommendation whose key starts with this (from the dashboard).
     pub find: Option<String>,
     pub view: Option<Sub>,
@@ -390,20 +393,44 @@ pub fn check_all() -> Vec<Effect> {
 
 impl Maint {
     /// Keep the cursor on the selected recommendation (or the one asked for by `find`).
+    /// While its row is away (a run's own row stands for the row that started it, a task is
+    /// done) the cursor waits on the nearest row that was after it, else before it, and
+    /// goes back when the row does; a key on the list takes the row under the cursor
+    /// instead (`handle`).
     fn sync(&mut self, recs: &[Rec]) {
+        let at = |k: &String| recs.iter().position(|r| &r.key == k);
         if let Some(p) = self.find.take() {
             if let Some(i) = recs.iter().position(|r| r.key.starts_with(&p)) {
                 self.cur.sel = i;
             }
-        } else if let Some(i) = self
-            .sel
-            .as_ref()
-            .and_then(|k| recs.iter().position(|r| &r.key == k))
-        {
-            self.cur.sel = i;
+            self.sel = None;
+        } else if let Some(k) = &self.sel {
+            match at(k) {
+                Some(i) => self.cur.sel = i,
+                None => {
+                    let was = self.order.iter().position(|o| o == k);
+                    let near = was.and_then(|p| {
+                        let (before, after) = self.order.split_at(p);
+                        after
+                            .iter()
+                            .find_map(at)
+                            .or(before.iter().rev().find_map(at))
+                    });
+                    self.cur.sel = near.unwrap_or(self.cur.sel);
+                    self.cur.clamp(recs.len());
+                    return;
+                }
+            }
         }
         let i = self.cur.clamp(recs.len());
         self.sel = recs.get(i).map(|r| r.key.clone());
+        self.order = recs.iter().map(|r| r.key.clone()).collect();
+    }
+
+    /// The row under the cursor is the one meant from now on (a key was pressed on it).
+    fn take(&mut self, recs: &[Rec]) {
+        self.sel = recs.get(self.cur.sel).map(|r| r.key.clone());
+        self.order = recs.iter().map(|r| r.key.clone()).collect();
     }
 
     pub fn selected(&self, v: &View) -> Option<Rec> {
@@ -443,8 +470,9 @@ impl Maint {
         }
         let recs = recs(v);
         self.sync(&recs);
-        if self.cur.nav(a, recs.len()) {
-            self.sel = recs.get(self.cur.sel).map(|r| r.key.clone());
+        let moved = self.cur.nav(a, recs.len());
+        self.take(&recs);
+        if moved {
             return Vec::new();
         }
         let t = v.t;

@@ -2538,3 +2538,97 @@ fn auto_takes_a_workflows_default_values() {
     );
     let _ = std::fs::remove_file(file);
 }
+
+/// The title cell of the row Maintenance's cursor is on.
+fn maint_row(a: &mut App) -> String {
+    let s = render_to_string(a, 158, 41);
+    let at = a.maint_cursor_for_test();
+    let rows: Vec<&str> = s
+        .lines()
+        .filter(|l| {
+            ["│ now ", "│ soon ", "│ routine "]
+                .iter()
+                .any(|p| l.starts_with(p))
+        })
+        .collect();
+    rows.get(at)
+        .map(|l| {
+            l.chars()
+                .skip(10)
+                .take(30)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_else(|| panic!("no row {at}: {s}"))
+}
+
+/// A run in progress whose one step waits for Enter (nothing is started or written).
+fn waiting_run(a: &mut App, name: &str) {
+    use crate::tui::wf::Session;
+    use crate::workflows::runner::Next;
+    use crate::workflows::state::RunState;
+    let wf = crate::workflows::parse(&format!(
+        "name = \"{name}\"\ndescription = \"test\"\n[[steps]]\nid = \"firmware\"\n\
+         title = \"Update the firmware\"\nrun = \"fwupdmgr update\"\ngate = \"confirm\"\n"
+    ))
+    .unwrap();
+    let st = RunState::new(name, &["firmware".to_string()], Default::default());
+    a.set_wf(Session::for_test(wf, st, Next::Confirm(0)));
+}
+
+#[test]
+fn the_cursor_keeps_its_row_through_a_run() {
+    let now = |id: &str, title: &str| crate::maint::tasks::Task {
+        level: crate::maint::Level::Now,
+        ..by_hand_task(id, title)
+    };
+    // The updates' row, third of four. While quick-update runs, its own row (first) stands
+    // for it: the cursor waits on the row after, not on whatever slid under it, and is back
+    // on the updates when they are (here they still wait).
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(now("ups", "Check the UPS battery"));
+    a.add_task_for_test(now("fans", "Clean the fans"));
+    a.add_task_for_test(by_hand_task("later", "Something routine"));
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    assert!(maint_row(&mut a).starts_with("Updates waiting"));
+    waiting_run(&mut a, crate::maint::local::UPDATE_WORKFLOW);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("quick-update in progress") && !s.contains("Updates waiting"),
+        "{s}"
+    );
+    assert_eq!(maint_row(&mut a), "Something routine");
+    ended_run(&mut a, crate::maint::local::UPDATE_WORKFLOW);
+    key(&mut a, KeyCode::Esc);
+    assert!(maint_row(&mut a).starts_with("Updates waiting"));
+    assert_eq!(a.maint_cursor_for_test(), 2);
+
+    // A task's row, which its workflow's run does: the cursor follows it down when the
+    // run's row comes in above, and once it's done stays where it was, on the next row.
+    let mut a = app(ScreenId::Maint);
+    a.add_task_for_test(now("ups", "Check the UPS battery"));
+    a.add_task_for_test(crate::maint::tasks::Task {
+        act: "run cursor-fw".into(),
+        ..by_hand_task("fw", "Update the firmware")
+    });
+    a.add_task_for_test(by_hand_task("later", "Something routine"));
+    render_to_string(&mut a, 158, 41);
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    assert_eq!(maint_row(&mut a), "Update the firmware");
+    waiting_run(&mut a, "cursor-fw");
+    assert_eq!(maint_row(&mut a), "Update the firmware");
+    assert_eq!(a.maint_cursor_for_test(), 3, "under the run's row");
+    ended_run(&mut a, "cursor-fw");
+    key(&mut a, KeyCode::Esc);
+    assert!(!a.tasks_due_for_test().contains(&"fw".to_string()));
+    assert_eq!(maint_row(&mut a), "Something routine");
+    assert_eq!(a.maint_cursor_for_test(), 2);
+    // A key on the list takes the row the cursor is on: it doesn't go back to a row
+    // that returns later.
+    key(&mut a, KeyCode::Char('k'));
+    assert!(maint_row(&mut a).starts_with("Updates waiting"));
+}
