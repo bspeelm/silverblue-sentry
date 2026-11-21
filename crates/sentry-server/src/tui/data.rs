@@ -29,6 +29,8 @@ pub enum Kind {
     Apt,
     Smart,
     Jails,
+    /// CrowdSec, where it runs: read when the Dashboard is entered, on `r`, never polled.
+    Crowdsec,
     Listeners,
     /// What listens and what's connected, without sudo (the Network screen's sample).
     Sockets,
@@ -64,6 +66,7 @@ pub enum Payload {
     Apt(apt::Apt),
     Smart(Vec<Result<health::Smart, SrvError>>),
     Jails(Vec<health::Jail>),
+    Crowdsec(Option<Box<collect::crowdsec::Crowdsec>>),
     Listeners(Vec<net::Listener>),
     Sockets(collect::sockets::Sockets),
     Journal(Vec<JournalUnit>),
@@ -174,6 +177,8 @@ pub struct Store {
     pub apt: Slot<apt::Apt>,
     pub smart: Slot<Vec<Result<health::Smart, SrvError>>>,
     pub jails: Slot<Vec<health::Jail>>,
+    /// CrowdSec as last read (`Some(None)`: read, and the server has none).
+    pub crowdsec: Slot<Option<collect::crowdsec::Crowdsec>>,
     /// Listeners with the process names only root sees (sudo, or the inventory read).
     pub listeners: Slot<Vec<net::Listener>>,
     pub sockets: Slot<collect::sockets::Sockets>,
@@ -245,6 +250,7 @@ impl Store {
             Payload::Apt(v) => self.apt.set(Ok(v)),
             Payload::Smart(v) => self.smart.set(Ok(v)),
             Payload::Jails(v) => self.jails.set(Ok(v)),
+            Payload::Crowdsec(v) => self.crowdsec.set(Ok(v.map(|c| *c))),
             Payload::Listeners(v) => self.listeners.set(Ok(v)),
             Payload::Sockets(v) => self.sockets.set(Ok(v)),
             Payload::Journal(v) => self.journal.set(Ok(v)),
@@ -283,6 +289,7 @@ impl Store {
             Kind::Apt => self.apt.err = Some(e),
             Kind::Smart => self.smart.err = Some(e),
             Kind::Jails => self.jails.err = Some(e),
+            Kind::Crowdsec => self.crowdsec.err = Some(e),
             Kind::Listeners => self.listeners.err = Some(e),
             Kind::Sockets => self.sockets.err = Some(e),
             Kind::Journal => self.journal.err = Some(e),
@@ -352,6 +359,7 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
         Kind::Apt => Payload::Apt(apt::collect(r)?),
         Kind::Smart => Payload::Smart(r.cfg.smart.iter().map(|d| health::smart(r, d)).collect()),
         Kind::Jails => Payload::Jails(health::fail2ban(r)?),
+        Kind::Crowdsec => Payload::Crowdsec(collect::crowdsec::collect(r)?.map(Box::new)),
         Kind::Listeners => Payload::Listeners(collect::listeners(r)?),
         Kind::Sockets => Payload::Sockets(collect::sockets::collect(r)?),
         Kind::Journal => Payload::Journal(collect::journal(r)?),

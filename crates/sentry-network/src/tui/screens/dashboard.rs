@@ -76,6 +76,26 @@ fn status_lines(v: &View, w: usize) -> Vec<Line<'static>> {
         }
         lines.push(Line::from(sp));
     }
+    // CrowdSec's firewall bouncer, only where the router has it: how many addresses it
+    // blocks now (a count: the addresses themselves never leave the router).
+    if let Some(Some(b)) = &s.crowdsec.value {
+        use crate::collect::services::State;
+        let running = s
+            .services
+            .value
+            .as_ref()
+            .map(|sv| sv.state(crate::collect::crowdsec::SERVICE) == State::Running);
+        let (said, c) = match (running, b.blocked()) {
+            (Some(false), _) if b.on() => ("○ not running".to_string(), t.red),
+            (Some(false) | None, _) if !b.on() => ("not switched on".to_string(), t.dim),
+            (_, Some(n)) => (format!("{n} blocked"), t.fg),
+            (_, None) => ("running".to_string(), t.fg),
+        };
+        lines.push(Line::from(vec![
+            label(t, "crowdsec"),
+            Span::styled(said, t.s(c)),
+        ]));
+    }
     if let Some(rep) = &s.report.value {
         let line = match rep.as_deref() {
             None => Line::from(vec![label(t, "audit"), Span::styled("none yet", t.dim())]),

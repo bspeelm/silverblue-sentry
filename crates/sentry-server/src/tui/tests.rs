@@ -5204,3 +5204,105 @@ fn the_cursor_keeps_its_row_through_a_run() {
         "{i} {row}\n{s}"
     );
 }
+
+/// CrowdSec is a Status row where the server has it, in counts; a server without it shows
+/// nothing (the Dashboard's own snapshot, unchanged, is that case).
+#[test]
+fn crowdsec_is_a_status_row_only_where_the_server_has_it() {
+    use collect::crowdsec::{self, Agent};
+    let mut a = app();
+    let has = |a: &mut App| {
+        render_to_string(a, 158, 41)
+            .to_lowercase()
+            .contains("crowdsec")
+    };
+    assert!(!has(&mut a), "never read");
+    data(&mut a, Kind::Crowdsec, Payload::Crowdsec(None));
+    assert!(!has(&mut a), "read: the server has none");
+    // Read when the Dashboard is entered and on r: its reads are root's, so no timer.
+    let polls = crate::tui::screens::Screens::polls(ScreenId::Dash, &srv(&a).remote.cfg);
+    let p = polls.iter().find(|p| p.kind == Kind::Crowdsec).unwrap();
+    assert!(p.every.is_none());
+
+    let mut c = crowdsec::tests::sample();
+    data(
+        &mut a,
+        Kind::Crowdsec,
+        Payload::Crowdsec(Some(Box::new(c.clone()))),
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("server_dashboard_crowdsec_158x41", body(&s));
+    assert!(
+        s.contains("● crowdsec: 2 bouncer(s) quiet · 15240 bans (4 local) · 6 alerts in 24 h "),
+        "{s}"
+    );
+    for addr in ["192.0.2.", "198.51.100.", "203.0.113.", "2001:db8"] {
+        assert!(!s.contains(addr), "{addr}");
+    }
+    // Every bouncer asking: one green line.
+    c.bouncers
+        .as_mut()
+        .unwrap()
+        .retain(|b| b.name == "firewall-myserver");
+    data(
+        &mut a,
+        Kind::Crowdsec,
+        Payload::Crowdsec(Some(Box::new(c.clone()))),
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("✓ crowdsec running · 15240 bans (4 local) · 6 alerts in 24 h "),
+        "{s}"
+    );
+    // Only the list could be read (no metrics): the local bans, said as that.
+    c.decisions = Some(crowdsec::parse_decisions(&fixture("crowdsec-decisions.json")).unwrap());
+    c.alerts = None;
+    data(
+        &mut a,
+        Kind::Crowdsec,
+        Payload::Crowdsec(Some(Box::new(c.clone()))),
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("✓ crowdsec running · 3 local ban(s) "), "{s}");
+    // The agent down.
+    c.agent = Agent::Down("failed".into());
+    data(&mut a, Kind::Crowdsec, Payload::Crowdsec(Some(Box::new(c))));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("● crowdsec isn't running (failed)"), "{s}");
+}
+
+/// What the audit says of CrowdSec on Maintenance: a quiet bouncer is listed, the hub's
+/// items behind can wait (listed with `o`). Before any read of its own, the Dashboard shows
+/// what the audit saw.
+#[test]
+fn crowdsec_findings_are_recommendations_and_the_hub_can_wait() {
+    let mut a = app();
+    let mut snap = collect::Snapshot {
+        server: "myserver".into(),
+        taken_at: Some("2026-10-26T11:00:00Z".parse().unwrap()),
+        crowdsec: Some(collect::crowdsec::tests::sample()),
+        ..Default::default()
+    };
+    snap.units = srv(&a).store.units.value.clone();
+    let findings = audit::derive(&snap, &cfg(), None, &Default::default());
+    data(
+        &mut a,
+        Kind::Report,
+        Payload::Report(Some(Box::new(audit::Report {
+            snapshot: snap,
+            findings,
+        }))),
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("● crowdsec: 2 bouncer(s) quiet · 15240 bans"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('6'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("CrowdSec bouncer web-proxy:"), "{s}");
+    assert!(!s.contains("CrowdSec hub"), "it can wait: {s}");
+    key(&mut a, KeyCode::Char('o'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("CrowdSec hub:"), "{s}");
+}

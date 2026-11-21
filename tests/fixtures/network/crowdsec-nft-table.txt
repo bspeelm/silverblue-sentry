@@ -1,0 +1,40 @@
+table ip crowdsec {
+	counter processed {
+		packets 1811 bytes 104022
+	}
+
+	set crowdsec-blacklists {
+		type ipv4_addr
+		flags timeout
+	}
+
+	set crowdsec-blacklists-CAPI {
+		type ipv4_addr
+		flags timeout
+		elements = { 192.0.2.14 timeout 6d23h59m55s expires 4d2h11m3s, 192.0.2.201 timeout 6d23h59m55s expires 4d2h11m3s,
+			     198.51.100.3 timeout 6d23h59m55s expires 4d2h11m3s, 198.51.100.77 timeout 6d23h59m55s expires 4d2h11m3s,
+			     203.0.113.9 timeout 6d23h59m55s expires 4d2h11m3s }
+	}
+
+	set crowdsec-blacklists-crowdsec {
+		type ipv4_addr
+		flags timeout
+		elements = { 192.0.2.10 timeout 4h expires 2h14m1s, 203.0.113.21 timeout 4h expires 51m9s }
+	}
+
+	chain crowdsec-chain-input {
+		type filter hook input priority filter + 4; policy accept;
+		ct state established,related accept
+		iifname != { "eth1" } accept
+		ip saddr @crowdsec-blacklists-CAPI counter packets 1702 bytes 98004 drop
+		ip saddr @crowdsec-blacklists-crowdsec counter packets 109 bytes 6018 drop
+	}
+
+	chain crowdsec-chain-forward {
+		type filter hook forward priority filter + 4; policy accept;
+		ct state established,related accept
+		iifname != { "eth1" } accept
+		ip saddr @crowdsec-blacklists-CAPI counter packets 0 bytes 0 drop
+		ip saddr @crowdsec-blacklists-crowdsec counter packets 0 bytes 0 drop
+	}
+}

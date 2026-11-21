@@ -347,6 +347,15 @@ Everything that changes a router is developed against a disposable one (`scripts
 
 Headless: `sentry-network collect [probe|ifaces|clients|listeners|uci|cert|services|updates] [name]` (JSON; all without a kind), `audit [name]`, `backup [name] [--verify]`, `backup list|key|decrypt`, `record [name]`, `run|exec <name> -- …` (the gateways), `guard <name> preview|apply|keep`, `packages <name> preview|upgrade|check`.
 
+## CrowdSec
+
+Read only, and only where it is installed: sentry installs nothing, registers no bouncer and never adds or deletes a decision. A host without it shows nothing new.
+
+- **A server with `cscli`**: a Dashboard status row (agent running, bans active with how many are local, alerts in 24 h) and the findings `srv:crowdsec:down` (the agent's unit isn't active: high), `srv:crowdsec:bouncer:<name>` (a registered bouncer hasn't asked for decisions in over an hour: medium; mark a retired one expected) and `srv:crowdsec:hub` (hub items with an update, or edited locally: low, listed with `o`). `cscli` usually needs root: add `cscli decisions list`, `cscli alerts list`, `cscli hub list`, `cscli bouncers list` and `cscli metrics` to `sudo:` (`sentry-server init` drafts them when it finds `cscli`). They are read when the Dashboard is entered, on `r`, by the audit and in `I`'s one read, never on a timer.
+- **A router with `crowdsec-firewall-bouncer`**: a Status row, `crowdsec N blocked` (the elements of its nft sets, counted on the router), and the finding `net:crowdsec:bouncer`: switched on and not running (high), installed and never switched on, or running for over a day with empty sets (both low).
+
+Blocked and banned addresses never reach a report or Claude: only counts, scenario names and bouncer names leave the collectors.
+
 ## Config
 
 `~/.config/sentry/config.toml` follows `docs/spec.md` §12, and every key is optional. Additions:

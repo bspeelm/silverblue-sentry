@@ -465,6 +465,9 @@ pub fn derive(
             );
         }
     }
+    if let Some(c) = &s.crowdsec {
+        out.extend(crowdsec(c));
+    }
     for j in s.journal.iter().flatten() {
         out.push(
             f(
@@ -495,6 +498,84 @@ pub fn derive(
             .any(|g| glob(g, &x.id));
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.id.cmp(&b.id)));
+    out
+}
+
+/// CrowdSec, where the server runs it: the agent down, a bouncer that stopped asking, hub
+/// items behind. Counts and names only (the collector keeps no address).
+fn crowdsec(c: &super::collect::crowdsec::Crowdsec) -> Vec<Finding> {
+    use super::collect::crowdsec::{Agent, HubState};
+    let mut out = Vec::new();
+    if let Agent::Down(state) = &c.agent {
+        out.push(
+            f(
+                "srv:crowdsec:down".into(),
+                Sev::High,
+                "security",
+                format!("CrowdSec's agent isn't running ({state})"),
+            )
+            .explain(
+                "crowdsec.service is installed and not active.",
+                "Nothing reads the logs or answers the bouncers: no new bans, and the ones \
+                 there run out.",
+                "Read why: journalctl -u crowdsec -n 50, then start it again.",
+            ),
+        );
+    }
+    for b in c.quiet_bouncers() {
+        let said = match b.last_pull {
+            Some(t) => format!("last asked {}", sentry_core::fmt::ago(c.now - t)),
+            None => "never asked".into(),
+        };
+        out.push(
+            f(
+                format!("srv:crowdsec:bouncer:{}", b.name),
+                Sev::Medium,
+                "security",
+                format!("CrowdSec bouncer {}: {said}", b.name),
+            )
+            .explain(
+                "A registered bouncer hasn't asked the agent for decisions in over an hour.",
+                "A bouncer is what blocks: one that stopped asking enforces an old list, or \
+                 nothing.",
+                "Check it where it runs. If it's retired, mark this expected (or remove it \
+                 with cscli bouncers delete).",
+            ),
+        );
+    }
+    let behind: Vec<String> = c
+        .hub
+        .iter()
+        .flatten()
+        .map(|i| {
+            let how = match i.state {
+                HubState::Outdated => "update available",
+                HubState::Tainted => "edited locally",
+            };
+            format!("{} {} ({how})", i.kind, i.name)
+        })
+        .collect();
+    if !behind.is_empty() {
+        out.push(
+            f(
+                "srv:crowdsec:hub".into(),
+                Sev::Low,
+                "maintenance",
+                format!(
+                    "CrowdSec hub: {} item(s) not as the hub has them",
+                    behind.len()
+                ),
+            )
+            .explain(
+                "Parsers, scenarios or collections have a newer version in the hub, or were \
+                 edited here (those are skipped by upgrades).",
+                "Newer scenarios catch more and misfire less. It can wait.",
+                "sudo cscli hub update && sudo cscli hub upgrade, when you next maintain the \
+                 server.",
+            )
+            .evidence(behind.join("\n")),
+        );
+    }
     out
 }
 
@@ -835,5 +916,83 @@ mod tests {
             ids(&derive(&s, &c, Some(&prev), &none())).contains(&"srv:container-restarted:web")
         );
         assert!(!ids(&derive(&s, &c, Some(&s), &none())).contains(&"srv:container-restarted:web"));
+    }
+
+    #[test]
+    fn crowdsec_down_a_quiet_bouncer_and_hub_items_and_nothing_where_it_isnt() {
+        use crate::collect::crowdsec::{self, Agent};
+        let of = |s: &Snapshot| -> Vec<(String, Sev)> {
+            derive(s, &cfg(), None, &none())
+                .into_iter()
+                .filter(|f| f.id.contains("crowdsec"))
+                .map(|f| (f.id, f.severity))
+                .collect()
+        };
+        // A server without it: no finding, and the report says nothing of it.
+        let mut s = snap();
+        assert!(s.crowdsec.is_none() && of(&s).is_empty());
+        assert!(!serde_json::to_string(&s).unwrap().contains("crowdsec"));
+        // As the fixtures have it: running, two bouncers that don't ask, three hub items.
+        s.crowdsec = Some(crowdsec::tests::sample());
+        assert_eq!(
+            of(&s),
+            [
+                ("srv:crowdsec:bouncer:new-bouncer".to_string(), Sev::Medium),
+                ("srv:crowdsec:bouncer:web-proxy".to_string(), Sev::Medium),
+                ("srv:crowdsec:hub".to_string(), Sev::Low),
+            ]
+        );
+        let all = derive(&s, &cfg(), None, &none());
+        let find = |id: &str| all.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(
+            find("srv:crowdsec:bouncer:web-proxy").message,
+            "CrowdSec bouncer web-proxy: last asked 3d ago"
+        );
+        assert_eq!(
+            find("srv:crowdsec:bouncer:new-bouncer").message,
+            "CrowdSec bouncer new-bouncer: never asked"
+        );
+        let hub = find("srv:crowdsec:hub");
+        assert_eq!(
+            hub.message,
+            "CrowdSec hub: 3 item(s) not as the hub has them"
+        );
+        assert!(
+            hub.evidence
+                .contains("parsers example/sshd-logs (edited locally)")
+        );
+        // Nothing in a report names an address.
+        let text = serde_json::to_string(&(&s.crowdsec, &all)).unwrap();
+        for addr in ["192.0.2.", "198.51.100.", "203.0.113.", "2001:db8"] {
+            assert!(!text.contains(addr), "{addr}");
+        }
+        // The agent down: that, and not its bouncers (nothing answers them).
+        let mut down = s.clone();
+        down.crowdsec.as_mut().unwrap().agent = Agent::Down("failed".into());
+        down.crowdsec.as_mut().unwrap().hub = Some(Vec::new());
+        assert_eq!(of(&down), [("srv:crowdsec:down".to_string(), Sev::High)]);
+        // All well, or cscli beside an agent that runs elsewhere: nothing.
+        let mut well = s.clone();
+        let c = well.crowdsec.as_mut().unwrap();
+        c.hub = Some(Vec::new());
+        c.bouncers
+            .as_mut()
+            .unwrap()
+            .retain(|b| b.name == "firewall-myserver");
+        assert!(of(&well).is_empty());
+        well.crowdsec.as_mut().unwrap().agent = Agent::NoUnit;
+        assert!(of(&well).is_empty());
+        // A retired bouncer marked expected stays expected.
+        let base = BaselineFile {
+            findings: vec!["srv:crowdsec:bouncer:web-proxy".into()],
+            ..Default::default()
+        };
+        let f = derive(&s, &cfg(), None, &base);
+        assert!(
+            f.iter()
+                .find(|f| f.id.ends_with("web-proxy"))
+                .unwrap()
+                .expected
+        );
     }
 }

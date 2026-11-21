@@ -44,8 +44,8 @@ enum Command {
     /// Test the connection, sudo and the tools sentry-server uses.
     Check { name: Option<String> },
     /// Run one collector and print its result as JSON (probe, procs, units, docker, apt,
-    /// smart, sensors, gpu, fail2ban, disks, listeners, sockets, journal, docker-stats,
-    /// snapshot).
+    /// smart, sensors, gpu, fail2ban, crowdsec, disks, listeners, sockets, journal,
+    /// docker-stats, snapshot).
     Collect { server: String, kind: String },
     /// Audit a server: what needs attention, written to a report.
     Audit { name: Option<String> },

@@ -547,6 +547,7 @@ impl ServerTarget {
             Kind::Docker,
             Kind::Smart,
             Kind::Jails,
+            Kind::Crowdsec,
             Kind::Journal,
             Kind::Listeners,
             Kind::Maint,

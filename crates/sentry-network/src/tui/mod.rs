@@ -95,6 +95,7 @@ pub mod testing {
                 Kind::Uci => "uci",
                 Kind::Cert => "cert",
                 Kind::Services => "services",
+                Kind::Crowdsec => "crowdsec",
                 Kind::Audit => "audit",
                 Kind::Report | Kind::ReportAt(_) => "report",
                 Kind::Updates => "updates",

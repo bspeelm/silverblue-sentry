@@ -44,6 +44,9 @@ pub struct Snapshot {
     /// The web interface's certificate (none: it has none, or it wasn't read).
     pub cert: Option<Cert>,
     pub services: Option<Services>,
+    /// CrowdSec's firewall bouncer, where the router has it (counts, never an address).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crowdsec: Option<collect::crowdsec::Bouncer>,
     /// The config backups against the router's files as they are now (none: not compared).
     pub backup: Option<crate::backup::Status>,
     /// (section, why it's missing)
@@ -778,11 +781,84 @@ pub fn derive(
         }
     }
 
+    if let Some(b) = &s.crowdsec {
+        let running = s
+            .services
+            .as_ref()
+            .map(|sv| sv.state(collect::crowdsec::SERVICE) == SvcState::Running);
+        out.extend(crowdsec(b, running));
+    }
+
     for x in &mut out {
         x.expected = base.findings.iter().any(|g| glob(g, &x.id));
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.id.cmp(&b.id)));
     out
+}
+
+/// A bouncer that has run this long with nothing in its sets isn't being fed.
+pub const CROWDSEC_EMPTY_S: u64 = 86_400;
+
+/// How CrowdSec's firewall bouncer stands, where the router has it: switched on and not
+/// running (high, as any service that is down), installed and never switched on, or running
+/// for a day with nothing to block (both low). `running`: None when the services weren't read.
+fn crowdsec(b: &collect::crowdsec::Bouncer, running: Option<bool>) -> Option<Finding> {
+    let id = format!("{NS}:crowdsec:bouncer");
+    let name = collect::crowdsec::SERVICE;
+    if b.on() && running == Some(false) {
+        return Some(
+            f(
+                id,
+                Sev::High,
+                "services",
+                "CrowdSec's firewall bouncer is switched on and isn't running".into(),
+            )
+            .explain(
+                "crowdsec-firewall-bouncer has no running instance.",
+                "Its tables are removed when it stops: nothing CrowdSec decided is blocked \
+                 at the router.",
+                &format!("Look at `logread -e {name}`, then /etc/init.d/{name} restart."),
+            ),
+        );
+    }
+    if !b.on() && running != Some(true) {
+        return Some(
+            f(
+                id,
+                Sev::Low,
+                "services",
+                "CrowdSec's firewall bouncer is installed and not switched on".into(),
+            )
+            .explain(
+                "The package is on the router; `option enabled` in /etc/config/crowdsec isn't 1.",
+                "It blocks nothing until it has an agent's address and key and is switched on.",
+                "Set it up (api_url, api_key, enabled), or remove the package if it isn't wanted.",
+            ),
+        );
+    }
+    if running == Some(true)
+        && b.blocked() == Some(0)
+        && b.age_s.is_some_and(|a| a >= CROWDSEC_EMPTY_S)
+    {
+        return Some(
+            f(
+                id,
+                Sev::Low,
+                "services",
+                "CrowdSec's firewall bouncer has run for over a day with nothing to block".into(),
+            )
+            .explain(
+                "Its nft sets are empty.",
+                "An agent with the community blocklist hands out thousands of addresses: an \
+                 empty set usually means the bouncer can't reach the agent or its key is refused.",
+                &format!(
+                    "Look at `logread -e {name}` and /var/log/crowdsec-firewall-bouncer.log; \
+                          on the agent, `cscli bouncers list` says when it last asked."
+                ),
+            ),
+        );
+    }
+    None
 }
 
 /// Read everything the audit looks at. A part that fails is left out and its error
@@ -809,7 +885,11 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
     let listeners = part("listeners", collect::listeners::collect(r), &mut errors)?;
     let raw = part("clients", collect::clients::collect(r), &mut errors)?;
     let cert = part("certificate", collect::cert::collect(r), &mut errors)?.flatten();
-    let services = part("services", collect::services::collect(r), &mut errors)?;
+    let (services, crowdsec) =
+        match part("services", collect::services::collect_with(r), &mut errors)? {
+            Some((sv, cs)) => (Some(sv), cs),
+            None => (None, None),
+        };
     // How the backups stand (a backup's sidecars are plain: nothing is decrypted).
     let backup = part(
         "backup",
@@ -832,6 +912,7 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
         clients,
         cert,
         services,
+        crowdsec,
         backup,
         errors,
     })
@@ -918,6 +999,7 @@ networks:
             clients: Some(list),
             cert: cert::parse(&fixture("network/cert.hex")).unwrap(),
             services: Some(services::parse(&fixture("network/services.json")).unwrap()),
+            crowdsec: None,
             backup: None,
             errors: Vec::new(),
         }
@@ -1439,5 +1521,120 @@ networks:
             ))
         );
         assert_eq!(pattern_for("net:load-high"), None);
+    }
+
+    #[test]
+    fn crowdsec_bouncer_down_off_or_unfed_and_nothing_where_it_isnt() {
+        use crate::collect::crowdsec::{Bouncer, SERVICE};
+        use crate::collect::services::Service;
+        let cfg = cfg();
+        let of = |s: &Snapshot| -> Vec<(String, Sev, String)> {
+            derive(s, &cfg, None, &none())
+                .into_iter()
+                .filter(|f| f.id.contains("crowdsec"))
+                .map(|f| (f.id, f.severity, f.message))
+                .collect()
+        };
+        // A router without it: nothing, and the report doesn't mention it.
+        let mut s = snap(&cfg);
+        assert!(of(&s).is_empty());
+        assert!(!serde_json::to_string(&s).unwrap().contains("crowdsec"));
+        let svc = |s: &mut Snapshot, running: u32| {
+            s.services.as_mut().unwrap().0.insert(
+                SERVICE.into(),
+                Service {
+                    instances: running,
+                    running,
+                },
+            );
+        };
+        let fed = Bouncer {
+            enabled: Some(true),
+            blocked4: Some(1204),
+            blocked6: Some(37),
+            age_s: Some(3 * 86_400),
+        };
+        // Running and fed: nothing.
+        s.crowdsec = Some(fed);
+        svc(&mut s, 1);
+        assert!(of(&s).is_empty());
+        // Switched on and no instance: high, as any service down.
+        svc(&mut s, 0);
+        s.crowdsec = Some(Bouncer {
+            blocked4: None,
+            blocked6: None,
+            age_s: None,
+            ..fed
+        });
+        let f = of(&s);
+        assert_eq!(f.len(), 1);
+        assert_eq!(
+            (f[0].0.as_str(), f[0].1),
+            ("net:crowdsec:bouncer", Sev::High)
+        );
+        assert!(f[0].2.contains("isn't running"), "{}", f[0].2);
+        // procd doesn't know it at all (never started): the same.
+        s.services.as_mut().unwrap().0.remove(SERVICE);
+        assert_eq!(of(&s)[0].1, Sev::High);
+        // As the package ships: installed, `enabled '0'`. Low.
+        s.crowdsec = Some(Bouncer {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        let f = of(&s);
+        assert_eq!((f.len(), f[0].1), (1, Sev::Low));
+        assert!(f[0].2.contains("not switched on"));
+        // Running with empty sets: low after a day, nothing before (it has just started),
+        // nothing when its age isn't known or the tables couldn't be read.
+        let empty = Bouncer {
+            blocked4: Some(0),
+            blocked6: Some(0),
+            ..fed
+        };
+        svc(&mut s, 1);
+        s.crowdsec = Some(empty);
+        let f = of(&s);
+        assert_eq!((f.len(), f[0].1), (1, Sev::Low));
+        assert!(f[0].2.contains("nothing to block"));
+        for b in [
+            Bouncer {
+                age_s: Some(CROWDSEC_EMPTY_S - 1),
+                ..empty
+            },
+            Bouncer {
+                age_s: None,
+                ..empty
+            },
+            Bouncer {
+                blocked4: None,
+                blocked6: None,
+                ..empty
+            },
+            Bouncer {
+                blocked6: None,
+                blocked4: Some(5),
+                ..empty
+            },
+        ] {
+            s.crowdsec = Some(b);
+            assert!(of(&s).is_empty(), "{b:?}");
+        }
+        // The services weren't read: nothing is said about whether it runs.
+        s.crowdsec = Some(fed);
+        s.services = None;
+        assert!(of(&s).is_empty());
+        // Marked expected (a bouncer left off on purpose) stays expected.
+        s.crowdsec = Some(Bouncer::default());
+        let base = BaselineFile {
+            findings: vec!["net:crowdsec:bouncer".into()],
+            ..Default::default()
+        };
+        let f = derive(&s, &cfg, None, &base);
+        assert!(
+            f.iter()
+                .find(|f| f.id == "net:crowdsec:bouncer")
+                .unwrap()
+                .expected
+        );
     }
 }

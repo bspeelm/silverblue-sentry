@@ -328,7 +328,8 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             },
             action: Action::Fix(f.id.clone()),
             item: None,
-            can_wait: false,
+            // Hub items behind: upkeep nothing asks for yet.
+            can_wait: f.id == "srv:crowdsec:hub",
         });
     }
     // The audit itself: due again after a week.

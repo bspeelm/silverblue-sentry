@@ -39,6 +39,9 @@ pub enum Kind {
     Cert,
     /// Which services run.
     Services,
+    /// CrowdSec's firewall bouncer: never asked for by itself, it arrives with `Services`
+    /// (the same exec).
+    Crowdsec,
     /// Audit now: every read above, a report stored. Then as `Report`.
     Audit,
     /// The newest report and the one before, from this machine's disk (no ssh).
@@ -69,6 +72,7 @@ pub enum Payload {
     Uci(Box<Uci>),
     Cert(Option<Cert>),
     Services(Services),
+    Crowdsec(Option<collect::crowdsec::Bouncer>),
     Reports(Box<Shown>),
     Updates(Updates),
     Upstream(Option<Box<Cached<Upstream>>>),
@@ -147,6 +151,8 @@ pub struct Store {
     pub uci: Slot<Uci>,
     pub cert: Slot<Option<Cert>>,
     pub services: Slot<Services>,
+    /// CrowdSec's firewall bouncer (`Some(None)`: read, and the router has none).
+    pub crowdsec: Slot<Option<collect::crowdsec::Bouncer>>,
     /// The latest audit (`Some(None)`: read, and there's none yet).
     pub report: Slot<Option<Box<Report>>>,
     /// What the audit report view shows (`F` on Maintenance): a report and the one before.
@@ -187,6 +193,15 @@ impl Store {
         let r = r.clone();
         let mail = mail.clone();
         std::thread::spawn(move || {
+            // The services' answer holds the bouncer's part too: two things from one exec.
+            if k == Kind::Services {
+                let res = collect::services::collect_with(&r).map(|(sv, cs)| {
+                    mail.send(Data(Kind::Crowdsec, Box::new(Ok(Payload::Crowdsec(cs)))));
+                    Payload::Services(sv)
+                });
+                mail.send(Data(k, Box::new(res)));
+                return;
+            }
             let res = run(k, &r);
             mail.send(Data(k, Box::new(res)));
         });
@@ -208,6 +223,7 @@ impl Store {
                 Kind::Uci => self.uci.err = Some(e),
                 Kind::Cert => self.cert.err = Some(e),
                 Kind::Services => self.services.err = Some(e),
+                Kind::Crowdsec => self.crowdsec.err = Some(e),
                 Kind::Audit | Kind::Report | Kind::ReportAt(_) => self.report.err = Some(e),
                 Kind::Updates | Kind::Refresh => self.updates.err = Some(e),
                 Kind::Upstream | Kind::Lookup => self.upstream.err = Some(e),
@@ -233,6 +249,7 @@ impl Store {
                     Payload::Uci(u) => self.uci.set(*u),
                     Payload::Cert(c) => self.cert.set(c),
                     Payload::Services(sv) => self.services.set(sv),
+                    Payload::Crowdsec(b) => self.crowdsec.set(b),
                     Payload::Reports(shown) => self.on_reports(*shown, k),
                     Payload::Updates(u) => self.updates.set(u),
                     Payload::Upstream(u) => self.upstream.set(u.map(|u| *u)),
@@ -286,6 +303,9 @@ impl Store {
                 }
                 if self.services.value.is_none() || k == Kind::Audit {
                     self.services.value = snap.services.clone().or(self.services.value.take());
+                }
+                if self.crowdsec.value.is_none() || (k == Kind::Audit && snap.services.is_some()) {
+                    self.crowdsec.value = Some(snap.crowdsec);
                 }
                 if k == Kind::Audit {
                     // The audit just read all of it: the screens show what it saw.
@@ -364,6 +384,7 @@ fn run(k: Kind, r: &Router) -> Result<Payload, CollectError> {
         Kind::Uci => Payload::Uci(Box::new(collect::uci::collect(r)?)),
         Kind::Cert => Payload::Cert(collect::cert::collect(r)?),
         Kind::Services => Payload::Services(collect::services::collect(r)?),
+        Kind::Crowdsec => Payload::Crowdsec(collect::services::collect_with(r)?.1),
         Kind::Report => Payload::Reports(Box::new(audit::shown(&r.scope, None))),
         Kind::ReportAt(i) => Payload::Reports(Box::new(audit::shown(&r.scope, Some(i as usize)))),
         Kind::Audit => {

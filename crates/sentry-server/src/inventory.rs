@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{self, docker, health};
+use super::collect::{self, crowdsec, docker, health};
 use super::remote::Remote;
 use sentry_core::cache::{self, Cached};
 use sentry_core::exec::sh_quote;
@@ -76,6 +76,12 @@ pub fn script(r: &Remote) -> String {
             "fail2ban-client status \"$j\"",
         );
         s += "done\n";
+    }
+    // Only where the allowlist names them, which it does only on a server with CrowdSec.
+    for argv in crowdsec::ARGVS {
+        if allowed(argv) {
+            s += &fixed(r, argv);
+        }
     }
     for argv in collect::SS_ARGVS {
         if allowed(argv) {
@@ -193,6 +199,20 @@ mod tests {
         let r = remote();
         let k = key(&r, &health::smart_argv("/dev/sda"));
         assert!(s.contains(&format!("{MARK}%s\\n' {}", sh_quote(&k))), "{s}");
+    }
+
+    #[test]
+    fn crowdsec_is_read_only_where_the_allowlist_names_it() {
+        assert!(!script(&remote()).contains("cscli"));
+        let s = Server {
+            sudo: vec!["cscli hub list".into(), "cscli metrics".into()],
+            ..Default::default()
+        };
+        let sc = script(&Remote::new("myserver", &s));
+        assert!(sc.contains("cscli hub list -o json 2>/dev/null"), "{sc}");
+        assert!(sc.contains("cscli metrics -o json"));
+        assert!(!sc.contains("decisions") && !sc.contains("bouncers"));
+        assert!(crate::config::lint("myserver", &s).is_empty());
     }
 
     #[test]

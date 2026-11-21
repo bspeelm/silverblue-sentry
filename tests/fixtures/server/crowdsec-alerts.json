@@ -1,0 +1,231 @@
+[
+ {
+  "capacity": 5,
+  "created_at": "2026-10-26T10:14:02Z",
+  "decisions": [
+   {
+    "duration": "3h",
+    "id": 4006,
+    "origin": "crowdsec",
+    "scenario": "example/ssh-bf",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "192.0.2.10"
+   }
+  ],
+  "events": [],
+  "events_count": 6,
+  "id": 806,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 192.0.2.10 performed 'example/ssh-bf' (6 events over 31s) at 2026-10-26T10:14:02Z",
+  "scenario": "example/ssh-bf",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "192.0.2.10",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "192.0.2.0/24",
+   "scope": "Ip",
+   "value": "192.0.2.10"
+  },
+  "start_at": "2026-10-26T10:14:02Z",
+  "stop_at": "2026-10-26T10:14:02Z"
+ },
+ {
+  "capacity": 5,
+  "created_at": "2026-10-26T09:40:11Z",
+  "decisions": [
+   {
+    "duration": "3h",
+    "id": 4005,
+    "origin": "crowdsec",
+    "scenario": "example/http-probing",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "198.51.100.7"
+   }
+  ],
+  "events": [],
+  "events_count": 6,
+  "id": 805,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 198.51.100.7 performed 'example/http-probing' (6 events over 31s) at 2026-10-26T09:40:11Z",
+  "scenario": "example/http-probing",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "198.51.100.7",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "198.51.100.0/24",
+   "scope": "Ip",
+   "value": "198.51.100.7"
+  },
+  "start_at": "2026-10-26T09:40:11Z",
+  "stop_at": "2026-10-26T09:40:11Z"
+ },
+ {
+  "capacity": 5,
+  "created_at": "2026-10-26T07:02:40Z",
+  "decisions": [
+   {
+    "duration": "3h",
+    "id": 4004,
+    "origin": "crowdsec",
+    "scenario": "example/ssh-bf",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "203.0.113.21"
+   }
+  ],
+  "events": [],
+  "events_count": 6,
+  "id": 804,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 203.0.113.21 performed 'example/ssh-bf' (6 events over 31s) at 2026-10-26T07:02:40Z",
+  "scenario": "example/ssh-bf",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "203.0.113.21",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "203.0.113.0/24",
+   "scope": "Ip",
+   "value": "203.0.113.21"
+  },
+  "start_at": "2026-10-26T07:02:40Z",
+  "stop_at": "2026-10-26T07:02:40Z"
+ },
+ {
+  "capacity": 5,
+  "created_at": "2026-10-25T18:00:00Z",
+  "decisions": [
+   {
+    "duration": "3h",
+    "id": 4003,
+    "origin": "cscli",
+    "scenario": "manual 'ban' from '192.0.2.50'",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "203.0.113.9"
+   }
+  ],
+  "events": [],
+  "events_count": 6,
+  "id": 803,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 203.0.113.9 performed 'manual 'ban' from '192.0.2.50'' (6 events over 31s) at 2026-10-25T18:00:00Z",
+  "scenario": "manual 'ban' from '192.0.2.50'",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "203.0.113.9",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "203.0.113.0/24",
+   "scope": "Ip",
+   "value": "203.0.113.9"
+  },
+  "start_at": "2026-10-25T18:00:00Z",
+  "stop_at": "2026-10-25T18:00:00Z"
+ },
+ {
+  "capacity": 5,
+  "created_at": "2026-10-25T16:31:09Z",
+  "decisions": null,
+  "events": [],
+  "events_count": 6,
+  "id": 802,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 2001:db8::5 performed 'example/http-probing' (6 events over 31s) at 2026-10-25T16:31:09Z",
+  "scenario": "example/http-probing",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "2001:db8::5",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "2001:db8::/32",
+   "scope": "Ip",
+   "value": "2001:db8::5"
+  },
+  "start_at": "2026-10-25T16:31:09Z",
+  "stop_at": "2026-10-25T16:31:09Z"
+ },
+ {
+  "capacity": 5,
+  "created_at": "2026-10-25T13:20:00Z",
+  "decisions": [
+   {
+    "duration": "3h",
+    "id": 4001,
+    "origin": "crowdsec",
+    "scenario": "example/ssh-bf",
+    "scope": "Ip",
+    "simulated": false,
+    "type": "ban",
+    "value": "192.0.2.77"
+   }
+  ],
+  "events": [],
+  "events_count": 6,
+  "id": 801,
+  "labels": null,
+  "leakspeed": "10s",
+  "machine_id": "myserver",
+  "message": "Ip 192.0.2.77 performed 'example/ssh-bf' (6 events over 31s) at 2026-10-25T13:20:00Z",
+  "scenario": "example/ssh-bf",
+  "scenario_hash": "",
+  "scenario_version": "0.3",
+  "simulated": false,
+  "source": {
+   "as_name": "EXAMPLE-NET",
+   "as_number": "64496",
+   "cn": "ZZ",
+   "ip": "192.0.2.77",
+   "latitude": 0,
+   "longitude": 0,
+   "range": "192.0.2.0/24",
+   "scope": "Ip",
+   "value": "192.0.2.77"
+  },
+  "start_at": "2026-10-25T13:20:00Z",
+  "stop_at": "2026-10-25T13:20:00Z"
+ }
+]

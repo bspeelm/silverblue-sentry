@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::crowdsec::{self, Bouncer};
 use super::{CollectError, output_needing};
 use sentry_app::remote::Remote;
 
@@ -78,8 +79,13 @@ impl Services {
     }
 }
 
+/// The services, from the JSON before any `@@` part.
 pub fn parse(text: &str) -> Result<Services, String> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let json = match text.find("\n@@") {
+        Some(at) => &text[..at],
+        None => text,
+    };
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let obj = v.as_object().ok_or("not an object")?;
     Ok(Services(
         obj.iter()
@@ -99,8 +105,26 @@ pub fn parse(text: &str) -> Result<Services, String> {
     ))
 }
 
+/// CrowdSec's firewall bouncer from the same answer: None where the router hasn't got it.
+pub fn parse_bouncer(text: &str) -> Option<Bouncer> {
+    super::sections(text)
+        .into_iter()
+        .find(|(name, _)| *name == "crowdsec")
+        .map(|(_, part)| crowdsec::parse(part))
+}
+
 pub fn collect(r: &Remote) -> Result<Services, CollectError> {
-    parse(&output_needing(r, "ubus", SCRIPT)?).map_err(CollectError::Parse)
+    Ok(collect_with(r)?.0)
+}
+
+/// The services, and in the same exec the firewall bouncer where it is installed.
+pub fn collect_with(r: &Remote) -> Result<(Services, Option<Bouncer>), CollectError> {
+    let script = format!("{SCRIPT} || exit $?\n{}", crowdsec::script());
+    let out = output_needing(r, "ubus", &script)?;
+    Ok((
+        parse(&out).map_err(CollectError::Parse)?,
+        parse_bouncer(&out),
+    ))
 }
 
 #[cfg(test)]
@@ -140,5 +164,23 @@ mod tests {
             ["dnsmasq", "dropbear", "uhttpd", "odhcpd"]
         );
         assert!(parse("[]").is_err() && parse("not json").is_err());
+    }
+
+    #[test]
+    fn the_bouncer_rides_the_same_answer_and_is_absent_without_its_part() {
+        let json = fixture("network/services.json");
+        assert_eq!(parse_bouncer(&json), None);
+        let with = format!("{json}\n@@crowdsec\nenabled=1\nv4=1204\nv6=37\nage=262800\n");
+        assert_eq!(parse(&with).unwrap(), parse(&json).unwrap());
+        let b = parse_bouncer(&with).unwrap();
+        assert_eq!(
+            (b.blocked(), b.on(), b.age_s),
+            (Some(1241), true, Some(262800))
+        );
+        // The package is there and nothing about it could be read: present, unread.
+        assert_eq!(
+            parse_bouncer(&format!("{json}\n@@crowdsec\n")),
+            Some(Bouncer::default())
+        );
     }
 }

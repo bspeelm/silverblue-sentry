@@ -16,6 +16,7 @@ impl Dashboard {
                 Kind::Units,
                 Kind::Docker,
                 Kind::Report,
+                Kind::Crowdsec,
             ]
             .into_iter()
             .map(Own::fetch)
@@ -240,6 +241,32 @@ pub fn status_rows(v: &View) -> Vec<StatusRow> {
             pick: None,
         });
     }
+    if let Some(c) = crowdsec(v) {
+        use crate::collect::crowdsec::Agent;
+        let quiet = c.quiet_bouncers();
+        let mut row = match &c.agent {
+            Agent::Down(state) => bad(
+                t.red,
+                format!("crowdsec isn't running ({state})"),
+                Some(ScreenId::Maint),
+            ),
+            _ if !quiet.is_empty() => bad(
+                t.yellow,
+                format!(
+                    "crowdsec: {} bouncer(s) quiet{}",
+                    quiet.len(),
+                    crowdsec_counts(c)
+                ),
+                Some(ScreenId::Maint),
+            ),
+            Agent::Running => ok(format!("crowdsec running{}", crowdsec_counts(c)), None),
+            Agent::NoUnit => ok(format!("crowdsec{}", crowdsec_counts(c)), None),
+        };
+        if row.goto.is_some() {
+            row.pick = Some("finding:srv:crowdsec:");
+        }
+        out.push(row);
+    }
     match s.report.value.as_ref().map(|r| r.as_deref()) {
         Some(Some(r)) => {
             // The findings Maintenance lists (not the ones its item rows already say, nor
@@ -282,6 +309,38 @@ pub fn status_rows(v: &View) -> Vec<StatusRow> {
         None => {}
     }
     out
+}
+
+/// CrowdSec as last read, else as the last audit saw it. None on a server without it: no
+/// row then.
+fn crowdsec<'a>(v: &'a View) -> Option<&'a crate::collect::crowdsec::Crowdsec> {
+    match &v.s.crowdsec.value {
+        Some(read) => read.as_ref(),
+        None => {
+            v.s.report
+                .value
+                .as_ref()
+                .and_then(|r| r.as_deref())
+                .and_then(|r| r.snapshot.crowdsec.as_ref())
+        }
+    }
+}
+
+/// " · 15240 bans (4 local) · 6 alerts in 24 h": counts only, of what could be read.
+fn crowdsec_counts(c: &crate::collect::crowdsec::Crowdsec) -> String {
+    let mut said = String::new();
+    if let Some(d) = &c.decisions {
+        let bans = d.by_type.get("ban").copied().unwrap_or(0);
+        said += &match d.local_only {
+            true => format!(" · {bans} local ban(s)"),
+            false => format!(" · {bans} bans ({} local)", d.local()),
+        };
+    }
+    if let Some(a) = &c.alerts {
+        let more = if a.capped { "+" } else { "" };
+        said += &format!(" · {}{more} alerts in 24 h", a.count);
+    }
+    said
 }
 
 pub fn overview(f: &mut Frame, area: Rect, v: &View) {

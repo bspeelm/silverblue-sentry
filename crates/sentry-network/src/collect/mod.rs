@@ -3,6 +3,7 @@
 
 pub mod cert;
 pub mod clients;
+pub mod crowdsec;
 pub mod ifaces;
 pub mod listeners;
 pub mod probe;

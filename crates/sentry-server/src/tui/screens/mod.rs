@@ -141,6 +141,8 @@ impl Screens {
                     at(Kind::Units, Some(SLOW)),
                     at(Kind::Docker, Some(SLOW)),
                     at(Kind::Report, None),
+                    // Its reads are root's: at entry and on `r`, never on a timer.
+                    at(Kind::Crowdsec, None),
                 ];
                 if !cfg.smart.is_empty() {
                     p.push(at(Kind::Smart, Some(SLOW)));

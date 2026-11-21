@@ -3462,3 +3462,56 @@ fn a_findings_plan_is_followed_by_an_audit() {
     let s = a.apply_session().unwrap();
     assert!(matches!(s.phase, Phase::Thinking(_)) && s.chat.live.is_some());
 }
+
+/// CrowdSec's firewall bouncer is a Status row only where the router has it: a count of
+/// what it blocks. A router without it is `dashboard_status_158x41`, unchanged.
+#[test]
+fn crowdsec_is_a_status_row_only_where_the_router_has_it() {
+    use crate::collect::crowdsec::{Bouncer, SERVICE};
+    use crate::collect::services::Service;
+    let mut a = full();
+    let has = |a: &mut App| {
+        render_to_string(a, 158, 41)
+            .to_lowercase()
+            .contains("crowdsec")
+    };
+    assert!(!has(&mut a), "never read");
+    data(&mut a, Kind::Crowdsec, Ok(Payload::Crowdsec(None)));
+    assert!(!has(&mut a), "read: the router has none");
+
+    let b = Bouncer {
+        enabled: Some(true),
+        blocked4: Some(1204),
+        blocked6: Some(37),
+        age_s: Some(3 * 86_400),
+    };
+    let services = |running: u32| {
+        let mut sv = audit::tests::snap(&fx_cfg()).services.unwrap();
+        sv.0.insert(
+            SERVICE.into(),
+            Service {
+                instances: running,
+                running,
+            },
+        );
+        sv
+    };
+    data(&mut a, Kind::Crowdsec, Ok(Payload::Crowdsec(Some(b))));
+    data(&mut a, Kind::Services, Ok(Payload::Services(services(1))));
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("dashboard_crowdsec_158x41", s);
+    assert!(line(&s, "│ crowdsec").contains("1241 blocked"), "{s}");
+    // Switched on and down; installed and never switched on.
+    data(&mut a, Kind::Services, Ok(Payload::Services(services(0))));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(line(&s, "│ crowdsec").contains("○ not running"), "{s}");
+    let off = Bouncer {
+        enabled: Some(false),
+        ..Default::default()
+    };
+    data(&mut a, Kind::Crowdsec, Ok(Payload::Crowdsec(Some(off))));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(line(&s, "│ crowdsec").contains("not switched on"), "{s}");
+    // Nothing new is asked for: it rides the services' read.
+    assert!(!net(&a).asked.contains(&Kind::Crowdsec));
+}
