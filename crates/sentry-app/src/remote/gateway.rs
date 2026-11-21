@@ -71,6 +71,19 @@ pub fn run_cli(
     line: &str,
     policy: impl Fn(&str) -> Result<(), Held>,
 ) -> u8 {
+    run_cli_with(prog, r, line, policy, |_| Ok(|s: &str| s.to_string()))
+}
+
+/// The same, with what the command printed passed through a filter before any of it is
+/// shown (a router's output is scrubbed). `filter` is made only once the policy let the
+/// line through, and before the command runs: when it can't be made, nothing is run.
+pub fn run_cli_with<F: Fn(&str) -> String>(
+    prog: &str,
+    r: &Remote,
+    line: &str,
+    policy: impl Fn(&str) -> Result<(), Held>,
+    filter: impl FnOnce(&Remote) -> Result<F, String>,
+) -> u8 {
     match policy(line) {
         // The words `claude::refused` knows: the session makes it a request for the user.
         Err(Held::Asks) => {
@@ -83,14 +96,21 @@ pub fn run_cli(
         }
         Ok(()) => {}
     }
+    let filter = match filter(r) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{prog}: not run: {e}");
+            return 125;
+        }
+    };
     match r
         .sh(line)
         .timeout(Some(std::time::Duration::from_secs(120)))
         .run()
     {
         Ok(o) => {
-            print!("{}", o.stdout);
-            eprint!("{}", o.stderr);
+            print!("{}", filter(&o.stdout));
+            eprint!("{}", filter(&o.stderr));
             if o.code != 0
                 && (o.stderr.contains("Permission denied")
                     || o.stderr.contains("permission denied"))

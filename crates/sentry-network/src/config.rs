@@ -35,6 +35,22 @@ pub struct Network {
     /// Local files Claude may read when planning or reviewing (runbooks, notes).
     pub notes: Vec<String>,
     pub claude: ClaudeCfg,
+    pub guard: GuardCfg,
+}
+
+/// The guard around a change to the configs the network is reached through.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct GuardCfg {
+    /// Seconds the router waits for the change to be confirmed before it takes it back
+    /// by itself.
+    pub window: u64,
+}
+
+impl Default for GuardCfg {
+    fn default() -> Self {
+        Self { window: 300 }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -350,6 +366,13 @@ pub fn lint(name: &str, n: &Network) -> Vec<String> {
     if name.is_empty() || name.contains(|c: char| c.is_whitespace() || c == '/' || c == ':') {
         p.push(format!(
             "`{name}`: a network's name is one word (it names a directory and `net:{name}`)"
+        ));
+    }
+    if !(5..=3600).contains(&n.guard.window) {
+        p.push(format!(
+            "{name}: guard: window: {} s (between 5 and 3600: long enough for the reloads, \
+             short enough to wait out)",
+            n.guard.window
         ));
     }
     if n.router.ssh.as_deref().is_some_and(|s| s.trim().is_empty()) {

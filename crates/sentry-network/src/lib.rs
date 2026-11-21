@@ -15,8 +15,13 @@ pub mod cli;
 pub mod clients;
 pub mod collect;
 pub mod config;
+pub mod gateway;
+pub mod guard;
 pub mod init;
+#[cfg(test)]
+mod live_router;
 pub mod maint;
+pub mod policy;
 pub mod rates;
 pub mod recorder;
 pub mod redact;

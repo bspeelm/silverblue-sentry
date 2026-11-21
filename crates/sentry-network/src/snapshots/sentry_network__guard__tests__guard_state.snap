@@ -1,0 +1,15 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: "state_script(&c, Some(t))"
+---
+echo @@board; ubus call system board >/dev/null 2>&1 && echo ok
+echo @@guards; ls -d /tmp/sentry-guard-*/ 2>/dev/null
+echo @@staged; for c in dhcp firewall network; do uci -q changes $c; done
+echo @@wan; ubus call network.interface dump 2>/dev/null
+echo @@route; ip route show default 2>/dev/null; ip -6 route show default 2>/dev/null
+echo @@firewall; uci -q show firewall
+echo @@stations; for h in $(ubus list 'hostapd.*' 2>/dev/null); do echo "$h $(ubus call $h get_clients 2>/dev/null | grep -c '"auth"')"; done
+echo @@reloaded; cat /tmp/sentry-guard-0123456789abcdef/reloaded 2>/dev/null
+echo @@armed; [ -e /tmp/sentry-guard-0123456789abcdef/armed ] && echo yes
+echo @@log; tail -n 8 /tmp/sentry-guard-0123456789abcdef/reload.log 2>/dev/null
+echo @@end

@@ -19,10 +19,11 @@ pub const KEY_FIRMWARE: &str = "net:maint:firmware";
 pub const KEY_PACKAGES: &str = "net:maint:packages";
 pub const KEY_BACKUP: &str = "net:maint:backup";
 
-/// What applying the firmware or the packages says until sentry can do it.
-pub const FIRMWARE_NOT_YET: &str = "sentry doesn't upgrade firmware yet: on the router, \
-     LuCI's Attended Sysupgrade (or `owut upgrade`) does; back the config up first";
-pub const PACKAGES_NOT_YET: &str = "sentry doesn't update packages yet: nothing here asks for it, and a firmware release brings them all";
+/// How the firmware and the packages are changed: by their workflows (Enter on the row).
+pub const FIRMWARE_VIA: &str = "the firmware-upgrade workflow (owut) does it, after a \
+     config backup; it is a draft until it has been run once";
+pub const PACKAGES_VIA: &str =
+    "the package-update workflow upgrades the packages you name, after a config backup";
 
 /// What is known when the rules are asked.
 pub struct State<'a> {
@@ -76,7 +77,7 @@ pub fn rules(s: &State) -> Vec<Rule> {
                      Moving to a newer series is a firmware upgrade.",
                     f.eol.map_or(String::new(), |d| format!(" ({d})"))
                 ),
-                action: Do::Say(FIRMWARE_NOT_YET),
+                action: Do::Say(FIRMWARE_VIA),
                 can_wait: false,
                 item: ItemKind::Firmware,
             }),
@@ -88,7 +89,7 @@ pub fn rules(s: &State) -> Vec<Rule> {
                     "After {} it gets no more security fixes: plan the move to a newer series.",
                     f.eol.map_or("then".to_string(), |d| d.to_string())
                 ),
-                action: Do::Say(FIRMWARE_NOT_YET),
+                action: Do::Say(FIRMWARE_VIA),
                 can_wait: false,
                 item: ItemKind::Firmware,
             }),
@@ -114,7 +115,7 @@ pub fn rules(s: &State) -> Vec<Rule> {
                             .to_string()
                     }
                 },
-                action: Do::Say(FIRMWARE_NOT_YET),
+                action: Do::Say(FIRMWARE_VIA),
                 can_wait: !security,
                 item: ItemKind::Firmware,
             });
@@ -135,7 +136,7 @@ pub fn rules(s: &State) -> Vec<Rule> {
                 },
                 u.index_said()
             ),
-            action: Do::Say(PACKAGES_NOT_YET),
+            action: Do::Say(PACKAGES_VIA),
             can_wait: true,
             item: ItemKind::Packages,
         });
@@ -473,7 +474,7 @@ mod tests {
             None,
         ));
         assert_eq!(r[0].title, "Firmware 25.12.3 → 25.12.5");
-        assert_eq!(r[0].action, Do::Say(FIRMWARE_NOT_YET));
+        assert_eq!(r[0].action, Do::Say(FIRMWARE_VIA));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: settled_script(t)
+---
+[ -d /tmp/sentry-guard-0123456789abcdef ] && echo @@still
+grep '^0123456789abcdef ' /tmp/sentry-guard.last 2>/dev/null
+logread -e sentry-guard 2>/dev/null | grep '0123456789abcdef' | tail -n 2
+true

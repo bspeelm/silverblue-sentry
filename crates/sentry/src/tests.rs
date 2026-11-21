@@ -990,31 +990,30 @@ fn a_network_is_asleep_until_it_first_has_the_window() {
     let t1 = Instant::now();
     a.focus(2, t1);
     assert!(a.started_at(2));
-    assert_eq!(asked(&a, 2), ["probe", "ifaces", "services", "report"]);
+    // (The config and the clients too, once per entry: what must be hidden from Claude,
+    // the SSIDs and the devices' names, is known wherever it can be asked.)
+    const ENTRY: [&str; 6] = ["probe", "ifaces", "services", "report", "uci", "clients"];
+    assert_eq!(asked(&a, 2), ENTRY);
     a.tick(t1 + std::time::Duration::from_millis(1100));
-    assert_eq!(asked(&a, 2).len(), 5);
-    assert_eq!(asked(&a, 2)[4], "probe");
+    assert_eq!(asked(&a, 2).len(), 7);
+    assert_eq!(asked(&a, 2)[6], "probe");
     // Out of view again it stops polling at once, and comes back reading.
     let t2 = t1 + std::time::Duration::from_secs(2);
     a.focus(0, t2);
     for i in 1..=5 {
         a.tick(t2 + std::time::Duration::from_secs(i));
     }
-    assert_eq!(asked(&a, 2).len(), 5);
+    assert_eq!(asked(&a, 2).len(), 7);
     let t3 = t2 + std::time::Duration::from_secs(10);
     a.focus(2, t3);
-    assert_eq!(
-        &asked(&a, 2)[5..],
-        ["probe", "ifaces", "services", "report"]
-    );
+    assert_eq!(&asked(&a, 2)[7..], ENTRY);
 }
 
 #[test]
 fn claude_is_offered_only_where_it_answers() {
-    // Claude Code is there (as tests have it): this machine and the server offer it in the
-    // key bar, on a screen that names no `A` of its own; the network, which has no Claude
-    // yet, doesn't, and neither does its `?`. Auto mode it does offer, where its workflows
-    // are started: on Maintenance.
+    // Claude Code is there (as tests have it): every target offers it in the key bar, on
+    // a screen that names no `A` of its own, and in `?`. Auto mode is named where a
+    // network's workflows are started: on Maintenance.
     let mut a = three();
     let bar = |a: &mut App| screen(a).lines().last().unwrap().to_string();
     key(&mut a, KeyCode::Char('1'));
@@ -1029,24 +1028,24 @@ fn claude_is_offered_only_where_it_answers() {
     for c in ['1', '2', '3', '6'] {
         key(&mut a, KeyCode::Char(c));
         let b = bar(&mut a);
-        assert!(!b.contains("Claude") && !b.contains("claude"), "{c}: {b}");
+        assert!(b.contains("laude"), "{c}: {b}");
         assert_eq!(b.contains("C-a  auto"), c == '6', "{c}: {b}");
     }
     key(&mut a, KeyCode::Char('?'));
     let help = screen(&mut a);
     assert!(
-        help.contains("Maintenance:") && !help.contains("Claude") && help.contains("auto mode"),
+        help.contains("Maintenance:") && help.contains("ask Claude") && help.contains("auto mode"),
         "{help}"
     );
     key(&mut a, KeyCode::Esc);
-    // And A there says why, whatever is installed.
-    key(&mut a, KeyCode::Char('A'));
-    assert_eq!(
-        a.toast_for_test(),
-        Some("Claude isn't set up for a network yet")
-    );
     // Back on this machine, Maintenance still names its own.
     key(&mut a, KeyCode::F(1));
     key(&mut a, KeyCode::Char('6'));
     assert!(bar(&mut a).contains("A  claude"), "{}", bar(&mut a));
+    // Nothing of the router has been read here, so what must be hidden from Claude isn't
+    // known: A asks nothing, and says why.
+    key(&mut a, KeyCode::F(3));
+    key(&mut a, KeyCode::Char('1'));
+    key(&mut a, KeyCode::Char('A'));
+    assert_eq!(a.toast_for_test(), Some(sentry_network::tui::ask::NOT_YET));
 }

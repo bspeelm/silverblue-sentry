@@ -65,6 +65,9 @@ pub struct Win {
     pub now_override: Option<jiff::Timestamp>,
     /// Tests: never start a fetch, write a record or send anything.
     pub offline: bool,
+    /// Live tests: a session's turns aren't sent to Claude (the test gives its answers);
+    /// everything else runs for real.
+    pub scripted_turns: bool,
     /// Something wrong in `[keys]`, said once the TUI is up.
     pub(crate) keys_warning: Option<String>,
     /// The slot whose flow runs has the window: its screen is the one in view.
@@ -134,6 +137,7 @@ impl App {
                 at: Instant::now(),
                 now_override: None,
                 offline: false,
+                scripted_turns: false,
                 keys_warning: None,
                 focused: true,
                 speaker: None,

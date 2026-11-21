@@ -1,0 +1,61 @@
+name = "guarded-change"
+description = "Change the config the network is reached through, with the router armed to take it back by itself"
+# The one way sentry changes network, firewall, wireless, dhcp, dropbear or uhttpd. Every
+# step runs on this machine (`sentry-network guard …`), which carries it out over ssh:
+#   show   reads only: what would be staged, that nothing else is staged, how the uplink is
+#   guard  snapshots the configs under /tmp on the router and arms a detached revert there
+#          (guard.window in network_config.yaml, 300 s) BEFORE anything changes; then stages
+#          the lines, commits, reloads the services, reconnects on a new connection and
+#          checks the router, its uplink, its default route and its firewall. All well: it
+#          disarms, and the change is kept with no key. Anything else: sentry does nothing
+#          and the router restores itself at the deadline.
+#   keep   only when the change touches Wi-Fi (or is meant to change the uplink): ssh over a
+#          cable can't tell that Wi-Fi works, so the change stays armed until you say keep.
+#          No answer within the window: the router takes it back. Auto mode never answers it.
+# Built-in: network. Condition: guard_waiting.
+
+[vars.configs]
+prompt = "The configs it touches (network, firewall, wireless, dhcp, dropbear, uhttpd; comma-separated, no spaces)"
+
+[vars.lines]
+prompt = "The uci lines to stage, `;` between them (uci set|add|add_list|del_list|delete|rename|reorder)"
+
+[vars.services]
+prompt = "What to reload afterwards (network, wifi, firewall, dnsmasq, odhcpd, uhttpd, dropbear; comma-separated, no spaces; may be empty)"
+default = ""
+
+[vars.alters_wan]
+prompt = "Is it meant to change the uplink or the default route? (yes: sentry asks before keeping it)"
+default = "no"
+
+[[steps]]
+id = "show"
+title = "What would change, and whether it can start (reads only)"
+run = "sentry-network guard preview configs={{ configs }} services={{ services }} wan={{ alters_wan }} -- {{ lines }}"
+gate = "auto"
+
+[[steps]]
+id = "guard"
+title = "Arm the router's own revert, then apply and check"
+run = "sentry-network guard apply configs={{ configs }} services={{ services }} wan={{ alters_wan }} -- {{ lines }}"
+gate = "confirm"
+on_fail = "manual"
+manual = """
+The change is not in place. The log (L) says which of these happened:
+  STOPPED        nothing was changed (something else is staged, or the revert couldn't be armed)
+  FAILED         a line or the commit failed before any reload; the configs are as they were
+  REVERTED       it was applied but not confirmed, and the router took it back by itself
+  NOT CONFIRMED  the router couldn't be asked afterwards; it restores itself at its deadline
+Abandon (a) this run; start again once what stopped it is dealt with."""
+
+[[steps]]
+id = "keep"
+title = "Keep it? Check a device on Wi-Fi first: the router takes the change back by itself otherwise"
+run = "sentry-network guard keep"
+gate = "confirm"
+risky = true
+when = "guard_waiting"
+on_fail = "manual"
+manual = """
+It wasn't kept: the window had passed (or was about to), and the router took the change
+back by itself. Abandon (a) this run and start again."""

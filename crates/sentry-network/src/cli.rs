@@ -564,3 +564,347 @@ pub fn backup_key(path: &std::path::Path) -> u8 {
         }
     }
 }
+
+/// `run <name> [--] <line>`: the gateway an apply session's Claude uses. Only a line that
+/// reads is run (as root, its output scrubbed); the rest is refused in its class's words.
+pub fn run(name: &str, line: &[String]) -> u8 {
+    let line = match line.first().map(String::as_str) {
+        Some("--") => line[1..].join(" "),
+        _ => line.join(" "),
+    };
+    match load(Some(name)) {
+        Ok((n, cfg)) => super::gateway::run_cli(&Router::new(&n, &cfg), &line),
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// `exec <name> [--] <argv…>`: the read-only gateway chats and reviews use.
+pub fn exec(name: &str, argv: &[String]) -> u8 {
+    let argv: Vec<String> = match argv.first().map(String::as_str) {
+        Some("--") => argv[1..].to_vec(),
+        _ => argv.to_vec(),
+    };
+    match load(Some(name)) {
+        Ok((n, cfg)) => super::gateway::exec_cli(&Router::new(&n, &cfg), &argv),
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// `guard <name> preview|apply|keep [configs=a,b] [services=x,y] [wan=yes] [-- <uci lines>]`:
+/// a guarded change (what the `guarded-change` workflow's steps run). `preview` only
+/// reads. Exit 0: in place (kept, or applied and waiting for `keep`); 3: not started,
+/// nothing changed; 4: the router took it back; 5: failed before any reload, put back;
+/// 6: not confirmed, and the router couldn't be asked.
+pub fn guard(name: &str, action: &str, rest: &[String]) -> u8 {
+    use super::guard::{self, Change, Outcome};
+    let (n, cfg) = match load(Some(name)) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let r = Router::new(&n, &cfg);
+    let window = cfg.guard.window;
+    let mut say = |l: String| println!("{l}");
+    let ended = |o: Outcome| {
+        match &o {
+            Outcome::Kept => println!("KEPT: the change is in place."),
+            Outcome::Waiting => {}
+            Outcome::Stopped(why) => eprintln!("STOPPED, nothing was changed: {why}"),
+            Outcome::Failed(why) => eprintln!("FAILED: {why}"),
+            Outcome::Reverted(why) => eprintln!(
+                "REVERTED: the change was not kept ({why}). The router restored its configs \
+                 and reloaded the same services by itself."
+            ),
+            Outcome::Unknown(why) => eprintln!(
+                "NOT CONFIRMED: {why}. The router restores itself at its deadline; look at it \
+                 before trying again."
+            ),
+        }
+        o.code()
+    };
+    if action == "keep" {
+        return ended(guard::keep(&r, window, &mut say));
+    }
+    let split = rest.iter().position(|a| a == "--").unwrap_or(rest.len());
+    let val = |key: &str| {
+        rest[..split]
+            .iter()
+            .find_map(|a| a.strip_prefix(key)?.strip_prefix('='))
+            .unwrap_or("")
+    };
+    let lines = rest.get(split + 1..).unwrap_or(&[]).join(" ");
+    let wan = matches!(val("wan"), "yes" | "true" | "1");
+    let change = match Change::parse(val("configs"), &lines, val("services"), wan) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("STOPPED, nothing was changed: {e}");
+            return 3;
+        }
+    };
+    match action {
+        "preview" => match guard::preview(&r, &change, &mut say) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("STOPPED, nothing was changed: {e}");
+                3
+            }
+        },
+        "apply" => ended(guard::run(&r, &change, window, &mut say)),
+        other => {
+            eprintln!("guard: `{other}` isn't preview, apply or keep");
+            2
+        }
+    }
+}
+
+/// The services that should run, do: what `packages check` and `firmware after` say.
+fn services_up(r: &Router) -> bool {
+    use collect::services::{self, State};
+    let svc = match services::collect(r) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("the services couldn't be read: {e}");
+            return false;
+        }
+    };
+    let mut ok = true;
+    for name in svc.watched(&r.cfg.expect.services) {
+        match svc.state(name) {
+            State::Running | State::NotADaemon => println!("✓ {name} runs"),
+            State::Down | State::Missing => {
+                eprintln!("✗ {name} isn't running");
+                ok = false;
+            }
+        }
+    }
+    ok
+}
+
+/// `packages <name> preview|upgrade|check [base] [-- <names>]`: what the `package-update`
+/// workflow's steps run. `upgrade` takes the names to upgrade and never upgrades
+/// everything; a base-system package is refused unless the step says `base` (the workflow's
+/// risky step).
+pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
+    use super::workflow::{base_package, package_name};
+    let (n, cfg) = match load(Some(name)) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let r = Router::new(&n, &cfg);
+    match action {
+        "preview" => match collect::updates::refresh(&r) {
+            Ok(u) => {
+                if u.refresh_failed.is_some() {
+                    eprintln!(
+                        "apk update failed on the router: the list below is from the index it had"
+                    );
+                }
+                println!("{} package(s) could be upgraded:", u.packages.len());
+                for p in &u.packages {
+                    println!(
+                        "  {} {} → {}{}",
+                        p.name,
+                        p.from,
+                        p.to,
+                        if base_package(&p.name) {
+                            "  (base system)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("sentry-network packages: {e}");
+                1
+            }
+        },
+        "upgrade" => {
+            // `upgrade [base] -- <names>`. (A `--` right after `upgrade` is taken by the
+            // argument parser: then everything left is names.)
+            let split = rest.iter().position(|a| a == "--");
+            let base = split.is_some_and(|i| rest[..i].iter().any(|a| a == "base"));
+            let names: Vec<&str> = rest[split.map_or(0, |i| i + 1)..]
+                .iter()
+                .flat_map(|a| a.split_whitespace())
+                .collect();
+            if names.is_empty() {
+                eprintln!("no package named: sentry never upgrades every package at once");
+                return 3;
+            }
+            if let Some(bad) = names.iter().find(|x| !package_name(x)) {
+                eprintln!("`{bad}` isn't a package's name");
+                return 3;
+            }
+            if let Some(b) = names.iter().find(|x| base_package(x)).filter(|_| !base) {
+                eprintln!(
+                    "`{b}` is a base-system package: that is the workflow's risky step, not this one"
+                );
+                return 3;
+            }
+            let line = format!("apk upgrade {}", names.join(" "));
+            println!("$ {line}");
+            match r
+                .sh(&line)
+                .timeout(Some(std::time::Duration::from_secs(900)))
+                .run()
+            {
+                Ok(o) => {
+                    print!("{}", o.stdout);
+                    eprint!("{}", o.stderr);
+                    o.code.clamp(0, 255) as u8
+                }
+                Err(e) => {
+                    eprintln!("sentry-network packages: {e}");
+                    1
+                }
+            }
+        }
+        "check" => {
+            let up = services_up(&r);
+            let audited = audit(Some(&n));
+            if up && audited == 0 { 0 } else { 1 }
+        }
+        other => {
+            eprintln!("packages: `{other}` isn't preview, upgrade or check");
+            2
+        }
+    }
+}
+
+/// `firmware <name> check|flash|after`: what the `firmware-upgrade` workflow's own steps
+/// run. `flash` is `owut upgrade` on the router, with sentry's sysupgrade lock held, and
+/// the wait for it to come back on a new boot. Never run end to end (the workflow is a
+/// draft).
+pub fn firmware(name: &str, action: &str) -> u8 {
+    let (n, cfg) = match load(Some(name)) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let r = Router::new(&n, &cfg);
+    let board = || ifaces::collect(&r).map(|i| i.board);
+    let boot_id = |fresh: bool| {
+        let c = r.cmd("cat").arg("/proc/sys/kernel/random/boot_id");
+        let c = if fresh { c.own_connection() } else { c };
+        c.output().map(|s| s.trim().to_string())
+    };
+    match action {
+        "check" => match board() {
+            Ok(b) => {
+                println!(
+                    "running {} {} ({}, {})",
+                    b.distribution, b.version, b.target, b.board_name
+                );
+                let Some(series) = super::maint::eval::series(&b.version) else {
+                    println!("not a release (a snapshot build): nothing to compare with");
+                    return 0;
+                };
+                let up = super::maint::upstream::get(&n, &series);
+                match &up.data.releases {
+                    Ok(rs) => println!(
+                        "{} release(s) known upstream for {series}: {rs:?}",
+                        rs.len()
+                    ),
+                    Err(e) => println!("the releases couldn't be looked up: {e}"),
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("sentry-network firmware: {e}");
+                1
+            }
+        },
+        "flash" => {
+            // sysupgrade keeps its file list at a fixed path: nothing else of sentry's
+            // may run it while owut does.
+            let _turn = match super::backup::turn(&r.scope) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("sentry-network firmware: the sysupgrade lock: {e}");
+                    return 1;
+                }
+            };
+            let (Ok(before), Ok(boot)) = (board(), boot_id(false)) else {
+                eprintln!("the router didn't answer: nothing was flashed");
+                return 1;
+            };
+            println!("running {} · flashing with `owut upgrade`", before.version);
+            // The connection drops when the router restarts: that is the upgrade happening.
+            match r
+                .sh("owut upgrade")
+                .timeout(Some(std::time::Duration::from_secs(900)))
+                .run()
+            {
+                Ok(o) => {
+                    print!("{}", o.stdout);
+                    eprint!("{}", o.stderr);
+                }
+                Err(e) => println!("(the connection ended: {e})"),
+            }
+            println!("… waiting for the router to come back (up to 10 minutes)");
+            let until = Instant::now() + std::time::Duration::from_secs(600);
+            while Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                if let Ok(now) = boot_id(true)
+                    && !now.is_empty()
+                    && now != boot
+                {
+                    return match board() {
+                        Ok(b) if b.version != before.version => {
+                            println!("✓ back, running {} (was {})", b.version, before.version);
+                            0
+                        }
+                        Ok(b) => {
+                            eprintln!(
+                                "✗ back on {}: it restarted, but nothing was flashed",
+                                b.version
+                            );
+                            1
+                        }
+                        Err(e) => {
+                            eprintln!("✗ back, but the board didn't read: {e}");
+                            1
+                        }
+                    };
+                }
+            }
+            eprintln!("✗ the router didn't come back on a new boot within 10 minutes");
+            1
+        }
+        "after" => {
+            match board() {
+                Ok(b) => println!("running {} {}", b.distribution, b.version),
+                Err(e) => {
+                    eprintln!("the board didn't read: {e}");
+                    return 1;
+                }
+            }
+            let up = services_up(&r);
+            let clients = collect::clients::collect(&r)
+                .map(|c| c.leases.len())
+                .unwrap_or(0);
+            println!("{clients} device(s) hold a lease");
+            let audited = audit(Some(&n));
+            if up && audited == 0 { 0 } else { 1 }
+        }
+        other => {
+            eprintln!("firmware: `{other}` isn't check, flash or after");
+            2
+        }
+    }
+}

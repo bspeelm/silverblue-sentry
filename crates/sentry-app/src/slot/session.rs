@@ -39,7 +39,9 @@ impl Slot {
         if sess.job.is_some_and(|(jid, _)| jid == id) {
             match m {
                 StreamMsg::Line { text, .. } => {
-                    sess.step_line(text.clone());
+                    // What goes back to Claude is what the target lets it see.
+                    let seen = self.target.hides(text);
+                    sess.step_line(seen.unwrap_or_else(|| text.clone()));
                     self.saw_line(w, text);
                 }
                 StreamMsg::Exit { code, .. } => {
@@ -547,7 +549,7 @@ impl Slot {
         // The target's profile for a session, plus what the user granted in it.
         let profile = self.target.profile(ProfileFor::Session, grants);
         let id = self.mail.next();
-        if w.offline {
+        if w.offline || w.scripted_turns {
             self.last_prompt = Some(prompt.to_string());
             return Ok((id, 0));
         }

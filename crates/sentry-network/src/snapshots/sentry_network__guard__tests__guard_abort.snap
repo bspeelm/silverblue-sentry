@@ -1,0 +1,13 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: abort_script(t)
+---
+sh /tmp/sentry-guard-0123456789abcdef/restore.sh
+D=/tmp/sentry-guard-0123456789abcdef
+rm -f "$D/armed"
+[ -s "$D/sleep.pid" ] && kill "$(cat "$D/sleep.pid")" 2>/dev/null
+[ -s "$D/pid" ] && kill "$(cat "$D/pid")" 2>/dev/null
+rm -rf "$D"
+[ -e "$D" ] && echo left || echo gone
+grep -q '^0123456789abcdef reverted' /tmp/sentry-guard.last 2>/dev/null && echo reverted
+true

@@ -53,6 +53,48 @@ pub struct Apply {
     pub finding: Option<String>,
     /// A failed workflow step: once it's fixed, the step is retried.
     pub step: Option<StepRef>,
+    /// What this host never runs from a session, whoever allows it (a router's guarded
+    /// and workflow-only commands): a plan's command it names is sent back, a request for
+    /// one isn't run.
+    pub refuses: Refuses,
+    /// A remote host whose own audit says whether the finding is gone (a router's): it
+    /// is audited again after the plan, as this machine is.
+    pub reaudits: bool,
+    /// How the host is talked about where it isn't a server (a router's words).
+    pub how: Option<&'static str>,
+    /// Auto mode never approves this session's plan or allows a command it asks to run:
+    /// the host's login is root, with no sudo line between a read and a change, so each
+    /// is the user's own Enter.
+    pub asks_each: bool,
+}
+
+/// A host's own rule for a command line: why it is never a session's to run, if it isn't.
+/// `remote`: the line is for the host (a plan's step, a line its gateway held); else a
+/// command on this machine that Claude Code refused.
+#[derive(Clone, Copy, Default)]
+pub struct Refuses(pub Option<fn(&str, bool) -> Option<String>>);
+
+impl Refuses {
+    pub fn why(&self, cmd: &str, remote: bool) -> Option<String> {
+        self.0.and_then(|f| f(cmd, remote))
+    }
+}
+
+impl std::fmt::Debug for Refuses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Refuses(rule)"
+        } else {
+            "Refuses(none)"
+        })
+    }
+}
+
+/// Two sessions are about the same thing whatever rule their host keeps.
+impl PartialEq for Refuses {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Apply {
@@ -271,7 +313,9 @@ pub fn apply_question(a: &Apply) -> String {
         ),
         None => String::new(),
     };
-    let how = if a.remote {
+    let how = if let Some(how) = a.how {
+        how
+    } else if a.remote {
         "Checks you simply run on the server, through the gateway: any command that only looks, \
          pipes and all. One that needs root you call with sudo: sentry-server shows me that exact \
          call, and once I allow it (and give my password) it runs it on the server and tells you \
@@ -316,7 +360,11 @@ pub fn apply_question(a: &Apply) -> String {
 
 /// Where a plan's file changes go: `edit` steps on this machine, `run` steps on a server.
 fn files_rule(a: &Apply) -> &'static str {
-    if a.remote {
+    if a.how.is_some() {
+        "The commands run on the router, as root (there is no sudo there). `edit` steps are \
+         only for my files on this machine (the notes); the router's files are never edited \
+         directly."
+    } else if a.remote {
         "The commands run on the server. Change the server's files with `run` steps there \
          (sudo where needed); `edit` steps are only for my files on this machine (the notes)."
     } else {

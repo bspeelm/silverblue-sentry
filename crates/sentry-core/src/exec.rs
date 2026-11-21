@@ -38,6 +38,8 @@ pub struct Cmd {
     ready: Option<String>,
     /// Streamed over ssh, its stdin is a pipe held open until it exits (`hold_stdin`).
     hold_stdin: bool,
+    /// Over ssh, never the shared connection (`own_connection`).
+    own_conn: bool,
 }
 
 /// What a command reads on stdin (a sudo password among it): never shown, never logged.
@@ -146,6 +148,7 @@ impl Cmd {
             input: None,
             ready: None,
             hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -159,6 +162,7 @@ impl Cmd {
             input: None,
             ready: None,
             hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -176,6 +180,7 @@ impl Cmd {
             input: None,
             ready: None,
             hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -223,6 +228,14 @@ impl Cmd {
     /// local ssh still ends it. Nothing changes for captured commands, nor off ssh.
     pub fn hold_stdin(mut self) -> Self {
         self.hold_stdin = true;
+        self
+    }
+
+    /// Over ssh, on a connection of its own even when captured (never the shared,
+    /// multiplexed one): for asking a host that may just have dropped every connection it
+    /// had whether it still answers. Nothing changes off ssh.
+    pub fn own_connection(mut self) -> Self {
+        self.own_conn = true;
         self
     }
 
@@ -322,7 +335,7 @@ impl Cmd {
                 let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
             }
             let mut c = Command::new("ssh");
-            c.args(ssh_opts(&dir, tty == Tty::No));
+            c.args(ssh_opts(&dir, tty == Tty::No && !self.own_conn));
             match tty {
                 Tty::No => {}
                 Tty::Forced => {

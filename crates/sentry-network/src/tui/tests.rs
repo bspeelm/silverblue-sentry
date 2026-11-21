@@ -14,6 +14,7 @@ use crate::remote::Router;
 use sentry_app::Target;
 use sentry_app::app::{App, render_to_string};
 use sentry_core::tui::ScreenId;
+use sentry_core::workflows::runner::Next;
 
 const NAME: &str = "home";
 
@@ -106,6 +107,18 @@ fn app() -> App {
         data(&mut a, Kind::Probe, Ok(Payload::Probe(later(s))));
     }
     a
+}
+
+/// What every screen's entry reads once beside its own, where it doesn't poll them
+/// already: what must be hidden from Claude (the SSIDs, who holds a lease, the uplink's
+/// addresses) is known wherever Claude can be asked.
+const HIDES: [Kind; 3] = [Kind::Uci, Kind::Clients, Kind::Ifaces];
+
+/// A screen's own fetches, then those of `HIDES` it doesn't make itself.
+fn with_hides(own: &[Kind]) -> Vec<Kind> {
+    let mut v = own.to_vec();
+    v.extend(HIDES.iter().filter(|k| !own.contains(k)));
+    v
 }
 
 /// The line of the screen that has `what` in it.
@@ -355,8 +368,13 @@ fn history_shows_the_ring_and_joins_the_strip_with_it() {
         s.contains("No recorder data.") && s.contains("sentry-network record home"),
         "{s}"
     );
-    // Entering it reads the ring from this machine's disk (and polls nothing).
-    assert_eq!(net(&a).asked.last(), Some(&Kind::History));
+    // Entering it reads the ring from this machine's disk (and polls nothing); and, once,
+    // what must be hidden from Claude, which can be asked here too.
+    let n = net(&a).asked.len();
+    assert_eq!(
+        &net(&a).asked[n - HIDES.len() - 1..],
+        with_hides(&[Kind::History])
+    );
     data(
         &mut a,
         Kind::History,
@@ -382,20 +400,32 @@ fn the_dashboard_polls_only_while_it_has_the_window() {
     let t0 = Instant::now();
     a.start(t0);
     // Entering the Dashboard reads what it shows at once (the last report is this
-    // machine's file, not the router's).
+    // machine's file, not the router's), then the config and the leases, once: what must
+    // be hidden from Claude.
+    const DASH: [Kind; 4] = [Kind::Probe, Kind::Ifaces, Kind::Services, Kind::Report];
+    let entry = with_hides(&DASH);
     assert_eq!(
-        net(&a).asked,
-        [Kind::Probe, Kind::Ifaces, Kind::Services, Kind::Report]
+        entry,
+        [
+            Kind::Probe,
+            Kind::Ifaces,
+            Kind::Services,
+            Kind::Report,
+            Kind::Uci,
+            Kind::Clients
+        ]
     );
+    assert_eq!(net(&a).asked, entry);
     // The probe every second, the interfaces every thirty, the services every minute.
+    // The config and the leases aren't polled here: entry only.
     a.tick(t0 + Duration::from_millis(500));
-    assert_eq!(net(&a).asked.len(), 4);
+    assert_eq!(net(&a).asked.len(), 6);
     assert!(a.next_due(t0) <= t0 + Duration::from_secs(1));
     a.tick(t0 + Duration::from_millis(1001));
     a.tick(t0 + Duration::from_millis(2002));
-    assert_eq!(&net(&a).asked[4..], [Kind::Probe, Kind::Probe]);
+    assert_eq!(&net(&a).asked[6..], [Kind::Probe, Kind::Probe]);
     a.tick(t0 + Duration::from_secs(31));
-    assert_eq!(&net(&a).asked[6..], [Kind::Probe, Kind::Ifaces]);
+    assert_eq!(&net(&a).asked[8..], [Kind::Probe, Kind::Ifaces]);
     // On History nothing is polled.
     let t1 = t0 + Duration::from_secs(40);
     a.on_event(
@@ -403,7 +433,7 @@ fn the_dashboard_polls_only_while_it_has_the_window() {
         t1,
     );
     let n = net(&a).asked.len();
-    assert_eq!(net(&a).asked[n - 1], Kind::History);
+    assert_eq!(&net(&a).asked[n - 4..], with_hides(&[Kind::History]));
     a.tick(t1 + Duration::from_secs(120));
     assert_eq!(net(&a).asked.len(), n);
     assert_eq!(
@@ -411,13 +441,14 @@ fn the_dashboard_polls_only_while_it_has_the_window() {
         t1 + Duration::from_secs(60),
         "the app's idle wait"
     );
-    // `r` on the Dashboard reads it all again.
+    // `r` on the Dashboard reads again what it shows.
     key(&mut a, KeyCode::Char('1'));
     let n = net(&a).asked.len();
     key(&mut a, KeyCode::Char('r'));
     assert_eq!(
         &net(&a).asked[n..],
-        [Kind::Probe, Kind::Ifaces, Kind::Services, Kind::Report]
+        DASH,
+        "what the screen shows, not what's hidden"
     );
 }
 
@@ -442,67 +473,20 @@ fn samples_become_the_ring_but_tests_write_none() {
     assert_eq!(s.traffic["eth1"].last(), Some(14_000_000.0));
 }
 
-#[test]
-fn claude_says_what_isnt_there_yet_and_workflows_are() {
-    use sentry_app::target::{Asks, Cx, Host, ProfileFor, Upkeep};
-    let mut a = app();
-    // The digits of screens it doesn't have do nothing.
-    for c in ['4', '5', '7'] {
-        key(&mut a, KeyCode::Char(c));
-        assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
-    }
-    let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("0 Upgrade") && !s.contains("Containers"), "{s}");
-    // Claude isn't offered anywhere: not in the key bar, not in `?`. Auto mode is, where
-    // work is started and followed (Maintenance and the run's screen).
-    for c in ['1', '2', '3', '6', '0'] {
-        key(&mut a, KeyCode::Char(c));
-        let s = render_to_string(&mut a, 158, 41);
-        let bar = s.lines().last().unwrap();
-        assert!(
-            !bar.contains("A  ask") && !bar.contains("A  claude"),
-            "{c}: {bar}"
-        );
-        assert!(!bar.contains("review"), "{c}: {bar}");
-        assert_eq!(
-            bar.contains("C-a  auto"),
-            matches!(c, '6' | '0'),
-            "{c}: {bar}"
-        );
-        key(&mut a, KeyCode::Char('?'));
-        let help = render_to_string(&mut a, 158, 41);
-        assert!(!help.contains("Claude"), "{c}: {help}");
-        assert!(
-            help.contains("C-a") && help.contains("auto mode"),
-            "{c}: {help}"
-        );
-        key(&mut a, KeyCode::Esc);
-    }
-    key(&mut a, KeyCode::Char('1'));
-    // A: nothing is asked, and it says why (whether or not Claude Code is installed).
-    key(&mut a, KeyCode::Char('A'));
-    assert_eq!(
-        a.toast_for_test(),
-        Some("Claude isn't set up for a network yet")
-    );
-    assert!(a.chat_for_test().is_none() && a.apply_session().is_none());
-    // `:wf` goes to its workflows; one it doesn't have says so.
-    typed(&mut a, ":wf package-update");
-    assert_eq!(a.toast_for_test(), Some("no workflow package-update"));
-    assert_eq!(a.slot().screen, ScreenId::Upgrade);
-    key(&mut a, KeyCode::Char('1'));
-    // What the app would be told if it asked.
-    let slot = a.slot();
-    let t = net(&a);
-    let theme = sentry_core::tui::theme::Theme::truecolor();
-    let cx = Cx {
-        theme: &theme,
-        now: jiff::Timestamp::UNIX_EPOCH,
-        screen: ScreenId::Dash,
+/// What the app shows a target of itself, on `screen`, with `run` in progress.
+fn cx_on<'a>(
+    theme: &'a sentry_core::tui::theme::Theme,
+    screen: ScreenId,
+    run: Option<&'a dyn sentry_app::run::WfRun>,
+) -> sentry_app::target::Cx<'a> {
+    sentry_app::target::Cx {
+        theme,
+        now: "2026-10-26T12:00:00Z".parse().unwrap(),
+        screen,
         filter: None,
         everything: true,
         writer: None,
-        run: None,
+        run,
         last_change: None,
         offline: true,
         at: Instant::now(),
@@ -514,20 +498,112 @@ fn claude_says_what_isnt_there_yet_and_workflows_are() {
         auto: false,
         focused: true,
         target: NAME,
-    };
-    assert!(t.derived_tasks(&slot.shared).is_empty());
+    }
+}
+
+#[test]
+fn claude_is_offered_once_what_must_be_hidden_is_known() {
+    use sentry_app::target::{Asks, Host, ProfileFor, SeriesStep, Upkeep};
+    // (No run is left to pick up: the tests that start one take turns with this.)
+    let _turn = runs();
+    let mut a = app();
+    // The digits of screens it doesn't have do nothing.
+    for c in ['4', '5', '7'] {
+        key(&mut a, KeyCode::Char(c));
+        assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("0 Upgrade") && !s.contains("Containers"), "{s}");
+    // Claude is offered on every screen: in the key bar, and in `?`. Auto mode's key is
+    // named where work is started and followed (Maintenance and the run's screen).
+    for c in ['1', '2', '3', '6', '0'] {
+        key(&mut a, KeyCode::Char(c));
+        let s = render_to_string(&mut a, 200, 41);
+        let bar = s.lines().last().unwrap();
+        assert!(bar.contains("A  ask Claude"), "{c}: {bar}");
+        assert_eq!(
+            bar.contains("C-a  auto"),
+            matches!(c, '6' | '0'),
+            "{c}: {bar}"
+        );
+        key(&mut a, KeyCode::Char('?'));
+        let help = render_to_string(&mut a, 158, 41);
+        assert!(
+            help.contains("ask Claude about what's selected"),
+            "{c}: {help}"
+        );
+        assert!(
+            help.contains("C-a") && help.contains("auto mode"),
+            "{c}: {help}"
+        );
+        key(&mut a, KeyCode::Esc);
+    }
+    key(&mut a, KeyCode::Char('1'));
+    // A before the config and the leases are read: nothing is asked, since what must be
+    // hidden isn't known yet; it says so.
+    key(&mut a, KeyCode::Char('A'));
+    assert_eq!(a.toast_for_test(), Some(super::ask::NOT_YET));
+    assert!(a.chat_for_test().is_none() && a.apply_session().is_none());
+    // No workflows read here: `:wf` says so of one it doesn't have.
+    typed(&mut a, ":wf package-update");
+    assert_eq!(a.toast_for_test(), Some("no workflow package-update"));
+    assert_eq!(a.slot().screen, ScreenId::Upgrade);
+
+    // Everything read: A opens the conversation on its brief. Nothing is sent until Enter.
+    let mut a = messy();
+    key(&mut a, KeyCode::Char('A'));
+    let s = render_to_string(&mut a, 158, 41);
+    let chat = a.chat_for_test().expect("a conversation");
+    assert!(chat.pending && chat.live.is_none(), "{s}");
+    let sent = a.consent_text().expect("its brief");
     assert!(
-        t.series_step("finding:net:ssh:password", &slot.shared, &cx)
+        sent.contains("Network `home`, its router: OpenWrt 25.12.3 on Example Router AX"),
+        "{sent}"
+    );
+    assert!(sent.contains("The last audit's open findings:"), "{sent}");
+    assert!(s.contains("home · overview"), "{s}");
+    // What is sent, and what never is, is said before it's sent.
+    assert!(
+        s.contains("scrubbed of secrets, the uplink's address, MACs, SSIDs and unnamed hostnames")
+            && s.contains("sentry-network's read-only gateway"),
+        "{s}"
+    );
+    assert!(s.contains("Enter  send"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // What the app is told when it asks.
+    let slot = a.slot();
+    let t = net(&a);
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let cx = cx_on(&theme, ScreenId::Dash, None);
+    assert!(t.derived_tasks(&slot.shared).is_empty());
+    assert!(t.offered() && t.auto_offered());
+    assert!(t.ask(&slot.shared, &cx).is_ok());
+    // A finding is a session's to a series, as on the other targets, and what Enter
+    // would apply on Maintenance; nothing on a network has a plan document.
+    let step = t.series_step("finding:net:ssh:password", &slot.shared, &cx);
+    let Some(SeriesStep::Session(ask)) = step else {
+        panic!("a finding is a session to a series");
+    };
+    let ap = ask.applying().expect("an apply session");
+    assert_eq!(ap.finding.as_deref(), Some("net:ssh:password"));
+    assert!(ap.remote && ap.asks_each && ap.reaudits);
+    let on_maint = cx_on(&theme, ScreenId::Maint, None);
+    assert!(t.apply_ask(&slot.shared, &on_maint).is_some());
+    assert!(
+        t.plan_ask("firmware", "item:firmware".into(), &slot.shared, &cx)
             .is_none()
     );
-    assert!(!t.offered() && t.auto_offered());
-    assert!(t.apply_ask(&slot.shared, &cx).is_none());
-    assert!(t.ask(&slot.shared, &cx).is_err());
     assert!(t.records(&slot.shared, &cx).0.is_empty());
     assert!(t.resume_run().is_none());
-    // A profile that allows nothing, should one ever be asked for.
+    // Its profiles reach the router only through the gateway.
     let p = t.profile(ProfileFor::Session, &[]);
-    assert!(p.tools.is_empty() && p.allowed.is_empty() && p.denied.contains(&"Bash".into()));
+    assert!(
+        p.allowed
+            .contains(&"Bash(sentry-network exec home:*)".to_string())
+            && !p.allowed.contains(&"Bash".to_string()),
+        "{:?}",
+        p.allowed
+    );
     // A command line is the router's shell's, over ssh as root, streamed the dropbear way.
     let c = t.command("logread -l 5");
     assert_eq!(c.remote_line(), "env LC_ALL=C sh -c 'logread -l 5'");
@@ -1391,10 +1467,14 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
     assert!(line(&s, "● access").contains("ssh takes passwords · web interface over HTTP too"));
     assert!(line(&s, "● clients").contains("2 unknown"));
     assert!(line(&s, "✓ services").contains("3 of 3 running"));
-    // The key bar: what this row takes, and nothing that does nothing.
-    let bar = s.lines().last().unwrap();
+    // The key bar: what this row takes, and nothing that does nothing. A finding can be
+    // ticked for a series (a session with Claude does it), and Claude can be asked. (Wide
+    // enough for all of them: at 158 the last two are fitted out.)
+    let wide = render_to_string(&mut a, 200, 41);
+    let bar = wide.lines().last().unwrap();
     for k in [
         "Enter  in the report",
+        "Space  tick",
         "x  expected",
         "B  all like it",
         "z  later",
@@ -1403,10 +1483,15 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
         "c  audit",
         "F  report",
         "v  records",
+        "A  ask Claude",
     ] {
         assert!(bar.contains(k), "{k} in {bar}");
     }
-    assert!(!bar.contains("Space") && !bar.contains("A  "), "{bar}");
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Space  tick") && bar.contains("A  ask Claude"),
+        "{bar}"
+    );
     // The items under the list, before anything about them was read: the firmware from
     // the board, with nothing looked up yet.
     assert!(line(&s, "│ firmware").contains("25.12.3"), "{s}");
@@ -1535,7 +1620,7 @@ fn the_audit_report_view() {
     let _ = picked;
     let bar = s.lines().last().unwrap();
     assert!(
-        bar.contains("b  expected on/off") && !bar.to_lowercase().contains("claude"),
+        bar.contains("b  expected on/off") && bar.contains("A  ask Claude"),
         "{bar}"
     );
     // b: expected, and back; the list shows it at once.
@@ -1608,12 +1693,15 @@ fn maintenance_audits_on_entry_when_the_last_report_is_old() {
     // What entering Maintenance reads: the report from disk, the board, the packages from
     // the index the router has, what was last looked up upstream (this machine's cache)
     // and the backups. Never the index's refresh, never a lookup: those are `r`.
-    const ENTRY: [Kind; 5] = [
+    // Then, once, the config and the leases: what must be hidden from Claude.
+    const ENTRY: [Kind; 7] = [
         Kind::Report,
         Kind::Ifaces,
         Kind::Updates,
         Kind::Upstream,
         Kind::Backup,
+        Kind::Uci,
+        Kind::Clients,
     ];
     let after_entry = |a: &App| net(a).asked[ENTRY.len()..].to_vec();
     // Five minutes old: entering Maintenance reads the report from disk and leaves it.
@@ -1654,7 +1742,14 @@ fn maintenance_audits_on_entry_when_the_last_report_is_old() {
     // Leaving and coming back refreshes nothing by itself.
     key(&mut a, KeyCode::Char('1'));
     key(&mut a, KeyCode::Char('6'));
-    let again: Vec<Kind> = net(&a).asked.iter().rev().take(5).rev().copied().collect();
+    let again: Vec<Kind> = net(&a)
+        .asked
+        .iter()
+        .rev()
+        .take(ENTRY.len())
+        .rev()
+        .copied()
+        .collect();
     assert_eq!(again, ENTRY);
     // Eight days old: the audit runs by itself, once.
     let mut a = blank_with(&cfg);
@@ -1696,6 +1791,8 @@ fn maintenance_audits_on_entry_when_the_last_report_is_old() {
             Kind::Ifaces,
             Kind::Services,
             Kind::Report,
+            Kind::Uci,
+            Kind::Clients,
             Kind::Cert
         ]
     );
@@ -1741,12 +1838,31 @@ fn tasks_by_hand_work_on_a_network() {
         "{s}"
     );
     key(&mut a, KeyCode::Char('n'));
-    // Space: nothing of a network's can go in a series yet.
+    // Space: a task done by hand can go in a series (a session with Claude does it, as
+    // on the other targets); Esc unticks.
     key(&mut a, KeyCode::Char(' '));
-    assert_eq!(
-        a.toast_for_test(),
-        Some(sentry_core::tui::maintlist::NOT_IN_A_SERIES)
+    assert_eq!(net(&a).screens.maint.ticks.len(), 1);
+    assert!(net(&a).screens.maint.ticks.contains("task:check-upnp"));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("· 1 ticked ·") && s.contains("Enter  do the ticked"),
+        "{s}"
     );
+    use sentry_app::target::{SeriesStep, Upkeep};
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let cx = cx_on(&theme, ScreenId::Maint, None);
+    let step = net(&a).series_step("task:check-upnp", &a.slot().shared, &cx);
+    match &step {
+        Some(SeriesStep::Session(ask)) => assert_eq!(ask.subject, "apply · Check UPnP is off"),
+        Some(SeriesStep::Workflow(w)) => panic!("a workflow: {w}"),
+        Some(_) => panic!("not a session"),
+        None => panic!(
+            "nothing: {:?}",
+            super::ask::scrub_of(&net(&a).store, &net(&a).router).err()
+        ),
+    }
+    key(&mut a, KeyCode::Esc);
+    assert!(net(&a).screens.maint.ticks.is_empty());
     // z: put off; the row leaves the list.
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('1'));
@@ -1826,7 +1942,8 @@ fn upkeep(a: &mut App, backup: Status) {
 
 #[test]
 fn the_items_and_what_they_ask_for() {
-    let mut a = full();
+    let _turn = runs();
+    let mut a = with_workflows(&fx_cfg(), None);
     upkeep(&mut a, backed_up(6, &[]));
     let s = screen(&mut a, '6', 158, 41);
     insta::assert_snapshot!("maintenance_items_158x41", s);
@@ -1859,14 +1976,17 @@ fn the_items_and_what_they_ask_for() {
         bar.contains("Enter  about") && bar.contains("z  later"),
         "{bar}"
     );
-    // Enter says how it stands, and plainly that sentry doesn't do it yet.
+    // Enter on the firmware's row says how it stands, and that its workflow is a draft:
+    // nothing is started, and the box has nothing to say yes to.
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("its notes list security fixes")
-            && s.contains("sentry doesn't upgrade firmware yet"),
+        s.contains("firmware-upgrade is a draft: it has never been run end to end on a router.")
+            && s.contains("delete `draft = true` from its file to use it")
+            && s.contains("Until then nothing here flashes firmware."),
         "{s}"
     );
+    assert!(a.box_yes_for_test().is_none() && a.slot().run.is_none());
     key(&mut a, KeyCode::Esc);
     // o: what can wait too.
     key(&mut a, KeyCode::Char('o'));
@@ -1889,10 +2009,27 @@ fn the_items_and_what_they_ask_for() {
         bar.starts_with(" Enter  about   o  everything   r  refresh"),
         "{bar}"
     );
+    // Enter on the packages starts package-update, which first asks which ones (never
+    // all of them): nothing runs until they're named, and Esc starts nothing.
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("sentry doesn't update packages yet"), "{s}");
+    assert!(
+        s.contains("The packages to upgrade, by name (space-separated) (packages): ▏"),
+        "{s}"
+    );
+    assert!(a.slot().run.is_none() && a.box_yes_for_test().is_none());
     key(&mut a, KeyCode::Esc);
+    assert!(a.slot().run.is_none());
+    let s = screen(&mut a, '6', 158, 41);
+    assert!(!s.contains("(packages):"), "{s}");
+    // The firmware item itself (the first one) says the same as its row did.
+    key(&mut a, KeyCode::Char('k'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("firmware-upgrade is a draft"), "{s}");
+    assert!(a.slot().run.is_none());
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('j'));
     // The backup item: where they are, whom they're for. Nobody yet in this config, so
     // Enter says what to set instead of starting anything.
     key(&mut a, KeyCode::Char('j'));
@@ -2008,7 +2145,24 @@ fn with_workflows(cfg: &Network, backup: Option<Status>) -> App {
         let _turn = crate::workflow::seeding();
         crate::workflow::list_for(&super::id_of(NAME))
     };
-    assert_eq!(list.len(), 1, "the seeded workflow");
+    let names: Vec<&str> = list.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "config-backup",
+            "firmware-upgrade",
+            "guarded-change",
+            "package-update"
+        ],
+        "the seeded workflows"
+    );
+    // The firmware's is a draft until the user says otherwise; the others aren't.
+    let drafts: Vec<&str> = list
+        .iter()
+        .filter(|e| e.wf.as_ref().is_ok_and(|w| w.draft))
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(drafts, ["firmware-upgrade"]);
     a.set_wf_entries(list);
     a
 }
@@ -2309,7 +2463,8 @@ fn a_cadence_is_a_task_once_its_workflow_is_there() {
         focused: true,
         target: NAME,
     };
-    // Its row is a workflow's run to a series; a finding's isn't anything to one.
+    // Its row is a workflow's run to a series; a row that only says how an item stands
+    // (Enter does that one by itself) isn't anything to one.
     assert!(matches!(
         t.series_step("task:cadence-config-backup", &slot.shared, &cx),
         Some(SeriesStep::Workflow(w)) if w == "config-backup"
@@ -2326,4 +2481,984 @@ fn a_cadence_is_a_task_once_its_workflow_is_there() {
     let mut b = with_workflows(&cfg, None);
     b.set_wf_entries(Vec::new());
     assert!(net(&b).derived_tasks(&b.slot().shared).is_empty());
+}
+
+// ── Claude on a network: what never reaches it, what it may never do ───────────────────
+
+/// What must never leave this machine, planted in everything a prompt is made from.
+mod private {
+    /// The uplink's address, its IPv6 address, and an address under the prefix delegated
+    /// to it.
+    pub const WAN4: &str = "198.51.100.23";
+    pub const WAN6: &str = "2001:db8:ffff:1::2";
+    pub const PREFIX: &str = "2001:db8:1200:";
+    /// A device the config doesn't name: its MAC (the half that is its own), and the
+    /// hostname it gives.
+    pub const MAC: &str = "00:00:5e:00:53:11";
+    pub const MAC_TAIL: &str = "00:53:11";
+    pub const HOST: &str = "kitchen-tablet";
+    pub const SSIDS: [&str; 2] = ["Example Net", "Example Guest"];
+    /// The Wi-Fi passphrase, as the fixture's config has it.
+    pub const PASSPHRASE: &str = "correct horse battery";
+
+    /// One line with all of it, and with what may be said: a device the config names
+    /// (by its MAC), and one known by the hostname it gives.
+    pub fn line() -> String {
+        format!(
+            "uplink {WAN4} and {WAN6}, prefix {PREFIX}:1, device {MAC} ({HOST}), \
+             the nas at 00:00:5e:00:53:10, my-phone, Wi-Fi {} and {}, \
+             glued sta:{MAC} id:00:00:5e:00:53:10",
+            SSIDS[0], SSIDS[1]
+        )
+    }
+
+    /// None of it is in `text`.
+    pub fn absent(what: &str, text: &str) {
+        for p in [
+            WAN4, WAN6, PREFIX, MAC, MAC_TAIL, HOST, SSIDS[0], SSIDS[1], PASSPHRASE,
+        ] {
+            assert!(!text.contains(p), "{what}: {p:?} in\n{text}");
+        }
+    }
+
+    /// What stands for it is: `line()` went through, scrubbed.
+    pub fn scrubbed(what: &str, text: &str) {
+        absent(what, text);
+        for p in [
+            "‹wan›",
+            "‹wan6›",
+            "‹ssid-1›",
+            "‹ssid-2›",
+            "‹host-",
+            "00:00:5e:xx:xx:xx",
+            "‹nas›",
+            "phone",
+            "sta:00:00:5e:xx:xx:xx",
+            "id:‹nas›",
+        ] {
+            assert!(text.contains(p), "{what}: no {p:?} in\n{text}");
+        }
+        assert!(!text.contains("my-phone"), "{what}: my-phone in\n{text}");
+    }
+}
+
+/// The fixtures' network with `desk` not named by the config (its lease gives a hostname),
+/// an IPv6 address on the uplink, and an audit report with one finding that says all of
+/// `private::line()` in every text it has. A task done by hand says it too.
+fn planted() -> App {
+    let mut cfg = fx_cfg();
+    cfg.devices.retain(|d| d.name.as_deref() != Some("desk"));
+    let mut a = full_with(&cfg, audit::tests::snap);
+    let mut i = the_ifaces();
+    let wan6 = i
+        .interfaces
+        .iter_mut()
+        .find(|x| x.name == "wan6")
+        .expect("the fixture's wan6");
+    wan6.ipv6.push(format!("{}/64", private::WAN6));
+    assert_eq!(wan6.prefixes, ["2001:db8:1200::/56"]);
+    data(&mut a, Kind::Ifaces, Ok(Payload::Ifaces(Box::new(i))));
+    let leases = fixture("network/clients.txt").replace(
+        "00:00:5e:00:53:11 192.0.2.11 *",
+        &format!("00:00:5e:00:53:11 192.0.2.11 {}", private::HOST),
+    );
+    assert!(leases.contains(private::HOST));
+    let raw = crate::collect::clients::parse(&leases).unwrap();
+    for _ in 0..2 {
+        data(
+            &mut a,
+            Kind::Clients,
+            Ok(Payload::Clients(Box::new(raw.clone()))),
+        );
+    }
+    let mut snap = audit::tests::snap(&cfg);
+    snap.taken_at = Some("2026-10-26T11:55:00Z".parse().unwrap());
+    let mut rep = report_for(&cfg, snap, &a);
+    let said = private::line();
+    rep.findings.push(sentry_core::finding::Finding {
+        id: "net:test:planted".into(),
+        severity: Sev::High,
+        category: "network".into(),
+        message: format!("planted: {said}"),
+        evidence: format!("evidence: {said}"),
+        expected: false,
+        what: format!("what: {said}"),
+        why: format!("why: {said}"),
+        fix: format!("fix: {said}"),
+        listeners: Vec::new(),
+    });
+    data(
+        &mut a,
+        Kind::Report,
+        Ok(Payload::Reports(Box::new(shown(rep, None, 1)))),
+    );
+    upkeep(&mut a, backed_up(1, &[]));
+    let (slot, _) = a.parts();
+    slot.shared.tasks.push(sentry_core::maint::tasks::Task {
+        id: "by-hand".into(),
+        title: format!("Look at {}", private::HOST),
+        why: format!("task why: {said}"),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: "by-hand".into(),
+        item: None,
+        steps: format!("1. steps: {said}"),
+        added: None,
+        review: None,
+        after: None,
+        again: None,
+        off: false,
+        source: Default::default(),
+    });
+    a
+}
+
+/// The screens' view of the app as it stands, the cursor on row `cur`.
+fn view_at<'a>(
+    a: &'a App,
+    theme: &'a sentry_core::tui::theme::Theme,
+    cur: usize,
+) -> super::screens::View<'a> {
+    let t = net(a);
+    super::screens::View {
+        t: theme,
+        s: &t.store,
+        sh: &a.slot().shared,
+        cfg: &t.router.cfg,
+        name: &t.router.name,
+        cur,
+        now: "2026-10-26T12:00:00Z".parse().unwrap(),
+        filter: None,
+        everything: true,
+        wf: wf(a),
+        auto: false,
+    }
+}
+
+/// A line the step running in the workflow printed (nothing ran).
+fn step_says(a: &mut App, text: &str) {
+    let id = wf(a)
+        .and_then(|w| w.live.as_ref())
+        .expect("a step running")
+        .id;
+    a.on_event(
+        Event::Stream(
+            super::id_of(NAME),
+            id,
+            sentry_core::exec::StreamMsg::Line {
+                stderr: false,
+                text: text.to_string(),
+            },
+        ),
+        Instant::now(),
+    );
+}
+
+/// A workflow of the test's own, the only one the network has.
+fn own_workflow(a: &mut App, name: &str, text: &str) {
+    let path = sentry_core::paths::config_dir().join(format!("{name}.toml"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    a.set_wf_entries(vec![sentry_core::workflows::Entry {
+        name: name.to_string(),
+        path,
+        wf: sentry_core::workflows::parse(text),
+        issues: Vec::new(),
+    }]);
+}
+
+#[test]
+fn nothing_private_reaches_a_prompt() {
+    use super::ask;
+    use super::screens::maint;
+    use sentry_app::target::Asks;
+    let _turn = runs();
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let whole = |a: &sentry_core::claude::Ask| {
+        format!(
+            "{}\n{}\n{}\n{}",
+            a.subject,
+            a.context,
+            a.question,
+            a.prompt()
+        )
+    };
+
+    // Nothing read yet: nothing can be asked, and nothing a command printed goes back.
+    let blank = blank_with(&fx_cfg());
+    let v = view_at(&blank, &theme, 0);
+    for screen in [
+        ScreenId::Dash,
+        ScreenId::Clients,
+        ScreenId::Net,
+        ScreenId::Maint,
+        ScreenId::Upgrade,
+        ScreenId::Hist,
+    ] {
+        assert_eq!(ask::ask_for(screen, &v), Err(ask::NOT_YET.to_string()));
+    }
+    assert_eq!(ask::review_request(&v, None, "changes"), "");
+    assert_eq!(
+        net(&blank).hides(&private::line()).as_deref(),
+        Some("(hidden: what must be scrubbed isn't known yet)")
+    );
+    // The interfaces alone aren't enough either (the SSIDs and the leases aren't known).
+    let half = app();
+    assert_eq!(
+        ask::ask_for(ScreenId::Dash, &view_at(&half, &theme, 0)),
+        Err(ask::NOT_YET.to_string())
+    );
+    assert!(net(&half).hides("x").unwrap().starts_with("(hidden"));
+
+    let mut a = planted();
+    let said = private::line();
+    // The planted values are what the router and the audit said: the test's own premise.
+    {
+        let t = net(&a);
+        let i = t.store.ifaces.value.as_ref().unwrap();
+        assert!(
+            i.interfaces
+                .iter()
+                .any(|x| x.ipv4.iter().any(|a| a.starts_with(private::WAN4)))
+        );
+        let ssids: Vec<String> = t
+            .store
+            .uci
+            .value
+            .as_ref()
+            .unwrap()
+            .wifi()
+            .into_iter()
+            .map(|w| w.ssid)
+            .collect();
+        for s in private::SSIDS {
+            assert!(ssids.iter().any(|x| x == s), "{ssids:?}");
+        }
+        let raw = t.store.raw_clients.value.as_ref().unwrap();
+        let lease = |host: &str| {
+            raw.leases
+                .iter()
+                .find(|l| l.hostname.as_deref() == Some(host))
+        };
+        assert_eq!(
+            lease(private::HOST).map(|l| l.mac.as_str()),
+            Some(private::MAC)
+        );
+        assert!(lease("nas").is_some() && lease("my-phone").is_some());
+        assert!(
+            !t.router
+                .cfg
+                .devices
+                .iter()
+                .any(|d| d.mac.as_deref() == Some(private::MAC))
+        );
+    }
+
+    // A on the Dashboard, Network and History (the overview), and on Clients.
+    let v = view_at(&a, &theme, 0);
+    for screen in [ScreenId::Dash, ScreenId::Net, ScreenId::Hist] {
+        let ask = ask::ask_for(screen, &v).unwrap();
+        private::scrubbed(&format!("{screen:?}"), &whole(&ask));
+    }
+    let ask = ask::ask_for(ScreenId::Clients, &v).unwrap();
+    let text = whole(&ask);
+    private::absent("Clients", &text);
+    for p in ["- nas ·", "- phone ·", "‹host-", ":xx:xx:xx"] {
+        assert!(text.contains(p), "Clients: no {p:?} in\n{text}");
+    }
+    // (An address on the LAN is what Claude works with: it stays.)
+    assert!(text.contains("192.0.2.10"), "{text}");
+
+    // A on Maintenance: on the finding's row (a session's brief), on a task's row, and on
+    // nothing (the items): the list is sent, and every row's words with it.
+    let recs = maint::recs(&v);
+    let at = |key: &str| {
+        recs.iter()
+            .position(|r| r.key == key)
+            .unwrap_or_else(|| panic!("no row {key}"))
+    };
+    let finding = view_at(&a, &theme, at("finding:net:test:planted"));
+    let ask = ask::ask_for(ScreenId::Maint, &finding).unwrap();
+    assert!(ask.applying().is_some_and(|ap| ap.reaudits && ap.remote));
+    private::scrubbed("Maintenance, a finding", &whole(&ask));
+    assert!(
+        ask.context.contains("evidence: evidence: uplink ‹wan›"),
+        "{}",
+        ask.context
+    );
+    let task = view_at(&a, &theme, at("task:by-hand"));
+    let ask = ask::ask_for(ScreenId::Maint, &task).unwrap();
+    assert!(ask.applying().is_none());
+    assert!(
+        ask.question.starts_with("About \"Look at ‹host-"),
+        "{}",
+        ask.question
+    );
+    private::scrubbed("Maintenance, a task", &whole(&ask));
+    let item = view_at(&a, &theme, recs.len());
+    let ask = ask::ask_for(ScreenId::Maint, &item).unwrap();
+    private::scrubbed("Maintenance, an item", &whole(&ask));
+    // The same through the target, as the app asks.
+    let cx = cx_on(&theme, ScreenId::Maint, None);
+    let ask = net(&a).ask(&a.slot().shared, &cx).unwrap();
+    private::scrubbed("Asks::ask", &whole(&ask));
+
+    // Applying a row with Claude: a finding, a task done by hand, the packages.
+    let steps = |wf: &str| format!("the steps of {wf}: {said}");
+    // (A workflow's steps, as the user's own file has them, are sent with its row.)
+    for key in [
+        "finding:net:test:planted",
+        "task:by-hand",
+        "net:maint:packages",
+    ] {
+        let ask = ask::apply_rec(&v, &recs[at(key)], &steps)
+            .unwrap_or_else(|| panic!("{key} isn't applied"));
+        assert!(ask.applying().is_some(), "{key}");
+        private::scrubbed(key, &whole(&ask));
+    }
+    let packages = ask::apply_rec(&v, &recs[at("net:maint:packages")], &steps).unwrap();
+    assert_eq!(
+        packages.applying().and_then(|ap| ap.workflow.as_deref()),
+        Some("package-update")
+    );
+    assert!(packages.context.contains("dnsmasq 2.93-r1 → 2.93-r2"));
+    // A series' session for a row is the same brief.
+    use sentry_app::target::{SeriesStep, Upkeep};
+    for key in ["finding:net:test:planted", "task:by-hand"] {
+        let Some(SeriesStep::Session(ask)) = net(&a).series_step(key, &a.slot().shared, &cx) else {
+            panic!("{key}: not a session");
+        };
+        private::scrubbed(key, &whole(&ask));
+    }
+
+    // A review, asked for and sentry's own.
+    let by_hand = ask::review_request(&v, None, "the changes' format");
+    assert!(by_hand.contains("## Summary") && by_hand.ends_with("the changes' format"));
+    private::scrubbed("a review", &by_hand);
+    let auto = ask::review_request(&v, Some("A run just ended."), "the changes' format");
+    assert!(auto.starts_with("A run just ended.\n\n"), "{auto}");
+    private::scrubbed("sentry's own review", &auto);
+    let through = net(&a).review_request(None, "", &a.slot().shared, &cx);
+    private::scrubbed("Asks::review_request", &through);
+
+    // What a command sentry ran for Claude printed.
+    let out = format!(
+        "{said}\nwireless.default_radio0.key='{}'\n\toption key '{}'\n",
+        private::PASSPHRASE,
+        private::PASSPHRASE
+    );
+    let hidden = net(&a).hides(&out).unwrap();
+    private::scrubbed("a command's output", &hidden);
+    assert!(
+        hidden.contains("wireless.default_radio0.key='redacted:"),
+        "{hidden}"
+    );
+
+    // The system text names who is to be left alone, and nothing of the network's.
+    let system = ask::system(&net(&a).router);
+    let alone: Vec<&str> = net(&a)
+        .router
+        .cfg
+        .devices
+        .iter()
+        .filter(|d| d.leave_alone)
+        .map(|d| d.label())
+        .collect();
+    assert_eq!(alone, ["panel"]);
+    assert!(
+        system.contains("marked these devices leave-alone: panel."),
+        "{system}"
+    );
+    private::absent("the system text", &system);
+    for f in [
+        sentry_app::target::ProfileFor::Chat,
+        sentry_app::target::ProfileFor::Session,
+        sentry_app::target::ProfileFor::Review,
+    ] {
+        let p = net(&a).profile(f, &[]);
+        assert!(p.system.contains("leave-alone: panel."));
+        private::absent("a profile's system text", &p.system);
+    }
+
+    // A workflow's run: a step waiting for its Enter, whose command, advice and log say
+    // it all; then that step failed.
+    own_workflow(
+        &mut a,
+        "leak-test",
+        &format!(
+            "name = \"leak-test\"\ndescription = \"test\"\n\
+             [[steps]]\nid = \"look\"\ntitle = \"Look at {host}\"\n\
+             run = \"logread -e '{host}' -e '{mac}' -e '{wan}' -e '{ssid}'\"\n\
+             gate = \"confirm\"\nmanual = \"advice: {said}\"\n",
+            host = private::HOST,
+            mac = private::MAC,
+            wan = private::WAN4,
+            ssid = private::SSIDS[0],
+        ),
+    );
+    a.apply(
+        vec![super::target::Effect::StartWorkflow("leak-test".into())],
+        Instant::now(),
+    );
+    let run = wf(&a).unwrap_or_else(|| panic!("no run: {:?}", a.toast_for_test()));
+    assert!(
+        matches!(run.next, Next::Confirm(0)) && run.live.is_none(),
+        "{:?}",
+        run.next
+    );
+    // (As a step tried before would have left it.)
+    run.run
+        .append_log("look", &format!("an earlier try: {said}"));
+    let v = view_at(&a, &theme, 0);
+    let ask = ask::ask_for(ScreenId::Upgrade, &v).unwrap();
+    assert!(ask.applying().is_none());
+    assert!(ask.question.starts_with("This step hasn't run yet."));
+    assert!(
+        ask.context.contains("an earlier try: uplink ‹wan›"),
+        "{}",
+        ask.context
+    );
+    private::scrubbed("a step waiting", &whole(&ask));
+    key(&mut a, KeyCode::Enter);
+    assert!(wf(&a).unwrap().live.is_some(), "the step runs");
+    step_says(&mut a, &format!("it printed: {said}"));
+    a.run_step_exit_for_test(1);
+    let run = wf(&a).unwrap();
+    assert!(matches!(run.next, Next::Stopped(_)), "{:?}", run.next);
+    let v = view_at(&a, &theme, 0);
+    let ask = ask::ask_for(ScreenId::Upgrade, &v).unwrap();
+    let ap = ask.applying().expect("a failed step is a session's");
+    assert_eq!(ap.step.as_ref().map(|s| s.id.as_str()), Some("look"));
+    assert!(
+        ask.context.contains("it printed: uplink ‹wan›"),
+        "{}",
+        ask.context
+    );
+    private::scrubbed("a failed step", &whole(&ask));
+    let cx = cx_on(&theme, ScreenId::Upgrade, a.slot().run.as_deref());
+    let ask = net(&a).ask(&a.slot().shared, &cx).unwrap();
+    private::scrubbed("Asks::ask on a run", &whole(&ask));
+}
+
+#[test]
+fn every_profile_denies_what_is_private() {
+    use sentry_app::target::{Asks, ProfileFor};
+    use sentry_core::claude::{Access, Grant};
+    let a = full();
+    let t = net(&a);
+    let scope = t.router.scope.as_str();
+    assert_eq!(scope, "net:home");
+    // A rule as Claude Code reads it: `//` and the absolute path.
+    let rule = |tool: &str, p: &std::path::Path, dir: bool| {
+        let abs = p.display().to_string();
+        assert!(abs.starts_with('/'), "{abs}");
+        let abs = abs.trim_start_matches('/');
+        if dir {
+            format!("{tool}(//{abs}/**)")
+        } else {
+            format!("{tool}(//{abs})")
+        }
+    };
+    let salt = crate::redact::path(scope);
+    let backups = crate::backup::backups_dir(scope);
+    let ssh = sentry_core::paths::home().join(".ssh");
+    let config = crate::config::path();
+    assert!(backups.ends_with("networks/home/backups") && salt.ends_with("networks/home/salt"));
+    // Nothing of these is Claude's to read or write: the encrypted backups, the salt
+    // behind every tag, ssh's keys, and the config that names every device.
+    let mut never: Vec<String> = Vec::new();
+    for tool in ["Read", "Edit", "Write"] {
+        never.push(rule(tool, &backups, true));
+        never.push(rule(tool, &salt, false));
+        never.push(rule(tool, &ssh, true));
+        never.push(rule(tool, &config, false));
+    }
+    // A workflow's file is what sentry runs on the router as root: read, never written.
+    for dir in [
+        sentry_core::maint::root(scope).join("workflows"),
+        sentry_core::paths::config_dir().join("network-workflows"),
+    ] {
+        for tool in ["Edit", "Write"] {
+            never.push(rule(tool, &dir, true));
+        }
+    }
+    // What the user might be asked to allow, and allow: it changes none of that.
+    let grant = |access, path: &std::path::Path| Grant {
+        access,
+        path: path.display().to_string(),
+        whole: None,
+        remote: false,
+    };
+    let asked = [
+        grant(Access::Write, &salt),
+        grant(Access::Write, &config),
+        grant(
+            Access::Read,
+            &backups.join("2026-10-26-120000-25.12.3.tar.gz.age"),
+        ),
+        grant(Access::Read, &ssh.join("id_ed25519")),
+        grant(
+            Access::Write,
+            &sentry_core::paths::config_dir().join("network-workflows/package-update.toml"),
+        ),
+    ];
+    let exec = "Bash(sentry-network exec home:*)".to_string();
+    let run = "Bash(sentry-network run home:*)".to_string();
+    for f in [ProfileFor::Chat, ProfileFor::Session, ProfileFor::Review] {
+        for grants in [&[][..], &asked[..]] {
+            let p = t.profile(f, grants);
+            let what = format!("{f:?} with {} grants", grants.len());
+            for r in &never {
+                assert!(p.denied.contains(r), "{what}: {r} isn't denied");
+            }
+            // The router is reached through the gateway only: reads for all three, a
+            // shell line (where a change becomes a request) for a session alone.
+            assert!(p.allowed.contains(&exec), "{what}: {:?}", p.allowed);
+            assert_eq!(
+                p.allowed.contains(&run),
+                matches!(f, ProfileFor::Session),
+                "{what}: {:?}",
+                p.allowed
+            );
+            assert_eq!(
+                p.allowed
+                    .iter()
+                    .filter(|r| r.contains("sentry-network"))
+                    .count(),
+                if matches!(f, ProfileFor::Session) {
+                    2
+                } else {
+                    1
+                },
+                "{what}: {:?}",
+                p.allowed
+            );
+            // No shell of its own, and no ssh round the gateway.
+            for r in &p.allowed {
+                assert!(
+                    r != "Bash" && r != "Bash(*)" && r != "Bash(:*)",
+                    "{what}: bare Bash is allowed"
+                );
+                assert!(
+                    !r.starts_with("Bash(") || r.starts_with("Bash(sentry-network "),
+                    "{what}: {r}"
+                );
+            }
+            for r in ["Bash(ssh:*)", "Bash(scp:*)"] {
+                assert!(p.denied.iter().any(|d| d == r), "{what}: {r} isn't denied");
+            }
+            // A review writes nothing, whatever was granted.
+            if matches!(f, ProfileFor::Review) {
+                for tool in ["Edit", "Write"] {
+                    assert!(
+                        !p.tools.iter().any(|t| t == tool),
+                        "{what}: {tool} is a tool"
+                    );
+                    assert!(
+                        p.denied.iter().any(|d| d == tool),
+                        "{what}: {tool} isn't denied"
+                    );
+                    assert!(
+                        !p.allowed.iter().any(|r| r.starts_with(tool)),
+                        "{what}: {:?}",
+                        p.allowed
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn ctrl(a: &mut App, c: char) {
+    a.on_event(
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+        Instant::now(),
+    );
+}
+
+/// A session with Claude on the Maintenance row whose title has `row` in it, opened as the
+/// user does (`A`, then 1): on its brief, or (auto on) already sent.
+fn session_on(a: &mut App, row: &str) {
+    key(a, KeyCode::Char('6'));
+    key(a, KeyCode::Char('/'));
+    for c in row.chars() {
+        key(a, KeyCode::Char(c));
+    }
+    key(a, KeyCode::Enter);
+    key(a, KeyCode::Char('A'));
+    key(a, KeyCode::Char('1'));
+    assert!(
+        a.apply_session().is_some(),
+        "no session: {:?}\n{}",
+        a.toast_for_test().map(str::to_string),
+        render_to_string(a, 158, 41)
+    );
+}
+
+/// The session's turn ends with these stream-json lines from Claude Code (nothing was
+/// sent): what `apply_answer_for_test` does for text alone.
+fn claude_turn(a: &mut App, lines: &[serde_json::Value]) {
+    let id = a
+        .apply_session()
+        .and_then(|s| s.chat.live.map(|l| l.0))
+        .expect("no turn running");
+    let mut msgs: Vec<sentry_core::exec::StreamMsg> = lines
+        .iter()
+        .map(|l| sentry_core::exec::StreamMsg::Line {
+            stderr: false,
+            text: l.to_string(),
+        })
+        .collect();
+    msgs.push(sentry_core::exec::StreamMsg::Exit {
+        code: 0,
+        elapsed: Duration::ZERO,
+    });
+    for m in msgs {
+        a.on_event(Event::Stream(super::id_of(NAME), id, m), Instant::now());
+    }
+}
+
+/// Claude called the session's gateway with `line`, and the gateway held it for the user
+/// (exit 126, in the words `gateway::run_cli` prints for a change).
+fn gateway_asks(line: &str) -> [serde_json::Value; 3] {
+    [
+        serde_json::json!({"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Bash",
+            "input": {"command": format!("sentry-network run home -- '{line}'")}
+        }]}}),
+        serde_json::json!({"type": "user", "message": {"content": [{
+            "type": "tool_result", "is_error": true,
+            "content": format!(
+                "Exit code 126\nsentry-network run: this needs root and requires approval: {line}"
+            )
+        }]}}),
+        serde_json::json!({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "I asked to run it, to see what answers."}
+        }}),
+    ]
+}
+
+/// A plan of one step, as Claude sends it.
+fn plan_of(step: &str) -> String {
+    format!(
+        "Here is the plan.\n```sentry-apply\nsummary = \"do it\"\n[[step]]\ntitle = \"The step\"\n{step}\n```"
+    )
+}
+
+#[test]
+fn auto_never_approves_a_plan_or_a_command_on_a_router() {
+    use sentry_core::apply::plan::RunState;
+    use sentry_core::apply::session::Phase;
+    let entries = |a: &mut App| -> Vec<String> {
+        let s = a.apply_session().expect("the session");
+        s.chat.entries.iter().map(|(_, l)| l.clone()).collect()
+    };
+    // Whatever the world does next, nothing moves by itself.
+    let stays = |a: &mut App, what: &str| {
+        for _ in 0..3 {
+            a.tick(Instant::now());
+        }
+        let s = a.apply_session().expect("the session stays open");
+        assert_eq!(s.phase, Phase::Review, "{what}");
+        assert!(
+            s.job.is_none() && s.output.is_empty(),
+            "{what}: something ran"
+        );
+    };
+
+    // Auto on (a root login has no password to ask for), a session on a finding's row:
+    // auto sends the brief, Claude answers with a plan.
+    let mut a = messy();
+    ctrl(&mut a, 'a');
+    assert!(a.slot().auto && asks_nothing(&a));
+    session_on(&mut a, "ssh accepts passwords");
+    let s = a.apply_session().unwrap();
+    assert!(
+        s.auto && matches!(s.phase, Phase::Thinking(_)),
+        "{:?}",
+        s.phase
+    );
+    assert!(
+        s.chat
+            .ask
+            .applying()
+            .is_some_and(|ap| ap.asks_each && ap.remote),
+        "a router's session asks for each thing"
+    );
+    a.apply_answer_for_test(&plan_of("run = \"apk add tcpdump\""));
+    // The plan is good to run, and it waits: on a host reached as root the approval is
+    // the user's, auto or not. It says so, once.
+    stays(&mut a, "the plan");
+    let s = a.apply_session().unwrap();
+    assert!(s.problems.is_empty() && s.can_approve(), "{:?}", s.problems);
+    assert_eq!(s.run().map(|r| r.state), Some(RunState::Proposed));
+    const YOURS: &str = "auto leaves this to you: a plan for a host reached as root is yours \
+                         to approve · Enter applies the plan";
+    let said = entries(&mut a);
+    assert_eq!(said.iter().filter(|l| *l == YOURS).count(), 1, "{said:#?}");
+    assert!(
+        !said.iter().any(|l| l.contains("approved the plan")),
+        "{said:#?}"
+    );
+    let screen = render_to_string(&mut a, 158, 41);
+    assert!(
+        screen.contains("a plan for a host reached as root is yours to approve")
+            && screen.contains("Enter  apply the plan"),
+        "{screen}"
+    );
+    // Enter is the approval: only then does the step run.
+    key(&mut a, KeyCode::Enter);
+    let s = a.apply_session().unwrap();
+    assert_eq!(s.phase, Phase::Applying);
+    assert_eq!(s.run().map(|r| r.state), Some(RunState::Running));
+
+    // A command Claude asks to run on the router (the gateway held it): auto doesn't
+    // allow it either.
+    let mut a = messy();
+    ctrl(&mut a, 'a');
+    session_on(&mut a, "ssh accepts passwords");
+    claude_turn(&mut a, &gateway_asks("apk add tcpdump"));
+    stays(&mut a, "the request");
+    let s = a.apply_session().unwrap();
+    let asked: Vec<(&str, bool)> = s
+        .chat
+        .requests
+        .iter()
+        .map(|g| (g.path.as_str(), g.remote))
+        .collect();
+    assert_eq!(asked, [("apk add tcpdump", true)]);
+    assert!(s.can_grant() && s.runs.is_empty());
+    let said = entries(&mut a);
+    assert!(
+        said.iter().any(|l| l
+            == "auto leaves this to you: run apk add tcpdump: a command run as root on the \
+                host is yours to allow"),
+        "{said:#?}"
+    );
+    assert!(
+        !said.iter().any(|l| l.contains("auto: allowed")),
+        "{said:#?}"
+    );
+    let screen = render_to_string(&mut a, 158, 41);
+    assert!(screen.contains("Enter  allow it"), "{screen}");
+    // Enter allows it: sentry runs that one line, as Claude wrote it.
+    key(&mut a, KeyCode::Enter);
+    let s = a.apply_session().unwrap();
+    assert_eq!(s.phase, Phase::Applying);
+    let run = s.run().expect("what was allowed, as a plan of its own");
+    assert_eq!(run.plan.steps.len(), 1);
+    assert_eq!(run.plan.steps[0].kind.target(), "apk add tcpdump");
+    // What the policy keeps for the guard isn't run even when the user allows it: it
+    // goes back to Claude with why, and nothing runs.
+    let mut a = messy();
+    session_on(&mut a, "ssh accepts passwords");
+    key(&mut a, KeyCode::Enter);
+    claude_turn(&mut a, &gateway_asks("uci commit network"));
+    key(&mut a, KeyCode::Enter);
+    let s = a.apply_session().unwrap();
+    assert!(s.runs.is_empty() && s.job.is_none(), "{:?}", s.phase);
+    assert!(
+        matches!(s.phase, Phase::Thinking(_)),
+        "told why: {:?}",
+        s.phase
+    );
+    let said = entries(&mut a);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("Not allowed: run uci commit network:")),
+        "{said:#?}"
+    );
+
+    // A plan that would cut the network off, restart the router, or rewrite what sentry
+    // knows about the network isn't runnable: it comes back as a problem, and Enter
+    // applies nothing. With auto on and off.
+    let config = crate::config::path().display().to_string();
+    for (step, why) in [
+        ("run = \"uci commit network\"", "guard"),
+        ("run = \"reboot\"", "workflow"),
+        (
+            "check = \"uci set network.lan.ipaddr='192.0.2.1'; uci commit\"",
+            "guard",
+        ),
+        (
+            "edit = \"~/.config/sentry/network_config.yaml\"\nold = \"a\"\nnew = \"b\"",
+            "never read or changed",
+        ),
+        (
+            &format!("edit = \"{config}\"\nold = \"a\"\nnew = \"b\""),
+            "never read or changed",
+        ),
+    ] {
+        for auto in [false, true] {
+            let what = format!("{step} (auto: {auto})");
+            let mut a = messy();
+            if auto {
+                ctrl(&mut a, 'a');
+            }
+            session_on(&mut a, "ssh accepts passwords");
+            if !auto {
+                key(&mut a, KeyCode::Enter);
+            }
+            // sentry sends such a plan back by itself while its rounds last; Claude
+            // insists.
+            let mut rounds = 0;
+            while a.apply_session().unwrap().chat.live.is_some() {
+                a.apply_answer_for_test(&plan_of(step));
+                rounds += 1;
+                assert!(rounds < 6, "{what}: Claude is asked again and again");
+            }
+            assert_eq!(
+                rounds,
+                1 + usize::from(sentry_core::apply::session::FIX_ROUNDS),
+                "{what}"
+            );
+            let s = a.apply_session().unwrap();
+            assert_eq!(s.phase, Phase::Review, "{what}");
+            // (An edit may have a second thing wrong with it; the rule's own why is
+            // among them, on the step.)
+            assert!(
+                s.problems.iter().all(|(i, _)| *i == 0)
+                    && s.problems.iter().any(|(_, w)| w.contains(why)),
+                "{what}: {:?}",
+                s.problems
+            );
+            assert!(!s.can_approve() && s.enter_word().is_none(), "{what}");
+            let screen = render_to_string(&mut a, 158, 41);
+            assert!(
+                !screen.contains("Enter  apply the plan"),
+                "{what}: {screen}"
+            );
+            key(&mut a, KeyCode::Enter);
+            stays(&mut a, &what);
+            let s = a.apply_session().unwrap();
+            assert_eq!(s.run().map(|r| r.state), Some(RunState::Proposed), "{what}");
+            assert!(s.took.is_empty(), "{what}");
+        }
+    }
+    // And should such a line ever reach the host's own door, it is turned into a command
+    // that only says so, here: nothing goes to the router.
+    use sentry_app::target::Host;
+    let t = net(&a);
+    for line in ["uci commit network", "reboot", "sysupgrade /tmp/x.bin"] {
+        let c = t.command(line);
+        let argv = c.quoted_argv();
+        assert!(
+            argv.starts_with("sh -c ") && argv.contains("sentry-network: not run:"),
+            "{line}: {argv}"
+        );
+        assert!(!argv.contains("ssh"), "{line}: {argv}");
+    }
+}
+
+#[test]
+fn a_findings_plan_is_followed_by_an_audit() {
+    use sentry_core::apply::session::{End, Phase};
+    let audits = |a: &App| net(a).asked.iter().filter(|k| **k == Kind::Audit).count();
+    let entries = |a: &mut App| -> Vec<String> {
+        let s = a.apply_session().expect("the session");
+        s.chat.entries.iter().map(|(_, l)| l.clone()).collect()
+    };
+    const PLAN: &str = "Two steps.\n```sentry-apply\nsummary = \"keys only\"\n\
+        [[step]]\ntitle = \"Look\"\ncheck = \"uci show dropbear\"\n\
+        [[step]]\ntitle = \"Add the tool\"\nrun = \"apk add tcpdump\"\n```";
+    let mut a = messy();
+    session_on(&mut a, "ssh accepts passwords");
+    let ap = a
+        .apply_session()
+        .and_then(|s| s.chat.ask.applying().cloned())
+        .unwrap();
+    assert_eq!(ap.finding.as_deref(), Some("net:ssh:password"));
+    assert!(ap.reaudits, "the audit says whether a finding is gone");
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(PLAN);
+    let before = audits(&a);
+    key(&mut a, KeyCode::Enter);
+    // The first step ends well: the plan goes on, nothing is audited yet.
+    a.apply_exit_for_test(0);
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
+    assert_eq!(audits(&a), before);
+    // The last one ends: the plan is carried out, and the network is audited again
+    // before Claude is asked how it went (the audit, not Claude, says whether the
+    // finding is gone).
+    a.apply_exit_for_test(0);
+    assert_eq!(audits(&a), before + 1);
+    assert_eq!(net(&a).asked.last(), Some(&Kind::Audit));
+    let s = a.apply_session().unwrap();
+    assert!(
+        s.busy() && s.chat.live.is_none(),
+        "it waits for the audit: {:?}",
+        s.phase
+    );
+    assert!(s.job.is_none());
+    // Its answer (offline nothing is read: this is what the target says once the audit
+    // is in): the finding is gone, and Claude verifies with that in hand.
+    a.apply(vec![super::target::Effect::Reaudited(true)], Instant::now());
+    let said = entries(&mut a);
+    assert!(
+        said.iter().any(|l| l
+            == "sentry's audit no longer reports the finding · Claude is verifying the result"),
+        "{said:#?}"
+    );
+    let s = a.apply_session().unwrap();
+    assert!(matches!(s.phase, Phase::Thinking(_)) && s.chat.live.is_some());
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only now\"\n```",
+    );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+    assert_eq!(audits(&a), before + 1, "once");
+
+    // Still reported: said so, and Claude is told the same.
+    let mut a = messy();
+    session_on(&mut a, "ssh accepts passwords");
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(PLAN);
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0);
+    a.apply_exit_for_test(0);
+    a.apply(
+        vec![super::target::Effect::Reaudited(false)],
+        Instant::now(),
+    );
+    let said = entries(&mut a);
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("sentry's audit still reports the finding")),
+        "{said:#?}"
+    );
+
+    // A task done by hand has no finding for an audit to look for: its plan is followed
+    // by Claude's own check, and no audit.
+    let mut a = messy();
+    a.add_task_for_test(sentry_core::maint::tasks::Task {
+        id: "check-upnp".into(),
+        title: "Check UPnP is off".into(),
+        why: "Devices can open ports by themselves with it.".into(),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: "by-hand".into(),
+        item: None,
+        steps: "1. uci show upnpd".into(),
+        added: None,
+        review: None,
+        after: None,
+        again: None,
+        off: false,
+        source: Default::default(),
+    });
+    session_on(&mut a, "Check UPnP is off");
+    let ap = a
+        .apply_session()
+        .and_then(|s| s.chat.ask.applying().cloned())
+        .unwrap();
+    assert!(ap.finding.is_none() && ap.task.as_deref() == Some("check-upnp"));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(PLAN);
+    let before = audits(&a);
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0);
+    a.apply_exit_for_test(0);
+    assert_eq!(audits(&a), before, "no audit after a task's plan");
+    let s = a.apply_session().unwrap();
+    assert!(matches!(s.phase, Phase::Thinking(_)) && s.chat.live.is_some());
 }

@@ -13,20 +13,20 @@ expression: "stable.join(\"\\n\")"
 │ now                                                      │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
+│ firmware-upgrade  6 steps  draft                         │  │                                                                                              │
+│ Upgrade the router's firmware with owut, after a config  │  │                                                                                              │
+│ backup, and check it came back                           │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
+│ guarded-change  3 steps                                  │  │                                                                                              │
+│ Change the config the network is reached through, with   │  │                                                                                              │
+│ the router armed to take it back by itself               │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│ package-update  5 steps                                  │  │                                                                                              │
+│ Upgrade named packages on the router, after a config     │  │                                                                                              │
+│ backup, and check the services afterwards                │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
@@ -42,4 +42,4 @@ expression: "stable.join(\"\\n\")"
 │                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  start   e  edit toml   r  reload   v  records   C-a  auto   ?  help   q  quit
+ j/k  select   Enter  start   e  edit toml   r  reload   v  records   C-a  auto   A  ask Claude   ?  help   q  quit

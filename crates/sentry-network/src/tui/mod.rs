@@ -4,6 +4,7 @@
 //! one of its targets). The app (the frame, sessions, records, the workflow run) is
 //! `sentry_app`'s; what's here is the network as its target ([`target::NetworkTarget`]).
 
+pub mod ask;
 mod data;
 mod screens;
 mod target;

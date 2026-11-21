@@ -25,4 +25,4 @@ expression: narrow
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  details   s  sort   ?  help   q  quit
+ j/k  select   Enter  details   s  sort   A  ask Claude   ?  help   q  quit

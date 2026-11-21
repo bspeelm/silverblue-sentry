@@ -57,6 +57,9 @@ pub struct Words {
     pub host: &'static str,
     /// "servers", "routers".
     pub hosts: &'static str,
+    /// What restarts it from a root login (a server: `systemctl reboot`; OpenWrt has no
+    /// systemctl).
+    pub reboot: &'static [&'static str],
 }
 
 impl Default for Words {
@@ -64,6 +67,7 @@ impl Default for Words {
         Self {
             host: "the server",
             hosts: "servers",
+            reboot: &["systemctl", "reboot"],
         }
     }
 }
@@ -254,12 +258,20 @@ impl Session {
         let full = match here {
             Some(rest) => {
                 let exe = exe(self.prog);
-                Cmd::local(&exe[0])
+                // What follows a ` -- ` is one argument, as written (a value with spaces).
+                let (words, tail) = match rest.split_once(" -- ") {
+                    Some((w, t)) => (w, Some(t)),
+                    None => (rest, None),
+                };
+                let mut c = Cmd::local(&exe[0])
                     .args(exe[1..].iter().map(String::as_str))
-                    .arg(rest.split_whitespace().next().unwrap_or("cond"))
+                    .arg(words.split_whitespace().next().unwrap_or("cond"))
                     .arg(&self.r.name)
-                    .args(rest.split_whitespace().skip(1))
-                    .timeout(None)
+                    .args(words.split_whitespace().skip(1));
+                if let Some(t) = tail {
+                    c = c.arg("--").arg(t);
+                }
+                c.timeout(None)
             }
             // Nothing on stdin: the step's terminal (it has one, so stopping it here stops
             // it there) would never end for a command that reads it.
@@ -319,7 +331,13 @@ impl Session {
                 );
                 Ok(Some(Exec::Reboot {
                     how: if sudo == Some(SudoMode::Root) {
-                        How::Plain(self.r.cmd("systemctl").arg("reboot").timeout(None))
+                        // In the host's own words (a router's is plain `reboot`).
+                        How::Plain(
+                            self.r
+                                .cmd(self.words.reboot[0])
+                                .args(self.words.reboot[1..].iter().copied())
+                                .timeout(None),
+                        )
                     } else {
                         How::Root("sudo systemctl reboot".into())
                     },
@@ -699,6 +717,7 @@ mod tests {
         let mut s = Session::new(wf, run("b"), &r, "sentry-network", Box::new(NoEnv)).on(Words {
             host: "the router",
             hosts: "routers",
+            reboot: &["reboot"],
         });
         assert_eq!(
             s.go(None).err().unwrap(),

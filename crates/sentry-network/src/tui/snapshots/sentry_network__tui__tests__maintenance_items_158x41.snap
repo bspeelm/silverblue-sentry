@@ -42,4 +42,4 @@ expression: s
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  about   z  later   o  everything   r  refresh   c  audit   F  report   v  records   C-a  auto   ?  help   q  quit
+ Enter  about   z  later   o  everything   r  refresh   c  audit   F  report   v  records   C-a  auto   A  ask Claude   ?  help   q  quit

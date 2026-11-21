@@ -299,7 +299,9 @@ impl Session {
                 Some("retry the step")
             }
             Phase::Settled(End::Done) => Some("close"),
-            Phase::Settled(_) if a.is_some_and(|a| a.finding.is_some() && !a.remote) => {
+            Phase::Settled(_)
+                if a.is_some_and(|a| a.finding.is_some() && (!a.remote || a.reaudits)) =>
+            {
                 Some("audit again")
             }
             Phase::Settled(_) if a.is_some_and(|a| a.can_mark_done()) => Some("mark it done"),
@@ -551,6 +553,14 @@ impl Session {
                     .err()
                     .unwrap_or("not in a server's session");
                 not.push(format!("{} {}: {why}", g.word(), g.path));
+            } else if let Some(why) = self
+                .chat
+                .ask
+                .applying()
+                .filter(|_| g.access == Access::Run)
+                .and_then(|a| a.refuses.why(g.line(), g.remote))
+            {
+                not.push(format!("run {}: {why}", g.line()));
             } else if g.access == Access::Run && crate::claude::workflow_only(g.line()) {
                 not.push(format!(
                     "run {}: upgrades, rebases, rollbacks and reboots are run by sentry's \
@@ -721,6 +731,11 @@ impl Session {
                 self.auto_did("started it");
                 self.begin(String::new())
             }
+            Do::Approve if self.chat.ask.applying().is_some_and(|a| a.asks_each) => waits(
+                self,
+                "a plan for a host reached as root is yours to approve · Enter applies the plan"
+                    .to_string(),
+            ),
             Do::Approve => {
                 let steps = self.run().map(|r| r.plan.steps.clone()).unwrap_or_default();
                 for (i, st) in steps.iter().enumerate() {
@@ -748,6 +763,18 @@ impl Session {
             Do::Allow => {
                 let reqs = self.chat.requests.clone();
                 for g in &reqs {
+                    if g.access == crate::claude::Access::Run
+                        && self.chat.ask.applying().is_some_and(|a| a.asks_each)
+                    {
+                        return waits(
+                            self,
+                            format!(
+                                "{} {}: a command run as root on the host is yours to allow",
+                                g.word(),
+                                g.path
+                            ),
+                        );
+                    }
                     let ok = self.grants_here(g);
                     if !answers(
                         true,
@@ -1108,7 +1135,7 @@ impl Session {
                     .chat
                     .ask
                     .applying()
-                    .is_some_and(|a| a.finding.is_some() && !a.remote)
+                    .is_some_and(|a| a.finding.is_some() && (!a.remote || a.reaudits))
                 {
                     self.chat.push(
                         Kind::Info,
@@ -1234,6 +1261,23 @@ impl Session {
         }
         self.problems.clear();
         let mut problems = plan::problems(&p, workflows);
+        // What the host never runs from a session (a router's guarded commands).
+        if let Some(a) = self.chat.ask.applying() {
+            for (i, st) in p.steps.iter().enumerate() {
+                if let StepKind::Run(c) | StepKind::Check(c) = &st.kind
+                    && let Some(why) = a.refuses.why(c, true)
+                {
+                    problems.push((i, why));
+                }
+                // And the files on this machine it never lets a plan edit (its own
+                // config, its workflows: what sentry runs on the host).
+                if let StepKind::Edit { file, .. } = &st.kind
+                    && let Some(why) = a.refuses.why(file, false)
+                {
+                    problems.push((i, format!("{file}: {why}")));
+                }
+            }
+        }
         // On a server, root's files are changed there (`run`), not here.
         if self.chat.ask.applying().is_some_and(|a| a.remote) {
             for (i, st) in p.steps.iter().enumerate() {

@@ -565,6 +565,11 @@ pub trait Asks {
     fn chat_continue(&mut self, _session: &str) -> Option<Vec<Effect>> {
         None
     }
+    /// What a command sentry ran for Claude printed, as Claude may see it (a router's
+    /// output with what is private scrubbed). None: as it is.
+    fn hides(&self, _text: &str) -> Option<String> {
+        None
+    }
     /// The answer says Claude waits for reads only the user can allow.
     fn waits_for_reads(&self, _answer: &str) -> bool {
         false

@@ -277,6 +277,8 @@ pub fn row_key(v: &View) -> Option<String> {
 pub enum SeriesKind {
     Workflow(String),
     Audit,
+    /// A session with Claude (a finding, a task done by hand).
+    Session,
 }
 
 /// What a series does for this row (None: Enter does it by itself, it can't be ticked).
@@ -290,9 +292,11 @@ pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
         Action::Task(id) => match task_of(v, id)?.action() {
             Do::Run(wf) => run(&wf),
             Do::Audit => Some(SeriesKind::Audit),
+            Do::ByHand => Some(SeriesKind::Session),
             _ => None,
         },
-        Action::Finding(_) | Action::About(_) => None,
+        Action::Finding(_) => Some(SeriesKind::Session),
+        Action::About(_) => None,
     }
 }
 
@@ -494,17 +498,44 @@ fn backup_enter(v: &View) -> Vec<Effect> {
     vec![Effect::StartWorkflow(BACKUP_WF.into())]
 }
 
-/// Enter on an item (or a row about one): the backup is made; the firmware and the
-/// packages say how they stand, and that changing them isn't sentry's yet.
+/// The workflows Enter starts on the packages and the firmware.
+pub const PACKAGES_WF: &str = "package-update";
+pub const FIRMWARE_WF: &str = "firmware-upgrade";
+
+/// Enter on an item (or a row about one): the backup is made, the packages' workflow
+/// starts (it asks which ones), and the firmware's says how it stands and that its
+/// workflow is still a draft, until the user makes it not one.
 fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
-    let (title, not_yet) = match kind {
+    let has = |wf: &str| v.sh.workflows.iter().any(|w| w == wf);
+    let draft = |wf: &str| {
+        v.sh.wf_entries
+            .iter()
+            .find(|e| e.name == wf)
+            .is_some_and(|e| e.wf.as_ref().is_ok_and(|w| w.draft))
+    };
+    let (title, wf) = match kind {
         ItemKind::Backup => return backup_enter(v),
-        ItemKind::Firmware => ("Firmware", recommend::FIRMWARE_NOT_YET),
-        ItemKind::Packages => ("Packages", recommend::PACKAGES_NOT_YET),
+        ItemKind::Packages if has(PACKAGES_WF) => {
+            return vec![Effect::StartWorkflow(PACKAGES_WF.into())];
+        }
+        ItemKind::Firmware if has(FIRMWARE_WF) && !draft(FIRMWARE_WF) => {
+            return vec![Effect::StartWorkflow(FIRMWARE_WF.into())];
+        }
+        ItemKind::Packages => ("Packages", PACKAGES_WF),
+        ItemKind::Firmware => ("Firmware", FIRMWARE_WF),
     };
     let mut lines = item_lines(v, kind);
     lines.push(Line::raw(""));
-    lines.push(Line::styled(not_yet, v.t.s(v.t.yellow)));
+    let said = if has(wf) {
+        vec![
+            format!("{wf} is a draft: it has never been run end to end on a router."),
+            "Read its steps (0), then delete `draft = true` from its file to use it.".to_string(),
+            "Until then nothing here flashes firmware.".to_string(),
+        ]
+    } else {
+        vec![format!("this network has no workflow {wf}")]
+    };
+    lines.extend(said.into_iter().map(|l| Line::styled(l, v.t.s(v.t.yellow))));
     vec![Effect::Confirm(Modal {
         title: title.into(),
         color: v.t.cyan,

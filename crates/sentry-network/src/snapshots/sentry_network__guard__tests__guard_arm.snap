@@ -1,0 +1,42 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: "arm_script(&c, t, 300)"
+---
+set -e
+umask 077
+D=/tmp/sentry-guard-0123456789abcdef
+mkdir "$D" "$D/config"
+for c in dhcp firewall; do
+  if [ -e /etc/config/$c ]; then cp -p /etc/config/$c "$D/config/$c"; else : > "$D/config/$c.absent"; fi
+done
+cat > "$D/restore.sh" <<'SENTRY_EOF'
+#!/bin/sh
+# sentry's guard 0123456789abcdef: the configs as they were before its change.
+D=/tmp/sentry-guard-0123456789abcdef
+for c in dhcp firewall; do
+  uci -q revert $c
+  if [ -e "$D/config/$c" ]; then cp -p "$D/config/$c" /etc/config/$c
+  elif [ -e "$D/config/$c.absent" ]; then rm -f /etc/config/$c; fi
+done
+SENTRY_EOF
+cat > "$D/deadman.sh" <<'SENTRY_EOF'
+#!/bin/sh
+# sentry's guard 0123456789abcdef: unless disarmed within 300 s, take the change back.
+D=/tmp/sentry-guard-0123456789abcdef
+echo $$ > "$D/pid"
+sleep 300 &
+echo $! > "$D/sleep.pid"
+wait $!
+[ -e "$D/armed" ] || exit 0
+rm -f "$D/armed"
+logger -t sentry-guard "0123456789abcdef: not confirmed within 300s: restoring dhcp firewall"
+sh "$D/restore.sh"
+/etc/init.d/firewall reload >/dev/null 2>&1
+/etc/init.d/dnsmasq reload >/dev/null 2>&1
+echo "0123456789abcdef reverted $(date +%s)" > /tmp/sentry-guard.last
+logger -t sentry-guard "0123456789abcdef: restored dhcp firewall; reloaded firewall dnsmasq"
+rm -rf "$D"
+SENTRY_EOF
+: > "$D/armed"
+setsid sh "$D/deadman.sh" </dev/null >/dev/null 2>&1 &
+echo @@snapshot

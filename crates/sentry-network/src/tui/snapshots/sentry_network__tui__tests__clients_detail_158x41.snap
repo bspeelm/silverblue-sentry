@@ -42,4 +42,4 @@ expression: s
 │                                                                                                                                                            │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  details   s  sort   b  expected on/off   /  filter   r  read again   ?  help   q  quit
+ j/k  select   Enter  details   s  sort   b  expected on/off   /  filter   r  read again   A  ask Claude   ?  help   q  quit

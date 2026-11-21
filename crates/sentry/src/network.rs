@@ -62,6 +62,41 @@ enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Run one read-only command on a router (the gateway Ask Claude uses): anything that
+    /// isn't known to only read is refused, and what a read prints is scrubbed (secrets,
+    /// the uplink's address, MACs, SSIDs, hostnames).
+    Exec {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        argv: Vec<String>,
+    },
+    /// Run one shell command line on a router (the gateway an apply session's Claude
+    /// uses). Only a line that reads is run; a change is refused and becomes a request,
+    /// config and service changes belong in a guard step, upgrades and reboots in a workflow.
+    Run {
+        name: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        line: Vec<String>,
+    },
+    /// A guarded config change (what the `guarded-change` workflow runs): `preview` (reads
+    /// only), `apply` (snapshot, arm the router's own revert, stage, commit, reload,
+    /// reconnect, confirm) or `keep`, with `configs=a,b services=x,y [wan=yes] -- <uci lines>`.
+    Guard {
+        name: String,
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
+    /// What the `package-update` workflow's steps run: `preview` (refresh the index, list
+    /// what could be upgraded), `upgrade [base] -- <names>` (named packages only), `check`.
+    Packages {
+        name: String,
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
+    /// What the `firmware-upgrade` workflow's own steps run: `check`, `flash`, `after`.
+    Firmware { name: String, action: String },
     /// Record a router's metrics every 10 s for the History screen, from this machine, in
     /// the foreground until Ctrl-C (the TUI records too, while its Dashboard is open).
     /// Nothing runs on the router between samples.
@@ -109,6 +144,11 @@ pub fn main(args: Vec<std::ffi::OsString>) -> ExitCode {
             None if verify => cli::backup_verify(name.as_deref()),
             None => cli::backup(name.as_deref()),
         },
+        Some(Command::Exec { name, argv }) => cli::exec(&name, &argv),
+        Some(Command::Run { name, line }) => cli::run(&name, &line),
+        Some(Command::Guard { name, action, rest }) => cli::guard(&name, &action, &rest),
+        Some(Command::Packages { name, action, rest }) => cli::packages(&name, &action, &rest),
+        Some(Command::Firmware { name, action }) => cli::firmware(&name, &action),
         Some(Command::Record { name }) => cli::record(name.as_deref()),
         None => crate::tui::run(crate::tui::Open::Network(cli.network.as_deref())),
     })

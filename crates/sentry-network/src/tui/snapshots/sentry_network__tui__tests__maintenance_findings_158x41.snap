@@ -42,4 +42,4 @@ expression: s
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  in the report   x  expected   B  all like it   z  later   o  everything   r  refresh   c  audit   F  report   v  records   ?  help   q  quit
+ Enter  in the report   Space  tick   x  expected   B  all like it   z  later   o  everything   r  refresh   c  audit   A  ask Claude   ?  help   q  quit

@@ -24,21 +24,96 @@ pub const PROG: &str = "sentry-network";
 pub const WORDS: Words = Words {
     host: "the router",
     hosts: "routers",
+    reboot: &["reboot"],
 };
 
 pub const BUILTINS: &[&str] = &["network"];
 
-/// No conditions yet: nothing a network's workflow does depends on one.
+/// `guard_waiting`: a guarded change is applied and still armed (it asks to be kept).
+/// `packages_base`: the run's `packages` names a base-system package.
+pub const CONDS: &[&str] = &["guard_waiting", "packages_base"];
+
 pub const RULES: LintRules = LintRules {
     builtins: BUILTINS,
-    cond: |_| false,
+    cond: |c| CONDS.contains(&c),
     check: |_| false,
 };
 
-pub const SEEDS: &[(&str, &str)] = &[(
-    "config-backup",
-    include_str!("../../../assets/network-workflows/config-backup.toml"),
-)];
+pub const SEEDS: &[(&str, &str)] = &[
+    (
+        "config-backup",
+        include_str!("../../../assets/network-workflows/config-backup.toml"),
+    ),
+    (
+        "firmware-upgrade",
+        include_str!("../../../assets/network-workflows/firmware-upgrade.toml"),
+    ),
+    (
+        "guarded-change",
+        include_str!("../../../assets/network-workflows/guarded-change.toml"),
+    ),
+    (
+        "package-update",
+        include_str!("../../../assets/network-workflows/package-update.toml"),
+    ),
+];
+
+/// Packages a router doesn't boot or answer without: upgrading one of these alone, against
+/// the firmware it was built with, is the risky kind.
+pub fn base_package(name: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "base-files",
+        "busybox",
+        "libc",
+        "musl",
+        "kernel",
+        "netifd",
+        "procd",
+        "firewall4",
+        "dropbear",
+        "ubus",
+        "ubusd",
+        "uci",
+        "fstools",
+        "mtd",
+        "apk-mbedtls",
+        "apk-openssl",
+        "odhcpd",
+        "odhcp6c",
+        "nftables",
+        "logd",
+        "rpcd",
+        "urngd",
+    ];
+    const STARTS: &[&str] = &[
+        "kmod-",
+        "hostapd",
+        "wpad",
+        "dnsmasq",
+        "libubox",
+        "libubus",
+        "libuci",
+        "procd-",
+        "libnftnl",
+        "nftables-",
+        "odhcpd-",
+        "libgcc",
+        "libpthread",
+        "librt",
+        "wpa-supplicant",
+    ];
+    EXACT.contains(&name) || STARTS.iter().any(|s| name.starts_with(s))
+}
+
+/// A package's name as apk takes it, and nothing a shell would read as anything else.
+pub fn package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+._-".contains(c))
+}
 
 /// The generic workflows, seeded.
 pub fn dir() -> PathBuf {
@@ -80,6 +155,19 @@ pub fn seeded() -> Vec<Entry> {
         .collect()
 }
 
+/// The same, with their lint results.
+pub fn seeded_all() -> Vec<Entry> {
+    seeded()
+        .into_iter()
+        .map(|mut e| {
+            if let Ok(w) = &e.wf {
+                e.issues = workflows::lint_with(w, &RULES);
+            }
+            e
+        })
+        .collect()
+}
+
 pub struct RouterEnv {
     pub r: Router,
     /// The workflow has a reboot step: only then is the router's boot id read (one ssh
@@ -89,7 +177,16 @@ pub struct RouterEnv {
 
 impl Env for RouterEnv {
     fn cond(&self, name: &str) -> Result<bool, String> {
-        Err(format!("unknown condition `{name}`"))
+        match name {
+            "guard_waiting" => Ok(crate::guard::pending(&self.r.scope).is_some()),
+            // The run in progress is this one: its `packages` value.
+            "packages_base" => Ok(sentry_core::workflows::state::in_progress_in(&root(
+                &self.r.scope,
+            ))
+            .and_then(|run| run.state.vars.get("packages").cloned())
+            .is_some_and(|p| p.split_whitespace().any(base_package))),
+            _ => Err(format!("unknown condition `{name}`")),
+        }
     }
 
     fn builtin(&self, name: &str) -> Result<String, String> {
@@ -149,7 +246,14 @@ mod tests {
 
     #[test]
     fn the_seeded_workflows_parse_and_lint_clean() {
-        for e in seeded() {
+        for e in seeded_all() {
+            if e.name == "firmware-upgrade" {
+                let w = e.wf.as_ref().unwrap();
+                let issues = workflows::lint_with(w, &RULES);
+                assert!(w.draft && issues.iter().all(|i| !i.error), "{issues:?}");
+                assert!(e.blocked().unwrap().starts_with("draft"));
+                continue;
+            }
             let w =
                 e.wf.as_ref()
                     .unwrap_or_else(|err| panic!("{}: {err}", e.name));
@@ -158,6 +262,16 @@ mod tests {
             assert!(issues.is_empty(), "{}: {issues:?}", e.name);
             assert!(e.blocked().is_none());
         }
+        // The firmware upgrade is the one draft.
+        let drafts: Vec<&str> = seeded_all()
+            .iter()
+            .filter(|e| e.blocked().is_some())
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|n| SEEDS.iter().find(|(s, _)| *s == n).unwrap().0)
+            .collect();
+        assert_eq!(drafts, ["firmware-upgrade"]);
         let backup = &seeded()[0];
         let w = backup.wf.as_ref().unwrap();
         // Both steps run here, by this program, and neither asks.
@@ -181,7 +295,15 @@ mod tests {
         );
         // Seeded where there are none of its own.
         let names: Vec<String> = list_for(scope).into_iter().map(|e| e.name).collect();
-        assert_eq!(names, ["config-backup"]);
+        assert_eq!(
+            names,
+            [
+                "config-backup",
+                "firmware-upgrade",
+                "guarded-change",
+                "package-update"
+            ]
+        );
         assert!(dir().join("config-backup.toml").is_file());
         // One of its own: only that.
         let own = own_dir(scope);
@@ -197,5 +319,165 @@ mod tests {
         assert_eq!(l[0].name, "mine");
         assert!(l[0].issues.is_empty(), "{:?}", l[0].issues);
         let _ = std::fs::remove_dir_all(sentry_core::maint::root(scope));
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+    use sentry_core::workflows::{Gate, Kind};
+
+    fn wf(name: &str) -> workflows::Workflow {
+        seeded()
+            .into_iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.wf.ok())
+            .unwrap_or_else(|| panic!("{name}"))
+    }
+
+    #[test]
+    fn what_changes_a_router_waits_for_a_key_and_auto_never_answers_the_hard_ones() {
+        use sentry_core::auto::{Asked, answers};
+        let auto = |w: &workflows::Workflow, id: &str| {
+            let step = w
+                .steps
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id}"));
+            let cmd = step.run.clone().unwrap_or_default();
+            answers(true, &Asked::Step { step, cmd: &cmd })
+        };
+        let g = wf("guarded-change");
+        let gates: Vec<(&str, Gate)> = g.steps.iter().map(|s| (s.id.as_str(), s.gate())).collect();
+        assert_eq!(
+            gates,
+            [
+                ("show", Gate::Auto),
+                ("guard", Gate::Confirm),
+                ("keep", Gate::Confirm)
+            ]
+        );
+        // Every step runs here, through the guard: none hands the router a line of its own.
+        assert!(g.steps.iter().all(|s| {
+            s.run
+                .as_deref()
+                .unwrap()
+                .starts_with("sentry-network guard ")
+        }));
+        assert!(
+            !auto(&g, "guard"),
+            "applying a guarded change is the user's Enter"
+        );
+        assert!(!auto(&g, "keep"), "Wi-Fi's keep is the user's");
+        // Even with the workflow's `risky` taken out, auto doesn't answer a keep.
+        let mut keep = g.steps[2].clone();
+        keep.risky = false;
+        assert!(!answers(
+            true,
+            &Asked::Step {
+                step: &keep,
+                cmd: "sentry-network guard keep"
+            }
+        ));
+        assert!(!answers(
+            true,
+            &Asked::Step {
+                step: &keep,
+                cmd: "sentry-network guard home keep"
+            }
+        ));
+        // Its values: the change itself has no default, so auto asks for it.
+        assert!(g.vars["configs"].default.is_none() && g.vars["lines"].default.is_none());
+
+        let p = wf("package-update");
+        assert!(p.vars["packages"].default.is_none(), "never every package");
+        assert!(auto(&p, "upgrade") && !auto(&p, "upgrade-base"));
+        assert_eq!(p.steps[2].cond(), Some((true, "packages_base")));
+        assert_eq!(p.steps[3].cond(), Some((false, "packages_base")));
+        // No step is a bare upgrade.
+        for w in [&g, &p, &wf("firmware-upgrade")] {
+            for s in &w.steps {
+                let run = s.run.as_deref().unwrap_or("");
+                assert!(
+                    !run.contains("apk upgrade") && !run.contains("sysupgrade"),
+                    "{run}"
+                );
+                assert_ne!(
+                    s.kind,
+                    Kind::Reboot,
+                    "{}: the flash step waits for the restart itself",
+                    s.id
+                );
+            }
+        }
+        let f = wf("firmware-upgrade");
+        assert!(f.draft);
+        assert!(!auto(&f, "flash"), "auto never flashes");
+        let mut flash = f.steps.iter().find(|s| s.id == "flash").unwrap().clone();
+        flash.risky = false;
+        assert!(!answers(
+            true,
+            &Asked::Step {
+                step: &flash,
+                cmd: "sentry-network firmware flash"
+            }
+        ));
+        assert!(!auto(&f, "download"), "owut download is a firmware command");
+    }
+
+    #[test]
+    fn base_packages_and_names() {
+        for b in [
+            "base-files",
+            "busybox",
+            "libc",
+            "netifd",
+            "procd",
+            "firewall4",
+            "dnsmasq",
+            "dnsmasq-full",
+            "dropbear",
+            "hostapd-common",
+            "wpad-basic-mbedtls",
+            "kmod-mt7915e",
+            "kernel",
+            "libubox20240329",
+            "uci",
+        ] {
+            assert!(base_package(b), "{b}");
+        }
+        for o in [
+            "tcpdump",
+            "luci-app-firewall",
+            "nano",
+            "adblock-fast",
+            "owut",
+            "curl",
+        ] {
+            assert!(!base_package(o), "{o}");
+        }
+        for ok in [
+            "tcpdump",
+            "luci-app-firewall",
+            "libstdcpp6",
+            "kmod-mt7915e",
+            "a.b+c_d",
+        ] {
+            assert!(package_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "a;reboot",
+            "a b",
+            "$(reboot)",
+            "a|b",
+            "--force",
+            "a'b",
+            "a/b",
+            "*",
+        ] {
+            assert!(!package_name(bad), "{bad}");
+        }
     }
 }

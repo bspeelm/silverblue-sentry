@@ -4,11 +4,10 @@
 //!
 //! Maintenance lists the audit's findings, what the firmware, the packages and the backups
 //! ask for, and the tasks due (`Upkeep`); its workflows (`crate::workflow`) run through the
-//! shared `remote::workflow::Session`, in a router's words. What the app asks a target
-//! about Claude still has plain answers here: Claude isn't set up for a network. That is
-//! the seam for what comes next (`Asks`, at the end of this file); until then the key bar
-//! and `?` don't offer it (`Asks::offered`), while auto mode, which a workflow's rows can
-//! use, is (`Asks::auto_offered`).
+//! shared `remote::workflow::Session`, in a router's words. Claude (`Asks`, `super::ask`)
+//! reaches the router only through the gateway, and nothing of the router's goes into a
+//! prompt unscrubbed. What a session runs for Claude goes through `Host::command`, which
+//! refuses by `policy` whatever the plan says.
 
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
@@ -47,8 +46,6 @@ pub use sentry_app::effect::{Effect, Modal};
 /// The program's name: its chip in the top bar.
 const APP: &str = "sentry-network";
 
-/// What asking Claude says for now.
-const NO_CLAUDE_YET: &str = "Claude isn't set up for a network yet";
 /// The probe: every second while the Dashboard has the window.
 const PROBE: Duration = Duration::from_secs(1);
 /// Board, interfaces and devices: they move slowly.
@@ -96,6 +93,19 @@ struct Poll {
 /// What the screen fetches while it's the one in view.
 fn polls(id: ScreenId) -> Vec<Poll> {
     let at = |kind, every: Option<Duration>| Poll { kind, every };
+    let mut v = polls_of(id);
+    // What must be hidden from Claude (the SSIDs, the devices' names) is known wherever
+    // it can be asked: read once when the screen is entered.
+    for k in [Kind::Uci, Kind::Clients, Kind::Ifaces] {
+        if !v.iter().any(|p| p.kind == k) {
+            v.push(at(k, None));
+        }
+    }
+    v
+}
+
+fn polls_of(id: ScreenId) -> Vec<Poll> {
+    let at = |kind, every: Option<Duration>| Poll { kind, every };
     match id {
         // Read from this machine's disk, when the screen is entered (and on r).
         ScreenId::Hist => vec![at(Kind::History, None)],
@@ -139,6 +149,8 @@ pub struct NetworkTarget {
     pub screens: Screens,
     /// Maintenance was just entered: once the last report is read, audit if it's old.
     audit_on_entry: bool,
+    /// The audit running is the one after a finding's plan (`Why::Reaudit`).
+    reaudit: bool,
     /// The samples taken become the router's metrics ring (History).
     recorder: crate::recorder::Recorder,
     /// There's a ring for this network: History is in the strip.
@@ -173,9 +185,8 @@ impl NetworkTarget {
                 runs: sentry_app::remote::workflow::root(&scope),
                 wf_dir: format!("~/.config/sentry/networks/{name}/workflows/"),
                 ways: Ways {
-                    no_claude: NO_CLAUDE_YET,
-                    // A review, when there is one, is about a network, and changes its
-                    // tasks only (nothing here is tracked the way a server's items are).
+                    // A review is about a network, and changes its tasks only (nothing
+                    // here is tracked the way a server's items are).
                     writer_place: "network",
                     server_changes: false,
                     // What a run did is read from the log (a cadence is done when its
@@ -184,23 +195,33 @@ impl NetworkTarget {
                     ..Default::default()
                 },
                 quit: format!("Quit sentry? Nothing keeps running on {name}'s router after exit."),
-                // (Claude isn't offered, so the app's own line about auto mode isn't shown.)
-                help_globals: &[(
-                    "C-a",
-                    "auto mode: a workflow's steps and a series' next row need no key",
-                )],
+                help_globals: &[
+                    ("A", "ask Claude about what's selected"),
+                    (
+                        "C-a",
+                        "auto mode: a workflow's steps, a plan's approval and a series' next row need no key",
+                    ),
+                ],
                 commands: ":q  :<screen>  :audit [now]  :wf [name]  :log  :refresh",
                 help_footer: format!(
-                    "Nothing is installed on {name}'s router, and nothing keeps running there."
+                    "Nothing is installed on {name}'s router. A guarded change leaves one \
+                     sleeper there for at most its window."
                 ),
-                privacy: format!("{NO_CLAUDE_YET}: nothing is sent."),
-                session_privacy: format!("{NO_CLAUDE_YET}: nothing is sent."),
+                privacy: "Sent to Claude through your Claude Code login (Anthropic): scrubbed \
+                          of secrets, the uplink's address, MACs, SSIDs and unnamed hostnames. \
+                          It reads the router through sentry-network's read-only gateway."
+                    .into(),
+                session_privacy: "Sent to Claude through your Claude Code login (Anthropic), \
+                                  scrubbed. It reads the router itself; every change is shown \
+                                  to you first, and config changes go through the guard."
+                    .into(),
             },
             router,
             mail,
             store: Store::default(),
             screens: Screens::default(),
             audit_on_entry: false,
+            reaudit: false,
             recorder: Default::default(),
             has_ring: false,
             ring_failed: false,
@@ -493,7 +514,20 @@ impl Target for NetworkTarget {
         match k {
             // One list of clients from the read, once the layout is known.
             Kind::Clients => self.store.raw_pending = ok,
-            Kind::Audit => fx.push(Effect::AuditEnded(ok)),
+            Kind::Audit => {
+                fx.push(Effect::AuditEnded(ok));
+                // The audit after a finding's plan: is the finding gone?
+                if let Some(id) = cx.finding.filter(|_| std::mem::take(&mut self.reaudit)) {
+                    let still = self
+                        .store
+                        .report
+                        .value
+                        .as_ref()
+                        .and_then(|r| r.as_deref())
+                        .is_some_and(|r| r.findings.iter().any(|f| f.id == id && !f.expected));
+                    fx.push(Effect::Reaudited(ok && !still));
+                }
+            }
             // The refresh was asked for: say how it went.
             Kind::Refresh => fx.push(Effect::Toast(match &self.store.updates {
                 u if !ok => format!(
@@ -560,6 +594,15 @@ impl Target for NetworkTarget {
             Why::Audit => {
                 self.fetch(Kind::Audit, cx);
                 vec![Effect::Toast("auditing the network…".into())]
+            }
+            // A finding's plan ran: the audit says whether it's gone.
+            Why::Reaudit => {
+                self.reaudit = true;
+                self.fetch(Kind::Audit, cx);
+                if cx.offline {
+                    self.reaudit = false;
+                }
+                Vec::new()
             }
             // A run ended: what it may have made (a backup) is read again.
             Why::Run | Why::Changed => {
@@ -760,6 +803,12 @@ impl Upkeep for NetworkTarget {
         Some(match maint::series_kind(&v, &rec)? {
             maint::SeriesKind::Workflow(name) => SeriesStep::Workflow(name),
             maint::SeriesKind::Audit => SeriesStep::Audit,
+            // A finding, a task done by hand: a session, as on the other targets.
+            maint::SeriesKind::Session => {
+                SeriesStep::Session(Box::new(super::ask::apply_rec(&v, &rec, &|wf| {
+                    sh.workflow_text(APP, wf)
+                })?))
+            }
         })
     }
 
@@ -792,64 +841,116 @@ impl Upkeep for NetworkTarget {
     }
 }
 
-/// Claude: not set up for a network yet. Nothing is asked, so nothing is sent; the profile
-/// (never used while `ask` refuses) allows no tool at all.
+/// Claude: asked through the read gateway, told only what has been scrubbed.
 impl Asks for NetworkTarget {
-    fn offered(&self) -> bool {
-        false
+    fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String> {
+        super::ask::ask_for(cx.screen, &self.view(sh, cx))
     }
 
-    /// Its workflows' rows can be done in a series, and a run followed without a key.
-    fn auto_offered(&self) -> bool {
-        true
+    fn apply_ask(&self, sh: &Shared, cx: &Cx) -> Option<Ask> {
+        let v = self.view(sh, cx);
+        super::ask::apply_rec(&v, &maint::pick(&v)?, &|wf| sh.workflow_text(APP, wf))
     }
 
-    fn ask(&self, _sh: &Shared, _cx: &Cx) -> Result<Ask, String> {
-        Err(NO_CLAUDE_YET.into())
-    }
-
-    fn apply_ask(&self, _sh: &Shared, _cx: &Cx) -> Option<Ask> {
-        None
-    }
-
+    /// Nothing on a network has a plan document of its own.
     fn plan_ask(&self, _item: &str, _key: String, _sh: &Shared, _cx: &Cx) -> Option<Ask> {
         None
     }
 
     fn review_brief(&self, cx: &Cx) -> Vec<Line<'static>> {
-        vec![
-            Line::raw(""),
-            Line::styled(format!("  {NO_CLAUDE_YET}."), cx.theme.dim()),
+        let t = cx.theme;
+        let name = &self.router.name;
+        let notes = &self.router.cfg.notes;
+        [
+            (String::new(), t.fg()),
+            (
+                format!("  Claude reviews the upkeep of {name}'s router: the audit's findings, the firmware"),
+                t.fg(),
+            ),
+            (
+                "  against upstream, the packages, the backups, the tasks due and the maintenance log,"
+                    .into(),
+                t.fg(),
+            ),
+            ("  then writes what to do now, soon and routinely, and why.".into(), t.fg()),
+            (String::new(), t.fg()),
+            (
+                "  It ends with how the task list should change. You see those as one list, ticked;"
+                    .into(),
+                t.fg(),
+            ),
+            ("  Enter applies them together.".into(), t.fg()),
+            (String::new(), t.fg()),
+            (
+                format!(
+                    "  It reads the web, your notes ({}), and the router read-only through the gateway.",
+                    if notes.is_empty() { "none".to_string() } else { notes.join(", ") }
+                ),
+                t.dim(),
+            ),
+            (
+                "  What it is sent and what it reads is scrubbed: secrets, the uplink's address, MACs,"
+                    .into(),
+                t.dim(),
+            ),
+            ("  SSIDs and unnamed hostnames never leave this machine.".into(), t.dim()),
+            (
+                "  Sent to Claude through your Claude Code login (Anthropic). Nothing on the router changes."
+                    .into(),
+                t.s(t.yellow),
+            ),
+            (String::new(), t.fg()),
+            ("  Enter starts the review.".into(), t.s(t.cyan)),
         ]
+        .into_iter()
+        .map(|(l, st)| Line::styled(l, st))
+        .collect()
     }
 
-    fn review_request(
-        &self,
-        _auto: Option<&str>,
-        _changes: &str,
-        _sh: &Shared,
-        _cx: &Cx,
-    ) -> String {
-        String::new()
+    fn review_request(&self, auto: Option<&str>, changes: &str, sh: &Shared, cx: &Cx) -> String {
+        let v = View {
+            filter: None,
+            everything: true,
+            ..self.view(sh, cx)
+        };
+        super::ask::review_request(&v, auto, changes)
     }
 
-    fn profile(&self, _f: ProfileFor, _grants: &[Grant]) -> Profile {
-        Profile {
-            system: format!("{NO_CLAUDE_YET}. Say so, and do nothing else."),
-            tools: Vec::new(),
-            allowed: Vec::new(),
-            denied: ["Bash", "Read", "Grep", "Glob", "Edit", "Write"]
-                .map(String::from)
-                .to_vec(),
-            dirs: Vec::new(),
+    fn profile(&self, f: ProfileFor, grants: &[Grant]) -> Profile {
+        let r = &self.router;
+        match f {
+            ProfileFor::Chat => super::ask::profile(r).with_grants(grants),
+            ProfileFor::Session => super::ask::session_profile(r).with_grants(grants),
+            ProfileFor::Review => super::ask::review_profile(r),
         }
+    }
+
+    /// What a command sentry ran for Claude printed goes back scrubbed; while what must
+    /// be hidden isn't known, nothing of it goes back.
+    fn hides(&self, text: &str) -> Option<String> {
+        let cx_free = super::ask::scrub_of(&self.store, &self.router);
+        Some(match cx_free {
+            Ok(s) => super::ask::scrubbed(&s, text),
+            Err(_) => "(hidden: what must be scrubbed isn't known yet)".into(),
+        })
     }
 }
 
 impl Host for NetworkTarget {
-    /// The line as the router's shell runs it, as root (there is no sudo there).
+    /// The line as the router's shell runs it, as root (there is no sudo there). This
+    /// is how a session's steps and what the user allowed are run: whatever a plan says,
+    /// a line the policy keeps for the guard or a workflow, or never runs, is turned into
+    /// a command that only says so, here, and nothing is sent to the router.
     fn command(&self, line: &str) -> Cmd {
-        self.router.sh(line)
+        match crate::policy::refuses(line) {
+            None => self.router.sh(line),
+            Some(why) => Cmd::local("sh").args([
+                "-c",
+                "printf '%s\\n' \"$1\" >&2; exit 126",
+                "sh",
+                &format!("sentry-network: not run: {why}"),
+            ]),
+        }
     }
 
     /// The login is root: nothing asks for a password.
@@ -900,7 +1001,8 @@ impl Host for NetworkTarget {
         self.fetch(Kind::Backup, cx);
     }
 
-    /// No workflow reboots a router yet.
+    /// No workflow reboots a router by a reboot step (the firmware's flash waits for the
+    /// restart itself).
     fn reboot(&mut self, _cmd: Cmd, _old_boot: String, _cx: &Cx) -> Vec<Effect> {
         Vec::new()
     }

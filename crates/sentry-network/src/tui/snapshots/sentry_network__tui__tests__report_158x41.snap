@@ -42,4 +42,4 @@ expression: s
 │        net:forward:udp:8000-8010                                             │  │                                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Esc  back   j/k  select   b  expected on/off   B  all like it   c  run audit   [ ]  browse reports   C-h/l  focus   C-a  auto   ?  help   q  quit
+ Esc  back   j/k  select   b  expected on/off   B  all like it   c  run audit   [ ]  browse reports   C-h/l  focus   A  ask Claude   ?  help   q  quit
