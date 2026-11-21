@@ -87,6 +87,8 @@ impl Slot {
         };
         let h = &e.head;
         let note = format!("{} {}: {}", h.workflow, h.result, h.summary);
+        // What goes back to Claude is what the target lets it see.
+        let note = self.target.hides(&note).unwrap_or(note);
         let fx = sess.workflow_ended(&h.workflow, h.result == "done", note);
         if !fx.is_empty() || sess.phase != sentry_core::apply::session::Phase::Applying {
             sess.chat.hidden = false;

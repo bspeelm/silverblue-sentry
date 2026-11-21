@@ -763,17 +763,17 @@ impl Session {
             Do::Allow => {
                 let reqs = self.chat.requests.clone();
                 for g in &reqs {
-                    if g.access == crate::claude::Access::Run
-                        && self.chat.ask.applying().is_some_and(|a| a.asks_each)
-                    {
-                        return waits(
-                            self,
-                            format!(
-                                "{} {}: a command run as root on the host is yours to allow",
-                                g.word(),
-                                g.path
-                            ),
-                        );
+                    // On a host reached as root nothing Claude asks for is auto's to
+                    // allow: not a command there, and not a file here either (what the
+                    // host said is text someone else may have written, a device's name
+                    // or a log line, and a file read here is how it would be answered).
+                    if self.chat.ask.applying().is_some_and(|a| a.asks_each) {
+                        let why = if g.access == crate::claude::Access::Run {
+                            "a command run as root on the host is yours to allow"
+                        } else {
+                            "in a session on a host reached as root, a file here is yours to allow"
+                        };
+                        return waits(self, format!("{} {}: {why}", g.word(), g.path));
                     }
                     let ok = self.grants_here(g);
                     if !answers(

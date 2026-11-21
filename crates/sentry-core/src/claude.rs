@@ -62,9 +62,9 @@ pub struct Apply {
     pub reaudits: bool,
     /// How the host is talked about where it isn't a server (a router's words).
     pub how: Option<&'static str>,
-    /// Auto mode never approves this session's plan or allows a command it asks to run:
-    /// the host's login is root, with no sudo line between a read and a change, so each
-    /// is the user's own Enter.
+    /// Auto mode never approves this session's plan and allows nothing it asks for (a
+    /// command there, a file here): the host's login is root, with no sudo line between a
+    /// read and a change, so each is the user's own Enter.
     pub asks_each: bool,
 }
 
