@@ -326,10 +326,38 @@ impl Slot {
         }
         self.sec_seen = now;
         self.shared.sec_last = w.sec.report.as_ref().map(|r| r.at);
+        // (Its own log it reads itself: only what ran elsewhere is handed over.)
+        self.shared.sec_upgraded = w
+            .sec
+            .upgraded
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                w.system
+                    .get(*i)
+                    .is_none_or(|s| s.peer.id != *self.mail.id())
+            })
+            .filter_map(|(_, u)| u.clone())
+            .max_by_key(|(at, _)| *at);
         self.shared.sec = sec::mine(&w.sec, self.mail.id(), &w.system)
             .into_iter()
             .cloned()
             .collect();
+    }
+
+    /// The newest firmware or OS upgrade in this target's log, said with where it ran. A
+    /// slot that never had the window hasn't read its log: it is read here, once.
+    pub(crate) fn upgraded(&mut self, w: &Win) -> Option<(jiff::Timestamp, String)> {
+        let found = if self.asleep && !w.offline {
+            self.slept_upgrade
+                .get_or_insert_with(|| {
+                    core::upgrade_in(&sentry_core::maint::log::list(&self.scope))
+                })
+                .clone()
+        } else {
+            core::upgrade_in(&self.shared.log)
+        };
+        found.map(|(at, wf)| (at, format!("{wf} ran on {}", self.title())))
     }
 
     /// Whether anything is being read as root for the target right now.

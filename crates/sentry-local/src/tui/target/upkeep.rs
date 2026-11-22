@@ -154,12 +154,18 @@ impl Asks for LocalTarget {
         }
     }
 
-    fn describe(&self, _sh: &Shared, _cx: &Cx) -> sentry_app::system::SystemLine {
+    fn describe(&self, _sh: &Shared, cx: &Cx) -> sentry_app::system::SystemLine {
         sentry_app::system::SystemLine {
             kind: "this machine".into(),
             what: "the laptop sentry runs on (Fedora Silverblue: rpm-ostree, Flatpak, \
                    toolbox). It reaches every other target over ssh."
                 .into(),
+            // How a network knows this machine among its devices: matched, never shown.
+            addrs: if cx.offline {
+                Vec::new()
+            } else {
+                own_macs(std::path::Path::new("/sys/class/net"))
+            },
             ..Default::default()
         }
     }
@@ -312,5 +318,45 @@ impl Asks for LocalTarget {
                 own: Some(own(Own::After(vec![local::Effect::ChatBack]))),
             }),
         ])
+    }
+}
+
+/// The MACs of this machine's network interfaces, as the kernel lists them under `dir`
+/// (`/sys/class/net`): what a router sees it as. Not the loopback's, nor an all-zero one.
+pub(crate) fn own_macs(dir: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name() != "lo")
+        .filter_map(|e| std::fs::read_to_string(e.path().join("address")).ok())
+        .map(|a| a.trim().to_ascii_lowercase())
+        .filter(|a| a.len() == 17 && a != "00:00:00:00:00:00")
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn this_machines_macs_are_its_interfaces() {
+        let dir = std::env::temp_dir().join(format!("sentry-macs-{}", std::process::id()));
+        for (name, mac) in [
+            ("lo", "00:00:00:00:00:00\n"),
+            ("wlp1s0", "02:00:5E:00:53:0a\n"),
+            ("enp2s0", "02:00:5e:00:53:0b\n"),
+            ("tun0", "\n"),
+        ] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("address"), mac).unwrap();
+        }
+        assert_eq!(
+            super::own_macs(&dir),
+            ["02:00:5e:00:53:0a", "02:00:5e:00:53:0b"]
+        );
+        assert!(super::own_macs(&dir.join("none")).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

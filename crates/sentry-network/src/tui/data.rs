@@ -157,6 +157,9 @@ pub struct Store {
     /// again when the interfaces or the config's devices are read).
     pub raw_clients: Slot<Raw>,
     pub clients: Option<Vec<Client>>,
+    /// The MACs of the devices that are sentry's own targets (`recognise`): shown by the
+    /// target's name, and no finding about an unknown device is listed for them.
+    pub targets: Vec<String>,
     /// When each device was first and last seen (`seen.toml`; not read or written offline).
     pub seen: Seen,
     seen_saved: Option<Instant>,
@@ -383,6 +386,23 @@ impl Store {
             self.report.set(shown.cur.clone());
         }
         self.shown = Some(shown);
+    }
+
+    /// The window's other targets, found among the clients (`clients::as_targets`): after
+    /// every read of the clients and before the screens look, since either may come first.
+    pub fn recognise(&mut self, system: &[sentry_app::system::Sys], me: &str) {
+        let targets: Vec<clients::Target> = system
+            .iter()
+            .filter(|s| s.peer.id != me)
+            .map(|s| clients::Target {
+                title: &s.peer.title,
+                known_as: &s.line.addrs,
+            })
+            .collect();
+        self.targets = match self.clients.as_deref_mut() {
+            Some(c) if !targets.is_empty() => clients::as_targets(c, &targets),
+            _ => Vec::new(),
+        };
     }
 
     /// Make the one list of clients from the last read, with the layout the interfaces

@@ -37,6 +37,9 @@ pub struct Shared {
     pub wf_dir: String,
     /// When the security audit last ran (the window's; its task is this machine's).
     pub sec_last: Option<jiff::Timestamp>,
+    /// The newest firmware or OS upgrade in any OTHER target's log, with where it ran
+    /// ("firmware-upgrade ran on home"): the audit's task is due again after it.
+    pub sec_upgraded: Option<(jiff::Timestamp, String)>,
     /// The security audit's items this target lists (`secaudit::mine`): to do first, worth
     /// doing, asked. The app's copy of what is the window's, kept as the report changes.
     pub sec: Vec<sentry_core::secaudit::Item>,

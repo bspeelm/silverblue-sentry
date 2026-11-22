@@ -286,7 +286,10 @@ impl NetworkTarget {
             &self.router,
             sh,
             cx,
-            self.screens.cur(cx.screen),
+            (
+                self.screens.cur(cx.screen),
+                self.screens.security.group.clone(),
+            ),
         )
     }
 
@@ -297,8 +300,11 @@ impl NetworkTarget {
         cx: &Cx,
         f: impl FnOnce(&mut Screens, &View) -> R,
     ) -> R {
-        let cur = self.screens.cur(cx.screen);
-        let v = view_of(&self.store, &self.router, sh, cx, cur);
+        let at = (
+            self.screens.cur(cx.screen),
+            self.screens.security.group.clone(),
+        );
+        let v = view_of(&self.store, &self.router, sh, cx, at);
         f(&mut self.screens, &v)
     }
 
@@ -454,7 +460,7 @@ fn view_of<'a>(
     router: &'a Router,
     sh: &'a Shared,
     cx: &'a Cx,
-    cur: usize,
+    (cur, group): (usize, Option<String>),
 ) -> View<'a> {
     View {
         t: cx.theme,
@@ -471,6 +477,7 @@ fn view_of<'a>(
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         auto: cx.auto,
         system: cx.system,
+        group,
     }
 }
 
@@ -605,6 +612,8 @@ impl Target for NetworkTarget {
             self.store
                 .merge_clients(&self.router.cfg.devices, cx.now.as_second(), scope);
         }
+        self.store
+            .recognise(cx.system, &super::id_of(&self.router.name));
         if k == Kind::Report && ok {
             let v = self.view(sh, cx);
             let (audited, due) = maint::audit_age(&v);
@@ -731,6 +740,9 @@ impl Target for NetworkTarget {
 
     fn render(&mut self, f: &mut Frame, area: Rect, sh: &Shared, cx: &Cx) {
         let id = cx.screen;
+        // A device that is another of the window's targets is shown as that target.
+        self.store
+            .recognise(cx.system, &super::id_of(&self.router.name));
         self.with_screens(sh, cx, |s, v| s.render(id, f, area, v));
     }
 

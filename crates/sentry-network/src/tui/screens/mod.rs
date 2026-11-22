@@ -48,6 +48,8 @@ pub struct View<'a> {
     /// The window's other targets, as last surveyed: what each says of itself
     /// (`SystemLine::facts`; a server's guard, for Security).
     pub system: &'a [sentry_app::system::Sys],
+    /// Security's list being gone through (`Security::group`).
+    pub group: Option<String>,
 }
 
 impl View<'_> {
@@ -81,6 +83,7 @@ impl View<'_> {
             wf: self.wf,
             auto: self.auto,
             system: self.system,
+            group: self.group.clone(),
         }
     }
 }

@@ -64,6 +64,9 @@ pub struct Security {
     pub sort: Sort,
     /// The list's row at the cursor (its key), kept when the list changes.
     pub sel: Option<String>,
+    /// The list being gone through: the key of the one row several of a kind make
+    /// (Enter on it; Esc comes back).
+    pub group: Option<String>,
 }
 
 /// The panels' keys.

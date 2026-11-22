@@ -187,6 +187,8 @@ pub struct Slot {
     pub(crate) sec_view: Option<usize>,
     /// The audit as this slot's records last took it in (`Sec::rev`, targets surveyed).
     sec_seen: (u64, usize),
+    /// Asleep: the newest upgrade in its log, read once (`Slot::upgraded`).
+    slept_upgrade: Option<Option<(jiff::Timestamp, String)>>,
     /// Records (`v`, `:log`): tasks, log, plans, reviews, what's put off.
     pub rec_view: Option<sentry_core::tui::records::Records>,
     /// The workflow run in progress on this target.
@@ -298,6 +300,7 @@ impl Slot {
             review_view: None,
             sec_view: None,
             sec_seen: (0, 0),
+            slept_upgrade: None,
             rec_view: None,
             run: None,
             chat: None,

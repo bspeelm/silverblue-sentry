@@ -1,5 +1,5 @@
 ---
-source: crates/sentry/src/tui/screens/tests.rs
+source: crates/sentry-local/src/tui/screens/tests.rs
 expression: body(&s)
 ---
  1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 1   7 Cleanup   0 Upgrade ↑
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  install   Space  tick   z  later   A  claude   c  check   v  records   R  review   C-a  auto   ?  help   q  quit
+ Enter  install   Space  tick   z  later   A  claude   c  check   v  records   R  review   C-a  auto   S  security audit   ?  help   q  quit

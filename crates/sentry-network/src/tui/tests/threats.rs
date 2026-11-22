@@ -79,14 +79,25 @@ fn security_list_wide() {
         s.contains("Needs attention · 4 · o shows 2 good to know"),
         "{s}"
     );
+    // Numbered, the first three under "Start here", the rest under "Then"; under each
+    // sentence, what Enter does.
+    let at = |what: &str| s.lines().position(|l| l.contains(what)).unwrap();
     assert!(
-        line(&s, "│ look     Someone tried to log in").contains("3 times and was refused"),
+        at("Start here") < at("│  1. look     The router refused a login 3 times in the last"),
+        "{s}"
+    );
+    assert_eq!(
+        at("│  1. look ") + 1,
+        at("Enter: see the numbers behind it (nothing to change)"),
         "{s}"
     );
     assert!(
-        s.contains("│ note     Someone tried a wrong Wi-Fi password twice"),
+        at("│  3. look ") < at("│              Then")
+            && at("│              Then")
+                < at("│  4. note     Someone tried a wrong Wi-Fi password twice"),
         "{s}"
     );
+    assert!(s.contains("Enter: set a new Wi-Fi password"), "{s}");
     // How the network is covered, a sentence and a state each.
     for said in [
         "✓ ok   2 doors are open from the internet, to 2 devices: web, phone",
@@ -147,20 +158,36 @@ fn security_list_busy_and_narrow() {
     let s = list(&mut a, 158, 41);
     insta::assert_snapshot!("threats_busy_158x41", s);
     assert!(
-        s.lines().nth(1).unwrap().contains("4 Security 9 "),
-        "red: something is wrong now: {s}"
+        s.lines().nth(1).unwrap().contains("4 Security 7 "),
+        "red: something is wrong now; naming devices isn't counted: {s}"
     );
-    // What is wrong now comes first.
-    let first = s.lines().position(|l| l.contains("│ act now")).unwrap();
-    let look = s.lines().position(|l| l.contains("│ look")).unwrap();
-    assert!(first < look, "{s}");
+    // What is wrong now comes first, and no act-now is under a look.
+    let rank = |word: &str| -> Vec<usize> {
+        s.lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains(&format!(". {word}")))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let (now, look, note) = (rank("act now"), rank("look"), rank("note"));
+    assert!(
+        now.last() < look.first() && look.last() < note.first(),
+        "{s}"
+    );
     for said in [
-        "A door from the internet is open that you haven't listed: game, udp port",
-        "The router lets people log in over ssh with a password",
-        "The router's admin page can be opened without encryption (plain HTTP)",
-        "A device nobody has named is plugged into lan",
-        "! weak ssh takes a password, and the admin page can be opened without encryption",
-        "2 not named",
+        "│  1. act now  An unlisted door from the internet is open: game (udp port 8000-8010)",
+        "Enter: close it, remove it, or say it's meant to be open",
+        "The router's remote login (ssh) still accepts a password",
+        "Enter: logins by key only (sentry checks its key works first)",
+        "The router's admin page can be opened without encryption",
+        "Enter: make the admin page use encryption (HTTPS)",
+        // Two unnamed devices: two rows, housekeeping, last.
+        "note     A device plugged into lan2 has no name yet: ",
+        "Enter: name it if it's yours, or block or pause it",
+        // What is weak in the cover points at its rows instead of saying it again.
+        "! weak What the internet can reach: see 1 above",
+        "! weak Logging in to the router: see 6 and 7 above",
+        "! weak Who is on the network: see 8 and 9 above",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
     }
@@ -239,11 +266,11 @@ fn a_calm_page_says_so_and_still_says_how_you_are_covered() {
 fn the_key_bar_names_what_enter_does_on_each_kind_of_row() {
     let mut a = busy();
     for (row, enter) in [
-        ("A door from the internet", "Enter  close it"),
-        ("log in over ssh with a password", "Enter  keys only"),
-        ("without encryption (plain HTTP)", "Enter  use HTTPS"),
-        ("nobody has named is plugged", "Enter  decide"),
-        ("in a way ordinary devices rarely do", "Enter  the numbers"),
+        ("An unlisted door from the internet", "Enter  close it"),
+        ("remote login (ssh) still accepts", "Enter  keys only"),
+        ("opened without encryption", "Enter  use HTTPS"),
+        ("lan2 has no name yet", "Enter  decide"),
+        ("a port ordinary devices rarely use", "Enter  the numbers"),
         ("wrong Wi-Fi password", "Enter  new password"),
     ] {
         let s = on_row(&mut a, row);
@@ -306,7 +333,7 @@ fn the_audits_items_join_the_pages_own_rows() {
     let mut a = busy();
     let before = {
         let s = list(&mut a, 158, 60);
-        s.matches("A door from the internet").count()
+        s.matches("An unlisted door from the internet").count()
     };
     assert!(before >= 1);
     a.slot_mut().shared.sec_last = Some("2026-10-23T12:00:00Z".parse().unwrap());
@@ -361,7 +388,11 @@ fn the_audits_items_join_the_pages_own_rows() {
     ];
     let s = list(&mut a, 158, 60);
     // Not twice: the door, the unnamed devices, password logins.
-    assert_eq!(s.matches("A door from the internet").count(), before, "{s}");
+    assert_eq!(
+        s.matches("An unlisted door from the internet").count(),
+        before,
+        "{s}"
+    );
     assert!(
         s.contains("The internet can reach a web app that is behind"),
         "{s}"
@@ -375,13 +406,10 @@ fn the_audits_items_join_the_pages_own_rows() {
     }
     assert!(s.contains("audited 3 days ago · S shows it"), "{s}");
     // The page's row has the action, and now the audit's why.
-    let s = on_row(
-        &mut a,
-        "A door from the internet is open that you haven't listed: game",
-    );
+    let s = on_row(&mut a, "An unlisted door from the internet is open: game");
     assert!(bar(&s).contains("Enter  close it"), "{}", bar(&s));
     assert!(s.contains("The audit's why for door."), "{s}");
-    let s = on_row(&mut a, "log in over ssh with a password");
+    let s = on_row(&mut a, "remote login (ssh) still accepts");
     assert!(
         s.contains("act now") && bar(&s).contains("Enter  keys only"),
         "{s}"
@@ -413,7 +441,7 @@ fn the_audits_items_join_the_pages_own_rows() {
 fn an_unknown_device_is_named_blocked_or_paused() {
     let _turn = runs();
     let mut a = armed(busy());
-    let s = on_row(&mut a, "nobody has named is plugged");
+    let s = on_row(&mut a, "lan2 has no name yet");
     assert!(s.contains("block it or pause it"), "{s}");
     // Enter: one question.
     key(&mut a, KeyCode::Enter);
@@ -473,7 +501,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
         "Clients shows it by name: {s}"
     );
     // A name that isn't one changes nothing.
-    on_row(&mut a, "nobody has named is plugged");
+    on_row(&mut a, "lan2 has no name yet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('1'));
     typed(&mut a, "   ");
@@ -482,7 +510,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
 
     // 4: paused for an hour. What is started is the security-action workflow, given a
     // tag (never the MAC); sentry notes here who the tag is and when the pause ends.
-    on_row(&mut a, "nobody has named is plugged");
+    on_row(&mut a, "lan2 has no name yet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('4'));
     let (name, action) = started(&a);
@@ -536,7 +564,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
     );
     ctrl(&mut a, 'a');
     // A second action while one runs: said, not started.
-    on_row(&mut a, "log in over ssh with a password");
+    on_row(&mut a, "remote login (ssh) still accepts");
     key(&mut a, KeyCode::Enter);
     assert_eq!(
         a.toast_for_test(),
@@ -561,7 +589,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
     // 3, on a fresh window: from everything.
     runs_cleared();
     let mut a = armed(busy());
-    on_row(&mut a, "nobody has named is plugged");
+    on_row(&mut a, "lan2 has no name yet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('3'));
     let (_, action) = started(&a);
@@ -575,7 +603,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
     // 6: looked at again in a week (the later list Maintenance uses).
     runs_cleared();
     let mut a = armed(busy());
-    on_row(&mut a, "nobody has named is plugged");
+    on_row(&mut a, "lan2 has no name yet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('6'));
     assert!(wf(&a).is_none());
@@ -586,7 +614,7 @@ fn an_unknown_device_is_named_blocked_or_paused() {
 
     // Without the workflow (a network with its own set): said, nothing noted.
     let mut a = busy();
-    on_row(&mut a, "nobody has named is plugged");
+    on_row(&mut a, "lan2 has no name yet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('2'));
     assert!(
@@ -754,7 +782,7 @@ fn enter_starts_each_action_as_its_plan() {
     let _turn = runs();
     // A door nobody listed: close it, remove it, or say it is meant.
     let mut a = armed(busy());
-    on_row(&mut a, "A door from the internet");
+    on_row(&mut a, "An unlisted door from the internet");
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     for option in [
@@ -776,13 +804,13 @@ fn enter_starts_each_action_as_its_plan() {
     assert_eq!(net(&a).store.blocks.door["@redirect[0]"].name, "game");
     runs_cleared();
     let mut a = armed(busy());
-    on_row(&mut a, "A door from the internet");
+    on_row(&mut a, "An unlisted door from the internet");
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('2'));
     assert_eq!(started(&a).1, "forward-remove:@redirect[0]");
     assert!(net(&a).store.blocks.door.is_empty());
     let mut b = armed(busy());
-    on_row(&mut b, "A door from the internet");
+    on_row(&mut b, "An unlisted door from the internet");
     key(&mut b, KeyCode::Enter);
     key(&mut b, KeyCode::Char('3'));
     assert_eq!(b.toast_for_test(), Some("marked expected (baseline.toml)"));
@@ -790,8 +818,8 @@ fn enter_starts_each_action_as_its_plan() {
 
     // ssh with keys only, the admin page on HTTPS: straight to the plan.
     for (row, action) in [
-        ("log in over ssh with a password", "ssh-keys-only"),
-        ("without encryption (plain HTTP)", "admin-https"),
+        ("remote login (ssh) still accepts", "ssh-keys-only"),
+        ("opened without encryption", "admin-https"),
     ] {
         runs_cleared();
         let mut a = armed(busy());
@@ -820,12 +848,12 @@ fn enter_starts_each_action_as_its_plan() {
     let mut dns = dnsstate::parse(&fixture("network/dnsstate.txt")).unwrap();
     dns.now += 40 * 86_400;
     data(&mut a, Kind::DnsState, Ok(Payload::DnsState(Box::new(dns))));
-    let s = on_row(
-        &mut a,
-        "The list of bad sites the router blocks is 54 days old",
-    );
+    let s = on_row(&mut a, "The list of bad sites is 54 days old");
     assert!(bar(&s).contains("Enter  refresh"), "{}", bar(&s));
-    assert!(s.contains("! weak Bad sites are filtered"), "{s}");
+    assert!(
+        s.contains("! weak Filtering of bad sites: see 1 above"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
@@ -913,7 +941,7 @@ fn a_row_dismissed_here_is_dismissed_on_maintenance() {
     assert!(s.contains("ssh accepts passwords"), "{s}");
     assert!(s.contains("the web interface"), "{s}");
     // b: expected, at once. One baseline: Maintenance stops listing the finding too.
-    on_row(&mut a, "log in over ssh with a password");
+    on_row(&mut a, "remote login (ssh) still accepts");
     key(&mut a, KeyCode::Char('b'));
     assert_eq!(a.toast_for_test(), Some("marked expected (baseline.toml)"));
     assert!(
@@ -925,19 +953,19 @@ fn a_row_dismissed_here_is_dismissed_on_maintenance() {
     );
     key(&mut a, KeyCode::Esc);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(!s.contains("log in over ssh with a password"), "{s}");
-    // (The cover still says how it is: expected isn't fixed.)
-    assert!(s.contains("! weak ssh takes a password"), "{s}");
+    assert!(!s.contains("remote login (ssh) still accepts"), "{s}");
+    // (The cover is still weak: expected isn't fixed. It points at the row that is left.)
+    assert!(s.contains("! weak Logging in to the router: see "), "{s}");
     let s = screen(&mut a, '6', 158, 41);
     assert!(!s.contains("ssh accepts passwords"), "{s}");
     // x asks first.
-    on_row(&mut a, "without encryption (plain HTTP)");
+    on_row(&mut a, "opened without encryption");
     key(&mut a, KeyCode::Char('x'));
     assert!(a.box_yes_for_test().is_some(), "a box");
     key(&mut a, KeyCode::Char('y'));
     assert_eq!(a.toast_for_test(), Some("marked expected (baseline.toml)"));
     // z: later. The same key in the same list as Maintenance's row for the finding.
-    on_row(&mut a, "A door from the internet");
+    on_row(&mut a, "An unlisted door from the internet");
     key(&mut a, KeyCode::Char('z'));
     key(&mut a, KeyCode::Char('1'));
     let later: Vec<&String> = a.slot().shared.later.keys().collect();
@@ -1029,6 +1057,450 @@ fn the_numbers_are_one_key_away_and_back() {
     f.flows.retain(|x| x.dport != 23);
     data(&mut a, Kind::Flows, Ok(Payload::Flows(Box::new(f))));
     let after = render_to_string(&mut a, 158, 41);
-    assert!(!after.contains("ordinary devices rarely do"), "{after}");
+    assert!(!after.contains("ordinary devices rarely use"), "{after}");
     assert!(after.contains("A login that worked"), "{after}");
+}
+
+fn net_mut(a: &mut App) -> &mut NetworkTarget {
+    a.slot_mut()
+        .target
+        .as_any_mut()
+        .downcast_mut()
+        .expect("the network")
+}
+
+/// `n` devices nobody has named beside whatever the network has, every one first seen
+/// weeks ago: every other one plugged in, the rest on the Wi-Fi.
+fn unnamed(a: &mut App, n: usize) {
+    let now = a.win.now_override.unwrap().as_second();
+    let list = net_mut(a).store.clients.as_mut().unwrap();
+    let base = list.iter().find(|c| c.mac.is_some()).unwrap().clone();
+    for c in list.iter_mut() {
+        c.first_seen = Some(now - 40 * 86_400);
+    }
+    for i in 0..n {
+        let mac = format!("00:00:5e:00:54:{i:02x}");
+        list.push(crate::clients::Client {
+            key: mac.clone(),
+            mac: Some(mac),
+            name: None,
+            known: false,
+            private: false,
+            flagged: true,
+            leave_alone: false,
+            hostname: Some(format!("thing-{i}")),
+            addrs: vec![format!("192.0.2.{}", 200 + i)],
+            link: if i % 2 == 1 {
+                crate::clients::Link::Wifi {
+                    ifname: "phy0-ap0".into(),
+                    signal: None,
+                }
+            } else {
+                crate::clients::Link::Wired {
+                    port: "lan3".into(),
+                }
+            },
+            first_seen: Some(now - 30 * 86_400),
+            connected_s: None,
+            ..base.clone()
+        });
+    }
+}
+
+/// A network like the one this page was first judged on: one thing to act on now (the
+/// router's firmware has security fixes waiting), then password logins, the admin page
+/// without encryption, CrowdSec's blocker off, packages, a log lost on restart, one flat
+/// network, no backup, three doors to answer for, and seven devices nobody has named.
+fn the_users_shape() -> App {
+    use sentry_core::secaudit::State;
+    let me = crate::tui::id_of(NAME);
+    let mut f = the_flows();
+    f.flows.retain(|x| x.dport != 23);
+    let mut a = full_with(&fx_cfg(), |c| {
+        let mut s = audit::tests::snap(c);
+        let text = fixture("network/uci.txt")
+            .replace(
+                "dropbear.main.PasswordAuth='off'",
+                "dropbear.main.PasswordAuth='on'",
+            )
+            .replace(
+                "uhttpd.main.redirect_https='1'",
+                "uhttpd.main.redirect_https='0'",
+            );
+        s.uci = Some(crate::collect::uci::parse(
+            &text,
+            &crate::redact::Salt::fixed([7; 16]),
+        ));
+        s
+    });
+    for secs in [0, 60] {
+        data(
+            &mut a,
+            Kind::Counters,
+            Ok(Payload::Counters(Box::new(counters_later(secs)))),
+        );
+    }
+    data(&mut a, Kind::Flows, Ok(Payload::Flows(Box::new(f))));
+    data(
+        &mut a,
+        Kind::SecLog,
+        Ok(Payload::SecLog(Box::new(seclog::parse("")))),
+    );
+    data(
+        &mut a,
+        Kind::DnsState,
+        Ok(Payload::DnsState(Box::new(
+            dnsstate::parse(&fixture("network/dnsstate.txt")).unwrap(),
+        ))),
+    );
+    let off = crate::collect::crowdsec::Bouncer {
+        enabled: Some(false),
+        ..Default::default()
+    };
+    data(&mut a, Kind::Crowdsec, Ok(Payload::Crowdsec(Some(off))));
+    unnamed(&mut a, 7);
+    let item = |what: &str, state, title: &str| {
+        let mut i = audit_item(&format!("sec:{what}:{me}"), state, title, &[&me]);
+        i.why = String::new();
+        i
+    };
+    a.slot_mut().shared.sec_last = Some("2026-10-23T12:00:00Z".parse().unwrap());
+    a.slot_mut().shared.sec = vec![
+        item(
+            "firmware",
+            State::DoFirst,
+            "The router's firmware has security fixes waiting",
+        ),
+        item(
+            "ssh-password",
+            State::Worth,
+            "The router's ssh login takes passwords",
+        ),
+        item(
+            "admin-http",
+            State::Worth,
+            "The router's admin page is plain HTTP",
+        ),
+        item(
+            "unknown-devices",
+            State::Worth,
+            "Devices nobody named are on the network",
+        ),
+        item(
+            "packages",
+            State::Worth,
+            "12 of the router's packages can be updated",
+        ),
+        item(
+            "logs",
+            State::Worth,
+            "The router forgets its log when it restarts",
+        ),
+        item(
+            "flat",
+            State::Worth,
+            "Every device at home shares one network",
+        ),
+        item(
+            "backup",
+            State::Worth,
+            "There is no backup of the router's configuration",
+        ),
+        item(
+            "door:tcp:443",
+            State::Ask,
+            "Does the web app behind port 443 ask for a login?",
+        ),
+        item(
+            "door:tcp:8443",
+            State::Ask,
+            "Does the app behind port 8443 ask for a login?",
+        ),
+        item(
+            "door:udp:8000-8010",
+            State::Ask,
+            "Does the game server behind ports 8000-8010 ask for a login?",
+        ),
+    ];
+    a
+}
+
+/// The page that was "17 equal look rows led by seven devices": ten rows now, what to do
+/// first, second and third said, the devices and the questions one row each at the end.
+#[test]
+fn the_page_says_what_to_do_first_second_and_third() {
+    let mut a = the_users_shape();
+    let s = list(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_users_shape_158x41", s);
+    let rows: Vec<&str> = s
+        .lines()
+        .filter_map(|l| l.strip_prefix("│ "))
+        .filter(|l| l.get(2..4) == Some(". "))
+        .map(|l| l.split('│').next().unwrap().trim())
+        .collect();
+    let want = [
+        " 1. act now  The router's firmware has security fixes waiting",
+        " 2. look     12 of the router's packages can be updated",
+        " 3. look     The router's remote login (ssh) still accepts a password",
+        " 4. look     The router's admin page can be opened without encryption",
+        " 5. look     CrowdSec's blocker is installed on the router but not switched on",
+        " 6. look     Every device at home shares one network",
+        " 7. look     The router forgets its log when it restarts",
+        " 8. look     There is no backup of the router's configuration",
+        " 9. note     7 devices have no name yet: 4 plugged in, 3 on Wi-Fi",
+        "10. note     3 doors from the internet: tell sentry whether each asks for a login",
+    ];
+    assert_eq!(rows.len(), want.len(), "{rows:#?}");
+    for (got, want) in rows.iter().zip(want) {
+        assert!(got.starts_with(want.trim_start()), "{want}:\n{rows:#?}");
+    }
+    // The first three are where to start; the rest follow.
+    let at = |what: &str| s.lines().position(|l| l.contains(what)).unwrap();
+    assert!(
+        at("Start here") < at(" 1. act now")
+            && at(" 3. look") < at("│              Then")
+            && at("│              Then") < at(" 4. look"),
+        "{s}"
+    );
+    // Each says what Enter does, under its sentence.
+    for (row, step) in [
+        (
+            " 1. act now",
+            "Enter: update the router's software (Maintenance does it)",
+        ),
+        (
+            " 3. look",
+            "Enter: logins by key only (sentry checks its key works first)",
+        ),
+        (
+            " 9. note",
+            "Enter: go through them (name, block or pause each)",
+        ),
+        ("10. note", "Enter: answer them one after another"),
+    ] {
+        assert!(
+            s.lines().nth(at(row) + 1).unwrap().contains(step),
+            "{row}: {step}\n{s}"
+        );
+    }
+    // Only what asks something is counted beside the screen's name: not housekeeping.
+    assert!(s.lines().nth(1).unwrap().contains("4 Security 8 "), "{s}");
+    assert!(s.contains("Needs attention · 10 "), "{s}");
+    // What is weak in the cover points at its row.
+    for said in [
+        "! weak Who is on the network: see 9 above",
+        "! weak Logging in to the router: see 3 and 4 above",
+        "✗ off  Blocking attackers at the router: see 5 above",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    // Narrow: the three to start with are all there.
+    let s = render_to_string(&mut a, 80, 24);
+    insta::assert_snapshot!("threats_users_shape_80x24", s);
+    assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+    assert!(
+        s.contains(" 1. act now") && s.contains(" 3. look") && s.contains("Start here"),
+        "{s}"
+    );
+}
+
+/// Enter on "7 devices…" lists them in the page's place. Each is its own decision, with
+/// the same question as a device's own row; naming one keeps the list open, one shorter.
+#[test]
+fn the_unnamed_devices_are_gone_through_in_one_list() {
+    let _turn = runs();
+    let mut a = armed(the_users_shape());
+    let unnamed = |a: &App| {
+        net(a)
+            .store
+            .clients
+            .iter()
+            .flatten()
+            .filter(|c| c.unknown())
+            .count()
+    };
+    assert_eq!(unnamed(&a), 7);
+    let s = on_row(&mut a, "devices have no name yet");
+    assert!(bar(&s).contains("Enter  list them"), "{}", bar(&s));
+    // Several as one can't be marked expected: each of them can.
+    assert!(!bar(&s).contains("x  expected"), "{}", bar(&s));
+    assert!(s.contains("thing-0") && s.contains("thing-6"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(
+        net(&a).screens.security.group.as_deref(),
+        Some("group:devices"),
+        "Esc took the filter away, the list is still open"
+    );
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_devices_open_158x41", s);
+    assert!(s.contains("┌ 7 devices with no name yet · Esc back"), "{s}");
+    assert!(
+        s.contains("A device plugged into lan3 has no name yet: thing-0")
+            && s.contains("A device on the Wi-Fi has no name yet: thing-1")
+            && s.contains("Enter: name it if it's yours, or block or pause it"),
+        "{s}"
+    );
+    assert!(
+        bar(&s).contains("Enter  decide") && bar(&s).contains("Esc  back"),
+        "{}",
+        bar(&s)
+    );
+    // The first: it's mine, a name. The list stays, with six.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("1  It's mine: give it a name"), "{s}");
+    key(&mut a, KeyCode::Char('1'));
+    typed(&mut a, "the printer");
+    assert_eq!(unnamed(&a), 6);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("┌ 6 devices with no name yet · Esc back")
+            && !s.contains("no name yet: thing-0"),
+        "{s}"
+    );
+    // The next one is under the cursor already: another name, five left.
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('1'));
+    typed(&mut a, "the tv");
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("┌ 5 devices with no name yet"), "{s}");
+    // Esc: the page again, on the row that is now five.
+    key(&mut a, KeyCode::Esc);
+    assert!(net(&a).screens.security.group.is_none());
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("5 devices have no name yet: 3 plugged in, 2 on Wi-Fi"),
+        "{s}"
+    );
+    // (The cursor is on it: its detail says what Enter does.)
+    assert!(s.contains("Enter: the list of them."), "{s}");
+    // Down to two: still the list while it is open; closed, they are rows of their own.
+    key(&mut a, KeyCode::Enter);
+    for name in ["a", "b", "c"] {
+        key(&mut a, KeyCode::Enter);
+        key(&mut a, KeyCode::Char('1'));
+        typed(&mut a, &format!("thing {name}"));
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("┌ 2 devices with no name yet"), "{s}");
+    // Pausing one from the list is the same action its own row starts: a block with an
+    // end, by tag.
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("4  Pause its internet for an hour"), "{s}");
+    key(&mut a, KeyCode::Char('4'));
+    let (name, action) = started(&a);
+    assert_eq!(name, "security-action");
+    assert!(
+        action.starts_with("block:") && action.ends_with(":internet"),
+        "{action}"
+    );
+    let tag = action.split(':').nth(1).unwrap();
+    assert!(blocks::is_tag(tag), "{action}");
+    assert!(net(&a).store.blocks.block[tag].until.is_some());
+    // Back on the page, the two that are left are two rows.
+    key(&mut a, KeyCode::Char('4'));
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(net(&a).screens.security.group.is_none(), "{s}");
+    assert_eq!(s.matches(". note     A device ").count(), 2, "{s}");
+    assert!(!s.contains("devices have no name yet"), "{s}");
+}
+
+/// The doors to answer for are one row and one list; a list whose last row is gone
+/// closes by itself.
+#[test]
+fn the_doors_are_answered_in_one_list() {
+    let mut a = the_users_shape();
+    let s = on_row(&mut a, "doors from the internet: tell sentry");
+    assert!(bar(&s).contains("Enter  list them"), "{}", bar(&s));
+    assert!(
+        s.contains("Does the web app behind port 443 ask for a login?"),
+        "the detail names them: {s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Esc);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_doors_open_158x41", s);
+    assert!(s.contains("┌ 3 doors from the internet · Esc back"), "{s}");
+    assert_eq!(
+        s.matches("Enter: answer yes, no, or don't know").count(),
+        3,
+        "{s}"
+    );
+    assert!(
+        bar(&s).contains("Enter  answer") && bar(&s).contains("Esc  back"),
+        "{}",
+        bar(&s)
+    );
+    // An answer takes the question off the audit's list: two left, the list still open.
+    a.slot_mut()
+        .shared
+        .sec
+        .retain(|i| !i.id.contains("door:tcp:443"));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("┌ 2 doors from the internet · Esc back"), "{s}");
+    // The last ones answered: the page again, without the row.
+    a.slot_mut().shared.sec.retain(|i| !i.id.contains("door:"));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("┌ Needs attention · 9 ") && !s.contains("doors from the internet"),
+        "{s}"
+    );
+    assert!(net(&a).screens.security.group.is_none());
+}
+
+/// A device that is another of the window's targets is that target, by its name: never
+/// "nobody has named", here, on Clients or on Maintenance.
+#[test]
+fn a_target_of_the_window_is_never_an_unnamed_device() {
+    let mut a = the_users_shape();
+    let before = list(&mut a, 158, 41);
+    assert!(before.contains("7 devices have no name yet"), "{before}");
+    let sys = |id: &str, title: &str, known_as: &[&str]| sentry_app::system::Sys {
+        peer: sentry_core::apply::session::Peer {
+            id: id.into(),
+            title: title.into(),
+            ..Default::default()
+        },
+        line: sentry_app::system::SystemLine {
+            addrs: known_as.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    a.win.system = vec![
+        // The server, by the address its ssh name resolves to.
+        sys("srv:myserver", "myserver", &["myserver", "192.0.2.200"]),
+        // This machine, by the MAC of its own interface.
+        sys("", "this machine", &["00:00:5E:00:54:01"]),
+        // The network itself is no device of its own.
+        sys(&crate::tui::id_of(NAME), NAME, &["192.0.2.202"]),
+    ];
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("5 devices have no name yet"), "{s}");
+    let named: Vec<(String, bool)> = net(&a)
+        .store
+        .clients
+        .iter()
+        .flatten()
+        .filter(|c| {
+            c.hostname
+                .as_deref()
+                .is_some_and(|h| h.starts_with("thing-"))
+        })
+        .take(3)
+        .map(|c| (c.label().to_string(), c.unknown()))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("myserver".to_string(), false),
+            ("this machine".to_string(), false),
+            ("thing-2".to_string(), true)
+        ]
+    );
+    let s = screen(&mut a, '2', 158, 41);
+    assert!(s.contains("myserver") && s.contains("this machine"), "{s}");
 }

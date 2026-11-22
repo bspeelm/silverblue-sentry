@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 7   3 Network   4 Security 8   6 Maintenance 2   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ 3 doors from the internet · Esc back ──────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│   Each is its own decision: the list stays open as you go                          │ │ note                                                                │
+│   Does the web app behind port 443 ask for a login?                                │ │ Does the web app behind port 443 ask for a login?                   │
+│   Enter: answer yes, no, or don't know                                             │ │                                                                     │
+│   Does the app behind port 8443 ask for a login?                                   │ │ The security audit can't read this: only you know. Enter answers    │
+│   Enter: answer yes, no, or don't know                                             │ │ it.                                                                 │
+│   Does the game server behind ports 8000-8010 ask for a login?                     │ │                                                                     │
+│   Enter: answer yes, no, or don't know                                             │ │ seen by the audit                                                   │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │ From the security audit. Enter: yes, no, or you don't know; the     │
+│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │ audit's list follows your answer.                                   │
+│ ! weak 17 devices on the network, 7 not named (1 with a private address, vouched   │ │                                                                     │
+│        for by the Wi-Fi password)                                                  │ │                                                                     │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
+│        and nothing crosses right now                                               │ │                                                                     │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
+│        update by itself                                                            │ │                                                                     │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
+│ ! weak Remote login (ssh) takes a password, and the admin page can be opened       │ │                                                                     │
+│        without encryption                                                          │ │                                                                     │
+│ ✗ off  CrowdSec's blocker is installed on the router but not switched on: what     │ │                                                                     │
+│        CrowdSec would block isn't enforced at the edge yet                         │ │                                                                     │
+│ ✓ ok   The security audit of every target: audited 3 days ago · S shows it         │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  answer   x  expected   z  later   Esc  back   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

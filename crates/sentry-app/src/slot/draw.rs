@@ -287,6 +287,10 @@ impl Slot {
                 {
                     h.push(self.auto_hint());
                 }
+                // The security audit's key, where it is taken beside the upkeep.
+                if self.screen == ScreenId::Maint {
+                    h.push(crate::secaudit::HINT);
+                }
                 // A hidden conversation waiting takes `A` over.
                 let hidden = self
                     .apply

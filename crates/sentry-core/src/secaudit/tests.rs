@@ -1142,7 +1142,7 @@ fn an_item_becomes_a_session_ask() {
 
 #[test]
 fn the_task_is_due_every_30_days_and_after_an_upgrade() {
-    let t = task(None, &[]);
+    let t = task(None, &[], None);
     assert_eq!(t.id, TASK_ID);
     assert_eq!(t.every.map(|d| d.0.as_secs()), Some(30 * 86_400));
     assert!(t.again.is_none());
@@ -1165,20 +1165,42 @@ fn the_task_is_due_every_30_days_and_after_an_upgrade() {
         ),
         run("firmware-upgrade", "system", "done", "2026-10-11T00:00:00Z"),
     ];
-    assert!(task(Some(last), &logs).again.is_none());
+    assert!(task(Some(last), &logs, None).again.is_none());
     let logs = [run(
         "firmware-upgrade",
         "system",
         "done",
         "2026-11-12T00:00:00Z",
     )];
-    let again = task(Some(last), &logs).again.unwrap();
+    let again = task(Some(last), &logs, None).again.unwrap();
     assert_eq!(
         again.why,
         "firmware-upgrade ran since the last security audit"
     );
     // Never audited: the task is simply due, nothing to be "again" about.
-    assert!(task(None, &logs).again.is_none());
+    assert!(task(None, &logs, None).again.is_none());
+    // An upgrade logged under any other target counts as this machine's own does: the
+    // newest one after the audit says why, with where it ran.
+    let at = |s: &str| -> Timestamp { s.parse().unwrap() };
+    let elsewhere = (
+        at("2026-11-14T00:00:00Z"),
+        "firmware-upgrade ran on home".to_string(),
+    );
+    let again = task(Some(last), &[], Some(&elsewhere)).again.unwrap();
+    assert_eq!(
+        (again.at, again.why.as_str()),
+        (
+            elsewhere.0,
+            "firmware-upgrade ran on home since the last security audit"
+        )
+    );
+    assert_eq!(
+        task(Some(last), &logs, Some(&elsewhere)).again.unwrap().at,
+        elsewhere.0
+    );
+    let before = (at("2026-10-30T00:00:00Z"), "release ran on myserver".into());
+    assert!(task(Some(last), &[], Some(&before)).again.is_none());
+    assert!(task(None, &[], Some(&elsewhere)).again.is_none());
     assert!(
         done_entry("3 to do first")
             .head

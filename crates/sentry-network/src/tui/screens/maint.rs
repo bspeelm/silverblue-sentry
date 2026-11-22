@@ -146,10 +146,18 @@ pub fn every_rec(v: &View) -> Vec<Rec> {
     let findings = latest(v).map_or(&[][..], |r| &r.findings[..]);
     // A backup made since the audit: its finding is over before the next audit says so.
     let stale = |f: &&Finding| f.id == UNSAVED && unsaved_now(v) == Some(false);
+    // A device that is one of sentry's own targets isn't an unknown device, whatever the
+    // audit (which knows only the router) said.
+    let ours: Vec<String> =
+        v.s.targets
+            .iter()
+            .map(|mac| crate::audit::client_id(v.name, mac))
+            .collect();
     for f in findings
         .iter()
         .filter(|f| !f.expected)
         .filter(|f| !stale(f))
+        .filter(|f| !ours.contains(&f.id))
     {
         out.push(Rec {
             level: match f.severity {
