@@ -166,6 +166,8 @@ Press **`A`** on any tab to ask your local [Claude Code](https://claude.com/clau
 
 `A` on a Maintenance row (or in the Plan view) offers **1 help me apply it** or **2 just ask about it**; `Enter` on a task done by hand is **1** straight away. Applying is one session in one window, start to finish. You make two decisions, and the rest follows by itself:
 
+**One session works across targets.** With several targets open (this machine, a server, a network) a session started on one reads on all of them and its plan may have steps on each (the plan view says whose each step is). You approve once; a server's sudo password is asked in the session's own line. A value one step makes (a key the server prints) is used by a later step on another target without ever being shown or written down, and a value only you have is asked for by the plan itself, typed hidden. If the cause of a failure is on another target, Claude fixes it there and retries. Each target's maintenance log gets its own entry. Auto mode never answers a session that involves a router.
+
 1. **Start (Enter).** The window shows what will be sent to Claude (the row: the updates waiting, the item's standing, the task's steps, the plan written earlier, the workflow that does it). Type anything Claude should also know, or just press Enter. Tab shows the whole brief.
 2. **Claude looks into it** read-only, then answers with **one plan**: exact steps, in order.
    - **`edit`**: a file change, as the exact old text and its replacement (shown as a diff). Your own files anywhere, and root's configuration under /etc (written with your sudo; never sudoers, PAM or the password files). On a server, only files on this machine (the notes); the server's files change with `run` steps.
