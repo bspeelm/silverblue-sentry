@@ -248,3 +248,39 @@ fn the_runs_record_round_trips() {
 }
 
 mod wait;
+
+/// After the flash, the family filter is read back and said in one line: in place for
+/// every device noted, or which of them it isn't whole on.
+#[test]
+fn the_family_filter_is_said_after_the_flash() {
+    use crate::security::blocks::{Blocks, Dev, Filtered};
+    use crate::security::family::Found;
+    let found = |tag: &str, parts: usize| Found {
+        tag: tag.into(),
+        mac: "02:00:5e:00:53:01".into(),
+        zone: "lan".into(),
+        resolver: Some("192.0.2.53".into()),
+        sections: (0..parts)
+            .map(|i| format!("sentry_filter_{tag}_{i}"))
+            .collect(),
+    };
+    let mut noted = Blocks::default();
+    for (tag, label) in [("aa11", "tablet"), ("bb22", "laptop")] {
+        noted.filter.insert(tag.into(), Filtered::default());
+        noted.device.insert(
+            tag.into(),
+            Dev {
+                label: label.into(),
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(
+        family_after(&[found("aa11", 3), found("bb22", 3)], &noted),
+        Ok("✓ The family filter's rules are still in place for 2 devices.".into())
+    );
+    let lost = family_after(&[found("aa11", 3), found("bb22", 2)], &noted).unwrap_err();
+    assert!(lost.contains("for laptop (of 2 devices)"), "{lost}");
+    let lost = family_after(&[], &noted).unwrap_err();
+    assert!(lost.contains("tablet, laptop"), "{lost}");
+}

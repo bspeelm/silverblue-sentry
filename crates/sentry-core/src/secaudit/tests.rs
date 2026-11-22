@@ -1751,3 +1751,24 @@ fn the_family_filter_is_said_by_count() {
     let unread = eval(net(), srv(), &answered());
     assert!(!unread.iter().any(|i| i.id.contains("family")));
 }
+
+/// A network's firmware upgrade, logged as its workflow's run writes it, makes the audit's
+/// task due again (`upgrade_in`): a run that ended well, and not one abandoned.
+#[test]
+fn a_routers_firmware_upgrade_makes_the_audit_due_again() {
+    use crate::maint::log::LogEntry;
+    use crate::workflows::state::{RunState, RunStatus};
+    let text =
+        std::fs::read_to_string("../../assets/network-workflows/firmware-upgrade.toml").unwrap();
+    let wf = crate::workflows::parse(&text).unwrap();
+    let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+    let mut st = RunState::new(&wf.name, &ids, Default::default());
+    st.status = RunStatus::Done;
+    st.ended = Some(st.started);
+    let done = LogEntry::from_run("net:home", &wf, &st, std::path::Path::new("x"), None, None);
+    let (at, what) = upgrade_in(std::slice::from_ref(&done)).expect("the upgrade counts");
+    assert_eq!((at, what.as_str()), (st.started, "firmware-upgrade"));
+    st.status = RunStatus::Abandoned;
+    let left = LogEntry::from_run("net:home", &wf, &st, std::path::Path::new("x"), None, None);
+    assert_eq!(upgrade_in(&[left]), None);
+}

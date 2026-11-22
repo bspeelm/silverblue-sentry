@@ -1836,6 +1836,17 @@ pub fn after(r: &Router, o: &mut Out, audit: &dyn Fn() -> u8) -> u8 {
         )),
         Err(e) => (o.err)(format!("the clients didn't read: {e}")),
     }
+    // The family filter is part of the settings a flash keeps: read back, never changed.
+    let noted = crate::security::blocks::Blocks::load(&r.scope);
+    if !noted.filter.is_empty() {
+        match crate::collect::uci::collect(r) {
+            Ok(u) => match family_after(&crate::security::family::found(&u), &noted) {
+                Ok(l) => (o.say)(l),
+                Err(l) => (o.err)(l),
+            },
+            Err(e) => (o.err)(format!("the family filter's rules didn't read: {e}")),
+        }
+    }
     if audit() != 0 {
         ok = false;
     }
@@ -1855,6 +1866,43 @@ pub fn after(r: &Router, o: &mut Out, audit: &dyn Fn() -> u8) -> u8 {
     st.step = "the checks after the restart".into();
     let _ = st.save(&r.scope);
     if ok { 0 } else { 1 }
+}
+
+/// The family filter after the flash, in one line: its rules still in place for every
+/// device noted as filtered, or which of them aren't (whole) on the router any more. Said
+/// only, never failing the step: the Security page offers to put it back.
+pub fn family_after(
+    on: &[crate::security::family::Found],
+    noted: &crate::security::blocks::Blocks,
+) -> Result<String, String> {
+    let lost: Vec<String> = noted
+        .filter
+        .keys()
+        .filter(|t| !on.iter().any(|f| &f.tag == *t && f.whole()))
+        .map(|t| {
+            noted
+                .device
+                .get(t)
+                .map_or_else(|| "a device".to_string(), |d| d.label.clone())
+        })
+        .collect();
+    let n = noted.filter.len();
+    let devices = if n == 1 {
+        "1 device".to_string()
+    } else {
+        format!("{n} devices")
+    };
+    if lost.is_empty() {
+        Ok(format!(
+            "✓ The family filter's rules are still in place for {devices}."
+        ))
+    } else {
+        Err(format!(
+            "✗ The family filter isn't whole on the router any more for {} (of {devices}): \
+             the Security page (4) offers to put it back.",
+            lost.join(", ")
+        ))
+    }
 }
 
 /// `add-missing`: `apk add` exactly the packages `after` found missing.
