@@ -155,6 +155,12 @@ pub struct Audit {
     pub retention_months: u32,
     pub stale_container_days: u32,
     pub cache_warn_mb: u64,
+    /// The security audit's check from outside: a command of yours, run on this machine,
+    /// given `{address}` (your uplink's public address) and `{ports}` (comma separated),
+    /// that prints the ports it found open, one per line. None: nothing is checked from
+    /// outside. e.g. `ssh vps "nc -zvw2 {address} $(echo {ports} | tr , ' ') 2>&1 | awk '/succeeded|open/ {print $4}'"`,
+    /// or the same `nc` inside a VPN's network namespace.
+    pub outside: Option<String>,
 }
 
 impl Default for Audit {
@@ -163,6 +169,7 @@ impl Default for Audit {
             retention_months: 12,
             stale_container_days: 30,
             cache_warn_mb: 2048,
+            outside: None,
         }
     }
 }

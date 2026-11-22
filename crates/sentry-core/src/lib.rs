@@ -16,5 +16,6 @@ pub mod fmt;
 pub mod maint;
 pub mod paths;
 pub mod recorder;
+pub mod secaudit;
 pub mod tui;
 pub mod workflows;
