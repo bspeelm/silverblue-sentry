@@ -1690,6 +1690,150 @@ fn the_family_filter_is_chosen_in_one_list_and_applied_as_one_change() {
     assert!(!s.contains("[ ] cam") && !s.contains("[ ] myserver"), "{s}");
 }
 
+/// Against a real router, reads only: the Security page's family filter list from live
+/// reads, two named devices ticked, Enter (which on a router where another program forces
+/// DNS says why and starts nothing), and the plan those two would get on a router where
+/// nothing came first (made from the live config, nothing sent). The screens and the plan
+/// name devices: they go to `SENTRY_LIVE_SCREEN` (a scratch file), never anywhere tracked.
+/// `SENTRY_NETWORK_LIVE=<name> SENTRY_LIVE_SCREEN=<file> XDG_*=<scratch> cargo test -p
+/// sentry-network live_family_filter -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_family_filter() {
+    let Some(r) = live_router() else { return };
+    let out = std::env::var("SENTRY_LIVE_SCREEN").expect("SENTRY_LIVE_SCREEN: a scratch file");
+    for v in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        assert!(std::env::var_os(v).is_some(), "{v}: a scratch dir");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(tx, &crate::tui::id_of(&r.name), crate::tui::target(r));
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    key(&mut a, KeyCode::Char('4'));
+    pump(&mut a, 15);
+    let mut said = String::new();
+    let page = render_to_string(&mut a, 158, 41);
+    said.push_str(&page);
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Enter);
+    assert!(
+        net(&a).screens.security.filter.is_some(),
+        "the list opened:\n{page}"
+    );
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    let menu = render_to_string(&mut a, 158, 41);
+    said.push_str(&menu);
+    said.push_str(&render_to_string(&mut a, 80, 24));
+    let ticks: Vec<String> = net(&a)
+        .screens
+        .security
+        .filter
+        .as_ref()
+        .unwrap()
+        .ticks
+        .iter()
+        .cloned()
+        .collect();
+    key(&mut a, KeyCode::Enter);
+    let after = render_to_string(&mut a, 158, 41);
+    said.push_str(&after);
+    assert!(wf(&a).is_none(), "nothing may start on a real router here");
+    // The plan those two would get where nothing comes first: pure, from the live reads.
+    let t = net(&a);
+    let mut b = t.store.blocks.clone();
+    let view = crate::tui::screens::View {
+        t: &a.win.theme,
+        s: &t.store,
+        sh: &a.slot().shared,
+        cfg: &t.router.cfg,
+        name: &t.router.name,
+        cur: 0,
+        now: jiff::Timestamp::now(),
+        filter: None,
+        everything: false,
+        wf: None,
+        auto: false,
+        system: &[],
+        group: None,
+    };
+    for e in crate::tui::screens::filter::menu_rows(&view) {
+        if ticks.contains(&e.dev.tag) {
+            b.device.insert(
+                e.dev.tag.clone(),
+                blocks::Dev {
+                    mac: e.dev.mac.clone(),
+                    label: e.dev.label.clone(),
+                    zone: e.dev.zone.clone(),
+                    wifi: e.dev.wifi.clone(),
+                },
+            );
+        }
+    }
+    let uci = t.store.uci.value.as_ref().expect("the config was read");
+    let mut c = t
+        .store
+        .counters
+        .value
+        .clone()
+        .expect("the counters were read");
+    let forced = crate::security::family::hijacked(&c, "lan");
+    if let Some(rules) = c.rules.as_mut() {
+        rules.retain(|x| !x.name.starts_with("ubus:"));
+    }
+    let wan = view
+        .s
+        .ifaces
+        .value
+        .as_ref()
+        .map(|i| {
+            crate::security::Nets::new(i, Some(uci))
+                .wan_zone()
+                .to_string()
+        })
+        .unwrap_or_else(|| "wan".into());
+    let f = crate::security::actions::Facts {
+        uci,
+        wan: &wan,
+        blocks: &b,
+        expected: &[],
+        counters: Some(&c),
+        tables: &[],
+    };
+    let plan =
+        crate::security::actions::plan(&crate::security::actions::Do::filter(ticks.clone()), &f);
+    said.push_str("\n--- the plan where nothing came first ---\n");
+    match &plan {
+        Ok(p) => said.push_str(&p.text().join("\n")),
+        Err(e) => said.push_str(e),
+    }
+    std::fs::write(&out, &said).unwrap();
+    // What may be printed: shapes, not names.
+    println!(
+        "ticked {} · forced DNS here: {:?} · refused on Enter: {} · plan: {}",
+        ticks.len(),
+        forced,
+        after.contains("can't work on this router yet"),
+        plan.as_ref().map_or("refused", |p| if p.guard.is_some() {
+            "made"
+        } else {
+            "empty"
+        })
+    );
+}
+
 /// The fixture's config with sentry's family filter on these devices.
 fn filtered_uci(devs: &[(&str, &str)]) -> crate::collect::uci::Uci {
     let mut add = String::new();

@@ -421,6 +421,10 @@ pub fn help() -> Hints {
             "no timer on the router: a row here offers to lift one",
         ),
         (
+            "filter",
+            "Filtered by you › Choose devices: tick them, Enter applies all as one change",
+        ),
+        (
             "not seen",
             "what is inside the traffic; devices on one switch",
         ),

@@ -381,7 +381,6 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 
 ## A49. Log entries of the same minute (2026-11)
 - An entry's file is `YYYY-MM-DD-HHMM-<what>.md` when that is free. When another entry has that name, the later of the two gets its seconds, `HHMM.SS-<what>.md` (`HHMM.SS-2-…` within the same second), so names still sort by time and the plain name stays the minute's earliest. Nothing reads entries by name: removal, replacement, retention and the ledger's links go by the file an entry is in; references (`run:<file>`, a review's run) keep naming the plain name as before.
-||||||| parent of 739fd22 (Router firmware upgrade: owut's check and download read from its source, a flash that says what happens, a draft started only from its box)
 
 ## A50. The router's firmware upgrade, and how a draft starts (2026-11)
 - `firmware-upgrade` is rewritten from owut's own source and a real router's answers: check → backup → plan (owut check) → download (confirm) → flash (confirm, risky, a box first) → wait → after → add-missing (confirm, risky, only when packages went missing). Every step is `sentry-network firmware <step>`; the image is `/tmp/sentry-firmware.bin` on the router, its record `networks/<name>/firmware.json` here.
@@ -395,3 +394,12 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - The wait tells three cases apart: back on a new boot; no answer by the deadline (the lost-contact words); still answering on the old boot. Old boot with nothing of the flash running (20 s without owut's "Installing" line, 120 s after it): "the flash did not happen, nothing was changed", early, image removed. Old boot with the flash still at work: it keeps waiting and says so; at the deadline it says the router still runs as it was, never that it is gone. One failed connection during the flash is not taken as the restart.
 - While the workflow is a draft, the flash box says "sentry has never flashed a router before this run."; un-drafting removes that line too.
 - The wait's and the flash's test knobs (`SENTRY_FIRMWARE_WAIT`, `SENTRY_FIRMWARE_WATCH`) are read only by a debug build.
+
+## A51. A family filter on the devices you tick (2026-11)
+- On a network's Security page, "Filtered by you" › "Choose devices…" opens a list of the devices on the network (named first; sentry's own targets and devices left alone aren't offered). Space ticks, `a` ticks every named one, `e` names one first, Enter applies the whole list as one change, Esc leaves. Enter on a filtered device takes it off. The service is CleanBrowsing Family; only ticked devices are filtered.
+- On the router it is firewall config only: per device a DNS redirect by MAC to the family service over IPv4, and DNS over IPv6 from it refused so it falls back to IPv4. sentry's sections only (name and section both sentry's, a salted tag, never a MAC, in the run and the log). DHCP and DNS config are never touched.
+- Where another program's DNS redirect comes first in the router's firewall (https-dns-proxy's "force DNS"), no firewall section can win: the filter refuses with a plain explanation and changes nothing. Someone's own DNS redirect in the config is put behind sentry's.
+- Proofs before and while the guard confirms: the router still looks names up through its own resolver; the family service answers the router and refuses its documented test name. What can't be proven from the router (a device really redirected) is said, with the test site to open on it.
+- A filter the router has and this machine has no note of, or the reverse, is a "look" row: keep or take off; put back or forget.
+- The Clients screen marks filtered devices; `sentry-network security` lists them, and the latest security audit's rows for the network.
+- Wording on Security: a long sentence takes its row's second line instead of being cut (the detail and key bar say what Enter does); a fix with Claude is named from the fix's own words where it fits; CrowdSec switched off on the router is said plainly.

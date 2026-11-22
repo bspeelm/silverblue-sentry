@@ -32,11 +32,12 @@ fn services(asked: &'static str) -> &'static str {
     asked
 }
 
-/// Tests against the disposable router: the lookups a proof makes are answered as these
-/// say (`(ordinary, blocked)` per call, in order) instead of being asked, since that
-/// container may not reach the internet. An empty list asks for real.
+/// Tests against the disposable router: its dnsmasq doesn't run, and what it sends to port
+/// 53 outside may be answered by whatever the network this machine is on puts in the way.
+/// So each lookup proof is taken to hold, or not, as these say (one per proof, in order)
+/// instead of being asked. Empty: asked for real.
 #[cfg(test)]
-pub static LOOKUPS: std::sync::Mutex<Vec<(bool, bool)>> = std::sync::Mutex::new(Vec::new());
+pub static LOOKUPS: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
 
 /// One lookup from the router (busybox `nslookup`, a read): what it printed. Err: the
 /// router has no lookup tool.
@@ -61,11 +62,9 @@ pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
     if matches!(p, Proof::OwnResolver | Proof::Family) {
         let mut l = LOOKUPS.lock().unwrap();
         if !l.is_empty() {
-            let (ordinary, blocked) = l.remove(0);
-            return match (p, ordinary, blocked) {
-                (Proof::OwnResolver, true, _) => Ok("(test) the router looks names up".into()),
-                (Proof::Family, true, true) => Ok("(test) the family service blocks".into()),
-                _ => Err("(test) the lookup didn't come back as it should".into()),
+            return match l.remove(0) {
+                true => Ok(format!("(test) taken to hold: {}", p.says())),
+                false => Err(format!("(test) taken to fail: {}", p.says())),
             };
         }
     }
@@ -75,8 +74,7 @@ pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
             let out = lookup(r, svc.ordinary, "127.0.0.1")?;
             if family::answered(&out).is_empty() {
                 return Err(format!(
-                    "the router's own resolver didn't answer for {}: its lookups don't work \
-                     as they are, so nothing is changed now",
+                    "the router's own resolver didn't answer for {}",
                     svc.ordinary
                 ));
             }
@@ -201,8 +199,16 @@ fn read(r: &Router, d: &Do) -> Result<Got, String> {
     // Whose DNS redirect comes first: what fw4 counts, and the other tables (both only
     // where the action is the family filter's; reads).
     let (counters, tables) = if matches!(d, Do::Filter { .. }) {
+        // (No rules read is not "nothing comes first": the plan then refuses. The
+        // disposable router can't list its firewall at all.)
+        #[cfg(test)]
+        let unread = NO_FIREWALL_RELOAD.load(std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(test))]
+        let unread = false;
         (
-            crate::collect::counters::collect(r).ok(),
+            crate::collect::counters::collect(r)
+                .ok()
+                .filter(|c| c.rules.is_some() || unread),
             r.output(&r.sh("nft list ruleset"))
                 .map(|t| family::foreign_tables(&t))
                 .unwrap_or_default(),
@@ -350,7 +356,7 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
         }
     }
     settle(r, d);
-    if let Do::Filter { .. } = d {
+    if p.proofs.contains(&Proof::Family) {
         let svc = family::service();
         say(format!(
             "sentry can't test from the device itself: open {} on it; it should be blocked.",

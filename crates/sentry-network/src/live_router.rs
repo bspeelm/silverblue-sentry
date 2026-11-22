@@ -2290,3 +2290,170 @@ fn live_firmware_upgrade() {
     assert_eq!(on(&r, "apk --no-network info -e partx-utils").code, 0);
     let _ = std::fs::remove_file(scratch.join("identity.txt"));
 }
+
+/// The family filter on two devices through the real flow, one taken off, and a proof
+/// that fails once the change is made: the sections exactly as designed, only sentry's
+/// touched, and taken back byte for byte. What this does NOT show (the container can't
+/// load a firewall): that fw4 makes these sections into nft rules, in the order the design
+/// says, and that a device's lookups are then redirected.
+#[test]
+#[ignore]
+fn live_security_filter() {
+    use crate::security::family;
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    const A: &str = "02:00:5e:00:53:51";
+    const B: &str = "02:00:5e:00:53:52";
+    let (ta, tb) = (
+        blocks::tag(&r.name, A).expect("a tag"),
+        blocks::tag(&r.name, B).expect("a tag"),
+    );
+    // Look-alikes of someone else's, and someone's own DNS intercept from lan, which
+    // sentry's redirects must come before.
+    let o = on(
+        &r,
+        &format!(
+            "uci set firewall.sentry_filter_kids=redirect && uci set firewall.sentry_filter_kids.name='sentry-filter-kids' \
+             && uci set firewall.sentry_filter_kids.src='lan' && uci set firewall.sentry_filter_kids.target='DNAT' \
+             && uci set firewall.mine=redirect && uci set firewall.mine.name='sentry-filter-{ta}' \
+             && uci set firewall.mine.src='lan' && uci set firewall.mine.src_dport='5353' && uci set firewall.mine.target='DNAT' \
+             && uci set firewall.intercept=redirect && uci set firewall.intercept.name='Intercept-DNS' \
+             && uci set firewall.intercept.src='lan' && uci set firewall.intercept.src_dport='53' \
+             && uci set firewall.intercept.target='DNAT' && uci commit firewall"
+        ),
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let before = sums(&r, &["firewall"]);
+    let both = Do::filter([ta.clone(), tb.clone()]).word();
+
+    // Devices sentry has no note of: nothing guessed, nothing changed.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("tick it on Security again")),
+        "{said:#?}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+
+    // What the screen notes when they are ticked.
+    let mut b = Blocks::load(&r.scope);
+    for (t, mac, label) in [(&ta, A, "a tablet"), (&tb, B, "a console")] {
+        b.device.insert(
+            t.clone(),
+            Dev {
+                mac: mac.into(),
+                label: label.into(),
+                zone: "lan".into(),
+                wifi: None,
+            },
+        );
+    }
+    b.save(&r.scope).unwrap();
+    // The container's dnsmasq doesn't run, and what it sends to port 53 outside goes
+    // through whatever this machine's own network does with DNS: the lookups are taken to
+    // hold (they are checked for real only from a real router, read-only).
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 24];
+
+    // The plan: reads only.
+    let mut shown = Vec::new();
+    secrun::show(&r, &Do::parse(&both).unwrap(), &mut |l| shown.push(l)).unwrap();
+    let text = shown.join("\n");
+    println!("{text}");
+    assert!(
+        text.contains("Family filter: on for a tablet and a console")
+            && text.contains("proven now: (test) taken to hold: CleanBrowsing Family answers")
+            && text.contains("Nothing has changed."),
+        "{text}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+    nothing_left(&r, r.cfg.guard.window);
+
+    // Both, through the guard: kept.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("open pornhub.com on it")),
+        "{said:#?}"
+    );
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "kept");
+    let shown = on(&r, "uci show firewall").stdout;
+    for (t, mac) in [(&ta, A), (&tb, B)] {
+        let w = family::Want {
+            tag: t.clone(),
+            mac: mac.into(),
+            zone: "lan".into(),
+        };
+        for l in family::device_lines(&w, "wan", family::service()).unwrap() {
+            let want = l.strip_prefix("uci set ").unwrap();
+            assert!(shown.lines().any(|x| x == want), "{want}:\n{shown}");
+        }
+    }
+    // sentry's redirects come before someone's own DNS intercept.
+    let at = |what: &str| shown.lines().position(|l| l == what).unwrap();
+    assert!(
+        at(&format!("firewall.sentry_filter_{ta}=redirect")) < at("firewall.intercept=redirect")
+    );
+    assert!(
+        at(&format!("firewall.sentry_filter_{tb}=redirect")) < at("firewall.intercept=redirect")
+    );
+    assert_eq!(on(&r, "uci changes firewall").stdout.trim(), "");
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    let found = family::found(&uci);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.iter().all(family::Found::whole));
+    let noted = Blocks::load(&r.scope);
+    assert!(noted.filter.contains_key(&ta) && noted.filter.contains_key(&tb));
+    // None of them is a door from the internet.
+    assert!(
+        !uci.forwards()
+            .iter()
+            .any(|f| f.name.starts_with("sentry-filter-"))
+    );
+    // Already so: nothing to do.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+
+    // One taken off: exactly its three sections go; the other's and the look-alikes stay.
+    let one = Do::filter([ta.clone()]).word();
+    let (code, said) = act(&r, &one);
+    assert_eq!(code, 0, "{said:#?}");
+    for s in ["", "_v6in", "_v6out"] {
+        assert_ne!(
+            on(&r, &format!("uci -q get firewall.sentry_filter_{tb}{s}")).code,
+            0
+        );
+        assert_eq!(
+            on(&r, &format!("uci -q get firewall.sentry_filter_{ta}{s}")).code,
+            0
+        );
+    }
+    assert_eq!(
+        on(
+            &r,
+            "uci get firewall.sentry_filter_kids.name; uci get firewall.mine.name; uci get firewall.intercept.name"
+        )
+        .stdout,
+        format!("sentry-filter-kids\nsentry-filter-{ta}\nIntercept-DNS\n")
+    );
+    let noted = Blocks::load(&r.scope);
+    assert!(noted.filter.contains_key(&ta) && !noted.filter.contains_key(&tb));
+
+    // A proof that fails once the change is made (the router's own lookups stop): sentry
+    // does nothing more, and the router takes it back byte for byte.
+    let before = sums(&r, &["firewall"]);
+    *secrun::LOOKUPS.lock().unwrap() = vec![true, true, false, false, false, false, false, false];
+    let (code, said) = act(&r, &both);
+    assert_ne!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("REVERTED")), "{said:#?}");
+    assert_eq!(sums(&r, &["firewall"]), before, "not byte for byte");
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "reverted");
+    let noted = Blocks::load(&r.scope);
+    assert!(
+        !noted.filter.contains_key(&tb),
+        "a change not kept isn't noted"
+    );
+    secrun::LOOKUPS.lock().unwrap().clear();
+}

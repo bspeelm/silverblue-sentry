@@ -4,7 +4,7 @@
 #   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
 #   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update,
 #   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only,
-#   live_firmware_upgrade
+#   live_firmware_upgrade, live_security_filter
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -12,6 +12,7 @@
 #   scripts/live-router.sh env <test>         the environment one test runs in
 #   scripts/live-router.sh sh [<command>]     a root shell (or one command) on it, over ssh
 #   scripts/live-router.sh down               remove what `up` made, nothing else
+#   (SENTRY_ROUTER_LABEL=<word> in front of each: a second router beside one already up)
 #
 # What it is: the official `openwrt/rootfs` userland (x86_64, the release below) under
 # podman with its own init: procd, ubus, netifd, logd, rpcd, uhttpd, odhcpd and dropbear
@@ -48,7 +49,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE=docker.io/openwrt/rootfs:x86_64-v25.12.5
-LABEL=sentry-router
+LABEL=${SENTRY_ROUTER_LABEL:-sentry-router} # another label: a second router beside the first
 NET=lab         # the network's name in the scratch network_config.yaml
 ALIAS=lab-router # what ssh connects to (the scratch ssh config's Host)
 
@@ -66,7 +67,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade live_security_filter"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1
