@@ -4,6 +4,7 @@
 //! that command.
 
 mod network;
+mod secaudit;
 mod server;
 #[cfg(test)]
 mod tests;
@@ -86,6 +87,12 @@ enum Command {
         /// JSON output (the default; accepted for compatibility).
         #[arg(long)]
         json: bool,
+    },
+    /// `audit security [--json] [--outside]`: the security audit across every target;
+    /// `audit security answers [<key> yes|no]`: what it asked you.
+    Audit {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// A server over ssh: `sentry server …` is `sentry-server …` (its own --help says what).
     Server {
@@ -197,6 +204,7 @@ fn main() -> ExitCode {
                 &collectors::Ctx::new(cfg),
             ))
         }
+        Some(Command::Audit { args }) => secaudit::main(&args),
         Some(Command::Status { short }) => {
             println!("{}", status::line(short));
             ExitCode::SUCCESS

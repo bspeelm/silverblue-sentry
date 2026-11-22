@@ -79,6 +79,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `sentry workflow list` · `lint [name]` · `abandon` | List workflows, validate them, or abandon the run in progress |
 | `sentry record [--interval 10s]` | Foreground metrics recorder for a spare terminal or tmux pane; Ctrl-C stops it |
 | `sentry status [--short]` | One line from state files only (workflow, due jobs, high findings); runs no collectors. `--short` prints nothing when there's nothing to say. |
+| `sentry audit security [--json] [--outside]` · `answers [<key> yes\|no]` | The security audit across this machine, every server and every network (below) |
 | `sentry collect <name>` | A collector as JSON: `system processes gpu disk disk-breakdown net ostree flatpak flatpak-updates podman units repos shell journal`. Exit 3 = the tool it needs isn't installed. |
 
 **Jobs:** `audit`, `update-check`, `update-apply`, `cleanup-flatpak`, `cleanup-podman`, `cleanup-ostree`, `cleanup-cache`. `--dry-run` shows the plan (what would run, what it would free) and changes nothing.
@@ -376,6 +377,24 @@ Read only, and only where it is installed: sentry installs nothing, registers no
 - **A router with `crowdsec-firewall-bouncer`**: a Status row, `crowdsec N blocked` (the elements of its nft sets, counted on the router), and the finding `net:crowdsec:bouncer`: switched on and not running (high), installed and never switched on, or running for over a day with empty sets (both low).
 
 Blocked and banned addresses never reach a report or Claude: only counts, scenario names and bouncer names leave the collectors.
+
+## Security audit
+
+`sentry audit security` reads this machine, every server and every network as one system and prints a short report in plain language: **Do these first**, **Worth doing**, **Fine**, and **Couldn't check / need your answer**. It follows what an attacker would try: getting in from the internet (each port the router forwards, matched with what answers on the server behind it), known holes (firmware, packages, the OS, tracked apps), logins (ssh passwords, Wi-Fi, sudo), moving around once inside (is the network split, is what the internet reaches kept apart, containers with too much control) and noticing and recovering (CrowdSec and where its bans are enforced, backups, logs).
+
+- It reads configuration and state. It never scans, probes or attacks anything, and gives no score.
+- A line appears only on evidence. What couldn't be read is listed as such, with what it would take.
+- What only you know (does that web app need a login? was a restore ever tested?) is asked once: `sentry audit security answers` lists the questions, `… answers <key> yes|no` remembers one with its date.
+- Reports are kept in `~/.config/sentry/system/security/` (the newest 24) and each is compared with the one before: new, fixed, worse.
+- What the internet can reach is inferred from the router's configuration. To have it confirmed from outside, give sentry a command of your own in `config.toml` and pass `--outside`. It gets your public address and the ports to try (the forwarded ones and a few management ports) and prints the open ones, one per line:
+
+```toml
+[audit]
+# from a machine elsewhere:
+outside = "ssh vps 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} $p && echo $p; done'"
+# or through a VPN's network namespace on this machine:
+# outside = "sudo ip netns exec vpn sh -c 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} $p && echo $p; done'"
+```
 
 ## Config
 
