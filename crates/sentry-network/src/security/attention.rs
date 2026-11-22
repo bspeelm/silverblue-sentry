@@ -48,7 +48,7 @@ impl Rank {
 /// | 1 | `Live` | happening now and shouldn't be: a live connection across sides kept apart, a connection from the internet with no listed door, refused logins or repeated wrong Wi-Fi passwords, a login from a device with no name, a device on a port ordinary devices rarely use, a device that joined within the last day and has no name |
 /// | 2 | `Hole` | a known hole with a fix: firmware, packages or an app with security fixes waiting or unsupported, a door or a firewall rule that lets the internet in unlisted |
 /// | 3 | `Login` | weak logins, admin pages without encryption, a door's certificate that lapsed or anyone could make (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
-/// | 4 | `Guard` | protection that is installed and not working: CrowdSec's blocker off, a blocklist that is stale or doesn't run, a service that should run |
+/// | 4 | `Guard` | protection that is installed and not working: CrowdSec switched off on the router, a blocklist that is stale or doesn't run, a service that should run |
 /// | 5 | `Structure` | how the network is laid out: everything on one network |
 /// | 6 | `Recovery` | what you'd need afterwards: no backup, a log lost on restart |
 /// | 7 | `Housekeeping` | naming long-standing devices, answering sentry's questions, and everything that is only a note |
@@ -107,7 +107,8 @@ impl Class {
             // (A certificate that lapsed or that anyone could make: posing as the server.)
             "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps"
             | "cert" => Class::Login,
-            "watch" | "dns-filter" | "auto-updates" => Class::Guard,
+            "watch" | "dns-filter" | "auto-updates" | "family" | "family-forced"
+            | "family-canaries" | "family-unforced" => Class::Guard,
             "flat" | "apart" => Class::Structure,
             "backup" | "logs" | "restore" => Class::Recovery,
             "unknown-devices" => Class::Housekeeping,
@@ -566,14 +567,7 @@ pub const EDGE: &str = "net:crowdsec:bouncer";
 /// The router has CrowdSec's firewall part and it isn't switched on: one sentence, wherever
 /// the page says it (the posture, the row, the finding).
 pub fn edge_off(server: bool) -> String {
-    format!(
-        "CrowdSec is installed on the router but switched off: {} aren't turned away there",
-        if server {
-            "attackers the server banned"
-        } else {
-            "known attackers"
-        }
-    )
+    sentry_core::secaudit::edge_off(server)
 }
 /// These only when they are high: the outside reaches something.
 const OTHER_HIGH: &[&str] = &["net:zone:", "net:listener:"];
@@ -635,19 +629,9 @@ pub fn raw(s: &State) -> Vec<Row> {
         let on = super::family::found(u);
         // It has stopped working: something forces lookups in front of it again, or nothing
         // forces them at all.
-        let forced: Vec<String> = s
-            .read
-            .counters
-            .map(|c| {
-                let mut z: Vec<String> = on.iter().map(|f| f.zone.clone()).collect();
-                z.sort();
-                z.dedup();
-                z.iter()
-                    .flat_map(|z| super::family::hijacked(c, z))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !on.is_empty() && !forced.is_empty() {
+        let trouble = super::family::trouble(u, s.read.counters);
+        use super::family::Trouble;
+        if trouble == Some(Trouble::Forced) {
             out.push(own(
                 "sec:filter:forced",
                 Rank::Now,
@@ -661,12 +645,7 @@ pub fn raw(s: &State) -> Vec<Row> {
                 Act::FilterRepair,
                 Subject::None,
             ));
-        } else if !on.is_empty()
-            && !super::family::dns_found(u).is_empty()
-            && super::family::canaries(u)
-                .iter()
-                .any(|n| !super::family::refused_by_config(u, n))
-        {
+        } else if trouble == Some(Trouble::Canaries) {
             out.push(own(
                 "sec:filter:canaries",
                 Rank::Now,
@@ -680,7 +659,7 @@ pub fn raw(s: &State) -> Vec<Row> {
                 Act::FilterRepair,
                 Subject::None,
             ));
-        } else if !on.is_empty() && unforced(u) {
+        } else if trouble == Some(Trouble::Unforced) {
             out.push(own(
                 "sec:filter:unforced",
                 Rank::Now,
@@ -1344,6 +1323,10 @@ fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
             "dns-filter" => "sec:blocklist",
             "wan-input" => "finding:net:zone:",
             "watch" => "finding:net:crowdsec:",
+            // The family filter stopped working: the page's own row says the same.
+            "family-forced" => "sec:filter:forced",
+            "family-canaries" => "sec:filter:canaries",
+            "family-unforced" => "sec:filter:unforced",
             // A door the page lists as one you haven't listed: `sec:door:<net>:<proto>:<port>`.
             "door" => {
                 let mut end = i.id.rsplit(':');
@@ -1415,6 +1398,8 @@ pub fn audit_rows(items: &[sentry_core::secaudit::Item], me: &str, s: &State, ro
             let read = match what {
                 "unknown-devices" => s.read.clients.is_some(),
                 "dns-filter" => s.read.dns.is_some(),
+                "family-forced" => s.read.uci.is_some() && s.read.counters.is_some(),
+                "family-canaries" | "family-unforced" => s.read.uci.is_some(),
                 _ => false,
             };
             // (A door you listed is still the audit's to judge: what answers behind it.)
@@ -1812,13 +1797,6 @@ pub fn filtered_label(b: &Blocks, clients: Option<&[Client]>, tag: &str, mac: &s
         .unwrap_or_else(|| mac.to_string())
 }
 
-/// sentry took the forcing of lookups over and its rules for it are gone, while the DNS
-/// proxy's own is off: nobody's lookups are forced through the router.
-fn unforced(u: &crate::collect::uci::Uci) -> bool {
-    super::family::proxy_forces(u).is_some_and(|(_, on)| !on)
-        && super::family::dns_found(u).is_empty()
-}
-
 /// The family filter's line of the cover: "Family filter: on 2 devices (a, b)".
 fn say_family(
     s: &State,
@@ -1861,7 +1839,7 @@ fn say_family(
         }
     };
     let proxy_only = blocked.iter().all(|b| b == super::family::PROXY);
-    let unforced = !names.is_empty() && unforced(u);
+    let unforced = !names.is_empty() && super::family::unforced(u);
     let (state, text) = match (names.len(), blocked.is_empty()) {
         _ if unforced => (
             Cover::Off,

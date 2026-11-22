@@ -1892,7 +1892,23 @@ fn a_family_filter_that_stopped_working_is_said_and_put_right() {
         line(&s, "The family filter has stopped working").contains("act now"),
         "{s}"
     );
-    on_row(&mut a, "The family filter has stopped working");
+    // The security audit says the same: one row, the page's, with the audit's why.
+    let me = crate::tui::id_of(NAME);
+    a.slot_mut().shared.sec = vec![audit_item(
+        &format!("sec:family-forced:{me}"),
+        sentry_core::secaudit::State::DoFirst,
+        "The family filter has stopped working: the router's own forced lookups are back",
+        &[&me],
+    )];
+    let s = list(&mut a, 158, 60);
+    assert_eq!(
+        s.matches("The family filter has stopped working").count(),
+        1,
+        "{s}"
+    );
+    let s = on_row(&mut a, "The family filter has stopped working");
+    assert!(s.contains("The audit's why for family-forced."), "{s}");
+    assert!(bar(&s).contains("Enter  put it right"), "{}", bar(&s));
     key(&mut a, KeyCode::Enter);
     assert_eq!(started(&a).1, format!("filter:{tp}"));
     runs_cleared();

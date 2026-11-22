@@ -31,7 +31,7 @@ use crate::maint::tasks::{Again, Source, Task};
 use crate::paths;
 
 pub use probe::{Answered, Issuer, Tls, Web};
-pub use rules::{EDGE_FIX, evaluate};
+pub use rules::{EDGE_FIX, edge_off, evaluate};
 
 // ---- what a target says
 
@@ -261,6 +261,8 @@ pub struct Router {
     pub crossings: Option<Vec<Crossing>>,
     pub devices: Option<Devices>,
     pub dns_filter: Option<DnsFilter>,
+    /// sentry's family filter on the router (None: its firewall config wasn't read).
+    pub family: Option<Family>,
     /// The log is kept somewhere that survives a reboot.
     pub log_kept: Option<bool>,
     pub outside: Option<Outside>,
@@ -364,6 +366,27 @@ pub struct Devices {
 pub struct DnsFilter {
     pub on: bool,
     pub age_days: Option<i64>,
+}
+
+/// sentry's family filter on a router: on how many devices (never which), and whether it
+/// has stopped working.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Family {
+    pub devices: usize,
+    pub trouble: Option<FamilyTrouble>,
+}
+
+/// How a family filter stopped working (the network's `family::Trouble`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FamilyTrouble {
+    /// Another program's forced lookups are in front of it again.
+    Forced,
+    /// A browser's own encrypted lookups aren't kept off any more.
+    Canaries,
+    /// Nobody's lookups are forced through the router.
+    Unforced,
 }
 
 /// What the user's own outside check said (`[audit] outside`).

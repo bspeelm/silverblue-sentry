@@ -7,8 +7,8 @@ use jiff::civil::Date;
 
 use super::rank::{EXPOSED, FLAT, OUTDATED, RECOVERY, WEAK_LOGIN};
 use super::{
-    Answers, Ctr, Eol, Forward, Group, Issuer, Item, Kind, Life, Router, Software, State,
-    TargetFacts, Web,
+    Answers, Ctr, Eol, Family, FamilyTrouble, Forward, Group, Issuer, Item, Kind, Life, Router,
+    Software, State, TargetFacts, Web,
 };
 use Group::{GettingIn, KnownHoles, Logins, MovingAround, Recovering};
 use State::{Ask, CouldNotCheck, DoFirst, Fine, Worth};
@@ -135,6 +135,20 @@ struct Doors {
 
 /// What finishing a router's bouncer takes, as a session is briefed (one across the server
 /// and the router) and as the report says it.
+/// CrowdSec's bouncer installed on the router and switched off, in the one sentence the
+/// audit, the network's Security page and its finding all say. `server`: a server's
+/// CrowdSec bans attackers the router could turn away.
+pub fn edge_off(server: bool) -> String {
+    format!(
+        "CrowdSec is installed on the router but switched off: {} aren't turned away there",
+        if server {
+            "attackers the server banned"
+        } else {
+            "known attackers"
+        }
+    )
+}
+
 pub const EDGE_FIX: &str = "Finish connecting the router's CrowdSec bouncer to the server's \
 CrowdSec, in one plan across both: on the server, make CrowdSec's local API reachable from the \
 router and from nothing else (it listens on loopback only: have it listen on the address the \
@@ -707,6 +721,68 @@ fn outside(n: &TargetFacts, r: &Router, out: &mut Out) {
             ev,
         );
     }
+}
+
+/// sentry's family filter: whether it is on and for how many devices; when it has
+/// stopped working, one item of its own per way (the Security page's rows say the same).
+fn family(f: &Family, id: &dyn Fn(&str) -> String, t: &[&str], out: &mut Out) {
+    let devices = plural(f.devices, "device", "devices");
+    let posture = if f.devices == 0 {
+        fine("No device is in the family filter (a choice: the network's Security page offers it)")
+    } else if f.trouble.is_none() {
+        fine(format!(
+            "The family filter (CleanBrowsing Family) is on for {devices}"
+        ))
+    } else {
+        fine(format!(
+            "The family filter is set up for {devices}, but has stopped working (below)"
+        ))
+    };
+    out.add(id("family"), Recovering, Fine, 0, posture, t, vec![]);
+    let Some(trouble) = f.trouble else {
+        return;
+    };
+    let (what, s) = match trouble {
+        FamilyTrouble::Forced => (
+            "family-forced",
+            says(
+                "The family filter has stopped working: the router's own forced lookups are \
+                 back in front of it",
+                "The filtered devices' lookups go to the router like everyone's, so nothing \
+                 is filtered for them.",
+                "Put the filter back in front (the Security page's row does it, its plan first).",
+            ),
+        ),
+        FamilyTrouble::Canaries => (
+            "family-canaries",
+            says(
+                "A browser's own encrypted lookups are no longer switched off on this network",
+                "Firefox's own encrypted lookups and iCloud Private Relay can switch on by \
+                 themselves and skip the family filter and the router's blocklist.",
+                "Put sentry's entries for those names back (the Security page's row does it, \
+                 its plan first).",
+            ),
+        ),
+        FamilyTrouble::Unforced => (
+            "family-unforced",
+            says(
+                "Lookups aren't forced through the router for anyone",
+                "Any device can ask another service and skip the family filter and the \
+                 router's blocklist.",
+                "Put sentry's rules for forcing lookups back (the Security page's row does it, \
+                 its plan first).",
+            ),
+        ),
+    };
+    out.add(
+        id(what),
+        Recovering,
+        DoFirst,
+        0,
+        s,
+        t,
+        vec![format!("the filter is set up for {devices}")],
+    );
 }
 
 fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &mut Out) {
@@ -1386,6 +1462,9 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
             ),
         };
         out.add(id("dns-filter"), Recovering, state, 0, s, &t, vec![]);
+    }
+    if let Some(f) = &r.family {
+        family(f, &id, &t, out);
     }
     if r.log_kept == Some(false) {
         out.add(
@@ -2452,10 +2531,7 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
         (
             Worth,
             says(
-                format!(
-                    "CrowdSec's blocker is installed on the router but not switched on: the \
-                     blocklist of {names} isn't enforced at the edge yet"
-                ),
+                edge_off(true),
                 "A banned address can still try every other door and device the router lets \
                  it reach.",
                 EDGE_FIX,

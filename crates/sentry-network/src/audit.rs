@@ -925,7 +925,7 @@ fn crowdsec(b: &collect::crowdsec::Bouncer, running: Option<bool>) -> Option<Fin
                 id,
                 Sev::Low,
                 "services",
-                "CrowdSec is installed on the router but switched off".into(),
+                sentry_core::secaudit::edge_off(false),
             )
             .explain(
                 "The package is on the router; `option enabled` in /etc/config/crowdsec isn't 1.",

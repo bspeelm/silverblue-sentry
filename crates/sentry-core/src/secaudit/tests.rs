@@ -102,6 +102,7 @@ fn net() -> TargetFacts {
                 on: true,
                 age_days: Some(1),
             }),
+            family: None,
             log_kept: Some(true),
             outside: None,
         }),
@@ -545,6 +546,50 @@ fn each_rule_fires_on_its_evidence_only() {
             State::Worth,
         ),
         (
+            "a family filter on two devices",
+            |n, _| {
+                n.router.as_mut().unwrap().family = Some(Family {
+                    devices: 2,
+                    trouble: None,
+                })
+            },
+            "sec:family:net:home",
+            State::Fine,
+        ),
+        (
+            "a family filter with forced lookups in front of it",
+            |n, _| {
+                n.router.as_mut().unwrap().family = Some(Family {
+                    devices: 2,
+                    trouble: Some(FamilyTrouble::Forced),
+                })
+            },
+            "sec:family-forced:net:home",
+            State::DoFirst,
+        ),
+        (
+            "a family filter whose browser names aren't refused",
+            |n, _| {
+                n.router.as_mut().unwrap().family = Some(Family {
+                    devices: 1,
+                    trouble: Some(FamilyTrouble::Canaries),
+                })
+            },
+            "sec:family-canaries:net:home",
+            State::DoFirst,
+        ),
+        (
+            "a family filter with nobody's lookups forced",
+            |n, _| {
+                n.router.as_mut().unwrap().family = Some(Family {
+                    devices: 1,
+                    trouble: Some(FamilyTrouble::Unforced),
+                })
+            },
+            "sec:family-unforced:net:home",
+            State::DoFirst,
+        ),
+        (
             "a log kept in memory",
             |n, _| n.router.as_mut().unwrap().log_kept = Some(false),
             "sec:logs:net:home",
@@ -917,12 +962,12 @@ fn a_flat_home_network_is_said_only_on_evidence() {
     });
     let items = eval(n, srv(), &answered());
     let w = items.iter().find(|i| i.id == "sec:watch").unwrap();
-    assert!(
-        w.title.starts_with(
-            "CrowdSec's blocker is installed on the router but not switched on: the blocklist of"
-        ) && w.title.ends_with("isn't enforced at the edge yet"),
-        "{}",
-        w.title
+    // (The sentence the network's Security page and its finding say too.)
+    assert_eq!(w.title, edge_off(true));
+    assert_eq!(
+        w.title,
+        "CrowdSec is installed on the router but switched off: attackers the server banned \
+         aren't turned away there"
     );
     assert!(w.targets.len() == 2 && w.brief.contains("captured as a secret"));
 
@@ -1655,4 +1700,54 @@ fn the_report_reads_in_order() {
             assert!(sentences <= 1, "{}: {t}", i.id);
         }
     }
+}
+
+/// The family filter is said by count, never by device, and its trouble is an item of its
+/// own beside the line that says it is set up.
+#[test]
+fn the_family_filter_is_said_by_count() {
+    let with = |devices, trouble| {
+        let mut n = net();
+        n.router.as_mut().unwrap().family = Some(Family { devices, trouble });
+        eval(n, srv(), &answered())
+    };
+    let title = |items: &[Item], id: &str| {
+        items
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| (i.state, i.title.clone()))
+    };
+    let none = with(0, None);
+    assert_eq!(
+        title(&none, "sec:family:net:home").map(|t| t.0),
+        Some(State::Fine)
+    );
+    assert!(
+        title(&none, "sec:family:net:home")
+            .unwrap()
+            .1
+            .contains("No device")
+    );
+    let three = with(3, None);
+    assert!(
+        title(&three, "sec:family:net:home")
+            .unwrap()
+            .1
+            .contains("on for 3 devices")
+    );
+    assert!(!three.iter().any(|i| i.id.starts_with("sec:family-")));
+    let broken = with(3, Some(FamilyTrouble::Forced));
+    assert!(
+        title(&broken, "sec:family:net:home")
+            .unwrap()
+            .1
+            .contains("has stopped working")
+    );
+    assert_eq!(
+        title(&broken, "sec:family-forced:net:home").map(|t| t.0),
+        Some(State::DoFirst)
+    );
+    // Not read: nothing said either way.
+    let unread = eval(net(), srv(), &answered());
+    assert!(!unread.iter().any(|i| i.id.contains("family")));
 }

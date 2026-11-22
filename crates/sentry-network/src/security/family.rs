@@ -243,6 +243,47 @@ pub fn found(uci: &Uci) -> Vec<Found> {
     out
 }
 
+/// How a family filter on the router has stopped working, worst first; one rule for the
+/// Security page's rows and the security audit's item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// Another program's forced lookups are in front of it again (needs the counters).
+    Forced,
+    /// The names that keep a browser's own encrypted lookups off aren't refused any more.
+    Canaries,
+    /// sentry took the forcing over, its rules for it are gone and the proxy's is off:
+    /// nobody's lookups are forced through the router.
+    Unforced,
+}
+
+/// Whether a filter that is on (`found`) has stopped working, and how. None: no filter,
+/// or nothing wrong as far as was read (`counters` None: the forced lookups not judged).
+pub fn trouble(u: &Uci, counters: Option<&Counters>) -> Option<Trouble> {
+    let on = found(u);
+    if on.is_empty() {
+        return None;
+    }
+    let mut zones: Vec<&str> = on.iter().map(|f| f.zone.as_str()).collect();
+    zones.sort();
+    zones.dedup();
+    if counters.is_some_and(|c| zones.iter().any(|z| !hijacked(c, z).is_empty())) {
+        return Some(Trouble::Forced);
+    }
+    if !dns_found(u).is_empty() && canaries(u).iter().any(|n| !refused_by_config(u, n)) {
+        return Some(Trouble::Canaries);
+    }
+    if unforced(u) {
+        return Some(Trouble::Unforced);
+    }
+    None
+}
+
+/// sentry took the forcing of lookups over and its rules for it are gone, while the DNS
+/// proxy's own is off: nobody's lookups are forced through the router.
+pub fn unforced(u: &Uci) -> bool {
+    proxy_forces(u).is_some_and(|(_, on)| !on) && dns_found(u).is_empty()
+}
+
 /// What already sends a zone's DNS somewhere before any section of the firewall config
 /// could: the packages that hand fw4 a DNS redirect of their own (`ubus:<package>[…]`),
 /// for this zone. Empty: nothing comes ahead of sentry's redirect.
