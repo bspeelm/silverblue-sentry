@@ -404,7 +404,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - The Clients screen marks filtered devices; `sentry-network security` lists them, and the latest security audit's rows for the network.
 - Wording on Security: a long sentence takes its row's second line instead of being cut (the detail and key bar say what Enter does); a fix with Claude is named from the fix's own words where it fits; CrowdSec switched off on the router is said plainly.
 
-## A49. The family filter takes over the DNS proxy's forced lookups (2026-11)
+## A52. The family filter takes over the DNS proxy's forced lookups (2026-11)
 - Where the router's DNS proxy (https-dns-proxy, `force_dns`) forces every lookup to the router, the first filter's plan also takes that over, in the same single change: the proxy's setting off, and sentry's own firewall sections doing exactly what the proxy's rules did (port 53 to the router, 853 refused, for the same zones), after the filtered devices' rules. Nothing changes for the other devices. The proxy and the firewall are reloaded, in that order.
 - The guard snapshots, commits, reloads and restores the proxy's config for this action only; Claude's own guarded lines keep the old list.
 - Once the change is made, before it is kept, the firewall as loaded is read back: each filtered device before the catch-all, no other program's DNS redirect in front, 853 still refused. Any failure: the router restores both configs by itself.
