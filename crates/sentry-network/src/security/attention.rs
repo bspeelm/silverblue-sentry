@@ -626,11 +626,13 @@ pub fn attention(s: &State) -> Vec<Row> {
                     "sec:wifi:mfp",
                     Rank::Note,
                     format!(
-                        "{stations} device(s) on the Wi-Fi don't use the protection against \
-                         being knocked off by a stranger"
+                        "{} on the Wi-Fi {} use the protection against being knocked off \
+                         by a stranger",
+                        plural(*stations, "device", "devices"),
+                        if *stations == 1 { "doesn't" } else { "don't" }
                     ),
-                    "The Wi-Fi offers it (management frame protection) and these devices \
-                     didn't take it: usually older ones. Nothing to fix on the router.",
+                    "The Wi-Fi offers it (management frame protection) and not every device \
+                     took it: usually older ones. Nothing to fix on the router.",
                     Act::Evidence,
                     Subject::Wifi,
                 );
@@ -1345,7 +1347,7 @@ mod tests {
             (
                 Rank::Note,
                 true,
-                "1 device(s) on the Wi-Fi don't use the protection against being knocked off by a stranger",
+                "1 device on the Wi-Fi doesn't use the protection against being knocked off by a stranger",
                 "the numbers",
             ),
             (
@@ -1788,6 +1790,40 @@ mod tests {
         );
         w.bouncer.as_mut().unwrap().age_s = None;
         assert_eq!(w.cover("edge").unwrap().0, Cover::Off);
+    }
+
+    /// `sentry-network security`: the same list and cover, as text.
+    #[test]
+    fn the_list_and_the_cover_as_text() {
+        let w = World::fixture();
+        let said = crate::security::gather::Said {
+            rows: w.rows(),
+            posture: w.with(posture),
+        };
+        let text = crate::cli::security_text("home", &said, &[]).join("\n");
+        for want in [
+            "home · security\n\nNeeds attention\n  look     Someone tried to log in to the router 3 times",
+            "           A refused login is the lock holding",
+            "           Enter on Security (4): new password",
+            "\nHow you're covered\n  ok    2 doors are open from the internet",
+            "  ok    Logging in to the router takes a key, and its admin page is encrypted",
+            "What a tool like this can't see: what is inside the traffic",
+        ] {
+            assert!(text.contains(want), "{want}:\n{text}");
+        }
+        // Nothing but what can wait: it says so, and still lists the cover.
+        let calm = crate::security::gather::Said {
+            rows: said.rows.into_iter().filter(|r| r.can_wait).collect(),
+            posture: said.posture,
+        };
+        let text = crate::cli::security_text("home", &calm, &[("log".into(), "no logread".into())])
+            .join("\n");
+        assert!(
+            text.contains("Nothing needs you.\n  note ")
+                && text.contains("How you're covered")
+                && text.contains("(not read: log: no logread)"),
+            "{text}"
+        );
     }
 
     #[test]

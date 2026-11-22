@@ -387,6 +387,15 @@ fn an_unknown_device_is_named_blocked_or_paused() {
     );
     let step = &run.wf.steps[1];
     assert!(step.risky, "auto mode never confirms a risky step");
+    // Auto on: it still waits for you.
+    ctrl(&mut a, 'a');
+    let run = wf(&a).unwrap();
+    assert!(
+        matches!(run.next, Next::Confirm(1)) && run.live.is_none(),
+        "auto answered it: {:?}",
+        run.next
+    );
+    ctrl(&mut a, 'a');
     // A second action while one runs: said, not started.
     on_row(&mut a, "log in over ssh with a password");
     key(&mut a, KeyCode::Enter);
@@ -394,6 +403,21 @@ fn an_unknown_device_is_named_blocked_or_paused() {
         a.toast_for_test(),
         Some("a workflow is already in progress (0 shows it): one at a time")
     );
+    // Enter on the run's screen is the approval: the second step runs, and the run ends.
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(1), "{:?}", run.next);
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(
+        s.contains(&format!(
+            "$ sentry-network security apply block:{tag}:internet"
+        )),
+        "{s}"
+    );
+    a.run_step_exit_for_test(0);
+    assert!(wf(&a).is_none_or(|r| r.done()), "the run ended");
 
     // 3, on a fresh window: from everything.
     runs_cleared();

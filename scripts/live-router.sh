@@ -3,7 +3,7 @@
 #   live_router_policy, live_guard_keeps, live_guard_reverts, live_guard_wifi_asks,
 #   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
 #   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update,
-#   live_router_security
+#   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -53,7 +53,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1

@@ -770,6 +770,10 @@ impl Target for NetworkTarget {
                     }
                     self.screens.maint.sel = maint::row_key(&self.view(sh, cx));
                 }
+                // Security's list: a key may have changed it (`o`, a row dismissed).
+                if cx.screen == ScreenId::Security {
+                    self.clamp(sh, cx);
+                }
             }
             Settle::Lists => self.clamp(sh, cx),
             Settle::Filter | Settle::FilterCleared => self.screens.reset_cursor(cx.screen),

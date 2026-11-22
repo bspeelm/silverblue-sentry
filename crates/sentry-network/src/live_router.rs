@@ -1553,3 +1553,322 @@ fn live_router_security() {
         found.iter().map(|x| &x.id).collect::<Vec<_>>()
     );
 }
+
+// ── What Enter on the Security screen does, for real ───────────────────────────────────
+//
+// The container may not load a firewall (`nft`, `fw4 reload`: not permitted), so the
+// firewall actions are carried out with nothing reloaded (`run::NO_FIREWALL_RELOAD`):
+// proven here is everything up to and including the committed config and the guard
+// around it (snapshot, armed revert, confirmed twice, kept or taken back). That fw4
+// makes the rule it is meant to, and that a device is then really refused, is not.
+
+use crate::security::actions::Do;
+use crate::security::blocks::{self, Blocks, Dev, Note, Reach};
+use crate::security::run as secrun;
+
+/// A Security action, as the workflow's second step runs it.
+fn act(r: &Router, word: &str) -> (u8, Vec<String>) {
+    let mut said = Vec::new();
+    let code = secrun::apply(r, &Do::parse(word).unwrap(), &mut |l| {
+        println!("  {l}");
+        said.push(l);
+    });
+    println!("→ {word}: exit {code}");
+    (code, said)
+}
+
+fn no_firewall_reload() {
+    secrun::NO_FIREWALL_RELOAD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Block a device by MAC through the guard, and unblock it: sentry's rule and only it.
+#[test]
+#[ignore]
+fn live_security_block() {
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    const MAC: &str = "02:00:5e:00:53:44";
+    let tag = blocks::tag(&r.name, MAC).expect("a tag (the network's salt)");
+    let sec = format!("sentry_block_{tag}");
+    // Rules of someone else's that look like sentry's: a section named like one with
+    // another name, sentry's name on a section that isn't sentry's, a tag that isn't one.
+    let o = on(
+        &r,
+        &format!(
+            "uci set firewall.sentry_block_kids=rule && uci set firewall.sentry_block_kids.name='sentry-block-kids' \
+             && uci set firewall.sentry_block_kids.src='lan' && uci set firewall.sentry_block_kids.target='REJECT' \
+             && uci set firewall.mine=rule && uci set firewall.mine.name='sentry-block-{tag}' \
+             && uci set firewall.mine.src='lan' && uci set firewall.mine.target='ACCEPT' \
+             && uci commit firewall"
+        ),
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let before = sums(&r, &["firewall"]);
+
+    // A tag sentry has no note of: nothing is guessed, nothing changes.
+    let word = format!("block:{tag}:internet");
+    let (code, said) = act(&r, &word);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("pick it on Security again")),
+        "{said:#?}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+
+    // What the screen notes when the device is picked.
+    let mut b = Blocks::load(&r.scope);
+    b.device.insert(
+        tag.clone(),
+        Dev {
+            mac: MAC.into(),
+            label: "a tablet".into(),
+            zone: "lan".into(),
+            wifi: None,
+        },
+    );
+    b.block.insert(
+        tag.clone(),
+        Note {
+            since: 1,
+            until: None,
+            reach: Reach::Internet,
+            why: "live test".into(),
+        },
+    );
+    b.save(&r.scope).unwrap();
+
+    // The first step: the plan and the guard's preview. It only reads.
+    let mut shown = Vec::new();
+    secrun::show(&r, &Do::parse(&word).unwrap(), &mut |l| shown.push(l)).unwrap();
+    let text = shown.join("\n");
+    println!("{text}");
+    assert!(
+        text.contains("Block a tablet from the internet")
+            && text.contains(&format!("uci set firewall.{sec}.src_mac='{MAC}'"))
+            && text.contains("Nothing has changed."),
+        "{text}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+    nothing_left(&r, r.cfg.guard.window);
+
+    // The second: through the guard, kept.
+    let (code, said) = act(&r, &word);
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("armed:")), "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("confirmed on a new connection, twice")),
+        "{said:#?}"
+    );
+    assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "kept");
+    let rule = on(&r, &format!("uci show firewall.{sec}")).stdout;
+    for want in [
+        format!("firewall.{sec}=rule"),
+        format!("firewall.{sec}.name='sentry-block-{tag}'"),
+        format!("firewall.{sec}.src='lan'"),
+        format!("firewall.{sec}.src_mac='{MAC}'"),
+        format!("firewall.{sec}.dest='wan'"),
+        format!("firewall.{sec}.target='REJECT'"),
+    ] {
+        assert!(rule.contains(&want), "{want}:\n{rule}");
+    }
+    assert_eq!(on(&r, "uci changes firewall").stdout.trim(), "");
+    // As the screen reads it back: one block, this device's.
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    let found = blocks::found(&uci);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].tag.as_str(), found[0].mac.as_str(), found[0].reach),
+        (tag.as_str(), MAC, Reach::Internet)
+    );
+    // Blocked already: said, nothing more is staged.
+    let (code, said) = act(&r, &word);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("already blocked")),
+        "{said:#?}"
+    );
+
+    // Unblock: exactly sentry's section goes; the look-alikes stay as they were.
+    let (code, said) = act(&r, &format!("unblock:{tag}"));
+    assert_eq!(code, 0, "{said:#?}");
+    assert_ne!(on(&r, &format!("uci -q get firewall.{sec}")).code, 0);
+    assert_eq!(
+        on(
+            &r,
+            "uci get firewall.sentry_block_kids.name; uci get firewall.mine.name; uci get firewall.mine.target"
+        )
+        .stdout,
+        format!("sentry-block-kids\nsentry-block-{tag}\nACCEPT\n")
+    );
+    assert_eq!(
+        sums(&r, &["firewall"]),
+        before,
+        "as before the block, byte for byte"
+    );
+    assert!(!Blocks::load(&r.scope).block.contains_key(&tag));
+    nothing_left(&r, r.cfg.guard.window);
+    // Nothing of sentry's left to remove: said.
+    let (code, said) = act(&r, &format!("unblock:{tag}"));
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("nothing to unblock")),
+        "{said:#?}"
+    );
+}
+
+/// Switch a port forward off and on again through the guard; and a change whose own
+/// check fails is taken back by the router, byte for byte.
+#[test]
+#[ignore]
+fn live_security_forward() {
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    let before = sums(&r, &["firewall"]);
+    // The config expects this forward: the guard is told the change means to close it.
+    let (code, said) = act(&r, "forward-off:web_https");
+    assert_eq!(code, 0, "{said:#?}");
+    assert_eq!(
+        on(&r, "uci get firewall.web_https.enabled").stdout.trim(),
+        "0"
+    );
+    assert_ne!(sums(&r, &["firewall"]), before);
+    let (code, said) = act(&r, "forward-off:web_https");
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("already switched off")),
+        "{said:#?}"
+    );
+    // On again, from the same place.
+    let (code, said) = act(&r, "forward-on:web_https");
+    assert_eq!(code, 0, "{said:#?}");
+    assert_eq!(
+        on(&r, "uci get firewall.web_https.enabled").stdout.trim(),
+        "1"
+    );
+    nothing_left(&r, r.cfg.guard.window);
+
+    // The same change with a check that never holds (as a proof failing after the
+    // change would): sentry does nothing more, and the router takes it back.
+    let before = sums(&r, &["firewall"]);
+    let c = Change::parse(
+        "firewall",
+        "uci set firewall.web_https.enabled='0'",
+        "",
+        false,
+    )
+    .unwrap();
+    let closing = vec!["tcp 443 → 192.0.2.10".to_string()];
+    let broken = || Err("deliberately broken".to_string());
+    let mut said = Vec::new();
+    let o = guard::run_also(
+        &r,
+        &c,
+        r.cfg.guard.window,
+        &guard::Also {
+            check: Some(&broken),
+            closing: &closing,
+        },
+        &mut |l| {
+            println!("  {l}");
+            said.push(l);
+        },
+    );
+    let Outcome::Reverted(why) = &o else {
+        panic!("{o:?}: {said:#?}")
+    };
+    assert!(why.contains("deliberately broken"), "{why}");
+    assert_eq!(sums(&r, &["firewall"]), before, "not byte for byte");
+    assert_eq!(
+        on(&r, "uci get firewall.web_https.enabled").stdout.trim(),
+        "1"
+    );
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "reverted");
+    // Without being told, the guard holds a forward the config expects against a change
+    // that closes it: that is what `closing` is for.
+    let expected = guard::expected_forwards(&r.cfg);
+    assert!(expected.contains(&closing[0]), "{expected:?}");
+}
+
+/// ssh with keys only: nothing changes unless a key login is proven on a new connection
+/// first; then both options go off through the guard, and a new login still works.
+#[test]
+#[ignore]
+fn live_security_ssh_keys_only() {
+    let Some(r) = router() else { return };
+    // As a router is out of the box: passwords allowed.
+    let o = on(
+        &r,
+        "uci set dropbear.main.PasswordAuth='on' && uci set dropbear.main.RootPasswordAuth='on' && uci commit dropbear",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let before = sums(&r, &["dropbear"]);
+
+    // The negative: the router loses its key file while the shared connection is still
+    // up. Everything read over that connection still answers; a NEW login can't get in,
+    // so the proof fails, and nothing is changed.
+    let shared = |script: &str| r.sh(script).timeout(Some(Duration::from_secs(20))).run();
+    let off =
+        shared("mv /etc/dropbear/authorized_keys /etc/dropbear/authorized_keys.off && echo moved")
+            .unwrap();
+    assert!(
+        off.stdout.contains("moved"),
+        "{} {}",
+        off.stdout,
+        off.stderr
+    );
+    let (code, said) = act(&r, "ssh-keys-only");
+    // (Put the key back first, over the connection that is still open, whatever happened.)
+    let back =
+        shared("mv /etc/dropbear/authorized_keys.off /etc/dropbear/authorized_keys && echo back")
+            .unwrap();
+    assert!(
+        back.stdout.contains("back"),
+        "{} {}",
+        back.stdout,
+        back.stderr
+    );
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.starts_with(
+            "STOPPED, nothing was changed: a new connection with a key didn't get in"
+        )),
+        "{said:#?}"
+    );
+    assert!(!said.iter().any(|l| l.starts_with("armed:")), "{said:#?}");
+    assert_eq!(sums(&r, &["dropbear"]), before, "nothing was changed");
+    nothing_left(&r, r.cfg.guard.window);
+
+    // The positive: proven, changed through the guard (which reloads dropbear), proven
+    // again before it is kept.
+    let (code, said) = act(&r, "ssh-keys-only");
+    assert_eq!(code, 0, "{said:#?}");
+    let at = |what: &str| said.iter().position(|l| l.starts_with(what));
+    let (proof, armed, kept) = (
+        at("proven: a new connection logged in with a key"),
+        at("armed:"),
+        at("KEPT"),
+    );
+    assert!(
+        proof.is_some() && proof < armed && armed < kept,
+        "proven before anything is armed: {said:#?}"
+    );
+    assert_eq!(
+        on(
+            &r,
+            "uci get dropbear.main.PasswordAuth; uci get dropbear.main.RootPasswordAuth"
+        )
+        .stdout,
+        "off\noff\n"
+    );
+    assert_eq!(on(&r, "uci changes dropbear").stdout.trim(), "");
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "kept");
+    // Already so: nothing to do.
+    let (code, said) = act(&r, "ssh-keys-only");
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(said.iter().any(|l| l.contains("already off")), "{said:#?}");
+}
