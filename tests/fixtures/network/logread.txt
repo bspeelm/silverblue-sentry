@@ -1,0 +1,40 @@
+@@me
+192.0.2.11
+@@now
+Mon Oct 26 12:00:00 2026
+@@log
+Mon Oct 26 09:10:00 2026 daemon.info dnsmasq-dhcp[1]: DHCPREQUEST(br-lan) 192.0.2.10 00:00:5e:00:53:10
+Mon Oct 26 09:10:00 2026 daemon.info dnsmasq-dhcp[1]: DHCPACK(br-lan) 192.0.2.10 00:00:5e:00:53:10 nas
+Mon Oct 26 09:14:02 2026 daemon.info hostapd: phy1-ap0: STA 02:00:5e:00:53:20 IEEE 802.11: authenticated
+Mon Oct 26 09:14:02 2026 daemon.info hostapd: phy1-ap0: STA 02:00:5e:00:53:20 IEEE 802.11: associated (aid 1)
+Mon Oct 26 09:14:02 2026 daemon.notice hostapd: phy1-ap0: AP-STA-CONNECTED 02:00:5e:00:53:20 auth_alg=sae
+Mon Oct 26 09:14:02 2026 daemon.info hostapd: phy1-ap0: STA 02:00:5e:00:53:20 WPA: pairwise key handshake completed (RSN)
+Mon Oct 26 09:14:02 2026 daemon.notice hostapd: phy1-ap0: EAPOL-4WAY-HS-COMPLETED 02:00:5e:00:53:20
+Mon Oct 26 09:20:11 2026 authpriv.info dropbear[2301]: Child connection from 192.0.2.11:41562
+Mon Oct 26 09:20:11 2026 authpriv.notice dropbear[2301]: Pubkey auth succeeded for 'root' with ssh-ed25519 key SHA256:EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE000 from 192.0.2.11:41562
+Mon Oct 26 09:20:29 2026 authpriv.info dropbear[2301]: Exit (root) from <192.0.2.11:41562>: Disconnect received
+Mon Oct 26 09:31:40 2026 daemon.info hostapd: phy0-ap0: STA 02:00:5e:00:53:21 IEEE 802.11: authenticated
+Mon Oct 26 09:31:40 2026 daemon.info hostapd: phy0-ap0: STA 02:00:5e:00:53:21 IEEE 802.11: associated (aid 1)
+Mon Oct 26 09:31:40 2026 daemon.notice hostapd: phy0-ap0: AP-STA-CONNECTED 02:00:5e:00:53:21 auth_alg=open
+Mon Oct 26 09:40:05 2026 kern.info kernel: [1354000.382196] br-lan: port 2(lan2) entered disabled state
+Mon Oct 26 09:52:17 2026 daemon.notice hostapd: phy0-ap0: AP-STA-POSSIBLE-PSK-MISMATCH 02:00:5e:00:53:55
+Mon Oct 26 09:52:19 2026 daemon.notice hostapd: phy0-ap0: AP-STA-POSSIBLE-PSK-MISMATCH 02:00:5e:00:53:55
+Mon Oct 26 10:02:44 2026 daemon.notice hostapd: phy0-ap0: AP-STA-DISCONNECTED 02:00:5e:00:53:21
+Mon Oct 26 10:02:44 2026 daemon.info hostapd: phy0-ap0: STA 02:00:5e:00:53:21 IEEE 802.11: disassociated
+Mon Oct 26 10:02:45 2026 daemon.info hostapd: phy0-ap0: STA 02:00:5e:00:53:21 IEEE 802.11: deauthenticated due to inactivity (timer DEAUTH/REMOVE)
+Mon Oct 26 10:15:30 2026 authpriv.info dropbear[2410]: Child connection from 192.0.2.77:50100
+Mon Oct 26 10:15:33 2026 authpriv.warn dropbear[2410]: Bad password attempt for 'root' from 192.0.2.77:50100
+Mon Oct 26 10:15:36 2026 authpriv.warn dropbear[2410]: Bad password attempt for 'root' from 192.0.2.77:50100
+Mon Oct 26 10:15:37 2026 authpriv.info dropbear[2410]: Exit before auth from <192.0.2.77:50100>: (user 'root', 2 fails): Exited normally
+Mon Oct 26 10:16:02 2026 authpriv.info dropbear[2414]: Child connection from 192.0.2.77:50102
+Mon Oct 26 10:16:03 2026 authpriv.warn dropbear[2414]: Login attempt for nonexistent user from 192.0.2.77:50102
+Mon Oct 26 10:16:04 2026 authpriv.info dropbear[2414]: Exit before auth from <192.0.2.77:50102>: Exited normally
+Mon Oct 26 10:40:00 2026 authpriv.info dropbear[2502]: Child connection from 192.0.2.10:38010
+Mon Oct 26 10:40:01 2026 authpriv.notice dropbear[2502]: Password auth succeeded for 'root' from 192.0.2.10:38010
+Mon Oct 26 10:44:12 2026 authpriv.info dropbear[2502]: Exit (root) from <192.0.2.10:38010>: Disconnect received
+Mon Oct 26 11:20:11 2026 authpriv.info dropbear[2611]: Child connection from 192.0.2.11:41980
+Mon Oct 26 11:20:11 2026 authpriv.notice dropbear[2611]: Pubkey auth succeeded for 'root' with ssh-ed25519 key SHA256:EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE000 from 192.0.2.11:41980
+Mon Oct 26 11:20:40 2026 authpriv.info dropbear[2611]: Exit (root) from <192.0.2.11:41980>: Disconnect received
+Mon Oct 26 11:41:09 2026 authpriv.info dropbear[2650]: Child connection from 2001:db8:1200::c40:51000
+Mon Oct 26 11:41:10 2026 authpriv.notice dropbear[2650]: Pubkey auth succeeded for 'root' with ssh-ed25519 key SHA256:EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE111 from 2001:db8:1200::c40:51000
+Mon Oct 26 11:50:00 2026 daemon.notice netifd: wan (11517): udhcpc: sending renew to server 198.51.100.1

@@ -6,8 +6,9 @@
 //! listeners, the configuration with its secrets tagged, the certificate, the services, the
 //! upgradable packages), the audit, the upkeep (firmware against upstream, packages,
 //! encrypted config backups and the workflow that makes one), the screens (Dashboard,
-//! Clients, Network, Maintenance, Upgrade, History), the recorder, and the `sentry-network`
-//! commands.
+//! Clients, Network, Security, Maintenance, Upgrade, History), what flows through the
+//! router as far as its own counters and connection table say ([`security`]), the recorder,
+//! and the `sentry-network` commands.
 
 pub mod audit;
 pub mod backup;
@@ -29,6 +30,7 @@ pub mod read;
 pub mod recorder;
 pub mod redact;
 pub mod remote;
+pub mod security;
 pub mod tui;
 pub mod workflow;
 

@@ -50,7 +50,7 @@ impl Section {
     }
 
     /// An option that's on unless it says otherwise (`enabled`), or off unless it says so.
-    fn flag(&self, k: &str, default: bool) -> bool {
+    pub fn flag(&self, k: &str, default: bool) -> bool {
         match self.one(k).map(str::to_ascii_lowercase).as_deref() {
             Some("1" | "on" | "yes" | "true" | "enabled") => true,
             Some("0" | "off" | "no" | "false" | "disabled") => false,

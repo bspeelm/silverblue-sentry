@@ -60,6 +60,8 @@ port no	mac addr		is local?	ageing timer
 			"ht": true,
 			"vht": false,
 			"he": false,
+			"wps": false,
+			"mfp": false,
 			"aid": 1,
 			"bytes": {
 				"rx": 3203955,
@@ -108,6 +110,8 @@ Station 00:00:5e:00:53:12 (on phy0-ap0)
 			"assoc": true,
 			"authorized": true,
 			"he": true,
+			"wps": false,
+			"mfp": true,
 			"aid": 1,
 			"rate": {
 				"rx": 864800000,

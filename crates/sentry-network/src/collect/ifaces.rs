@@ -60,6 +60,10 @@ pub struct Interface {
     /// The router's own addresses in the prefixes assigned to this interface (no mask).
     #[serde(default)]
     pub local6: Vec<String>,
+    /// The prefixes assigned to this interface (`2001:db8:1200::/60`): its side of the
+    /// network, in IPv6.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assigned6: Vec<String>,
     /// Prefixes delegated to it (`2001:db8::/56`).
     pub prefixes: Vec<String>,
     pub gateway: Option<String>,
@@ -287,6 +291,7 @@ fn interface(v: &Value) -> Interface {
             .flatten()
             .filter_map(|a| a["local-address"]["address"].as_str().map(str::to_string))
             .collect(),
+        assigned6: addrs(&v["ipv6-prefix-assignment"]),
         prefixes: addrs(&v["ipv6-prefix"]),
         gateway: default("0.0.0.0"),
         gateway6: default("::"),

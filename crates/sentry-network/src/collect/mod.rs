@@ -3,10 +3,14 @@
 
 pub mod cert;
 pub mod clients;
+pub mod counters;
 pub mod crowdsec;
+pub mod dnsstate;
+pub mod flows;
 pub mod ifaces;
 pub mod listeners;
 pub mod probe;
+pub mod seclog;
 pub mod services;
 pub mod uci;
 pub mod updates;
@@ -77,6 +81,10 @@ pub const KINDS: &[&str] = &[
     "cert",
     "services",
     "updates",
+    "counters",
+    "flows",
+    "seclog",
+    "dnsstate",
 ];
 
 /// One kind, read now, as JSON (`sentry-network collect`).
@@ -93,6 +101,10 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, Collect
         "cert" => json(serde_json::to_value(cert::collect(r)?)),
         "services" => json(serde_json::to_value(services::collect(r)?)),
         "updates" => json(serde_json::to_value(updates::collect(r)?)),
+        "counters" => json(serde_json::to_value(counters::collect(r)?)),
+        "flows" => json(serde_json::to_value(flows::collect(r)?)),
+        "seclog" => json(serde_json::to_value(seclog::collect(r)?)),
+        "dnsstate" => json(serde_json::to_value(dnsstate::collect(r)?)),
         other => Err(CollectError::Failed(format!(
             "no collector `{other}` (there are: {})",
             KINDS.join(", ")

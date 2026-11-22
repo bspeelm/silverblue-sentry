@@ -74,6 +74,15 @@ pub struct Station {
     pub tx_rate: u64,
     pub freq: u32,
     pub connected_s: Option<u64>,
+    /// Management frame protection in use (None: the access point didn't say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mfp: Option<bool>,
+    /// It joined by WPS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wps: Option<bool>,
+    /// The handshake is complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -208,6 +217,9 @@ pub fn stations(ifname: &str, json: &str) -> Result<Vec<Station>, String> {
                 tx_rate: c["rate"]["tx"].as_u64().unwrap_or(0),
                 freq,
                 connected_s: None,
+                mfp: c["mfp"].as_bool(),
+                wps: c["wps"].as_bool(),
+                authorized: c["authorized"].as_bool(),
             })
         })
         .collect())
