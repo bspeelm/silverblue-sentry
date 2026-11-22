@@ -178,6 +178,18 @@ impl Slot {
                     );
                 }
             }
+            Parcel::Facts => {
+                if !self.asleep {
+                    self.refresh(w, Why::Facts);
+                }
+            }
+            Parcel::Entry(e) => {
+                self.log_event(w, *e);
+                if !self.asleep {
+                    self.refresh(w, Why::Lists);
+                    self.settle(w, Settle::Lists);
+                }
+            }
             Parcel::Log { ok, body, tags } => {
                 let e = sentry_core::maint::log::LogEntry::event(
                     &self.scope,

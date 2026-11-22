@@ -30,6 +30,19 @@ pub struct SystemLine {
     /// What it knows about hosts by address or name: the key (matched, not shown), and
     /// what it says of whoever has it ("‹nas› on its own routed port, network `dmz`").
     pub knows: Vec<(String, String)>,
+    /// Named facts it says of itself for the other targets' screens (`guard.blocked`…):
+    /// counts and names it would show itself, never an address. The app only carries
+    /// them (`Cx::system`); a target that knows a name reads it.
+    pub facts: Vec<(String, String)>,
+}
+
+impl SystemLine {
+    pub fn fact(&self, name: &str) -> Option<&str> {
+        self.facts
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// One target, surveyed: its rules, what it is, and how a session elsewhere reaches it.
@@ -66,6 +79,10 @@ pub enum Parcel {
         name: String,
         vars: BTreeMap<String, String>,
     },
+    /// The security audit is about to read every target (`Why::Facts`).
+    Facts,
+    /// A log entry of this target's, made elsewhere in the window (the audit's task done).
+    Entry(Box<sentry_core::maint::log::LogEntry>),
     /// This target's own log entry of what the session ran here.
     Log {
         ok: bool,
@@ -320,6 +337,7 @@ mod tests {
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
+                facts: Vec::new(),
             },
             reach: Profile {
                 system: format!("call {id}"),

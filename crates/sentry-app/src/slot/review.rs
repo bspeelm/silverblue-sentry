@@ -11,9 +11,22 @@ impl Slot {
     pub(crate) fn start_writer(
         &mut self,
         w: &mut Win,
+        wr: Writer,
+        prompt: String,
+        resume: Option<String>,
+    ) {
+        self.start_writer_with(w, wr, prompt, resume, None);
+    }
+
+    /// The same, with a profile of the app's own in place of the target's review profile
+    /// (the security audit's review: the web and nothing else).
+    pub(crate) fn start_writer_with(
+        &mut self,
+        w: &mut Win,
         mut wr: Writer,
         prompt: String,
         resume: Option<String>,
+        profile: Option<claude::Profile>,
     ) {
         match self.writer.as_ref().filter(|x| x.running()) {
             // What you ask for takes the place of a review the app started by itself.
@@ -35,10 +48,12 @@ impl Slot {
                 .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
                 .brief = false;
         }
-        let profile = self.target.profile(ProfileFor::Review, &[]);
+        let profile = profile.unwrap_or_else(|| self.target.profile(ProfileFor::Review, &[]));
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         let rid = self.mail.next();
         if w.offline {
+            self.last_prompt = Some(prompt);
+            self.last_profile = Some(profile);
             wr.live = Some((rid, 0));
             self.writer = Some(wr);
             return;
@@ -429,6 +444,13 @@ impl Slot {
 
     /// The writer's turn ended: save its answer as the review, then any reads it asked for.
     pub(crate) fn writer_turn_ended(&mut self, w: &mut Win) {
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|x| x.item == crate::secaudit::REVIEW)
+        {
+            return self.sec_review_ended(w);
+        }
         if let Some(mut rd) = self.writer.as_ref().and_then(|x| x.review.clone()) {
             let (answer, err, session) = self
                 .writer

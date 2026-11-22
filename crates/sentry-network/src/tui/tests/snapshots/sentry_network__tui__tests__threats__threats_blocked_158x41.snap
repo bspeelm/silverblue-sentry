@@ -26,13 +26,13 @@ expression: s
 │        update by itself                                                            │ │                                                                     │
 │ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
 │ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
+│ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
 ┌ Blocked by you · 2 ────────────────────────────────────────────────────────────────┐ │                                                                     │
 │ what                                              when                             │ │                                                                     │
 │ dock                             from internet    paused, ends in 30 minutes       │ │                                                                     │
 │ door game                        closed           since a day ago                  │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
                                                                                        ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
                                                                                        │ rejected   21/min                             █ 31.2k since 1d ago  │
@@ -42,4 +42,4 @@ expression: s
                                                                                        │            3 refused · 1 left before logging in · in the last 2h 50 │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  the numbers   x  expected   z  later   o  everything   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit
+ Enter  the numbers   x  expected   z  later   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

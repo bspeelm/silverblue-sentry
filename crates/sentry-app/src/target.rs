@@ -305,6 +305,10 @@ pub struct Cx<'a> {
     pub focused: bool,
     /// What the target is called (the top bar's name for it).
     pub target: &'a str,
+    /// Every target the window has, as last surveyed (empty with one): what each says of
+    /// itself, its `SystemLine::facts` among it. How one target shows what another knows
+    /// without depending on it: the app carries, the target reads by name.
+    pub system: &'a [crate::system::Sys],
 }
 
 /// Why a target should read something again.
@@ -328,6 +332,9 @@ pub enum Why {
     Logged,
     /// What's marked expected changed (a listener taken back in Records).
     Baseline,
+    /// The security audit is about to read every target: what this one reads as root,
+    /// and can read now (its password is held), is read again first.
+    Facts,
 }
 
 /// Why a target's cursors and selections may need putting right.
@@ -577,6 +584,15 @@ pub trait Asks {
     /// `C` in an idle chat: carry the conversation on somewhere else (its Claude session).
     fn chat_continue(&mut self, _session: &str) -> Option<Vec<Effect>> {
         None
+    }
+    /// The session that fixes one of the security audit's items, started here: the
+    /// audit's own brief, as this kind of target opens a session.
+    fn sec_ask(&self, item: &sentry_core::secaudit::Item, _sh: &Shared, _cx: &Cx) -> Ask {
+        let mut ask = item.ask();
+        if let Some(sentry_core::claude::Target::Apply(a)) = ask.target.as_mut() {
+            a.remote = self.peer().remote;
+        }
+        ask
     }
     /// The rules this target keeps for any session's steps and requests, whichever
     /// target the session started on.

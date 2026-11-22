@@ -204,7 +204,14 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
             let o = guard::run_also(r, &c, r.cfg.guard.window, &also, say);
             match &o {
                 Outcome::Kept => say("KEPT: the change is in place.".into()),
-                Outcome::Waiting => {}
+                // (No action here touches Wi-Fi or the uplink, the two cases the guard
+                // asks about before keeping: this workflow has no keep step, so one that
+                // did would be taken back, and is said so rather than called done.)
+                Outcome::Waiting => say(
+                    "NOT KEPT: this change needs a keep this action can't ask for; the \
+                     router takes it back by itself at its deadline."
+                        .into(),
+                ),
                 Outcome::Stopped(why) => say(format!("STOPPED, nothing was changed: {why}")),
                 Outcome::Failed(why) => say(format!("FAILED: {why}")),
                 Outcome::Reverted(why) => say(format!(
@@ -215,6 +222,9 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
                     "NOT CONFIRMED: {why}. The router restores itself at its deadline; look \
                      at it before trying again."
                 )),
+            }
+            if o == Outcome::Waiting {
+                return 1;
             }
             if o != Outcome::Kept {
                 return o.code();

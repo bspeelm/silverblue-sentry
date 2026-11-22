@@ -103,6 +103,65 @@ pub fn finish<A: Act>(mut rules: Vec<Rec<A>>, t: &Tail) -> Vec<Rec<A>> {
     rules
 }
 
+/// The key of the row for one of the security audit's items.
+pub fn audit_key(id: &str) -> String {
+    format!("audit:{id}")
+}
+
+/// The security audit's items this target lists (`items`), among its own rows. `same` says
+/// which row here is already about an item's subject (updates waiting, a reboot, a
+/// finding): that row stays, the one with the action, and takes the audit's plain why and
+/// its urgency; the item gets no row of its own. The rest become rows (`act`: what Enter
+/// does, from the item's id), put off like any other, ranked with the others.
+pub fn with_audit<A>(
+    mut recs: Vec<Rec<A>>,
+    items: &[crate::secaudit::Item],
+    snooze: &std::collections::BTreeMap<String, jiff::civil::Date>,
+    today: jiff::civil::Date,
+    same: impl Fn(&crate::secaudit::Item, &[Rec<A>]) -> Option<usize>,
+    act: impl Fn(String) -> A,
+) -> Vec<Rec<A>> {
+    use crate::secaudit::State;
+    for i in items {
+        let level = match i.state {
+            State::DoFirst => Level::Soon,
+            _ => Level::Routine,
+        };
+        if let Some(n) = same(i, &recs).filter(|n| *n < recs.len()) {
+            let r = &mut recs[n];
+            r.level = r.level.min(level);
+            if !i.why.is_empty() && !r.why.contains(&i.why) {
+                r.why = format!("{} · {}", r.why, i.why);
+            }
+            // What the audit puts first doesn't wait.
+            r.can_wait = r.can_wait && i.state != State::DoFirst;
+            continue;
+        }
+        let key = audit_key(&i.id);
+        if snooze.get(&key).is_some_and(|d| *d > today) {
+            continue;
+        }
+        recs.push(Rec {
+            level,
+            key,
+            title: i.title.clone(),
+            why: match (i.state, i.fix.is_empty()) {
+                (State::Ask, _) => {
+                    "The security audit can't read this: only you know. Enter answers it."
+                        .to_string()
+                }
+                (_, true) => i.why.clone(),
+                (_, false) => format!("{} What it takes: {}", i.why, i.fix),
+            },
+            action: act(i.id.clone()),
+            item: None,
+            can_wait: false,
+        });
+    }
+    recs.sort_by_key(|r| r.level);
+    recs
+}
+
 /// What the list shows: everything, or only what needs doing. With it, how many wait.
 /// A tidy row never needs doing (a low finding, a tidy task), so it waits whatever made it.
 pub fn needed<A>(recs: Vec<Rec<A>>, everything: bool) -> (Vec<Rec<A>>, usize) {

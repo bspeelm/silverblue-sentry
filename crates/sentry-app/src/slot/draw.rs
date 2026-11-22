@@ -30,6 +30,13 @@ impl Slot {
                     .filter(|_| banner.is_none())
                     .map(|g| (format!("{} · a step of it runs here", g.what), ""))
             });
+        // The security audit at work is the window's: said on every target.
+        let series = series.or_else(|| {
+            w.sec
+                .line()
+                .filter(|_| banner.is_none())
+                .map(|l| (l.to_string(), ""))
+        });
         // Auto mode says so in the row, with whatever else is there (or by itself).
         let series = match series {
             Some((line, hint)) if self.auto => Some((format!("{line} · auto"), hint)),
@@ -69,7 +76,9 @@ impl Slot {
         }
         self.target.render(f, body, &self.shared, &cx!(self, w));
         let front = self.doc_front();
-        if let Some(rv) = self
+        if self.sec_view.is_some() {
+            self.sec_draw(w, f, body);
+        } else if let Some(rv) = self
             .review_view
             .as_ref()
             .filter(|_| front == Some(Doc::Review))
@@ -306,6 +315,9 @@ impl Slot {
     pub(crate) fn doc_hints(&self) -> frame::Hints<'_> {
         // The app's own way names the review's keys first, then Records', then the plan's;
         // the other names the plan's first.
+        if self.sec_view.is_some() {
+            return Self::sec_hints();
+        }
         let plan_first = !self.ways.review_over_plan && self.plan_view.is_some();
         if let Some(rv) = self.review_view.as_ref().filter(|_| !plan_first) {
             rv.hints(self.shared.review.as_ref(), self.writing_review())

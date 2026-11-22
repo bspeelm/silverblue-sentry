@@ -1526,6 +1526,456 @@ fn the_web_goes_once_a_session_has_read_from_the_router() {
     }
 }
 
+/// What the three targets would say to the security audit: the router forwards a door to
+/// the server where nothing answers (an item across both), the server's ssh takes
+/// passwords (its own), this machine's firewall is off (its own), and the router's
+/// bouncer is installed and off while the server runs CrowdSec. The server's address and
+/// a device's MAC are in the facts and must never be in anything Claude is sent.
+const AUDIT_CANARIES: [&str; 2] = ["192.0.2.10", "02:00:5e:00:53:99"];
+
+fn audit_facts(server: &str, network: &str) -> Vec<sentry_core::secaudit::TargetFacts> {
+    use sentry_core::secaudit::*;
+    let local = TargetFacts {
+        firewall: Some(HostFw {
+            active: false,
+            zone: None,
+        }),
+        ..TargetFacts::new("local", Kind::Local, "this machine")
+    };
+    let srv = TargetFacts {
+        addrs: vec![AUDIT_CANARIES[0].into()],
+        listeners: Some(vec![Listen {
+            proto: "tcp".into(),
+            port: 22,
+            wide: true,
+            process: Some("sshd".into()),
+        }]),
+        ssh: Some(Ssh {
+            on: Some(true),
+            password: Some(true),
+            root: Some("no".into()),
+            source: "sshd -T".into(),
+        }),
+        watch: Some(Watch {
+            crowdsec: Some(true),
+            bouncers: Some(Vec::new()),
+            ..Default::default()
+        }),
+        ..TargetFacts::new(&format!("srv:{server}"), Kind::Server, server)
+    };
+    let net = TargetFacts {
+        addrs: vec![AUDIT_CANARIES[1].into()],
+        watch: Some(Watch {
+            enforces: Some(false),
+            installed_off: true,
+            ..Default::default()
+        }),
+        // (A backup there is: whether it was ever restored is asked.)
+        backup: Some(Backup {
+            count: Some(2),
+            newest_days: Some(1),
+            encrypted: Some(true),
+            unsaved: Some(false),
+            ..Default::default()
+        }),
+        router: Some(Router {
+            wan_up: Some(true),
+            forwards: Some(vec![Forward {
+                proto: "tcp".into(),
+                port: "443".into(),
+                to_port: "8443".into(),
+                dest: AUDIT_CANARIES[0].into(),
+                zone: Some("dmz".into()),
+            }]),
+            ..Default::default()
+        }),
+        ..TargetFacts::new(&format!("net:{network}"), Kind::Network, network)
+    };
+    vec![local, srv, net]
+}
+
+/// `S` anywhere the system's safety is looked at runs the audit (the first time; after
+/// that it shows the report, and `S` there runs it again). It is the window's: said on
+/// every target while it reads, its report opens when the facts are in, its task on this
+/// machine is done, Claude reviews the evidence with the web and nothing else, and each
+/// item is a row on the one target that lists it.
+#[test]
+fn the_security_audit_is_the_windows_and_each_target_lists_its_rows() {
+    let (server, network) = ("auditsrv", "auditnet");
+    let mut a = three_with(server, network);
+    a.survey();
+    // This machine's Maintenance: no report yet, so `S` runs it.
+    key(&mut a, KeyCode::Char('6'));
+    key(&mut a, KeyCode::Char('S'));
+    assert!(a.win.sec.busy() && a.win.sec.report.is_none());
+    assert!(
+        screen(&mut a).contains("security audit · reading every target"),
+        "{}",
+        screen(&mut a)
+    );
+    // Once more is not twice.
+    key(&mut a, KeyCode::Char('S'));
+    assert_eq!(
+        a.toast_for_test(),
+        Some("the security audit is already running")
+    );
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    assert!(!a.win.sec.busy());
+    let ids: Vec<String> = a
+        .win
+        .sec
+        .report
+        .as_ref()
+        .expect("a report")
+        .items
+        .iter()
+        .map(|i| format!("{} {:?} {:?}", i.id, i.state, i.targets))
+        .collect();
+    let door = format!("sec:door:net:{network}:tcp:443");
+    assert!(ids.iter().any(|i| i.starts_with(&door)), "{ids:#?}");
+    // The report is in front, in sections, and says what it isn't.
+    let s = tall(&mut a);
+    for said in [
+        " Security audit ",
+        "audited today",
+        "Worth doing",
+        "It doesn't attack anything",
+        "S  run it again",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    // Its task is this machine's, and done.
+    let e = a.slots[LOCAL].shared.log.first().expect("logged");
+    assert!(
+        e.head
+            .tags
+            .iter()
+            .any(|t| t == &format!("task:{}", sentry_core::secaudit::TASK_ID)),
+        "{:?}",
+        e.head.tags
+    );
+    // Claude reviews the evidence: scrubbed where it was made, the web and nothing else.
+    assert!(a.writing() && a.win.sec.reviewing);
+    let sent = a.slots[LOCAL].last_prompt.clone().expect("a review asked");
+    assert!(sent.contains("### Getting in from the internet"), "{sent}");
+    for c in AUDIT_CANARIES {
+        assert!(!sent.contains(c), "{c} in the review's brief:\n{sent}");
+    }
+    let p = a.slots[LOCAL].last_profile.clone().unwrap();
+    assert_eq!(p.tools, ["WebFetch", "WebSearch"]);
+    assert!(has_web(&p) && p.denied.iter().any(|d| d == "Bash"));
+    assert!(tall(&mut a).contains("Claude is reading the evidence"));
+    a.writer_answered("## Do these first\nClose the door nobody uses.");
+    assert!(!a.win.sec.reviewing);
+    let s = tall(&mut a);
+    assert!(
+        s.contains("What matters most here") && s.contains("Close the door nobody uses."),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
+
+    // This machine lists what is its alone, as a recommendation.
+    let s = tall(&mut a);
+    assert!(s.contains("firewall"), "{s}");
+    let local: Vec<String> = a.slots[LOCAL]
+        .shared
+        .sec
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert!(
+        !local.is_empty() && local.iter().all(|i| i.ends_with(":local")),
+        "{local:?}"
+    );
+    // The server lists its own: its ssh login takes passwords.
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('6'));
+    let srv: Vec<String> = a.slots[SRV]
+        .shared
+        .sec
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert!(
+        srv.contains(&format!("sec:ssh-password:srv:{server}"))
+            && srv.iter().all(|i| i.ends_with(&format!("srv:{server}"))),
+        "{srv:?}"
+    );
+    // (Its list isn't drawn before the server was read; the row is there to select.)
+    key(&mut a, KeyCode::Char('o'));
+    let mut seen = false;
+    for _ in 0..6 {
+        seen = seen || tall(&mut a).contains("accepts ssh logins with a password");
+        key(&mut a, KeyCode::Char('j'));
+    }
+    assert!(seen, "{}", tall(&mut a));
+    // The network's Security page lists its own and what spans targets: the door, and
+    // ONE row for CrowdSec at the edge (the audit's item joins the page's own).
+    key(&mut a, KeyCode::F(3));
+    key(&mut a, KeyCode::Char('4'));
+    a.on_event(
+        sentry_network::tui::testing::bouncer_ev(network, false),
+        Instant::now(),
+    );
+    a.on_event(
+        sentry_server::tui::testing::crowdsec_ev(server, 7, "ssh brute force"),
+        Instant::now(),
+    );
+    a.survey();
+    let s = tall(&mut a);
+    assert!(
+        s.contains("but nothing on auditsrv") && s.contains("audited today · S shows it"),
+        "{s}"
+    );
+    assert_eq!(s.matches("not switched on").count(), 2, "{s}");
+    assert!(
+        s.contains("auditsrv blocked 7 attacker(s) today (mostly ssh brute force)"),
+        "{s}"
+    );
+    let net: Vec<String> = a.slots[NET]
+        .shared
+        .sec
+        .iter()
+        .map(|i| i.id.clone())
+        .collect();
+    assert!(
+        net.contains(&door) && net.contains(&"sec:watch".to_string()),
+        "{net:?}"
+    );
+    // Nothing is listed twice across the targets.
+    for i in &net {
+        assert!(!local.contains(i) && !srv.contains(i), "{i} twice");
+    }
+    // `S` now shows the report; `:audit security` too, from any target.
+    key(&mut a, KeyCode::Char('S'));
+    assert!(!a.win.sec.busy() && tall(&mut a).contains(" Security audit "));
+    key(&mut a, KeyCode::Esc);
+}
+
+/// The audit is a task of this machine's (every 30 days, and after a firmware or OS
+/// upgrade): Enter on it runs the audit, it isn't a list of steps to do by hand.
+#[test]
+fn the_audits_task_runs_the_audit() {
+    let mut a = one();
+    // (From tasks.toml a task is due at once; the derived one counts from the log.)
+    a.add_task_for_test(sentry_core::secaudit::task(None, &[]));
+    key(&mut a, KeyCode::Char('6'));
+    typed(&mut a, "/Run the security audit");
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Run the security audit") && s.contains("Enter  audit"),
+        "{s}"
+    );
+    assert!(!a.win.sec.busy());
+    key(&mut a, KeyCode::Enter);
+    assert!(a.win.sec.busy(), "{:?}", a.toast_for_test());
+    assert!(a.apply_session_at(0).is_none(), "not a session by hand");
+    // Done when the audit has run: its entry is this machine's.
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts("s", "n"))),
+        ),
+        Instant::now(),
+    );
+    let done = a.slots[0].shared.log.iter().any(|e| {
+        e.head
+            .tags
+            .iter()
+            .any(|t| t == &format!("task:{}", sentry_core::secaudit::TASK_ID))
+    });
+    assert!(done);
+}
+
+/// Enter on an audit item that spans targets is one session across them, started where
+/// the row is: briefed with the audit's own words (no address in them), no web from the
+/// start (a router is among its targets), and its plan's steps run where they belong.
+/// What only the user knows is a pick, and the audit's list follows the answer.
+#[test]
+fn enter_on_an_audit_item_is_a_session_across_its_targets() {
+    use sentry_core::apply::session::Phase;
+    use sentry_core::secaudit::State;
+    let (server, network) = ("doorsrv", "doornet");
+    let mut a = three_with(server, network);
+    a.set_wf_entries_at(
+        NET,
+        sentry_network::workflow::list_for(&sentry_network::tui::id_of(network)),
+    );
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    key(&mut a, KeyCode::F(3));
+    key(&mut a, KeyCode::Char('4'));
+    typed(&mut a, "/nothing on doorsrv");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let s = a.apply_session_at(NET).expect("a session on the network");
+    assert_eq!(s.phase, Phase::Brief);
+    assert!(s.web_off, "briefed about a router: no web");
+    let brief = a.consent_text().unwrap();
+    assert!(
+        brief.contains("but nothing on doorsrv answers there")
+            && brief.contains(&format!("About: net:{network}, srv:{server}")),
+        "{brief}"
+    );
+    for c in AUDIT_CANARIES {
+        assert!(!brief.contains(c), "{c}");
+    }
+    key(&mut a, KeyCode::Enter);
+    assert!(!has_web(&a.session_profile_at(NET)));
+    // One plan, a step on each: approved once.
+    a.apply_answer_at(
+        NET,
+        &plan_of(&format!(
+            "[[step]]\ntitle = \"See what listens\"\non = \"srv:{server}\"\nrun = \"ss -ltn\"\n\n\
+             [[step]]\ntitle = \"Look at the forward\"\nrun = \"uci show firewall\"\n"
+        )),
+    );
+    let s = a.apply_session_at(NET).unwrap();
+    assert!(s.can_approve(), "{:?}", s.problems);
+    assert_eq!(
+        s.touched()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        [format!("net:{network}"), format!("srv:{server}")]
+    );
+    a.slots[NET].apply_close_for_test();
+
+    // What only the user knows: Enter is a pick; the answer is remembered and the rules
+    // are gone through again over the facts this window read.
+    let (id, q) = a
+        .win
+        .sec
+        .report
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.state == State::Ask)
+        .map(|i| (i.id.clone(), i.question.clone().unwrap()))
+        .expect("something only the user knows");
+    let home = (0..3)
+        .find(|i| a.slots[*i].shared.sec.iter().any(|x| x.id == id))
+        .expect("listed by one target");
+    a.apply_at(home, vec![Effect::SecItem(id.clone())]);
+    a.focus(home, Instant::now());
+    let s = tall(&mut a);
+    assert!(
+        s.contains("Only you know this") && s.contains("I don't know"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('2'));
+    assert_eq!(a.win.sec.answers.get(&q), Some(false));
+    let now = a
+        .win
+        .sec
+        .report
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.state);
+    assert!(now.is_some() && now != Some(State::Ask), "{now:?}");
+    assert!(
+        !a.slots[home]
+            .shared
+            .sec
+            .iter()
+            .any(|x| x.id == id && x.state == State::Ask)
+    );
+}
+
+/// The CrowdSec row on the network's Security page is a session across the server and
+/// the router: what the server's guard says is carried by the app (the network target
+/// knows no server), and Enter briefs one session with the whole job.
+#[test]
+fn the_edge_row_is_one_session_across_the_server_and_the_router() {
+    use sentry_core::apply::session::Phase;
+    let (server, network) = ("edgesrv", "edgenet");
+    let mut a = three_with(server, network);
+    a.set_wf_entries_at(
+        NET,
+        sentry_network::workflow::list_for(&sentry_network::tui::id_of(network)),
+    );
+    a.start(Instant::now());
+    // Security is entered: the server, never looked at, starts so it can say.
+    assert!(!a.started_at(SRV));
+    key(&mut a, KeyCode::F(3));
+    a.survey();
+    key(&mut a, KeyCode::Char('4'));
+    assert!(a.started_at(SRV) && a.focus == NET);
+    // No server guard read, no bouncer on the router: no line, no row.
+    let s = tall(&mut a);
+    assert!(!s.contains("attacker") && !s.contains("CrowdSec"), "{s}");
+    a.on_event(
+        sentry_network::tui::testing::bouncer_ev(network, false),
+        Instant::now(),
+    );
+    a.on_event(
+        sentry_server::tui::testing::crowdsec_ev(server, 12, "http probing"),
+        Instant::now(),
+    );
+    a.survey();
+    let s = tall(&mut a);
+    assert!(
+        s.contains("edgesrv blocked 12 attacker(s) today (mostly http probing); the router")
+            && s.contains("doesn't enforce its bans")
+            && s.contains("server's blocklist isn't enforced at the edge yet"),
+        "{s}"
+    );
+    typed(&mut a, "/blocker");
+    key(&mut a, KeyCode::Enter);
+    assert!(
+        bar_of(&mut a).contains("Enter  finish it"),
+        "{}",
+        bar_of(&mut a)
+    );
+    key(&mut a, KeyCode::Enter);
+    let sess = a.apply_session_at(NET).expect("a session");
+    assert_eq!(sess.phase, Phase::Brief);
+    let brief = a.consent_text().unwrap();
+    for said in [
+        "local API reachable from the router",
+        "captured as a secret",
+        "a guarded change",
+        "edgesrv blocked 12 attacker(s) today",
+    ] {
+        assert!(brief.contains(said), "{said}:\n{brief}");
+    }
+    // The router enforces: the row goes, the line says so.
+    a.slots[NET].apply_close_for_test();
+    a.on_event(
+        sentry_network::tui::testing::bouncer_ev(network, true),
+        Instant::now(),
+    );
+    key(&mut a, KeyCode::Esc);
+    let s = tall(&mut a);
+    assert!(
+        s.contains("refuses them too") && !s.contains("not switched on"),
+        "{s}"
+    );
+}
+
+fn bar_of(a: &mut App) -> String {
+    let s = tall(a);
+    s.lines().last().unwrap_or_default().to_string()
+}
+
 fn ask_about(what: &str) -> Effect {
     Effect::AskConsent(Box::new(sentry_core::claude::Ask::apply(
         what,

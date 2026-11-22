@@ -498,6 +498,7 @@ fn cx_on<'a>(
         auto: false,
         focused: true,
         target: NAME,
+        system: &[],
     }
 }
 
@@ -722,6 +723,7 @@ fn live_network_screens() {
         everything: false,
         wf: None,
         auto: false,
+        system: &[],
     });
     assert!(rows.len() >= 2, "{} rows", rows.len());
     assert!(
@@ -1603,6 +1605,7 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
         auto: false,
         focused: true,
         target: NAME,
+        system: &[],
     };
     let (slot, _) = a.parts();
     let t: &mut NetworkTarget = slot.target.as_any_mut().downcast_mut().unwrap();
@@ -2526,6 +2529,7 @@ fn a_cadence_is_a_task_once_its_workflow_is_there() {
         auto: false,
         focused: true,
         target: NAME,
+        system: &[],
     };
     // Its row is a workflow's run to a series; a row that only says how an item stands
     // (Enter does that one by itself) isn't anything to one.
@@ -2696,6 +2700,7 @@ fn view_at<'a>(
         everything: true,
         wf: wf(a),
         auto: false,
+        system: &[],
     }
 }
 

@@ -93,6 +93,8 @@ fn lift(e: local::Effect) -> Effect {
         L::StartWorkflow(name) => Effect::StartWorkflow(name),
         L::LogOpen => Effect::LogOpen(None),
         L::Everything => Effect::Everything,
+        L::SecRun => Effect::SecRun,
+        L::SecItem(id) => Effect::SecItem(id),
         L::SeriesStart(rows) => Effect::SeriesStart(rows),
         L::PlanOpen(wf) => Effect::PlanOpen(wf),
         L::PlanApply(wf) => Effect::PlanApply(wf),
@@ -332,7 +334,7 @@ impl LocalTarget {
                 },
                 quit: "Quit sentry? Nothing keeps running after exit.".into(),
                 help_globals: &[],
-                commands: ":q  :<screen>  :job <name>  :workflow <name>  :refresh",
+                commands: ":q  :<screen>  :job <name>  :workflow <name>  :audit security  :refresh",
                 help_footer: "Nothing runs in the background after sentry exits.".into(),
                 // What a session's Claude may do here (as a session says it itself).
                 session_privacy: crate::claude::acting_summary(),
@@ -892,7 +894,7 @@ impl Target for LocalTarget {
         match why {
             // The lists are computed from what's loaded; a step's effects show on their
             // screens' own refresh.
-            Why::Lists | Why::Step | Why::Edited => {}
+            Why::Lists | Why::Step | Why::Edited | Why::Facts => {}
             // Keep tabs, dashboard and the workflow list in step with the run.
             Why::Run => self.fetch(Fetch::Workflows),
             Why::Changed => {

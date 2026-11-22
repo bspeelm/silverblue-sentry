@@ -136,6 +136,34 @@ impl Crowdsec {
     }
 }
 
+/// What the server's own guard says, for another target's screen (a network's Security
+/// page, through `SystemLine::facts`): the alerts of the last day, what they were for,
+/// and the bouncers that pull its decisions now. Counts and names only (the addresses
+/// were dropped as it was parsed).
+pub fn guard_facts(c: &Crowdsec) -> Vec<(String, String)> {
+    let mut out = vec![
+        ("guard.name".to_string(), "CrowdSec".to_string()),
+        (
+            "guard.running".to_string(),
+            (!matches!(c.agent, Agent::Down(_))).to_string(),
+        ),
+    ];
+    if let Some(a) = &c.alerts {
+        out.push(("guard.blocked".into(), a.count.to_string()));
+        let top: Vec<&str> = a.top.iter().map(|(n, _)| n.as_str()).collect();
+        out.push(("guard.scenarios".into(), top.join("\n")));
+    }
+    if let Some(b) = &c.bouncers {
+        let live: Vec<String> = b
+            .iter()
+            .filter(|x| !x.revoked && x.last_pull.is_some_and(|t| c.now - t <= QUIET_S))
+            .map(|x| format!("{} ({})", x.name, x.kind))
+            .collect();
+        out.push(("guard.bouncers".into(), live.join("\n")));
+    }
+    out
+}
+
 /// A name with anything that reads as an address taken out: a scenario's name is free text
 /// (`manual 'ban' from '…'`, an import's file name).
 pub fn scrub(name: &str) -> String {

@@ -241,7 +241,7 @@ impl NetworkTarget {
                         "auto mode: a workflow's steps, a plan's approval and a series' next row need no key",
                     ),
                 ],
-                commands: ":q  :<screen>  :audit [now]  :wf [name]  :log  :refresh",
+                commands: ":q  :<screen>  :audit [now|security]  :wf [name]  :log  :refresh",
                 help_footer: format!(
                     "Nothing is installed on {name}'s router. A guarded change leaves one \
                      sleeper there for at most its window."
@@ -470,6 +470,7 @@ fn view_of<'a>(
         everything: cx.everything,
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         auto: cx.auto,
+        system: cx.system,
     }
 }
 
@@ -514,6 +515,16 @@ impl Target for NetworkTarget {
             if let Some(every) = p.every {
                 self.due.insert(p.kind, now + every);
             }
+        }
+        // Security shows what a server's own guard says of the doors forwarded to it: a
+        // server that never had the window starts now, so it has read it.
+        if cx.screen == ScreenId::Security {
+            return cx
+                .system
+                .iter()
+                .filter(|s| s.peer.id.starts_with("srv:"))
+                .map(|s| Effect::Wake(s.peer.id.clone()))
+                .collect();
         }
         Vec::new()
     }
@@ -1102,6 +1113,10 @@ impl Asks for NetworkTarget {
             ProfileFor::Peer => super::ask::session_profile(r),
             ProfileFor::Review => super::ask::review_profile(r),
         }
+    }
+
+    fn sec_ask(&self, item: &sentry_core::secaudit::Item, sh: &Shared, cx: &Cx) -> Ask {
+        super::ask::apply_audit(&self.view(sh, cx), item)
     }
 
     /// What a command sentry ran for Claude printed goes back scrubbed; while what must

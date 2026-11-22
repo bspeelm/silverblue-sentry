@@ -419,6 +419,18 @@ pub fn apply_rec(
     let item = |id: &str, key: String| apply_item(v, r, id, key, steps);
     {
         match &x.action {
+            // The audit's own brief (what only the user knows isn't something to apply).
+            Action::Security(id) => {
+                let i =
+                    v.sh.sec
+                        .iter()
+                        .find(|i| &i.id == id && i.question.is_none())?;
+                let mut ask = i.ask();
+                if let Some(sentry_core::claude::Target::Apply(a)) = ask.target.as_mut() {
+                    a.remote = true;
+                }
+                Some(ask)
+            }
             Action::Plan(id) | Action::OpenPlan(id) => item(id, x.key.clone()),
             Action::Look(id) if !id.is_empty() => item(id, x.key.clone()),
             Action::Run(wf) => {

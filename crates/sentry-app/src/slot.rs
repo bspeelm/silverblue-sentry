@@ -18,6 +18,7 @@ pub mod guest;
 mod records;
 mod review;
 mod root;
+mod secaudit;
 mod series;
 mod session;
 mod wf;
@@ -82,6 +83,7 @@ macro_rules! cx {
             focused: $w.focused,
             target: &$s.title,
             finding: $s.apply.as_ref().and_then(|a| a.chat.ask.finding()),
+            system: &$w.system,
         }
     };
 }
@@ -181,6 +183,10 @@ pub struct Slot {
     plan_view: Option<(String, usize)>,
     /// The Review window (`R` on Maintenance).
     pub(crate) review_view: Option<sentry_core::tui::reviewview::ReviewView>,
+    /// The security audit's report over the screen: lines scrolled from the top.
+    pub(crate) sec_view: Option<usize>,
+    /// The audit as this slot's records last took it in (`Sec::rev`, targets surveyed).
+    sec_seen: (u64, usize),
     /// Records (`v`, `:log`): tasks, log, plans, reviews, what's put off.
     pub rec_view: Option<sentry_core::tui::records::Records>,
     /// The workflow run in progress on this target.
@@ -200,6 +206,8 @@ pub struct Slot {
     reads: HashMap<u64, crate::effect::Own>,
     /// Tests (nothing is sent): what the last turn of a session would have sent Claude.
     pub last_prompt: Option<String>,
+    /// Tests (nothing is sent): the profile the last thing Claude writes would have had.
+    pub last_profile: Option<claude::Profile>,
     /// Auto mode (`slot/auto.rs`): routine questions on this target are answered without a
     /// key. Off at start, never saved.
     pub auto: bool,
@@ -288,6 +296,8 @@ impl Slot {
             writer: None,
             plan_view: None,
             review_view: None,
+            sec_view: None,
+            sec_seen: (0, 0),
             rec_view: None,
             run: None,
             chat: None,
@@ -298,6 +308,7 @@ impl Slot {
             unlock: None,
             reads: HashMap::new(),
             last_prompt: None,
+            last_profile: None,
             auto: false,
             auto_busy: false,
             auto_again: false,
@@ -471,6 +482,12 @@ impl Slot {
             v.push(format!("{} is running", p.title));
         }
         v
+    }
+
+    /// The apply session is closed, whatever it was at (tests).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn apply_close_for_test(&mut self) {
+        self.apply = None;
     }
 
     /// sudo's check for the session is running (tests).

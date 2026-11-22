@@ -34,12 +34,12 @@ expression: s
 │        update by itself                                                            │ │                                                                     │
 │ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ └─────────────────────────────────────────────────────────────────────┘
 │ ! weak ssh takes a password, and the admin page can be opened without encryption   │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
-└────────────────────────────────────────────────────────────────────────────────────┘ │ rejected   21/min                             █ 31.2k since 1d ago  │
-                                                                                       │ forward       port       to                     new/min  total live │
+│ ? ?    The security audit of every target has never run · S runs it                │ │ rejected   21/min                             █ 31.2k since 1d ago  │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ forward       port       to                     new/min  total live │
                                                                                        │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
                                                                                        │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
                                                                                        │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
                                                                                        │            3 refused · 1 left before logging in · in the last 2h 50 │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  close it   x  expected   z  later   o  everything   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit
+ Enter  close it   x  expected   z  later   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

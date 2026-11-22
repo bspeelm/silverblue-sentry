@@ -1589,7 +1589,7 @@ fn help_is_laid_out_like_sentrys() {
         " Keys ",
         "1–9 0 H   switch screen",
         "j/k ↑↓    move selection",
-        ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
+        ":q  :<screen>  :workflow <name>  :audit [now|security]  :log  :refresh",
         "Dashboard:",
         "sentry-server:",
         "read what needs root (your sudo password, asked once)",

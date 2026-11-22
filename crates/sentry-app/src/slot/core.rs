@@ -152,6 +152,14 @@ impl Slot {
 
     /// Something one of the target's threads read.
     pub(crate) fn on_data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
+        // The security audit's facts are the window's, whichever slot asked.
+        let data = match data.downcast::<crate::secaudit::Done>() {
+            Ok(d) => {
+                self.sec_done(w, d.0);
+                return self.settle(w, Settle::Lists);
+            }
+            Err(d) => d,
+        };
         let e = self.target.on_data(data, &mut self.shared, &cx!(self, w));
         self.apply(w, e, w.at);
         self.auto_step(w);
@@ -327,7 +335,10 @@ impl Slot {
             apply: self.apply.as_ref().is_some_and(|s| !s.chat.hidden),
             chat: self.chat.as_ref().is_some_and(|c| !c.hidden),
             input: w.input.is_open(),
-            docs: self.rec_view.is_some() || self.plan_view.is_some() || self.review_view.is_some(),
+            docs: self.rec_view.is_some()
+                || self.plan_view.is_some()
+                || self.review_view.is_some()
+                || self.sec_view.is_some(),
         }
     }
 
@@ -456,6 +467,7 @@ impl Slot {
                         self.rec_view = None;
                         self.review_view = None;
                         self.plan_view = None;
+                        self.sec_view = None;
                         return self.enter(w, id, now);
                     }
                     Some(Action::Command) => {
@@ -464,8 +476,11 @@ impl Slot {
                     }
                     _ => {}
                 }
-                // Records first, then whichever of the plan and the review is in front.
-                if self.rec_view.is_some() {
+                // The audit's report is over the others; then Records, then whichever of
+                // the plan and the review is in front.
+                if self.sec_view.is_some() {
+                    self.sec_view_key(w, k);
+                } else if self.rec_view.is_some() {
                     self.records_key(w, k, now);
                 } else if self.plan_view.is_none()
                     || (self.review_view.is_some() && self.ways.review_over_plan)
@@ -506,6 +521,13 @@ impl Slot {
                 w.quit_asked = true;
             }
             Action::Command => w.input = Input::Command(String::new()),
+            // The security audit, where the system's upkeep and safety are looked at.
+            Action::Char(c)
+                if c == crate::secaudit::KEY
+                    && matches!(self.screen, ScreenId::Maint | ScreenId::Security) =>
+            {
+                self.sec_show(w)
+            }
             Action::Filter if self.strip(w).1 => {
                 w.input =
                     Input::Filter(self.filters.get(&self.screen).cloned().unwrap_or_default());
@@ -758,6 +780,13 @@ impl Slot {
         use sentry_core::tui::records::Section;
         let mut parts = c.split_whitespace();
         let (name, arg) = (parts.next(), parts.next());
+        // The security audit is the window's, on every target.
+        if (name, arg) == (Some("audit"), Some("security")) {
+            return match parts.next() {
+                Some("now" | "run") => self.sec_run(w),
+                _ => self.sec_show(w),
+            };
+        }
         // One only this kind of target has.
         if let Some(n) = name
             && let Some(e) = self.target.colon(c, n, arg, &self.shared, &cx!(self, w))

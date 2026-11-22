@@ -90,6 +90,8 @@ pub struct Win {
     /// What one slot's flow hands the app for another slot (a session's step `on`
     /// another target, and what comes back): delivered when the flow returns.
     pub(crate) outbox: std::collections::VecDeque<(TargetId, crate::system::Parcel)>,
+    /// The security audit: one for every target (`crate::secaudit`).
+    pub sec: crate::secaudit::Sec,
 }
 
 impl Win {
@@ -158,6 +160,7 @@ impl App {
                 quit_asked: false,
                 system: Vec::new(),
                 outbox: Default::default(),
+                sec: Default::default(),
             },
             tx,
             seq: Arc::new(AtomicU64::new(0)),
@@ -246,7 +249,15 @@ impl App {
                 self.with_one(j, |s, w| s.parcel(w, p));
             }
         }
+        if self.win.sec.pending.is_some() {
+            self.sec_go();
+        }
         r
+    }
+
+    /// How a worker thread answers a slot.
+    pub(crate) fn sender(&self) -> Sender<Event> {
+        self.tx.clone()
     }
 
     /// Ask every target what it is and how a session elsewhere reaches it (`Win::system`).
@@ -274,6 +285,7 @@ impl App {
             self.win.speaker = Some(self.slots[i].title().to_string());
         }
         self.win.focused = i == focus;
+        self.slots[i].sec_sync(&self.win);
         let r = f(&mut self.slots[i], &mut self.win);
         self.win.focused = true;
         if i != focus {
@@ -407,6 +419,7 @@ impl App {
     /// view, except that a run left in progress is picked up for each now.
     pub fn start(&mut self, now: Instant) {
         self.win.at = now;
+        self.sec_load();
         for i in 0..self.slots.len() {
             self.with(i, |s, w| {
                 if w.focused {

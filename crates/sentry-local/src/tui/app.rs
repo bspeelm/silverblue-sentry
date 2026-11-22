@@ -51,6 +51,10 @@ pub enum Effect {
     LogOpen,
     /// Maintenance: list what can wait too, or only what's needed (`o`).
     Everything,
+    /// Run the security audit across every target (its task's Enter).
+    SecRun,
+    /// Enter on one of the security audit's rows (the item's id).
+    SecItem(String),
     /// Maintenance: do the ticked rows (key, title) one after another.
     SeriesStart(Vec<(String, String)>),
     /// Maintenance with the first recommendation whose key starts with this selected.

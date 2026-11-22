@@ -77,4 +77,31 @@ pub mod testing {
             Box::new(Data(Kind::Sudo, Box::new(Ok(Payload::Sudo(mode))))),
         )
     }
+
+    /// What reading the server's CrowdSec would have sent: its agent running, this many
+    /// alerts in the last day (all of one scenario), no bouncer.
+    pub fn crowdsec_ev(server: &str, alerts: u32, scenario: &str) -> super::Event {
+        use crate::collect::crowdsec::{Agent, Alerts, Crowdsec};
+        let c = Crowdsec {
+            agent: Agent::Running,
+            version: None,
+            now: 1_793_000_000,
+            decisions: None,
+            alerts: Some(Alerts {
+                count: alerts,
+                capped: false,
+                top: vec![(scenario.to_string(), alerts)],
+            }),
+            hub: None,
+            bouncers: Some(Vec::new()),
+            unread: Vec::new(),
+        };
+        super::Event::Data(
+            super::id_of(server),
+            Box::new(Data(
+                Kind::Crowdsec,
+                Box::new(Ok(Payload::Crowdsec(Some(Box::new(c))))),
+            )),
+        )
+    }
 }

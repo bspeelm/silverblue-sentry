@@ -249,6 +249,14 @@ impl Asks for ServerTarget {
             ),
             addrs,
             knows: Vec::new(),
+            facts: self
+                .store
+                .crowdsec
+                .value
+                .as_ref()
+                .and_then(|c| c.as_ref())
+                .map(crate::collect::crowdsec::guard_facts)
+                .unwrap_or_default(),
         }
     }
 

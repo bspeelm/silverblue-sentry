@@ -212,7 +212,7 @@ impl ServerTarget {
                 ways: Default::default(),
                 quit: format!("Quit sentry-server? Nothing keeps running on {name} after exit."),
                 help_globals: &[("I", "read what needs root (your sudo password, asked once)")],
-                commands: ":q  :<screen>  :workflow <name>  :audit [now]  :log  :refresh",
+                commands: ":q  :<screen>  :workflow <name>  :audit [now|security]  :log  :refresh",
                 help_footer: format!("Nothing keeps running on {name} after sentry-server exits."),
                 privacy: format!(
                     "Claude may run read-only commands on {name} through `sentry-server exec` (nothing \
@@ -860,6 +860,16 @@ impl Target for ServerTarget {
                 return vec![Effect::Toast("auditing… (a few seconds)".into())];
             }
             Why::Edited => return self.reload_config(cx),
+            // The security audit reads what needs root from the last inventory: with the
+            // password held, that is read again first (nothing is asked for).
+            Why::Facts => {
+                if cx.root
+                    && self.store.sudo.value == Some(SudoMode::Password)
+                    && !crate::inventory::script(&self.remote).is_empty()
+                {
+                    return vec![Own::Inventory.into()];
+                }
+            }
         }
         Vec::new()
     }

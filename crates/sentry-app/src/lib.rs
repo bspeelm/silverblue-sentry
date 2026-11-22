@@ -8,6 +8,7 @@ pub mod app;
 pub mod effect;
 pub mod remote;
 pub mod run;
+pub mod secaudit;
 pub mod shared;
 pub mod slot;
 pub mod system;

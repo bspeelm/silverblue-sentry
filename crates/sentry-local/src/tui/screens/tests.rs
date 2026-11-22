@@ -1579,9 +1579,11 @@ fn records_show_every_task_and_bring_back_what_was_put_off() {
     key(&mut a, KeyCode::Char('['));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("Records   Tasks 3  Log 3  Plans 0  Reviews 0  Later 1"),
+        s.contains("Records   Tasks 4  Log 3  Plans 0  Reviews 0  Later 1"),
         "{s}"
     );
+    // (And the security audit of every target, which is this machine's task.)
+    assert!(s.contains("Run the security audit"), "{s}");
     assert!(
         s.contains("Check for updates") && s.contains("job update-check") && s.contains("built in"),
         "{s}"

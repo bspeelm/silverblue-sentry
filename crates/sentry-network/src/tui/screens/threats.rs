@@ -106,6 +106,7 @@ pub fn built(v: &View) -> Built {
         },
         v.now,
     );
+    let guard = server_guard(v);
     let state = State {
         network: v.name,
         read,
@@ -114,14 +115,30 @@ pub fn built(v: &View) -> Built {
         expected: &v.sh.baseline.findings,
         blocks: &s.blocks,
         bouncer: s.crowdsec.value.as_ref().and_then(|c| c.as_ref()),
-        // The seam for what the server's own guard reports: nothing provides it yet.
-        server_guard: None,
+        server_guard: guard.as_ref(),
         now: v.now.as_second(),
     };
     let day = today(v);
     let mut rows = attention(&state);
+    audit_rows(v, &state, &mut rows);
     rows.retain(|r| v.sh.later.get(&r.key).is_none_or(|d| *d <= day));
-    let posture = posture(&state);
+    let mut posture = posture(&state);
+    // The audit of the whole system: when it last ran, and the key that shows it.
+    posture.push(crate::security::Line {
+        what: "audit",
+        state: match v.sh.sec_last {
+            Some(at) if v.secs_since(at) <= 45 * 86_400 => Cover::Ok,
+            Some(_) => Cover::Weak,
+            None => Cover::Unknown,
+        },
+        text: match v.sh.sec_last {
+            Some(at) => format!(
+                "The security audit of every target: {} · S shows it",
+                sentry_app::secaudit::audited(v.now, at)
+            ),
+            None => "The security audit of every target has never run · S runs it".into(),
+        },
+    });
     let shut = s
         .uci
         .value
@@ -134,6 +151,127 @@ pub fn built(v: &View) -> Built {
         posture,
         shut,
     }
+}
+
+/// What a server's own guard says, when the window has a server that has one: read by
+/// name from what that target says of itself (the app carries it; this crate knows no
+/// server). Whether the router enforces its bans is the router's own bouncer.
+pub fn server_guard(v: &View) -> Option<crate::security::attention::ServerGuard> {
+    let sys = v
+        .system
+        .iter()
+        .find(|s| s.line.fact("guard.blocked").is_some())?;
+    Some(crate::security::attention::ServerGuard {
+        server: sys.peer.title.clone(),
+        banned_today: sys.line.fact("guard.blocked")?.parse().ok()?,
+        scenarios: sys
+            .line
+            .fact("guard.scenarios")
+            .unwrap_or("")
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        enforced_here: match v.s.crowdsec.value.as_ref() {
+            None => None,
+            Some(None) => Some(false),
+            Some(Some(b)) => Some(b.on() && b.age_s.is_some()),
+        },
+    })
+}
+
+/// The page's own row that is already about an audit item's subject, by its key (a
+/// prefix), for the items that are this network's.
+fn audit_subject(what: &str) -> Option<&'static str> {
+    Some(match what {
+        "ssh-password" => "finding:net:ssh:password",
+        "admin-http" => "finding:net:luci:http",
+        "unknown-devices" => "finding:net:client:",
+        "crossing" => "finding:net:flow:",
+        "dns-filter" => "sec:blocklist",
+        "wan-input" => "finding:net:zone:",
+        "watch" => "finding:net:crowdsec:",
+        _ => return None,
+    })
+}
+
+/// The security audit's items this page lists (`Shared::sec`), joined with its own rows by
+/// subject: where the page already has the row (it has the action), that row takes the
+/// audit's why and its urgency and the item gets none; where the page's row was marked
+/// expected, the item stays away too; the rest become rows of their own. What Maintenance
+/// does (firmware, packages, the backup) is a row whose Enter goes there.
+fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
+    use sentry_core::secaudit::State as St;
+    let me = crate::tui::id_of(v.name);
+    for i in &v.sh.sec {
+        let own = i.targets.len() <= 1 || i.targets.contains(&me);
+        let what = i.id.split(':').nth(1).unwrap_or("");
+        let rank = match i.state {
+            St::DoFirst => Rank::Now,
+            _ => Rank::Look,
+        };
+        if let Some(prefix) = audit_subject(what).filter(|_| own || what == "watch") {
+            if let Some(r) = rows.iter_mut().find(|r| r.key.starts_with(prefix)) {
+                r.rank = r.rank.min(rank);
+                r.can_wait = false;
+                if !i.why.is_empty() && !r.why.contains(&i.why) {
+                    r.why = format!("{} {}", i.why, r.why);
+                }
+                continue;
+            }
+            // The page read it and has no row: expected, or no longer so.
+            let id = prefix.trim_start_matches("finding:");
+            let expected = s
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with(id) && f.expected)
+                || s.expected
+                    .iter()
+                    .any(|g| sentry_core::baseline::glob(g, id.trim_end_matches(':')));
+            let read = match what {
+                "unknown-devices" => s.read.clients.is_some(),
+                "dns-filter" => s.read.dns.is_some(),
+                _ => false,
+            };
+            if expected || read {
+                continue;
+            }
+        }
+        let key = sentry_app::secaudit::row_key(&i.id);
+        if s.expected
+            .iter()
+            .any(|g| sentry_core::baseline::glob(g, &key))
+        {
+            continue;
+        }
+        let maint = matches!(what, "firmware" | "packages" | "backup") && own;
+        rows.push(Row {
+            id: key.clone(),
+            key,
+            rank,
+            title: i.title.clone(),
+            why: match (i.state, i.fix.is_empty()) {
+                (St::Ask, _) => {
+                    "The security audit can't read this: only you know. Enter answers it."
+                        .to_string()
+                }
+                (_, true) => i.why.clone(),
+                (_, false) => format!("{} What it takes: {}", i.why, i.fix),
+            },
+            seen: i.evidence.clone(),
+            act: if maint {
+                Act::Maint
+            } else {
+                Act::Audit {
+                    id: i.id.clone(),
+                    asks: i.state == St::Ask,
+                }
+            },
+            subject: Subject::None,
+            can_wait: false,
+        });
+    }
+    rows.sort_by_key(|r| r.rank);
 }
 
 impl Built {
@@ -211,6 +349,7 @@ fn enter_word(a: &Act) -> &'static str {
     match a {
         // A session is Claude's: without Claude Code, Enter shows the evidence.
         Act::Finding(_) | Act::Server { .. } if !claude() => "the numbers",
+        Act::Audit { asks: false, .. } if !claude() => "the report",
         a => a.enter(),
     }
 }
@@ -250,7 +389,12 @@ pub fn hints(v: &View) -> Hints {
     if v.everything || b.listed(v).1 > 0 {
         h.push(("o", maintlist::everything_word(v.everything)));
     }
-    h.extend([("d", "numbers"), ("r", "read again"), ("v", "records")]);
+    h.extend([
+        ("S", "audit"),
+        ("d", "numbers"),
+        ("r", "read again"),
+        ("v", "records"),
+    ]);
     h
 }
 
@@ -268,6 +412,10 @@ pub fn help() -> Hints {
         ("z", "look again later: 7, 30 or 90 days"),
         ("o", "everything: what is only good to know too"),
         ("A", "ask Claude about what the screen shows"),
+        (
+            "S",
+            "the security audit of every target: its report, S there runs it",
+        ),
         ("d", "the numbers behind it (? there: what each is not)"),
         ("r / v", "read everything again / records and the log"),
         (
@@ -581,6 +729,13 @@ fn enter(v: &View, row: &Row, sec: &mut Security) -> Vec<Effect> {
         Act::Blocklist { stale: true, .. } => start(Do::ListRefresh),
         Act::Blocklist { .. } => start(Do::ListSchedule),
         Act::WifiKey => wifi_choice(v, row),
+        // The audit's own: a session across whatever targets it names, or your answer.
+        Act::Audit { id, asks } if *asks || claude() => vec![Effect::SecItem(id.clone())],
+        Act::Audit { .. } => vec![Effect::SecShow],
+        Act::Maint => vec![
+            Effect::Goto(sentry_core::tui::ScreenId::Maint),
+            Effect::Toast("Maintenance does it: its row is in the list here".into()),
+        ],
         // What has no fixed remedy: a session with Claude plans it, you approve.
         Act::Finding(_) | Act::Server { .. } if claude() => match crate::tui::ask::scrub(v) {
             Ok(_) => vec![Effect::ApplyAsk],
@@ -630,6 +785,12 @@ pub fn apply_ask(v: &View) -> Option<sentry_core::claude::Ask> {
         // session carries out.
         Act::Server { brief: said } => {
             crate::tui::ask::apply_brief(v, &row.key, &row.title, &format!("{brief}\n{said}"))
+        }
+        Act::Audit { id, asks: false } => {
+            v.sh.sec
+                .iter()
+                .find(|i| &i.id == id)
+                .map(|i| crate::tui::ask::apply_audit(v, i))
         }
         _ => None,
     }
@@ -866,8 +1027,16 @@ fn enter_says(a: &Act) -> &'static str {
             "Enter: a session with Claude. It reads the router, plans the fix, you approve; a config change goes through the guard."
         }
         Act::Server { .. } if claude() => {
-            "Enter: a session with Claude, for what must change on the server and the router."
+            "Enter: one session with Claude across the server and the router. It reads both, shows one plan with each step on the device it belongs to, and you approve it once."
         }
+        Act::Audit { asks: true, .. } => {
+            "From the security audit. Enter: yes, no, or you don't know; the audit's list follows your answer."
+        }
+        Act::Audit { .. } if claude() => {
+            "From the security audit (S shows it). Enter: a session with Claude that fixes it, on whichever devices it takes; you approve its plan first."
+        }
+        Act::Audit { .. } => "From the security audit. Enter: its report.",
+        Act::Maint => "From the security audit. Enter: Maintenance (6), where it is done.",
         Act::Finding(_) | Act::Server { .. } | Act::Evidence => {
             "Enter: the numbers behind it. Nothing here needs changing on the router."
         }

@@ -90,10 +90,18 @@ pub enum Act {
     Finding(String),
     /// Nothing to do but look: Enter shows the numbers.
     Evidence,
-    /// Its fix is on the server (seam: only when `State.server_guard` is there).
+    /// Its fix spans the server and the router: one session across both.
     Server {
         brief: String,
     },
+    /// One of the security audit's items (its id): a session that fixes it; `asks`: what
+    /// only you know, answered with a pick.
+    Audit {
+        id: String,
+        asks: bool,
+    },
+    /// The audit says it, Maintenance does it (firmware, packages, the backup).
+    Maint,
 }
 
 impl Act {
@@ -110,7 +118,10 @@ impl Act {
             Act::WifiKey => "new password",
             Act::Finding(_) => "fix",
             Act::Evidence => "the numbers",
-            Act::Server { .. } => "on the server",
+            Act::Server { .. } => "finish it",
+            Act::Audit { asks: true, .. } => "answer",
+            Act::Audit { .. } => "fix",
+            Act::Maint => "Maintenance",
         }
     }
 }
@@ -134,9 +145,8 @@ pub struct Row {
 }
 
 /// What the server's own guard (CrowdSec) reports about the doors this router forwards to
-/// it. A seam: nothing fills it yet (it needs the server target's reader, which the
-/// cross-target stage provides), so it is always `None`; its line and row are drawn when
-/// it is there.
+/// it: said by the server target (`SystemLine::facts`), carried by the app, read here by
+/// name. None without a server that has one (or before it was read).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerGuard {
     /// The server, as the window names it.
@@ -269,7 +279,25 @@ fn sev_rank(s: Sev) -> Rank {
 /// The findings that are about security but have no sentence of their own here: said in
 /// the audit's words, fixed in a session. (What only differs from what the config
 /// expects, a zone's members, a forward that is gone, is Maintenance's.)
-const OTHER: &[&str] = &["net:service:", "net:crowdsec:", "net:cert:"];
+const OTHER: &[&str] = &["net:service:", "net:cert:"];
+
+/// The finding and the row for CrowdSec's blocker at the edge: one id, here and on
+/// Maintenance.
+pub const EDGE: &str = "net:crowdsec:bouncer";
+
+/// The router has the blocker and it isn't switched on: one sentence, wherever it is said
+/// (the posture, the row, the finding, the audit).
+pub fn edge_off(server: bool) -> String {
+    format!(
+        "CrowdSec's blocker is installed on the router but not switched on: {} isn't \
+         enforced at the edge yet",
+        if server {
+            "the server's blocklist"
+        } else {
+            "what CrowdSec would block"
+        }
+    )
+}
 /// These only when they are high: the outside reaches something.
 const OTHER_HIGH: &[&str] = &["net:zone:", "net:listener:"];
 
@@ -755,32 +783,98 @@ pub fn attention(s: &State) -> Vec<Row> {
         }
     }
 
-    // What the server's guard saw (only when something provides it).
-    if let Some(g) = s.server_guard.filter(|g| g.banned_today > 0)
-        && g.enforced_here == Some(false)
-        && !s.dismissed("sec:server:bans")
-    {
-        out.push(own(
-            "sec:server:bans",
-            Rank::Look,
-            format!(
-                "{} blocked {} attacker(s) today, but the router still lets them knock",
-                g.server, g.banned_today
-            ),
-            "The server refuses them itself; the router could refuse them at the door, for \
-             every device behind it.",
-            Act::Server {
-                brief: format!(
-                    "{} banned {} address(es) today ({}). The router doesn't enforce those \
-                     bans. Plan what it takes on both to have the router's firewall enforce \
-                     them.",
+    // CrowdSec at the edge: ONE row, whatever says it (the router's own finding, the
+    // server's guard), and its Enter is the session across both that finishes it.
+    let edge_key = format!("finding:{EDGE}");
+    let edge_expected = s.findings.iter().any(|f| f.id == EDGE && f.expected);
+    if !edge_expected && !s.dismissed(EDGE) {
+        let guard = s.server_guard;
+        let unenforced = guard.filter(|g| g.enforced_here == Some(false));
+        let off = s.bouncer.is_some_and(|b| !b.on());
+        let seen = |extra: Vec<String>| {
+            let mut v = extra;
+            if let Some(g) = guard {
+                v.push(format!(
+                    "{} blocked {} attacker(s) today{}",
                     g.server,
                     g.banned_today,
-                    g.scenarios.join(", ")
-                ),
-            },
-            Subject::Ingress,
-        ));
+                    match g.scenarios.first() {
+                        Some(x) => format!(" (mostly {x})"),
+                        None => String::new(),
+                    }
+                ));
+            }
+            v
+        };
+        let row = if off {
+            Some(Row {
+                key: edge_key.clone(),
+                id: EDGE.into(),
+                rank: Rank::Look,
+                title: edge_off(guard.is_some()),
+                why: "The server refuses the attackers CrowdSec catches by itself; the router \
+                      could refuse them at the door, for every device behind it. The package \
+                      is there: it needs the server's address and a key, and switching on."
+                    .into(),
+                seen: seen(vec!["the bouncer: installed, switched off".into()]),
+                act: Act::Server {
+                    brief: sentry_core::secaudit::EDGE_FIX.into(),
+                },
+                subject: Subject::Ingress,
+                can_wait: false,
+            })
+        } else if let Some(f) = s.open(EDGE) {
+            let mut r = finding_row(
+                f,
+                cap(&f.message),
+                if f.why.is_empty() {
+                    f.what.clone()
+                } else {
+                    f.why.clone()
+                },
+                Act::Server {
+                    brief: format!(
+                        "On the router: {}. {} Find the cause on the router or on the server \
+                         whose CrowdSec it asks, and fix it where it is.",
+                        f.message, f.what
+                    ),
+                },
+                Subject::Ingress,
+            );
+            r.seen = seen(r.seen);
+            Some(r)
+        } else {
+            unenforced
+                .filter(|g| g.banned_today > 0 && s.bouncer.is_none())
+                .map(|g| Row {
+                    key: edge_key.clone(),
+                    id: EDGE.into(),
+                    rank: Rank::Look,
+                    title: format!(
+                        "{} blocked {} attacker(s) today, but the router still lets them knock",
+                        g.server, g.banned_today
+                    ),
+                    why: "The server refuses them itself; the router could refuse them at \
+                          the door, for every device behind it."
+                        .into(),
+                    seen: seen(Vec::new()),
+                    act: Act::Server {
+                        brief: format!(
+                            "{} banned {} address(es) today ({}). The router doesn't enforce \
+                             those bans. Plan what it takes on both to have the router's \
+                             firewall enforce them: CrowdSec's firewall bouncer on the router, \
+                             fed by the server's CrowdSec. {}",
+                            g.server,
+                            g.banned_today,
+                            g.scenarios.join(", "),
+                            sentry_core::secaudit::EDGE_FIX
+                        ),
+                    },
+                    subject: Subject::Ingress,
+                    can_wait: false,
+                })
+        };
+        out.extend(row);
     }
 
     out.sort_by_key(|r| r.rank);
@@ -1117,11 +1211,9 @@ pub fn posture(s: &State) -> Vec<Line> {
     if let Some(b) = s.bouncer {
         let down = open("net:crowdsec:");
         match (b.enabled, b.age_s, b.blocked()) {
-            (Some(false), _, _) => say(
-                "edge",
-                Cover::Off,
-                "The router has CrowdSec's blocker installed, but it is switched off".into(),
-            ),
+            (e, _, _) if e != Some(true) => {
+                say("edge", Cover::Off, edge_off(s.server_guard.is_some()))
+            }
             (_, None, _) => say(
                 "edge",
                 Cover::Off,
@@ -1588,16 +1680,18 @@ mod tests {
             (Rank::Note, true, &Act::Evidence)
         );
 
-        // What the server's guard saw: only when something provides it.
+        // What the server's guard saw: only when a server says it. ONE row for CrowdSec at
+        // the edge, under the finding's own id (Maintenance's), whatever says it.
+        const EDGE_ROW: &str = "finding:net:crowdsec:bouncer";
         let mut w = World::fixture();
-        assert!(!w.has("sec:server") && w.cover("server").is_none());
+        assert!(!w.has(EDGE_ROW) && w.cover("server").is_none());
         w.guard = Some(ServerGuard {
             server: "myserver".into(),
             banned_today: 7,
             scenarios: vec!["ssh brute force".into()],
             enforced_here: Some(false),
         });
-        let r = w.row("sec:server:bans");
+        let r = w.row(EDGE_ROW);
         assert_eq!(
             r.title,
             "myserver blocked 7 attacker(s) today, but the router still lets them knock"
@@ -1611,8 +1705,55 @@ mod tests {
             ))
         );
         w.guard.as_mut().unwrap().enforced_here = Some(true);
-        assert!(!w.has("sec:server"));
+        assert!(!w.has(EDGE_ROW));
         assert_eq!(w.cover("server").unwrap().0, Cover::Ok);
+
+        // The bouncer installed on the router and not switched on: the posture, the row
+        // and the finding say one thing, there is one row, and its Enter is the session
+        // across the server and the router that finishes it.
+        const OFF: &str = "CrowdSec's blocker is installed on the router but not switched on: the server's blocklist isn't enforced at the edge yet";
+        let mut w = World::fixture();
+        w.bouncer = Some(Bouncer {
+            enabled: Some(false),
+            blocked4: None,
+            blocked6: None,
+            age_s: None,
+        });
+        w.guard = Some(ServerGuard {
+            server: "myserver".into(),
+            banned_today: 7,
+            scenarios: vec!["ssh brute force".into()],
+            enforced_here: Some(false),
+        });
+        let rows = w.with(attention);
+        let edge: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.key.contains("crowdsec") || r.key.contains("server"))
+            .collect();
+        assert_eq!(edge.len(), 1, "{edge:#?}");
+        let r = edge[0];
+        assert_eq!((r.key.as_str(), r.id.as_str()), (EDGE_ROW, EDGE));
+        assert_eq!(
+            (r.title.as_str(), r.rank, r.can_wait),
+            (OFF, Rank::Look, false)
+        );
+        assert!(
+            matches!(&r.act, Act::Server { brief } if brief.contains("captured as a secret")
+                && brief.contains("guarded change")),
+            "{:?}",
+            r.act
+        );
+        assert!(r.seen.iter().any(|s| s.starts_with("myserver blocked 7")));
+        assert_eq!(w.cover("edge"), Some((Cover::Off, OFF.into())));
+        // Without a server that says anything, the same sentence without one.
+        w.guard = None;
+        assert_eq!(
+            w.row(EDGE_ROW).title,
+            "CrowdSec's blocker is installed on the router but not switched on: what CrowdSec would block isn't enforced at the edge yet"
+        );
+        // Marked expected (here or on Maintenance): gone from both.
+        w.expected = vec![EDGE.into()];
+        assert!(!w.has(EDGE_ROW));
     }
 
     #[test]

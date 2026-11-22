@@ -51,8 +51,38 @@ pub fn waiting(v: &View) -> usize {
     sentry_core::maint::rec::needed(every_rec(v), v.everything).1
 }
 
-/// Every recommendation there is, whatever is shown.
+/// Which row here is already about the subject of one of the security audit's items:
+/// the updates waiting, the reboot, an item that is behind, a container's socket.
+fn audit_same(i: &sentry_core::secaudit::Item, recs: &[Rec]) -> Option<usize> {
+    let what = i.id.split(':').nth(1).unwrap_or("");
+    let last = i.id.rsplit(':').next().unwrap_or("");
+    let key = |f: &dyn Fn(&str) -> bool| recs.iter().position(|r| f(&r.key));
+    match what {
+        "os" => key(&|k| k.ends_with(":updates") || k.starts_with("finding:srv:updates")),
+        "reboot" => key(&|k| k == "reboot" || k == "finding:srv:reboot-required"),
+        "app" => recs
+            .iter()
+            .position(|r| r.item.as_deref() == Some(last) || r.key == last),
+        "ctr" => key(&|k| k == format!("finding:srv:docker-sock:{last}")),
+        "watch" => key(&|k| k.starts_with("finding:srv:crowdsec:")),
+        _ => None,
+    }
+}
+
+/// Every recommendation there is, whatever is shown: the server's own, then the security
+/// audit's items that are this server's alone.
 pub fn every_rec(v: &View) -> Vec<Rec> {
+    sentry_core::maint::rec::with_audit(
+        own_recs(v),
+        &v.sh.sec,
+        &v.sh.later,
+        v.now.to_zoned(jiff::tz::TimeZone::UTC).date(),
+        audit_same,
+        Action::Security,
+    )
+}
+
+fn own_recs(v: &View) -> Vec<Rec> {
     let empty = Vec::new();
     recommend::recommend(&recommend::Inputs {
         items: &v.cfg.maintenance.items,
@@ -441,6 +471,13 @@ fn row_verbs(v: &View) -> Verbs {
                 }
             }
             Action::Audit => only("audit"),
+            Action::Security(id) => only(
+                if v.sh.sec.iter().any(|i| &i.id == id && i.question.is_some()) {
+                    "answer"
+                } else {
+                    "fix"
+                },
+            ),
             Action::Run(_) => match r.item.as_deref() {
                 Some(id) => item(id, "start"),
                 None => only("start"),
@@ -503,6 +540,9 @@ fn action_words(a: &Action) -> String {
         Action::Look(_) => "Enter: go to the item".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it".into(),
         Action::Audit => "Enter: audit the server now".into(),
+        Action::Security(_) => {
+            "From the security audit (S shows it). Enter: a session with Claude that fixes it, or your answer where only you know".into()
+        }
         Action::Task(_) => "A task: Enter does it".into(),
     }
 }
@@ -1019,6 +1059,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Own::fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
+        ('\n', Action::Security(id)) => vec![Effect::SecItem(id.clone())],
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
         ('m', Action::Task(id)) => task_manual(v, id),

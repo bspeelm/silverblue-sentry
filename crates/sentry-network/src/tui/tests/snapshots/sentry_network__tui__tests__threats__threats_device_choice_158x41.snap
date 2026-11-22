@@ -22,8 +22,8 @@ expression: s
 │        update by itself            │ 1  It's mine: give it a name                                                     │                                    │
 │ ✓ ok   2 Wi-Fi networks, password-p│ 2  Block it from the internet (it stays on your network)                         │                                    │
 │ ! weak ssh takes a password, and th│ 3  Block it from everything, the router included                                 │                                    │
-└────────────────────────────────────│ 4  Pause its internet for an hour                                                │                                    │
-                                     │ 5  Pause its internet until tomorrow morning                                     │                                    │
+│ ? ?    The security audit of every │ 4  Pause its internet for an hour                                                │                                    │
+└────────────────────────────────────│ 5  Pause its internet until tomorrow morning                                     │                                    │
                                      │ 6  Look again in a week                                                          │                                    │
                                      │                                                                                  │                                    │
                                      │ Blocking and pausing are firewall rules by MAC, made through the guard:          │                                    │

@@ -809,6 +809,22 @@ pub fn apply_brief(v: &View, key: &str, title: &str, brief: &str) -> Option<Ask>
     Some(hidden(a, &s))
 }
 
+/// The session that fixes one of the security audit's items, started on this network: the
+/// audit's own brief (its evidence carries no address or name: the rules left them out),
+/// with this router's rules for a session.
+pub fn apply_audit(v: &View, i: &sentry_core::secaudit::Item) -> Ask {
+    let own = i.ask();
+    let a = Ask::apply(
+        format!("{} · {}", v.name, i.title),
+        format!("{}{}\n{}", header(v), own.context, own.question),
+        apply(sentry_app::secaudit::row_key(&i.id)),
+    );
+    match scrub(v) {
+        Ok(s) => hidden(a, &s),
+        Err(_) => a,
+    }
+}
+
 /// Applying a Maintenance row with Claude (None: it isn't something to apply, or it can't
 /// be sent yet). `steps` describes a workflow.
 pub fn apply_rec(v: &View, x: &maint::Rec, steps: &dyn Fn(&str) -> String) -> Option<Ask> {

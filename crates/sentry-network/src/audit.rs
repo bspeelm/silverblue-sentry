@@ -925,11 +925,12 @@ fn crowdsec(b: &collect::crowdsec::Bouncer, running: Option<bool>) -> Option<Fin
                 id,
                 Sev::Low,
                 "services",
-                "CrowdSec's firewall bouncer is installed and not switched on".into(),
+                "CrowdSec's blocker is installed on the router but not switched on".into(),
             )
             .explain(
                 "The package is on the router; `option enabled` in /etc/config/crowdsec isn't 1.",
-                "It blocks nothing until it has an agent's address and key and is switched on.",
+                "Nothing CrowdSec would block is enforced at the edge yet: it needs an \
+                 agent's address and key, and switching on.",
                 "Set it up (api_url, api_key, enabled), or remove the package if it isn't wanted.",
             ),
         );

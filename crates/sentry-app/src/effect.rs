@@ -112,6 +112,19 @@ pub enum Effect {
     LogEvent(Box<LogEntry>),
     /// Close the Plan view.
     PlanClose,
+    /// The security audit (the window's, across every target): its report, or, with none
+    /// yet, run it (`S`, `:audit security`).
+    SecShow,
+    /// Run it now (its task's Enter).
+    SecRun,
+    /// Enter on one of its rows (the item's id): a session that fixes it, or the pick for
+    /// what only the user knows.
+    SecItem(String),
+    /// The answer to one of its questions (None: not known; the item's id then).
+    SecAnswer(String, Option<bool>),
+    /// A target that never had the window starts now (its id): this one's screen shows
+    /// what it knows.
+    Wake(String),
     /// From a target: a line of its own in the open chat.
     ChatNote(String),
     /// From a target: what the apply session fixed was audited again (true: it's gone).

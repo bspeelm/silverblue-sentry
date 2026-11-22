@@ -21,8 +21,8 @@ expression: s
 │        update by itself                                                            │ │                                                                     │
 │ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
 │ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
+│ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
@@ -42,4 +42,4 @@ expression: s
                                                                                        │                                                                     │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- o  everything   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit
+ o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

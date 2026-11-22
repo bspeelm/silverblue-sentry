@@ -187,6 +187,8 @@ pub fn run(open: Open) -> u8 {
         }
         let mut app = app.expect("a target");
         app.focus_at_start(plan.focus);
+        // The security audit is the window's: every target's facts, read side by side.
+        app.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
         // What's wrong in a config file, said once the TUI is up (ahead of a `[keys]` warning).
         if let Some(w) = warnings.into_iter().next() {
             app.warn_at_start(w);

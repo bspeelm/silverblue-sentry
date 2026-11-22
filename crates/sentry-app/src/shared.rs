@@ -35,6 +35,11 @@ pub struct Shared {
     pub wf_list: Vec<WfInfo>,
     /// Where they come from (shown with the run).
     pub wf_dir: String,
+    /// When the security audit last ran (the window's; its task is this machine's).
+    pub sec_last: Option<jiff::Timestamp>,
+    /// The security audit's items this target lists (`secaudit::mine`): to do first, worth
+    /// doing, asked. The app's copy of what is the window's, kept as the report changes.
+    pub sec: Vec<sentry_core::secaudit::Item>,
 }
 
 impl Shared {

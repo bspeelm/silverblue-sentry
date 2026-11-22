@@ -103,8 +103,9 @@ fn security_list_wide() {
     );
     assert!(s.contains("3 refused · 1 left before logging in"), "{s}");
     assert!(
-        bar(&s)
-            .contains("Enter  the numbers   x  expected   z  later   o  everything   d  numbers"),
+        bar(&s).contains(
+            "Enter  the numbers   x  expected   z  later   o  everything   S  audit   d  numbers"
+        ),
         "{}",
         bar(&s)
     );

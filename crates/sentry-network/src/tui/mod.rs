@@ -99,6 +99,24 @@ pub mod testing {
         )
     }
 
+    /// What reading the router's CrowdSec bouncer would have sent: installed, switched on
+    /// (and running) or not.
+    pub fn bouncer_ev(network: &str, on: bool) -> super::Event {
+        let b = crate::collect::crowdsec::Bouncer {
+            enabled: Some(on),
+            blocked4: on.then_some(0),
+            blocked6: None,
+            age_s: on.then_some(60),
+        };
+        super::Event::Data(
+            super::id_of(network),
+            Box::new(Data(
+                Kind::Crowdsec,
+                Box::new(Ok(Payload::Crowdsec(Some(b)))),
+            )),
+        )
+    }
+
     /// The fetches the network in slot `i` has asked for so far, in order (asked for: with
     /// the window offline none is started, but each is still counted).
     pub fn asked(a: &super::App, i: usize) -> Vec<&'static str> {

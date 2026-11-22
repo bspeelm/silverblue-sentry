@@ -46,6 +46,9 @@ pub enum Action {
     OpenPlan(String),
     /// A task from a review (its id): what Enter does is the task's own `do`.
     Task(String),
+    /// One of the security audit's items that is this machine's (its id): a session that
+    /// fixes it, or the answer to what only the user knows.
+    Security(String),
 }
 
 /// Keys: `finding:<id>`, `updates`, `reboot`, `job:<name>`, `cleanup`, `run`,

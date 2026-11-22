@@ -51,8 +51,8 @@ impl LocalTarget {
 }
 
 impl Upkeep for LocalTarget {
-    fn derived_tasks(&self, _sh: &Shared) -> Vec<Task> {
-        crate::jobs::state::tasks(&self.cfg)
+    fn derived_tasks(&self, sh: &Shared) -> Vec<Task> {
+        maint::derived_tasks(&self.cfg, sh)
     }
 
     fn with_known(&self, sh: &Shared, cx: &Cx, f: &mut dyn FnMut(&Known)) {

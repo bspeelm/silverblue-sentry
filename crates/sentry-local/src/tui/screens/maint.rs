@@ -69,6 +69,8 @@ pub fn how(v: &View, r: &Rec) -> Option<How> {
         }
         Do::Audit => Some(How::Audit),
         Do::Run(wf) | Do::OpenPlan(wf) => Some(How::Workflow(wf.clone())),
+        // The security audit is the window's own flow, not a row of a series.
+        Do::Task(id) if id == sentry_core::secaudit::TASK_ID => None,
         Do::Task(id) => match task(v, id)?.action() {
             TaskDo::Run(wf) => Some(How::Workflow(wf)),
             TaskDo::Audit => Some(How::Audit),
@@ -142,6 +144,11 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
         Do::Cleanup => "clean up",
         Do::OpenRun => "open run",
         Do::OpenPlan(_) => "apply the plan",
+        Do::Security(id) if v.sh.sec.iter().any(|i| &i.id == id && i.question.is_some()) => {
+            "answer"
+        }
+        Do::Security(_) => "fix",
+        Do::Task(id) if id == sentry_core::secaudit::TASK_ID => "audit",
         Do::Task(id) => match task(v, id).map(|t| t.action()) {
             Some(TaskDo::Run(_)) => "start",
             Some(TaskDo::Audit) => "audit",
@@ -307,6 +314,31 @@ pub fn waiting(v: &View) -> usize {
 
 /// The recommendations, from what's loaded.
 pub fn recs_all(v: &View) -> Vec<Rec> {
+    crate::maint::rec::with_audit(
+        own_recs(v),
+        &v.sh.sec,
+        &v.sh.later,
+        jiff::Zoned::now().date(),
+        audit_same,
+        Do::Security,
+    )
+}
+
+/// Which row here is already about the subject of one of the security audit's items: the
+/// updates waiting, the staged reboot, a listener open to everyone, the firewall.
+fn audit_same(i: &sentry_core::secaudit::Item, recs: &[Rec]) -> Option<usize> {
+    let what = i.id.split(':').nth(1).unwrap_or("");
+    let key = |f: &dyn Fn(&str) -> bool| recs.iter().position(|r| f(&r.key));
+    match what {
+        "os" => key(&|k| k == "updates"),
+        "reboot" => key(&|k| k == "reboot"),
+        "listen-wide" => key(&|k| k.starts_with("finding:listener:")),
+        "firewall" => key(&|k| k.starts_with("finding:firewall")),
+        _ => None,
+    }
+}
+
+fn own_recs(v: &View) -> Vec<Rec> {
     let run = v.wf.map(|s| {
         let i = s.next.idx();
         RunInfo {
@@ -352,7 +384,15 @@ pub fn recs_all(v: &View) -> Vec<Rec> {
 
 /// Every task that applies: `tasks.toml`'s and the jobs' cadences.
 pub fn all_tasks(v: &View) -> Vec<Task> {
-    crate::maint::tasks::effective(&v.sh.tasks, crate::jobs::state::tasks(v.cfg))
+    crate::maint::tasks::effective(&v.sh.tasks, derived_tasks(v.cfg, v.sh))
+}
+
+/// The tasks nothing wrote down: the jobs' cadences, and the security audit (the whole
+/// system's, kept here: this machine is where sentry runs).
+pub fn derived_tasks(cfg: &crate::config::Config, sh: &sentry_app::shared::Shared) -> Vec<Task> {
+    let mut t = crate::jobs::state::tasks(cfg);
+    t.push(sentry_core::secaudit::task(sh.sec_last, &sh.log));
+    t
 }
 
 /// The task behind a `Task` recommendation.
@@ -687,6 +727,7 @@ impl Maint {
             Do::OpenRun => vec![Effect::Goto(crate::tui::ScreenId::Upgrade)],
             // A plan ready for it: its session opens on that plan, to approve.
             Do::OpenPlan(wf) => vec![Effect::PlanApply(wf.clone())],
+            Do::Security(id) => vec![Effect::SecItem(id.clone())],
             Do::Task(id) => task_effects(v, id),
         }
     }
@@ -887,12 +928,16 @@ fn action_words(a: &Do) -> String {
         Do::OpenPlan(_) => {
             "Enter: the plan, to approve (it starts its workflow) · p reads it".into()
         }
+        Do::Security(_) => "From the security audit (S shows it). Enter: a session with Claude that fixes it, or your answer where only you know".into(),
         Do::Task(_) => "A task: Enter does it".into(),
     }
 }
 
 /// What Enter does on a task, in words.
 fn task_words(task: &Task) -> String {
+    if task.id == sentry_core::secaudit::TASK_ID {
+        return "Enter runs the security audit across every target (reads only, a minute or two); it's done when the audit has run.".into();
+    }
     match task.action() {
         TaskDo::Run(wf) => format!("Enter starts {wf}; it's done when the run ends well."),
         TaskDo::Audit => "Enter audits now; it's done with the audit.".into(),
@@ -911,6 +956,9 @@ pub fn task_effects(v: &View, id: &str) -> Vec<Effect> {
     let Some(task) = task(v, id) else {
         return Vec::new();
     };
+    if id == sentry_core::secaudit::TASK_ID {
+        return vec![Effect::SecRun];
+    }
     match task.action() {
         TaskDo::Run(wf) => vec![Effect::StartWorkflow(wf)],
         TaskDo::Audit => vec![audit::audit_run()],

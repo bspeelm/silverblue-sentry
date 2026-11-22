@@ -45,6 +45,9 @@ pub struct View<'a> {
     /// The workflow run in progress (or just ended).
     pub wf: Option<&'a crate::workflow::Session>,
     pub auto: bool,
+    /// The window's other targets, as last surveyed: what each says of itself
+    /// (`SystemLine::facts`; a server's guard, for Security).
+    pub system: &'a [sentry_app::system::Sys],
 }
 
 impl View<'_> {
@@ -77,6 +80,7 @@ impl View<'_> {
             everything: self.everything,
             wf: self.wf,
             auto: self.auto,
+            system: self.system,
         }
     }
 }

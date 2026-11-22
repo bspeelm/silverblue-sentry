@@ -37,6 +37,15 @@ impl Slot {
                         self.apply_fx(w, fx);
                     }
                 }
+                Effect::SecShow => self.sec_show(w),
+                Effect::SecRun => self.sec_run(w),
+                Effect::SecItem(id) => self.sec_item(w, &id),
+                Effect::SecAnswer(key, said) => self.sec_answer(w, &key, said),
+                Effect::Wake(id) => {
+                    if w.system.iter().any(|s| s.peer.id == id) {
+                        w.outbox.push_back((id, crate::system::Parcel::Wake));
+                    }
+                }
                 Effect::Toast(s) => w.toast(&s),
                 Effect::Quit => w.quit = true,
                 Effect::Info(title, lines) => {
