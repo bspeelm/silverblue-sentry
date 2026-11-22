@@ -46,6 +46,12 @@ pub fn secret(option: &str) -> bool {
         .any(|s| last == *s || last.ends_with(&format!("_{s}")))
 }
 
+/// The same, or one of a daemon's own names for a passphrase: what a staging line must
+/// never be written down with.
+pub fn secret_option(option: &str) -> bool {
+    secret(option) || wifi_secret(option)
+}
+
 /// A network's salt.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Salt([u8; 16]);

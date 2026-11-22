@@ -89,6 +89,10 @@ pub struct Session {
     prog: &'static str,
     env: Box<dyn Env>,
     words: Words,
+    /// Values the run was started with that are never written down (a router's new
+    /// passphrase): the run's state, its log and its card have what stands for them, and
+    /// a step is run with these. In memory only: a run picked up again doesn't have them.
+    held: BTreeMap<String, String>,
 }
 
 impl Session {
@@ -106,6 +110,7 @@ impl Session {
             prog,
             env,
             words: Words::default(),
+            held: BTreeMap::new(),
         };
         s.refresh();
         s
@@ -161,6 +166,13 @@ impl Session {
     /// The run says these words for its host from now on.
     pub fn on(mut self, words: Words) -> Self {
         self.words = words;
+        self
+    }
+
+    /// The run's steps are carried out with these values in place of the ones it was
+    /// begun with (which are what is kept and shown).
+    pub fn holding(mut self, real: BTreeMap<String, String>) -> Self {
+        self.held = real;
         self
     }
 
@@ -253,6 +265,15 @@ impl Session {
         runner::start(&mut self.run.state, idx, boot);
         self.save();
         self.run.append_log(&id, &format!("$ {cmd}"));
+        // What runs has the values that are held; what was just shown and logged doesn't.
+        let cmd = if self.held.is_empty() {
+            cmd
+        } else {
+            let mut st = self.run.state.clone();
+            st.vars.extend(self.held.clone());
+            let run = self.wf.steps[idx].run.clone().unwrap_or_default();
+            runner::render(&mut st, self.env.as_ref(), &run).unwrap_or(cmd)
+        };
         // `sentry-server cond …` checks the server from here; everything else runs there.
         let here = self.here(&cmd);
         let full = match here {

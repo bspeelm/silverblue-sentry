@@ -290,6 +290,7 @@ impl LocalTarget {
                     docs_keep_run_key: false,
                     review_over_plan: false,
                     label,
+                    typed: |_, _| None,
                     not_started: None,
                     noted: "noted in the maintenance log (v opens it)",
                     task_note: true,

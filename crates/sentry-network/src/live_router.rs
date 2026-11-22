@@ -1329,8 +1329,11 @@ fn live_router_session() {
         "```sentry-apply\nsummary = \"a marker, then the lease through the guard\"\n\n\
          [[step]]\ntitle = \"leave a marker\"\nrun = \"touch /tmp/sentry-session-canary\"\n\n\
          [[step]]\ntitle = \"six-hour leases\"\nworkflow = \"guarded-change\"\n\
-         vars = { configs = \"dhcp\", lines = \"uci set dhcp.lan.leasetime='6h'\", services = \"dnsmasq\" }\n```\n",
+         vars = { configs = \"dhcp\", lines = \"uci set dhcp.lan.leasetime='6h'; uci set dhcp.lan.sentry_test_token='c4nary-Live-Token-71'\", services = \"dnsmasq\" }\n```\n",
     );
+    // (The second line sets an option whose name says secret: its value reaches the
+    // router and nothing sentry writes down or sends. Checked at the end.)
+    const CANARY: &str = "c4nary-Live-Token-71";
     assert!(
         matches!(a.apply_session().unwrap().phase, Phase::Review),
         "{}",
@@ -1354,6 +1357,9 @@ fn live_router_session() {
             && !confirmed
         {
             assert_eq!(i, 1, "the guard step");
+            // Its card shows the tag where the value is.
+            let card = screen(&mut a);
+            assert!(!card.contains(CANARY), "{card}");
             // The marker was made by the first step, before the guard was asked for.
             assert_eq!(on(&r, "ls /tmp/sentry-session-canary").code, 0);
             assert_eq!(
@@ -1370,8 +1376,10 @@ fn live_router_session() {
         if confirmed && thinking && !verdict {
             let prompt = a.slot().last_prompt.clone().unwrap_or_default();
             assert!(!prompt.contains("correct horse battery") && !prompt.contains("Example Net"));
+            assert!(!prompt.contains(CANARY), "{prompt}");
+            // (A verdict that says the value: the log's entry still doesn't.)
             a.apply_answer_for_test(
-                "The lease is six hours.\n\n```sentry-verdict\nstatus = \"done\"\nsummary = \"leases are six hours\"\n```\n",
+                "The lease is six hours.\n\n```sentry-verdict\nstatus = \"done\"\nsummary = \"leases are six hours, the token is c4nary-Live-Token-71\"\n```\n",
             );
             verdict = true;
             continue;
@@ -1409,4 +1417,44 @@ fn live_router_session() {
         "{kinds:?}"
     );
     assert!(log.iter().any(|e| e.head.kind == "apply"), "{kinds:?}");
+    // The secret the change set is on the router, as given, and in nothing sentry keeps:
+    // the run's state and step logs, the guard's journal, the log's entries and ledger.
+    assert_eq!(
+        on(&r, "uci get dhcp.lan.sentry_test_token").stdout.trim(),
+        CANARY
+    );
+    let tag = crate::redact::Salt::load(&scope).unwrap().tag(CANARY);
+    let mut tagged = Vec::new();
+    let mut dirs: Vec<std::path::PathBuf> = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]
+        .iter()
+        .map(|v| std::env::var_os(v).unwrap().into())
+        .collect();
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && !p.is_symlink() {
+                dirs.push(p);
+            } else if let Ok(bytes) = std::fs::read(&p) {
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(!text.contains(CANARY), "{} has the secret", p.display());
+                if text.contains(&tag) {
+                    tagged.push(p.display().to_string());
+                }
+            }
+        }
+    }
+    println!("its tag {tag} is in: {tagged:#?}");
+    for f in [
+        "state.json",
+        "steps/show.log",
+        "steps/guard.log",
+        "-guarded-change.md",
+    ] {
+        assert!(tagged.iter().any(|p| p.ends_with(f)), "{f}: {tagged:#?}");
+    }
+    assert!(
+        log.iter()
+            .any(|e| e.head.kind == "apply" && e.body.contains(&format!("the token is {tag}"))),
+        "the session's entry has the tag where the verdict said the value"
+    );
 }

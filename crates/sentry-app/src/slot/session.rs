@@ -330,6 +330,7 @@ impl Slot {
                         &[format!("apply:{key}"), "wait".into()],
                         jiff::Timestamp::now(),
                     );
+                    let e = self.kept_entry(e);
                     if w.offline {
                         self.shared.log.insert(0, e);
                     } else if sentry_core::maint::log::write(&e).is_ok() {
@@ -767,7 +768,21 @@ impl Slot {
     }
 
     /// Something done outside a workflow (a reboot, a fix): into the maintenance log.
+    /// An entry as the target lets it be written down.
+    pub(crate) fn kept_entry(
+        &self,
+        mut e: sentry_core::maint::log::LogEntry,
+    ) -> sentry_core::maint::log::LogEntry {
+        for t in [&mut e.body, &mut e.head.summary] {
+            if let Some(k) = self.target.kept(t) {
+                *t = k;
+            }
+        }
+        e
+    }
+
     pub(crate) fn log_event(&mut self, w: &mut Win, e: sentry_core::maint::log::LogEntry) {
+        let e = self.kept_entry(e);
         if !w.offline {
             if let Err(err) = sentry_core::maint::log::write(&e) {
                 return w.toast(&format!("couldn't write the maintenance log: {err}"));

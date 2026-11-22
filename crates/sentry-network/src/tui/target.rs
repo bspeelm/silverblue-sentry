@@ -159,6 +159,9 @@ pub struct NetworkTarget {
     ring_failed: bool,
     /// When each fetch of the screen in view is next due.
     due: HashMap<Kind, Instant>,
+    /// The secrets this window's runs were given (a guarded change's new passphrase):
+    /// in memory only, so that nothing written down afterwards says one.
+    given: Vec<String>,
     /// Every fetch asked for, in order (tests: nothing is spawned there, this still counts).
     #[cfg(any(test, feature = "testing"))]
     pub asked: Vec<Kind>,
@@ -192,6 +195,11 @@ impl NetworkTarget {
                     // What a run did is read from the log (a cadence is done when its
                     // workflow last ended well): it follows every entry written.
                     log_kept: true,
+                    // A secret typed among a run's values shows as dots.
+                    typed: |p, text| match p {
+                        effect::Prompt::WfVar(_) => crate::guard::typed(text),
+                        _ => None,
+                    },
                     ..Default::default()
                 },
                 quit: format!("Quit sentry? Nothing keeps running on {name}'s router after exit."),
@@ -226,6 +234,7 @@ impl NetworkTarget {
             has_ring: false,
             ring_failed: false,
             due: HashMap::new(),
+            given: Vec::new(),
             #[cfg(any(test, feature = "testing"))]
             asked: Vec::new(),
         }
@@ -843,6 +852,53 @@ impl Upkeep for NetworkTarget {
 
 /// Claude: asked through the read gateway, told only what has been scrubbed.
 impl Asks for NetworkTarget {
+    /// A secret one of this window's runs was given never reaches the log, whoever's
+    /// words would have said it (a step's note, Claude's verdict, the user's own note).
+    fn kept(&self, text: &str) -> Option<String> {
+        if !self.given.iter().any(|v| text.contains(v.as_str())) {
+            return None;
+        }
+        let salt = crate::redact::Salt::load(&self.router.scope).ok();
+        Some(crate::guard::swept(text, &self.given, salt.as_ref()))
+    }
+
+    /// A plan that is kept has a guard step's secrets as tags: in its block, in its
+    /// header's values, and wherever its words say one. Opened again later, that step
+    /// stops and says the value must be given again (`guard::Change::parse`).
+    fn plan_kept(&self, doc: &mut sentry_core::maint::plan::PlanDoc, _answer: &str) {
+        use sentry_core::apply::plan::{self, Kind as StepKind};
+        let salt = crate::redact::Salt::load(&self.router.scope).ok();
+        let mut secrets = self.given.clone();
+        let (words, block) = plan::take(&doc.body);
+        let mut block = block.and_then(Result::ok);
+        for vars in block
+            .iter_mut()
+            .flat_map(|p| p.steps.iter_mut())
+            .filter_map(|s| match &mut s.kind {
+                StepKind::Workflow { vars, .. } => Some(vars),
+                _ => None,
+            })
+            .chain([&mut doc.head.vars])
+        {
+            for v in vars.values_mut() {
+                secrets.extend(crate::guard::secrets_in(v));
+                if let Some(k) = crate::guard::kept(v, salt.as_ref()) {
+                    *v = k;
+                }
+            }
+        }
+        doc.body = match &block {
+            Some(p) => format!(
+                "{}\n\n{}",
+                crate::guard::swept(&words, &secrets, salt.as_ref()),
+                crate::guard::swept(&plan::to_block(p), &secrets, salt.as_ref())
+            )
+            .trim()
+            .to_string(),
+            None => crate::guard::swept(&doc.body, &secrets, salt.as_ref()),
+        };
+    }
+
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String> {
         super::ask::ask_for(cx.screen, &self.view(sh, cx))
     }
@@ -985,6 +1041,11 @@ impl Host for NetworkTarget {
         vars: BTreeMap<String, String>,
         _sh: &Shared,
     ) -> Result<Box<dyn WfRun>, String> {
+        for v in vars.values().flat_map(|v| crate::guard::secrets_in(v)) {
+            if !self.given.contains(&v) {
+                self.given.push(v);
+            }
+        }
         match workflow::begin(entry, &self.router, vars) {
             Ok(s) => Ok(Box::new(s)),
             Err(e) => Err(e.to_string()),

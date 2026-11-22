@@ -180,7 +180,18 @@ pub fn resume(r: &Router) -> Option<Session> {
 /// Start a run. `vars`: the workflow's `[vars]`, asked for before it starts.
 pub fn begin(entry: &Entry, r: &Router, vars: BTreeMap<String, String>) -> anyhow::Result<Session> {
     let e = env(r, entry.wf.as_ref().ok());
-    Session::begin(entry, r, vars, PROG, e).map(|s| s.on(WORDS))
+    // A secret among its values (a guarded change's new passphrase) is never written
+    // down: the run's state, its log and its card get the tag, the steps the value.
+    let salt = crate::redact::Salt::load(&r.scope).ok();
+    let mut held = BTreeMap::new();
+    let mut shown = vars.clone();
+    for (k, v) in &vars {
+        if let Some(t) = crate::guard::kept(v, salt.as_ref()) {
+            held.insert(k.clone(), v.clone());
+            shown.insert(k.clone(), t);
+        }
+    }
+    Session::begin(entry, r, shown, PROG, e).map(|s| s.on(WORDS).holding(held))
 }
 
 /// Tests that seed or read the generic directory take turns: it is one for the process.
@@ -269,6 +280,124 @@ mod tests {
         assert_eq!(l[0].name, "mine");
         assert!(l[0].issues.is_empty(), "{:?}", l[0].issues);
         let _ = std::fs::remove_dir_all(sentry_core::maint::root(scope));
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+    use sentry_app::remote::SudoMode;
+    use sentry_app::run::{Exec, How};
+
+    const CANARY: &str = "c4nary-Resume-Passphrase";
+
+    fn step_cmd(e: Option<Exec>) -> String {
+        match e {
+            Some(Exec::Stream {
+                how: How::Plain(c), ..
+            }) => c.display(),
+            _ => panic!("no step to run"),
+        }
+    }
+
+    /// A guarded change that sets a secret: the step runs with the value, the run's
+    /// state and logs have its tag, and the run picked up after a restart stops rather
+    /// than apply the tag as the passphrase.
+    #[test]
+    fn a_run_holds_a_secret_in_memory_and_a_resumed_one_asks_for_it_again() {
+        let _turn = seeding();
+        let name = "held-secret-test";
+        let scope = crate::remote::scope(name);
+        let _ = std::fs::remove_dir_all(sentry_core::maint::root(&scope));
+        let _ = std::fs::remove_dir_all(sentry_core::maint::data_root(&scope));
+        let r = Router::new(name, &crate::audit::tests::cfg());
+        let entry = list_for(&scope)
+            .into_iter()
+            .find(|e| e.name == "guarded-change")
+            .unwrap();
+        let lines = format!(
+            "uci set wireless.default_radio0.key='{CANARY}'; uci set wireless.radio0.channel='36'"
+        );
+        let vars: BTreeMap<String, String> = [
+            ("configs", "wireless"),
+            ("lines", lines.as_str()),
+            ("services", "wifi"),
+            ("alters_wan", "no"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .into();
+        let root_login = Some(SudoMode::Root);
+        let mut s = begin(&entry, &r, vars).unwrap();
+        let tag = crate::redact::Salt::load(&scope).unwrap().tag(CANARY);
+        // What runs: the value. What the window and the step's log show: the tag.
+        let cmd = step_cmd(s.auto(root_login));
+        assert!(cmd.contains(CANARY) && !cmd.contains(&tag), "{cmd}");
+        let shown: Vec<&str> = s.log.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(
+            shown
+                .iter()
+                .any(|l| l.starts_with("$ sentry-network guard preview")
+                    && l.contains(&format!("wireless.default_radio0.key={tag}"))
+                    && l.contains("wireless.radio0.channel=36")),
+            "{shown:?}"
+        );
+        assert_eq!(s.run.state.vars["lines"].matches(&tag).count(), 1);
+        // The preview ends well; the apply step waits for its Enter. The window closes.
+        s.on_exit(0, 0);
+        assert!(matches!(
+            s.next,
+            sentry_core::workflows::runner::Next::Confirm(1)
+        ));
+        let dir = s.run.dir.clone();
+        drop(s);
+        let on_disk = |what: &str| {
+            let mut all = String::new();
+            let mut dirs = vec![
+                sentry_core::maint::root(&scope),
+                sentry_core::maint::data_root(&scope),
+            ];
+            while let Some(d) = dirs.pop() {
+                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        dirs.push(p);
+                    } else {
+                        let text =
+                            String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                        assert!(!text.contains(CANARY), "{what}: {} has it", p.display());
+                        all.push_str(&text);
+                    }
+                }
+            }
+            all
+        };
+        let all = on_disk("after the first step");
+        assert!(
+            dir.join("state.json").is_file() && all.contains(&tag),
+            "{all}"
+        );
+
+        // The window closed and opened again: the run is there, the value is not.
+        let mut s = resume(&r).expect("the run in progress");
+        let cmd = step_cmd(s.go(root_login).unwrap());
+        assert!(
+            cmd.contains("guard held-secret-test apply") && cmd.contains(&tag),
+            "{cmd}"
+        );
+        assert!(!cmd.contains(CANARY), "{cmd}");
+        // What that step does with it (`sentry-network guard preview|apply`, here):
+        // stops before anything is read or changed, and says what to do.
+        let err =
+            crate::guard::Change::parse("wireless", &s.run.state.vars["lines"], "wifi", false)
+                .unwrap_err();
+        assert!(
+            err.contains("isn't here any more") && err.contains("give the value"),
+            "{err}"
+        );
+        on_disk("after the resume");
+        s.abandon();
+        let _ = std::fs::remove_dir_all(sentry_core::maint::root(&scope));
+        let _ = std::fs::remove_dir_all(sentry_core::maint::data_root(&scope));
     }
 }
 

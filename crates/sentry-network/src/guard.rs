@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::policy::GUARDED;
+use crate::redact::Salt;
 use crate::remote::Router;
 use sentry_core::exec::sh_quote;
 
@@ -51,6 +52,145 @@ const VERBS: &[&str] = &[
 
 /// The default window, in seconds.
 pub const WINDOW: u64 = 300;
+
+/// What stands for a secret when its tag can't be made (the salt didn't read): a tag all
+/// the same, so it is refused like one and never applied as the value.
+pub const NOT_KEPT: &str = "redacted:00000000";
+
+/// A staging argument that gives a secret option its value (`pkg.section.option=value`):
+/// the option and the value.
+fn secret_arg(arg: &str) -> Option<(&str, &str)> {
+    let (name, value) = arg.split_once('=')?;
+    (name.split('.').count() == 3 && crate::redact::secret_option(name)).then_some((name, value))
+}
+
+fn tag_of(salt: Option<&Salt>, value: &str) -> String {
+    if crate::redact::is_tag(value) {
+        return value.to_string();
+    }
+    salt.map_or_else(|| NOT_KEPT.to_string(), |s| s.tag(value))
+}
+
+/// A command's words with every secret option's value replaced by `hide(value)`, and
+/// whether one was. What follows such a word in the same command is dropped: it can only
+/// be the rest of a value that wasn't quoted.
+fn words_kept(words: &[String], hide: &dyn Fn(&str) -> String) -> (Vec<String>, bool) {
+    let mut out = Vec::new();
+    for w in words {
+        match secret_arg(w) {
+            Some((name, v)) => {
+                out.push(format!("{name}={}", hide(v)));
+                if out.len() < words.len() {
+                    out.push("…".into());
+                }
+                return (out, true);
+            }
+            None => out.push(w.clone()),
+        }
+    }
+    (out, false)
+}
+
+/// A line as an error may quote it: a secret's value is never said back.
+fn shown_words(words: &[String]) -> String {
+    words_kept(words, &|_| "‹hidden›".to_string()).0.join(" ")
+}
+
+/// A value of a run (a guarded change's `lines`) as it may be written down: the value of
+/// every option that is a secret (`redact::secret_option`) replaced by its tag, so that
+/// it changed can be told and what it is never can. None: it holds no secret, and is
+/// kept as typed. The real value stays in memory, with the window that was given it.
+pub fn kept(text: &str, salt: Option<&Salt>) -> Option<String> {
+    match crate::policy::plain_commands(text) {
+        Ok(cmds) => {
+            let mut hid = false;
+            let lines: Vec<String> = cmds
+                .iter()
+                .map(|words| {
+                    let (words, h) = words_kept(words, &|v| tag_of(salt, v));
+                    hid |= h;
+                    words
+                        .iter()
+                        .map(|w| sh_quote(w))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            hid.then(|| lines.join("; "))
+        }
+        // Not lines a shell would only run one after another: nothing after the first
+        // secret option's name is kept.
+        Err(_) => {
+            let at = text.match_indices('=').find_map(|(i, _)| {
+                let from = text[..i]
+                    .rfind(|c: char| c.is_whitespace() || "'\"`;".contains(c))
+                    .map_or(0, |j| j + 1);
+                crate::redact::secret_option(&text[from..i]).then_some(i)
+            })?;
+            Some(format!(
+                "{}={NOT_KEPT} … (the rest wasn't kept: the lines couldn't be read)",
+                &text[..at]
+            ))
+        }
+    }
+}
+
+/// The secret values a run's value gives (what `kept` hides), as they were typed.
+pub fn secrets_in(text: &str) -> Vec<String> {
+    crate::policy::plain_commands(text)
+        .unwrap_or_default()
+        .iter()
+        .flatten()
+        .filter_map(|w| secret_arg(w))
+        .map(|(_, v)| v.to_string())
+        .filter(|v| !crate::redact::is_tag(v))
+        .collect()
+}
+
+/// `text` with each of `secrets` replaced by its tag, wherever it stands (what a command
+/// printed, a note, a plan's words). A value under four characters is left: it would be
+/// found in everything.
+pub fn swept(text: &str, secrets: &[String], salt: Option<&Salt>) -> String {
+    let mut out = text.to_string();
+    for v in secrets.iter().filter(|v| v.chars().count() >= 4) {
+        if out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), &tag_of(salt, v));
+        }
+    }
+    out
+}
+
+/// What is being typed for a run's value, as the input line shows it: a secret option's
+/// value as dots (one for each character, so the cursor stays where it is). None:
+/// nothing to hide.
+pub fn typed(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut hid = false;
+    let mut rest = text;
+    while let Some(i) = rest.find('=') {
+        let from = rest[..i]
+            .rfind(|c: char| c.is_whitespace() || "'\"`;".contains(c))
+            .map_or(0, |j| j + 1);
+        out.push_str(&rest[..=i]);
+        let value = &rest[i + 1..];
+        if !crate::redact::secret_option(&rest[from..i]) {
+            rest = value;
+            continue;
+        }
+        // To the closing quote, or the end of the word.
+        let end = match value.chars().next() {
+            Some(q @ ('\'' | '"')) => value[1..].find(q).map_or(value.len(), |j| j + 2),
+            _ => value
+                .find(|c: char| c.is_whitespace() || c == ';')
+                .unwrap_or(value.len()),
+        };
+        out.extend(value[..end].chars().map(|_| '•'));
+        hid |= end > 0;
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    hid.then_some(out)
+}
 
 /// One guarded change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -112,12 +252,19 @@ impl Change {
         }
         services.sort_by_key(|s| SERVICES.iter().position(|x| x == s));
         let mut out = Vec::new();
-        for (i, words) in crate::policy::plain_commands(lines)?
-            .into_iter()
-            .enumerate()
-        {
+        // (Why a line isn't plain quotes the word: not one of a line that sets a secret.)
+        let cmds = crate::policy::plain_commands(lines).map_err(|e| {
+            if kept(lines, None).is_some() {
+                "a line that sets a secret has something a shell would expand or redirect: \
+                 put the value in single quotes"
+                    .to_string()
+            } else {
+                e
+            }
+        })?;
+        for (i, words) in cmds.into_iter().enumerate() {
             let n = i + 1;
-            let shown = words.join(" ");
+            let shown = shown_words(&words);
             let [uci, verb, args @ ..] = words.as_slice() else {
                 return Err(format!("line {n} (`{shown}`) isn't a uci command"));
             };
@@ -159,6 +306,17 @@ impl Change {
             }
             if args.iter().any(|a| a.contains('\n')) {
                 return Err(format!("line {n}: a value can't span lines"));
+            }
+            // A tag where a secret's value should be: this change was written down (a run
+            // picked up after a restart, a plan from before) and its value was not.
+            if let Some((name, v)) = args.iter().find_map(|a| secret_arg(a))
+                && crate::redact::is_tag(v)
+            {
+                return Err(format!(
+                    "line {n}: the value of `{name}` isn't here any more. sentry never writes a \
+                     secret down, only its tag (`{v}`), and a tag is never applied as the \
+                     value: start the change again and give the value"
+                ));
             }
             out.push(words[1..].to_vec());
         }
@@ -204,6 +362,42 @@ impl Change {
             }
         }
         out
+    }
+
+    /// The change as it may be written down and shown: every secret option's value its
+    /// tag. Never applied (`parse` refuses a tag where a secret's value should be).
+    pub fn kept(&self, salt: Option<&Salt>) -> Self {
+        Self {
+            lines: self
+                .lines
+                .iter()
+                .map(|l| words_kept(l, &|v| tag_of(salt, v)).0)
+                .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// The secret values it sets, as they were given.
+    pub fn secrets(&self) -> Vec<String> {
+        self.lines
+            .iter()
+            .flatten()
+            .filter_map(|w| secret_arg(w))
+            .map(|(_, v)| v.to_string())
+            .filter(|v| !crate::redact::is_tag(v))
+            .collect()
+    }
+
+    /// What is said about it (each line for the window and the step's log, why it
+    /// ended), with the secret values it sets taken out wherever they stand.
+    pub fn hider(&self, scope: &str) -> impl Fn(String) -> String + use<> {
+        let secrets = self.secrets();
+        let salt = if secrets.is_empty() {
+            None
+        } else {
+            Salt::load(scope).ok()
+        };
+        move |t| swept(&t, &secrets, salt.as_ref())
     }
 
     /// The staging lines as the router's shell runs them.
@@ -871,6 +1065,17 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// The same outcome, its why as `f` gives it.
+    fn said(self, f: &dyn Fn(String) -> String) -> Self {
+        match self {
+            Outcome::Stopped(w) => Outcome::Stopped(f(w)),
+            Outcome::Failed(w) => Outcome::Failed(f(w)),
+            Outcome::Reverted(w) => Outcome::Reverted(f(w)),
+            Outcome::Unknown(w) => Outcome::Unknown(f(w)),
+            o => o,
+        }
+    }
+
     pub fn word(&self) -> &'static str {
         match self {
             Outcome::Kept => "kept",
@@ -1019,6 +1224,12 @@ fn shown_changes(body: &str, scrub: Option<&crate::redact::Scrub>) -> Vec<String
 
 /// (a) alone: what the change would do and whether it could start. Reads only.
 pub fn preview(r: &Router, c: &Change, say: &mut dyn FnMut(String)) -> Result<State, String> {
+    let hide = c.hider(&r.scope);
+    let mut said = |l: String| say(hide(l));
+    preview_with(r, c, &mut said).map_err(&hide)
+}
+
+fn preview_with(r: &Router, c: &Change, say: &mut dyn FnMut(String)) -> Result<State, String> {
     say(format!(
         "guarded change · configs: {} · reload: {}{}",
         c.configs.join(", "),
@@ -1034,7 +1245,9 @@ pub fn preview(r: &Router, c: &Change, say: &mut dyn FnMut(String)) -> Result<St
         }
     ));
     let scrub = crate::redact::Scrub::read(r).ok();
-    for l in c.uci_lines() {
+    // A secret it sets is shown as its tag, whatever else could be read.
+    let salt = Salt::load(&r.scope).ok();
+    for l in c.kept(salt.as_ref()).uci_lines() {
         say(format!(
             "  {}",
             scrub.as_ref().map_or_else(|| l.clone(), |s| s.text(&l))
@@ -1097,7 +1310,10 @@ pub fn run(r: &Router, c: &Change, window: u64, say: &mut dyn FnMut(String)) -> 
         Ok(t) => t,
         Err(e) => return Outcome::Stopped(format!("no random token: {e}")),
     };
-    let o = run_with(r, c, window, &token, say);
+    // Nothing said about it, and no reason it ended, carries a secret it sets.
+    let hide = c.hider(&r.scope);
+    let mut said = |l: String| say(hide(l));
+    let o = run_with(r, c, window, &token, &mut said).said(&hide);
     journal(&r.scope, &token, c, &o);
     o
 }
@@ -1131,7 +1347,7 @@ fn run_with(
         Err(e) => return Outcome::Stopped(format!("the router didn't answer ({e})")),
     }
     // (a) Preflight.
-    let before = match preview(r, c, say) {
+    let before = match preview_with(r, c, say) {
         Ok(s) => s,
         Err(why) => return Outcome::Stopped(why),
     };
@@ -1282,7 +1498,8 @@ fn run_with(
         let p = Pending {
             token: token.to_string(),
             deadline: wall + window as i64,
-            change: c.clone(),
+            // On disk: what was changed, never a secret's value (a keep needs neither).
+            change: c.kept(Salt::load(&r.scope).ok().as_ref()),
         };
         let saved = std::fs::create_dir_all(guard_dir(&r.scope)).and_then(|_| {
             sentry_core::paths::write_atomic(
@@ -1936,5 +2153,161 @@ mod tests {
         assert_eq!(margin(300), 15);
         assert_eq!(margin(5), 2);
         assert_eq!(margin(20), 4);
+    }
+
+    const CANARY: &str = "c4nary-Passphrase-9";
+
+    fn salt() -> Salt {
+        Salt::fixed([7; 16])
+    }
+
+    #[test]
+    fn a_secret_a_change_sets_is_written_down_as_its_tag_only() {
+        let s = salt();
+        let tag = s.tag(CANARY);
+        let lines = format!(
+            "uci set wireless.default_radio0.key='{CANARY}'; uci set wireless.radio0.channel='36'"
+        );
+        // What is kept: the tag where the value was, everything else as it reads.
+        let k = kept(&lines, Some(&s)).unwrap();
+        assert_eq!(
+            k,
+            format!(
+                "uci set wireless.default_radio0.key={tag}; uci set wireless.radio0.channel=36"
+            )
+        );
+        // The same value, the same tag (so "it changed" can still be told); kept again,
+        // it stays.
+        assert_eq!(kept(&k, Some(&s)).as_deref(), Some(k.as_str()));
+        assert_ne!(s.tag("another one"), tag);
+        // No secret: nothing is touched, the value stays as typed.
+        assert_eq!(kept("uci set dhcp.lan.leasetime='6h'", Some(&s)), None);
+        assert_eq!(kept("tcpdump luci-app-sqm", Some(&s)), None);
+        // Not a section's type, not an option that only looks like one.
+        assert_eq!(kept("uci set network.key=interface", Some(&s)), None);
+        assert_eq!(
+            kept("uci set uhttpd.defaults.key_type='ec'", Some(&s)),
+            None
+        );
+        // A list's, a daemon's own name for one, every secret of several.
+        for l in [
+            format!("uci add_list wireless.ap.r0kh='{CANARY}'"),
+            format!("uci set wireless.ap.sae_password=\"{CANARY}\""),
+            format!("uci set wireless.ap.wpa_passphrase={CANARY}"),
+            format!("uci set network.wan.password={CANARY}; uci set wireless.ap.key='{CANARY} 2'"),
+            // Unquoted with a space: the rest of the line goes with it.
+            format!("uci set wireless.ap.key={CANARY} and more of {CANARY}"),
+        ] {
+            let k = kept(&l, Some(&s)).unwrap_or_else(|| panic!("{l}"));
+            assert!(!k.contains(CANARY) && k.contains("redacted:"), "{k}");
+        }
+        // What a shell would do more with, or what can't be read as lines at all: nothing
+        // after the option's name is kept.
+        for l in [
+            format!("uci set wireless.ap.key=$({CANARY})"),
+            format!("uci set wireless.ap.key='{CANARY}' > /tmp/x"),
+            format!("uci set wireless.ap.key='{CANARY}"),
+        ] {
+            let k = kept(&l, Some(&s)).unwrap_or_else(|| panic!("{l}"));
+            assert!(!k.contains(CANARY), "{k}");
+            assert!(k.starts_with("uci set wireless.ap.key=redacted:"), "{k}");
+        }
+        // Without a salt it is still a tag, so still refused where a value is needed.
+        let blank = kept(&lines, None).unwrap();
+        assert!(
+            blank.contains(NOT_KEPT) && crate::redact::is_tag(NOT_KEPT),
+            "{blank}"
+        );
+        assert_eq!(secrets_in(&lines), [CANARY]);
+        assert!(secrets_in(&k).is_empty());
+
+        // The change itself: what runs has the value, what is kept and shown doesn't.
+        let c = Change::parse("wireless", &lines, "wifi", false).unwrap();
+        assert!(c.uci_lines()[0].contains(CANARY));
+        assert_eq!(c.secrets(), [CANARY]);
+        let shown = c.kept(Some(&s));
+        assert_eq!(
+            shown.uci_lines(),
+            [
+                format!("uci set wireless.default_radio0.key={tag}"),
+                "uci set wireless.radio0.channel=36".to_string()
+            ]
+        );
+        assert!(!serde_json::to_string(&shown).unwrap().contains(CANARY));
+        assert_eq!((&shown.configs, &shown.services), (&c.configs, &c.services));
+        // Whatever is said about it (a line of output, why it ended).
+        let said = swept(
+            &format!("uci: Invalid argument near '{CANARY}'"),
+            &c.secrets(),
+            Some(&s),
+        );
+        assert_eq!(said, format!("uci: Invalid argument near '{tag}'"));
+        let o = Outcome::Failed(format!("line 1: {CANARY}"))
+            .said(&|t| swept(&t, &c.secrets(), Some(&s)));
+        assert_eq!(o, Outcome::Failed(format!("line 1: {tag}")));
+    }
+
+    #[test]
+    fn a_tag_is_never_applied_as_the_value() {
+        let s = salt();
+        // As a run's state has it after a restart, or a plan kept from before.
+        let lines = kept(
+            &format!("uci set dhcp.lan.limit=9; uci set wireless.default_radio0.key='{CANARY}'"),
+            Some(&s),
+        )
+        .unwrap();
+        let err = Change::parse("wireless,dhcp", &lines, "wifi", false).unwrap_err();
+        assert!(
+            err.starts_with(
+                "line 2: the value of `wireless.default_radio0.key` isn't here any more"
+            ) && err.contains("a tag is never applied as the value")
+                && err.ends_with("start the change again and give the value"),
+            "{err}"
+        );
+        let blank = format!("uci set wireless.default_radio0.key={NOT_KEPT}");
+        assert!(Change::parse("wireless", &blank, "", false).is_err());
+        // Why a line is refused never says a secret back.
+        for l in [
+            format!("uci set wireless.ap.key={CANARY} and more"),
+            format!("uci set wireless.ap.key=${CANARY}"),
+            format!("uci set wireless.ap.key='{CANARY}' -x"),
+            format!("uci set firewall.ap.key='{CANARY}'"),
+            format!("uci commit wireless; uci set wireless.ap.key='{CANARY}' extra"),
+        ] {
+            let err = Change::parse("wireless", &l, "", false).unwrap_err();
+            assert!(!err.contains(CANARY), "{l}: {err}");
+        }
+        // A line that sets nothing secret is still quoted whole.
+        let err = Change::parse("dhcp", "uci set dhcp.lan.limit=9 extra", "", false).unwrap_err();
+        assert!(err.contains("`uci set dhcp.lan.limit=9 extra`"), "{err}");
+    }
+
+    #[test]
+    fn a_secret_being_typed_shows_as_dots() {
+        let dots = "•".repeat(CANARY.chars().count());
+        assert_eq!(typed("uci set dhcp.lan.limit=9"), None);
+        assert_eq!(typed("wireless,dhcp"), None);
+        // As it grows: from the first character after the `=`.
+        assert_eq!(typed("uci set wireless.ap.key="), None);
+        assert_eq!(
+            typed("uci set wireless.ap.key='c4").as_deref(),
+            Some("uci set wireless.ap.key=•••")
+        );
+        let whole = format!("uci set wireless.ap.key='{CANARY}'; uci set wireless.ap.ssid='x'");
+        let shown = typed(&whole).unwrap();
+        assert_eq!(
+            shown,
+            format!("uci set wireless.ap.key=•{dots}•; uci set wireless.ap.ssid='x'")
+        );
+        // One dot a character: what is typed next lands where it's shown.
+        assert_eq!(shown.chars().count(), whole.chars().count());
+        let two = typed(&format!(
+            "uci set network.wan.password={CANARY}; uci set wireless.ap.key=\"a b"
+        ))
+        .unwrap();
+        assert_eq!(
+            two,
+            format!("uci set network.wan.password={dots}; uci set wireless.ap.key=••••")
+        );
     }
 }

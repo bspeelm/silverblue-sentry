@@ -143,6 +143,7 @@ impl Slot {
             None,
         );
         sentry_core::maint::tasks::tag_run(&mut entry, &self.all_tasks());
+        let entry = self.kept_entry(entry);
         self.apply_run_ended(w, &entry);
         if !w.offline {
             if let Err(e) = log::write(&entry) {
@@ -269,6 +270,7 @@ impl Slot {
             Some(note),
         );
         sentry_core::maint::tasks::tag_run(&mut with_note, &self.all_tasks());
+        let with_note = self.kept_entry(with_note);
         if !w.offline
             && let Err(e) = sentry_core::maint::log::write(&with_note)
         {

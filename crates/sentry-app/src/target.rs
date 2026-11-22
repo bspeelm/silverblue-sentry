@@ -101,6 +101,9 @@ pub struct Ways {
     pub review_over_plan: bool,
     /// The words of a prompt, where they aren't the app's: what it asks, and what Enter does.
     pub label: fn(&Prompt) -> Option<(String, &'static str)>,
+    /// What is being typed into a prompt, as the input line shows it, where that isn't
+    /// what was typed (a router's new passphrase among a run's values: dots).
+    pub typed: fn(&Prompt, &str) -> Option<String>,
     /// Esc on a workflow's values says this.
     pub not_started: Option<&'static str>,
     /// A run's note was saved.
@@ -172,6 +175,7 @@ impl Default for Ways {
             docs_keep_run_key: true,
             review_over_plan: true,
             label: |_| None,
+            typed: |_, _| None,
             not_started: Some("not started"),
             noted: "noted in the maintenance log",
             task_note: false,
@@ -543,6 +547,12 @@ pub trait Asks {
     /// A session's plan is about to be kept: anything of the target's to put in its header
     /// (the version it moves to, into the workflow's values).
     fn plan_kept(&self, _doc: &mut PlanDoc, _answer: &str) {}
+    /// Words about to be written down for this target (a log entry's, a run's note), as
+    /// they may be kept: a router's takes out a secret one of its runs was given. None: as
+    /// they are.
+    fn kept(&self, _text: &str) -> Option<String> {
+        None
+    }
     /// What a review reads and does, shown before one is started.
     fn review_brief(&self, cx: &Cx) -> Vec<Line<'static>>;
     /// What a review is sent; `auto`: one the app starts by itself, and what it's about.

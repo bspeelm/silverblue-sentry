@@ -3643,6 +3643,8 @@ fn a_draft_never_starts_whoever_asks() {
     use sentry_app::effect::{Effect, WfCmd};
     use std::collections::BTreeMap;
     const NAME: &str = "firmware-upgrade";
+    // (It looks at the runs on disk: no other test's run is there meanwhile.)
+    let _turn = runs();
     let entry = crate::workflow::seeded_all()
         .into_iter()
         .find(|e| e.name == NAME)
@@ -3713,5 +3715,206 @@ fn a_draft_never_starts_whoever_asks() {
             a.tick(Instant::now());
         }
         untouched(&a, &what("Enter on its row"));
+    }
+}
+
+/// A guarded change that sets a secret (a new Wi-Fi passphrase), from the value's prompt
+/// to the log: the steps run with it, and nothing sentry writes down or sends says it.
+#[test]
+fn a_guarded_changes_secret_is_never_written_down() {
+    use sentry_app::effect::Prompt;
+    use sentry_app::target::Asks;
+    use sentry_core::maint::{log, plan};
+    use sentry_core::tui::input::Input;
+    const CANARY: &str = "c4nary-Wifi-passphrase";
+    let _turn = runs();
+    let scope = super::id_of(NAME);
+    let kept_dirs = || {
+        [
+            log::dir(&scope),
+            sentry_core::maint::root(&scope).join("plans"),
+        ]
+    };
+    for d in kept_dirs() {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let mut a = with_workflows(&backup_cfg(), None);
+    let lines = format!(
+        "uci set wireless.default_radio0.key='{CANARY}'; uci set wireless.radio0.channel='36'"
+    );
+    let tag = crate::redact::Salt::load(&scope).unwrap().tag(CANARY);
+
+    // Its values, typed: the passphrase shows as dots while it is, the rest as typed.
+    typed(&mut a, ":wf guarded-change");
+    let mut asked = Vec::new();
+    while let Input::Prompt(Prompt::WfVar(v), _) = &a.win.input {
+        let name = v.current().unwrap().0.clone();
+        let value = match name.as_str() {
+            "configs" => "wireless",
+            "lines" => lines.as_str(),
+            "services" => "wifi",
+            _ => "",
+        };
+        for c in value.chars() {
+            key(&mut a, KeyCode::Char(c));
+        }
+        if name == "lines" {
+            let s = render_to_string(&mut a, 300, 41);
+            let bar = s.lines().last().unwrap();
+            assert!(!s.contains(CANARY), "{bar}");
+            assert!(
+                bar.contains(&format!(
+                    "uci set wireless.default_radio0.key={}; uci set wireless.radio0.channel='36'▏",
+                    "•".repeat(CANARY.chars().count() + 2)
+                )),
+                "{bar}"
+            );
+        }
+        asked.push(name);
+        key(&mut a, KeyCode::Enter);
+    }
+    assert_eq!(asked, ["alters_wan", "configs", "lines", "services"]);
+
+    // It runs: the window, the run's state and the step's log have the tag.
+    let run = wf(&a).expect("the run");
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(0));
+    assert_eq!(
+        run.run.state.vars["lines"],
+        format!("uci set wireless.default_radio0.key={tag}; uci set wireless.radio0.channel=36")
+    );
+    let s = render_to_string(&mut a, 300, 41);
+    assert!(!s.contains(CANARY), "{s}");
+    assert!(
+        s.contains(&format!(
+            "$ sentry-network guard preview configs=wireless services=wifi wan=no -- uci set wireless.default_radio0.key={tag};"
+        )),
+        "{s}"
+    );
+    step_says(
+        &mut a,
+        &format!("  uci set wireless.default_radio0.key={tag}"),
+    );
+    a.run_step_exit_for_test(0);
+    // What Claude would be sent about the step that waits.
+    let v = view_at(&a, &theme, 0);
+    let ask = super::ask::ask_for(ScreenId::Upgrade, &v).unwrap();
+    let sent = format!(
+        "{}\n{}\n{}\n{}",
+        ask.subject,
+        ask.context,
+        ask.question,
+        ask.prompt()
+    );
+    assert!(!sent.contains(CANARY) && sent.contains(&tag), "{sent}");
+    // Enter applies it; nothing waits to be kept here, so the run is done.
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(wf(&a).unwrap().live.as_ref().map(|l| l.idx), Some(1));
+    let s = render_to_string(&mut a, 300, 41);
+    assert!(!s.contains(CANARY) && s.contains("guard apply"), "{s}");
+    a.run_step_exit_for_test(0);
+    assert!(wf(&a).unwrap().done());
+    // The note the user gives says it: the entry doesn't.
+    assert!(matches!(a.win.input, Input::Prompt(Prompt::LogNote(_), _)));
+    typed(&mut a, &format!("the new passphrase is {CANARY}"));
+    let e = a.slot().shared.log.first().expect("logged").clone();
+    assert_eq!(
+        (e.head.workflow.as_str(), e.head.result.as_str()),
+        ("guarded-change", "done")
+    );
+    assert!(
+        e.body.contains(&format!("the new passphrase is {tag}")),
+        "{}",
+        e.body
+    );
+    // A value that isn't a secret reads as it was given; the secret says only that it
+    // was set, and to what tag.
+    assert!(
+        e.body.contains(&format!(
+            "- `lines` = `uci set wireless.default_radio0.key={tag}; uci set wireless.radio0.channel=36`"
+        )) && e.body.contains("- `configs` = `wireless`"),
+        "{}",
+        e.body
+    );
+    // (Tests write no log: this is the entry and the ledger as they'd be written.)
+    for e in &a.slot().shared.log {
+        log::write(e).unwrap();
+    }
+    // What a session's own entry, or anything else written down later, would say.
+    assert_eq!(
+        net(&a).kept(&format!("Claude: the key is now {CANARY}")),
+        Some(format!("Claude: the key is now {tag}"))
+    );
+    assert_eq!(net(&a).kept("Claude: six-hour leases"), None);
+
+    // A plan that is kept: its block, its header's values and its words.
+    let mut doc = plan::PlanDoc {
+        head: plan::Head {
+            item: "wifi-key".into(),
+            server: scope.clone(),
+            workflow: "guarded-change".into(),
+            vars: [("lines".to_string(), lines.clone())].into(),
+            ..Default::default()
+        },
+        body: format!(
+            "The passphrase becomes {CANARY}.\n\n```sentry-apply\nsummary = \"A new passphrase\"\n\n\
+             [[step]]\ntitle = \"Stage it\"\nworkflow = \"guarded-change\"\n\
+             vars = {{ configs = \"wireless\", lines = \"{lines}\", services = \"wifi\" }}\n```"
+        ),
+    };
+    net(&a).plan_kept(&mut doc, "");
+    assert!(
+        doc.body
+            .starts_with(&format!("The passphrase becomes {tag}."))
+            && doc.head.vars["lines"].contains(&tag),
+        "{}",
+        doc.body
+    );
+    plan::save(&doc).unwrap();
+    // Opened again, its guard step has the tag, which is refused as a value.
+    let (_, Some(Ok(p))) = sentry_core::apply::plan::take(&doc.body) else {
+        panic!("{}", doc.body);
+    };
+    let sentry_core::apply::plan::Kind::Workflow { vars, .. } = &p.steps[0].kind else {
+        panic!("{p:?}");
+    };
+    assert_eq!(vars["configs"], "wireless");
+    let err = crate::guard::Change::parse("wireless", &vars["lines"], "wifi", false).unwrap_err();
+    assert!(err.contains("give the value"), "{err}");
+
+    // Everything sentry keeps about the network, on disk: the passphrase is in none of it.
+    let mut seen = Vec::new();
+    let mut dirs = vec![
+        sentry_core::maint::root(&scope),
+        sentry_core::maint::data_root(&scope),
+    ];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+            assert!(!text.contains(CANARY), "{} has the passphrase", p.display());
+            if text.contains(&tag) {
+                seen.push(p.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    seen.sort();
+    seen.dedup();
+    // (The entry, the ledger's row has only its summary; the plan, the run's state and
+    // each step's log.)
+    for f in ["state.json", "show.log", "guard.log", "wifi-key.md"] {
+        assert!(seen.iter().any(|s| s == f), "{f}: {seen:?}");
+    }
+    assert!(
+        seen.iter().any(|s| s.ends_with("guarded-change.md")),
+        "{seen:?}"
+    );
+    assert!(log::dir(&scope).join("LOG.md").is_file());
+    for d in kept_dirs() {
+        let _ = std::fs::remove_dir_all(d);
     }
 }

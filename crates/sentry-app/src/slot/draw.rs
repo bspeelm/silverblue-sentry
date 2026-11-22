@@ -226,9 +226,17 @@ impl Slot {
             return frame::draw_keybar(f, area, &w.theme, &frame::KeyBar::Password(line), toast);
         }
         // A box or a conversation over the line: its keys, not the line's.
+        // What is typed, as the target shows it (a secret among a run's values: dots).
+        let typed = match &w.input {
+            Input::Prompt(p, text) => (self.ways.typed)(p, text),
+            _ => None,
+        };
         if layer == Layer::Input
             && let Some(mut bar) = w.input.bar()
         {
+            if let (Some(shown), frame::KeyBar::Prompt { text, .. }) = (&typed, &mut bar) {
+                *text = shown;
+            }
             // The target's own words for a prompt.
             if let (Input::Prompt(p, _), frame::KeyBar::Prompt { label, enter, .. }) =
                 (&w.input, &mut bar)
