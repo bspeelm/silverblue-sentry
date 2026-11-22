@@ -237,6 +237,9 @@ const KNOWN: &[&str] = &[
     "backups",
     "guard",
     "metrics",
+    // The Security screen's: the names given to devices, and who is blocked (with MACs).
+    "names.toml",
+    "blocks.toml",
 ];
 
 /// What no profile may read or write on this machine, whoever grants what: everything
@@ -785,6 +788,25 @@ pub fn ask_for(screen: ScreenId, v: &View) -> Result<Ask, String> {
         }
     };
     Ok(hidden(a, &s))
+}
+
+/// Applying a Security row that is an audit finding as read just now (None: what must be
+/// hidden isn't known yet).
+pub fn apply_finding(v: &View, f: &sentry_core::finding::Finding) -> Option<Ask> {
+    let s = scrub(v).ok()?;
+    Some(hidden(ask_finding(v, f), &s))
+}
+
+/// Applying a Security row that has no finding behind it: its sentence, why it matters
+/// and what was seen are the brief.
+pub fn apply_brief(v: &View, key: &str, title: &str, brief: &str) -> Option<Ask> {
+    let s = scrub(v).ok()?;
+    let a = Ask::apply(
+        format!("{} · {title}", v.name),
+        format!("{}On the Security screen: {title}\n{brief}", header(v)),
+        apply(key.to_string()),
+    );
+    Some(hidden(a, &s))
 }
 
 /// Applying a Maintenance row with Claude (None: it isn't something to apply, or it can't

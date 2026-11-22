@@ -2215,7 +2215,8 @@ fn with_workflows(cfg: &Network, backup: Option<Status>) -> App {
             "config-backup",
             "firmware-upgrade",
             "guarded-change",
-            "package-update"
+            "package-update",
+            "security-action"
         ],
         "the seeded workflows"
     );
@@ -4204,16 +4205,25 @@ fn secured() -> App {
     secured_with(full(), the_flows())
 }
 
+/// Security's numbers (`d` from its list): the five panels.
+fn numbers(a: &mut App, w: u16, h: u16) -> String {
+    key(a, KeyCode::Char('4'));
+    if !net(a).screens.security.panels {
+        key(a, KeyCode::Char('d'));
+    }
+    render_to_string(a, w, h)
+}
+
 #[test]
 fn security_wide() {
     let mut a = secured();
-    let s = screen(&mut a, '4', 158, 41);
+    let s = numbers(&mut a, 158, 41);
     insta::assert_snapshot!("security_158x41", s);
-    // The strip has it, between Network and Maintenance, with nothing beside its name
-    // while nothing says the separation or a login failed... here a login was refused.
+    // The strip has it, between Network and Maintenance, with how many rows of its list
+    // ask something of you beside its name.
     let tabs = s.lines().nth(1).unwrap();
     assert!(
-        tabs.contains("3 Network   4 Security 1   6 Maintenance"),
+        tabs.contains("3 Network   4 Security 3   6 Maintenance"),
         "{tabs}"
     );
     // Ingress: what the uplink rejected, as a rate from two reads and a total with since
@@ -4344,7 +4354,7 @@ fn security_wide() {
 #[test]
 fn security_narrow() {
     let mut a = secured();
-    let s = screen(&mut a, '4', 80, 24);
+    let s = numbers(&mut a, 80, 24);
     insta::assert_snapshot!("security_80x24", s);
     assert!(s.lines().all(|l| l.chars().count() <= 80));
     // What matters most stays: who goes out, and what came in.
@@ -4372,10 +4382,23 @@ fn security_with_a_flow_from_the_dmz_into_the_lan() {
     // The Dashboard says so, from what was last read.
     let dash = render_to_string(&mut a, 158, 41);
     assert!(
-        line(&dash, "│ security").contains("dmz→lan 1 live"),
+        line(&dash, "│ security").contains("4 need attention"),
         "{dash}"
     );
-    let s = screen(&mut a, '4', 158, 41);
+    // The list has it first, in a sentence.
+    key(&mut a, KeyCode::Char('4'));
+    let top = render_to_string(&mut a, 158, 41);
+    assert!(
+        top.contains(
+            "│ act now  Something on the server's side (dmz) is talking to a device on your home"
+        ),
+        "{top}"
+    );
+    assert!(
+        top.contains("✗ off  The server's side (dmz) is meant to be kept from"),
+        "{top}"
+    );
+    let s = numbers(&mut a, 158, 41);
     insta::assert_snapshot!("security_crossing_158x41", s);
     let row = line(&s, "dmz→lan");
     assert!(
@@ -4390,7 +4413,7 @@ fn security_with_a_flow_from_the_dmz_into_the_lan() {
         "{s}"
     );
     // The DMZ's server is a device with a flow into another zone: its row, and its box.
-    assert!(s.lines().nth(1).unwrap().contains("4 Security 2"), "{s}");
+    assert!(s.lines().nth(1).unwrap().contains("4 Security 4"), "{s}");
 }
 
 #[test]
@@ -4440,7 +4463,7 @@ fn security_with_everything_optional_absent() {
             dnsstate::parse(&fixture("network/dnsstate-bare.txt")).unwrap(),
         ))),
     );
-    let s = screen(&mut a, '4', 158, 41);
+    let s = numbers(&mut a, 158, 41);
     insta::assert_snapshot!("security_bare_158x41", s);
     // Absent is said, or left out; nothing is a zero that wasn't counted.
     assert!(
@@ -4470,7 +4493,7 @@ fn security_with_everything_optional_absent() {
     c.reset_at = None;
     let mut b = full();
     data(&mut b, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
-    let since = screen(&mut b, '4', 158, 41);
+    let since = numbers(&mut b, 158, 41);
     assert!(
         since.contains("31.2k since the firewall last reloaded"),
         "{since}"
@@ -4492,7 +4515,7 @@ fn security_with_everything_optional_absent() {
             "the connection table (/proc/net/nf_conntrack)".into(),
         )),
     );
-    let s = screen(&mut b, '4', 158, 41);
+    let s = numbers(&mut b, 158, 41);
     assert!(
         s.contains("the connection table (/proc/net/nf_conntrack) isn't on the router"),
         "{s}"
@@ -4518,7 +4541,7 @@ fn security_offloading_accounting_and_a_reset_are_said() {
         r.packets = 3;
     }
     data(&mut a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
-    let s = screen(&mut a, '4', 158, 41);
+    let s = numbers(&mut a, 158, 41);
     let rej = line(&s, "│ rejected");
     assert!(
         rej.contains("–/min") && rej.contains("3 since 5m ago"),
@@ -4549,6 +4572,7 @@ fn security_offloading_accounting_and_a_reset_are_said() {
 fn security_sort_filter_and_a_devices_flows() {
     let mut a = secured();
     key(&mut a, KeyCode::Char('4'));
+    key(&mut a, KeyCode::Char('d'));
     // Enter: the selected device's live flows by port, with the far ends (on this
     // machine's screen only).
     key(&mut a, KeyCode::Enter);
@@ -4618,7 +4642,7 @@ fn dashboard_has_a_security_row_once_it_was_read() {
             .trim_end_matches([' ', '│'])
             .trim_start_matches('│')
             .trim(),
-        "security rejects 21/min · 2 forwards · dmz→lan none"
+        "security 3 need attention"
     );
     // Nothing is fetched for it there.
     assert_eq!(net(&a).asked.len(), before);
@@ -4645,7 +4669,9 @@ fn security_polls_only_in_view_and_focused() {
             Kind::Ifaces,
             Kind::Uci,
             Kind::SecLog,
-            Kind::DnsState
+            Kind::DnsState,
+            Kind::Listeners,
+            Kind::Services
         ]
     );
     // By time: the counters and the clients every 10 s, the flows and the interfaces
@@ -4686,7 +4712,9 @@ fn security_polls_only_in_view_and_focused() {
             Kind::DnsState,
             Kind::Flows,
             Kind::Ifaces,
+            Kind::Listeners,
             Kind::SecLog,
+            Kind::Services,
             Kind::Uci
         ]
     );
@@ -5068,3 +5096,4 @@ fn live_security() {
         "something is said to be missing"
     );
 }
+mod threats;

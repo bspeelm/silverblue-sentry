@@ -10,6 +10,7 @@ pub mod maint;
 pub mod network;
 pub mod report;
 pub mod security;
+pub mod threats;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -61,6 +62,23 @@ impl View<'_> {
     pub fn secs_since(&self, t: jiff::Timestamp) -> i64 {
         self.now.as_second() - t.as_second()
     }
+
+    /// The same view with the cursor elsewhere.
+    pub fn at(&self, cur: usize) -> View<'_> {
+        View {
+            t: self.t,
+            s: self.s,
+            sh: self.sh,
+            cfg: self.cfg,
+            name: self.name,
+            cur,
+            now: self.now,
+            filter: self.filter,
+            everything: self.everything,
+            wf: self.wf,
+            auto: self.auto,
+        }
+    }
 }
 
 /// Every screen's own state.
@@ -103,7 +121,7 @@ impl Screens {
         match id {
             ScreenId::Clients => Some(&mut self.clients.cur),
             ScreenId::Net => Some(&mut self.net.cur),
-            ScreenId::Security => Some(&mut self.security.cur),
+            ScreenId::Security => Some(self.security.cursor()),
             ScreenId::Maint => Some(&mut self.maint.cur),
             ScreenId::Upgrade => Some(&mut self.upgrade.cur),
             _ => None,
@@ -115,7 +133,7 @@ impl Screens {
         match id {
             ScreenId::Clients => self.clients.cur.sel,
             ScreenId::Net => self.net.cur.sel,
-            ScreenId::Security => self.security.cur.sel,
+            ScreenId::Security => self.security.at(),
             ScreenId::Maint => self.maint.cur.sel,
             ScreenId::Upgrade => self.upgrade.cur.sel,
             _ => 0,
@@ -147,6 +165,11 @@ impl Screens {
         if let Some(c) = self.cursor_mut(id)
             && c.nav(a, n)
         {
+            // Security's list: the row the cursor is on now is the one it stays on.
+            if id == ScreenId::Security && !self.security.panels {
+                let at = self.security.cur.sel;
+                self.security.sel = threats::row_key(&v.at(at));
+            }
             return Vec::new();
         }
         match id {
@@ -175,7 +198,8 @@ impl Screens {
         match id {
             ScreenId::Clients => clients::hints(),
             ScreenId::Net => network::hints(),
-            ScreenId::Security => security::hints(),
+            ScreenId::Security if self.security.panels => security::hints(),
+            ScreenId::Security => threats::hints(v),
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => maint::hints(v, maint::ticked(v, &self.maint.ticks)),
             ScreenId::Upgrade => wfview::hints(v.wf),
@@ -198,11 +222,8 @@ impl Screens {
                 let n = network::new_count(v);
                 (n > 0).then(|| (format!(" {n}"), t.yellow))
             }
-            // What says the separation or a login failed, once something was read.
-            ScreenId::Security => {
-                let n = security::grave(v);
-                (n > 0).then(|| (format!(" {n}"), t.red))
-            }
+            // What asks something of you, once something was read.
+            ScreenId::Security => threats::badge(v),
             _ => None,
         }
     }
@@ -211,6 +232,9 @@ impl Screens {
     pub fn clamp(&mut self, id: ScreenId, v: &View) {
         if id == ScreenId::Maint {
             return self.maint.keep(v);
+        }
+        if id == ScreenId::Security {
+            return self.security.keep(v);
         }
         let n = self.rows(id, v);
         if let Some(c) = self.cursor_mut(id) {

@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients   3 Network   4 Security 1   6 Maintenance   0 Upgrade
+ 1 Dashboard   2 Clients   3 Network   4 Security 3   6 Maintenance   0 Upgrade
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ Ingress · from outside ──────────────────────────────────────────────────────┐

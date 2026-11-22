@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients   3 Network   4 Security 1   6 Maintenance   0 Upgrade
+ 1 Dashboard   2 Clients   3 Network   4 Security 3   6 Maintenance   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Router · home ───────────────────────────────────────┐┌ Ports · 6 of 7 up ─────────────────────────────────────────────────────────────────────────────────┐
@@ -24,7 +24,7 @@ expression: s
 ┌ Status ──────────────────────────────────────────────┐│                                                                                                    │
 │ clients  8 · 5 wired · 3 Wi-Fi                       ││                                                                                                    │
 │ services ● dnsmasq ● dropbear ● uhttpd               ││                                                                                                    │
-│ security rejects 21/min · 2 forwards · dmz→lan none  ││                                                                                                    │
+│ security 3 need attention                            ││                                                                                                    │
 │ audit    ✓ nothing to check · 5m ago                 ││                                                                                                    │
 │ cert     157 days left                               ││                                                                                                    │
 └──────────────────────────────────────────────────────┘│                                                                                                    │

@@ -99,6 +99,13 @@ enum Command {
     },
     /// What the `firmware-upgrade` workflow's own steps run: `check`, `flash`, `after`.
     Firmware { name: String, action: String },
+    /// What needs attention on a network and how it is covered, as text (`--json`: as
+    /// data): `security [name]`. Also what the `security-action` workflow's steps run:
+    /// `security <name> plan|apply <action>` (`plan` only reads).
+    Security {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
     /// Record a router's metrics every 10 s for the History screen, from this machine, in
     /// the foreground until Ctrl-C (the TUI records too, while its Dashboard is open).
     /// Nothing runs on the router between samples.
@@ -151,6 +158,7 @@ pub fn main(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some(Command::Guard { name, action, rest }) => cli::guard(&name, &action, &rest),
         Some(Command::Packages { name, action, rest }) => cli::packages(&name, &action, &rest),
         Some(Command::Firmware { name, action }) => cli::firmware(&name, &action),
+        Some(Command::Security { rest }) => cli::security(&rest),
         Some(Command::Record { name }) => cli::record(name.as_deref()),
         None => crate::tui::run(crate::tui::Open::Network(cli.network.as_deref())),
     })

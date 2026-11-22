@@ -57,6 +57,10 @@ pub const SEEDS: &[(&str, &str)] = &[
         "package-update",
         include_str!("../../../assets/network-workflows/package-update.toml"),
     ),
+    (
+        "security-action",
+        include_str!("../../../assets/network-workflows/security-action.toml"),
+    ),
 ];
 
 pub use crate::packages::{base_package, package_name};
@@ -276,7 +280,8 @@ mod tests {
                 "config-backup",
                 "firmware-upgrade",
                 "guarded-change",
-                "package-update"
+                "package-update",
+                "security-action"
             ]
         );
         assert!(dir().join("config-backup.toml").is_file());

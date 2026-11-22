@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security 3   6 Maintenance   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Needs attention · 4 · o shows 2 good to know ──────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│          What                                                                      │ │ look                                                                │
+│ look     Someone tried to log in to the router 3 times and was refused, in the     │ │ Someone tried to log in to the router 3 times and was refused, in   │
+│          last 2 h 50 min                                                           │ │ the last 2 h 50 min                                                 │
+│ look     192.0.2.77 is talking to the internet in a way ordinary devices rarely do │ │                                                                     │
+│          (port 23)                                                                 │ │ A refused login is the lock holding, and passwords are already off: │
+│ look     Someone logged in to the router once from a device nobody has named, in   │ │ there is nothing to guess. Worth knowing which device it was.       │
+│          the last 2 h 50 min                                                       │ │                                                                     │
+│ note     Someone tried a wrong Wi-Fi password twice in the last 2 h 50 min         │ │ 192.0.2.77                                                          │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │ Enter: the numbers behind it. Nothing here needs changing on the    │
+│ ✓ ok   1 door is open from the internet, to web                                    │ │ router.                                                             │
+│ ✓ ok   10 devices on the network, none unaccounted for (1 with a private address,  │ │                                                                     │
+│        vouched for by the Wi-Fi password)                                          │ │                                                                     │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
+│        and nothing crosses right now                                               │ │                                                                     │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
+│        update by itself                                                            │ │                                                                     │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
+│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ Blocked by you · 2 ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ what                                              when                             │ │                                                                     │
+│ dock                             from internet    paused, ends in 30 minutes       │ │                                                                     │
+│ door game                        closed           since a day ago                  │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+                                                                                       ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
+                                                                                       │ rejected   21/min                             █ 31.2k since 1d ago  │
+                                                                                       │ forward       port       to                     new/min  total live │
+                                                                                       │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
+                                                                                       │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
+                                                                                       │            3 refused · 1 left before logging in · in the last 2h 50 │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  the numbers   x  expected   z  later   o  everything   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

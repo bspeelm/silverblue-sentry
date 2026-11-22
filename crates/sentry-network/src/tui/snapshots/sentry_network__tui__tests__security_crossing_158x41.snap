@@ -3,7 +3,7 @@ source: crates/sentry-network/src/tui/tests.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients   3 Network   4 Security 2   6 Maintenance   0 Upgrade
+ 1 Dashboard   2 Clients   3 Network   4 Security 4   6 Maintenance   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Ingress · from outside ──────────────────────────────────────────────┐┌ Egress · 6 devices · 12 live flows · new connections out 180/min, all zones ───────┐
@@ -42,4 +42,4 @@ expression: s
                                                                         └────────────────────────────────────────────────────────────────────────────────────┘
  counters since 1d ago · log window 2h 50m · 212 of 16384 connections tracked, 21 listed
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  its flows   s  sort   /  filter   r  read again   A  ask Claude   ?  help   q  quit
+ j/k  select   Enter  its flows   s  sort   /  filter   r  read again   d  the list   A  ask Claude   ?  help   q  quit

@@ -28,6 +28,11 @@ impl std::ops::Deref for Router {
 
 impl Router {
     pub fn new(name: &str, cfg: &Network) -> Self {
+        // The names given on the Security screen (sentry's own `names.toml`) count as
+        // the config's `devices` everywhere a client is shown, judged or hidden.
+        let mut cfg = cfg.clone();
+        crate::security::names::Names::load(&scope(name)).merge(&mut cfg.devices);
+        let cfg = &cfg;
         Self {
             base: sentry_app::remote::Remote::new(
                 name,

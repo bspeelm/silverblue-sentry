@@ -55,10 +55,18 @@ impl Sort {
 
 #[derive(Default)]
 pub struct Security {
+    /// The list's cursor (what needs attention, then what is shut).
     pub cur: Cursor,
+    /// The panels' cursor (Egress's devices).
+    pub pcur: Cursor,
+    /// The numbers are shown (`d`), not the list.
+    pub panels: bool,
     pub sort: Sort,
+    /// The list's row at the cursor (its key), kept when the list changes.
+    pub sel: Option<String>,
 }
 
+/// The panels' keys.
 pub fn hints() -> Hints {
     vec![
         ("j/k", "select"),
@@ -66,6 +74,22 @@ pub fn hints() -> Hints {
         ("s", "sort"),
         ("/", "filter"),
         ("r", "read again"),
+        ("d", "the list"),
+    ]
+}
+
+/// Everything read again.
+pub fn read_again() -> Vec<Effect> {
+    vec![
+        Own::fetch(Kind::Counters),
+        Own::fetch(Kind::Flows),
+        Own::fetch(Kind::Clients),
+        Own::fetch(Kind::SecLog),
+        Own::fetch(Kind::DnsState),
+        Own::fetch(Kind::Uci),
+        Own::fetch(Kind::Ifaces),
+        Own::fetch(Kind::Listeners),
+        Own::fetch(Kind::Services),
     ]
 }
 
@@ -106,15 +130,15 @@ pub fn help() -> Hints {
         ),
         (
             "keys",
-            "r read again · s sort · / filter · Enter a device's flows",
+            "r read again · s sort · / filter · Enter a device's flows · d the list",
         ),
     ]
 }
 
-/// The picture of what was read so far.
-pub fn picture(v: &View) -> Picture {
+/// What was read so far.
+pub fn read<'a>(v: &View<'a>) -> Read<'a> {
     let s = v.s;
-    Picture::of(&Read {
+    Read {
         ifaces: s.ifaces.value.as_ref(),
         uci: s.uci.value.as_ref(),
         clients: s.clients.as_deref(),
@@ -124,15 +148,12 @@ pub fn picture(v: &View) -> Picture {
         flows: s.flows.value.as_ref(),
         log: s.seclog.value.as_ref(),
         dns: s.dnsstate.value.as_ref(),
-    })
+    }
 }
 
-/// How many marks say the separation or a login failed: the count beside the screen's name.
-pub fn grave(v: &View) -> usize {
-    if v.s.flows.value.is_none() && v.s.seclog.value.is_none() {
-        return 0;
-    }
-    picture(v).marks.iter().filter(|m| m.grave()).count()
+/// The picture of what was read so far.
+pub fn picture(v: &View) -> Picture {
+    Picture::of(&read(v))
 }
 
 /// A count for a narrow column: `902`, `31.2k`, `1.4M`.
@@ -157,40 +178,6 @@ pub fn per_min(rate: Option<f64>) -> String {
 /// `a → b`.
 fn arrow(a: &str, b: &str) -> String {
     format!("{a}→{b}")
-}
-
-/// The Dashboard's Status row: the uplink's rejects, the forwards, and whether anything
-/// crosses zones that the firewall keeps apart. None until Security has read something.
-pub fn status(v: &View) -> Option<(String, bool)> {
-    if v.s.counters.value.is_none() && v.s.flows.value.is_none() {
-        return None;
-    }
-    let p = picture(v);
-    let mut said = Vec::new();
-    if let Some(c) = p.wan_rejects {
-        said.push(match c.rate {
-            Some(_) => format!("WAN rejects {}/min", per_min(c.rate)),
-            None => format!("WAN rejects {}", num(c.total)),
-        });
-    }
-    if v.s.uci.value.is_some() || !p.forwards.is_empty() {
-        said.push(match p.forwards.len() {
-            1 => "1 forward".to_string(),
-            n => format!("{n} forwards"),
-        });
-    }
-    let bad = p.crossings();
-    let grave = !bad.is_empty();
-    if let Some(x) = bad.first() {
-        // First: it is what the row is red for.
-        said.insert(0, format!("{} {} live", arrow(&x.from, &x.to), x.flows));
-    } else if v.s.flows.value.is_some()
-        && let Some(x) = p.apart().first()
-    {
-        // The pair the firewall keeps apart, and that nothing crosses now.
-        said.push(format!("{} none", arrow(&x.from, &x.to)));
-    }
-    (!said.is_empty()).then(|| (said.join(" · "), grave))
 }
 
 /// The devices the filter keeps, in the order asked for.
@@ -322,7 +309,7 @@ fn waiting<T>(v: &View, slot: &crate::tui::data::Slot<T>, what: &str) -> String 
 }
 
 /// `compact`: the logins in one line (a narrow window).
-fn ingress_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'static>> {
+pub fn ingress_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'static>> {
     let t = v.t;
     let mut l = Vec::new();
     match (p.wan_rejects, &v.s.counters.value) {
@@ -463,7 +450,7 @@ fn ingress_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'st
 }
 
 /// `compact`: only the pairs between inside zones, and whatever is crossed (a narrow window).
-fn seg_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'static>> {
+pub fn seg_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'static>> {
     let t = v.t;
     let Some(m) = &p.matrix else {
         return vec![Line::styled(
@@ -533,7 +520,7 @@ fn seg_lines(v: &View, p: &Picture, w: usize, compact: bool) -> Vec<Line<'static
     l
 }
 
-fn dns_lines(v: &View, p: &Picture, w: usize) -> Vec<Line<'static>> {
+pub fn dns_lines(v: &View, p: &Picture, w: usize) -> Vec<Line<'static>> {
     let t = v.t;
     let room = w.saturating_sub(11);
     let row = |name: &str, text: String, c: Color| {
@@ -653,7 +640,7 @@ fn dns_lines(v: &View, p: &Picture, w: usize) -> Vec<Line<'static>> {
     l
 }
 
-fn wifi_lines(v: &View, p: &Picture, w: usize) -> Vec<Line<'static>> {
+pub fn wifi_lines(v: &View, p: &Picture, w: usize) -> Vec<Line<'static>> {
     let t = v.t;
     let mut l = Vec::new();
     for a in &p.aps {
@@ -798,24 +785,63 @@ fn footer(v: &View, p: &Picture) -> Option<Line<'static>> {
 }
 
 impl Security {
+    /// The cursor of the view shown.
+    pub fn cursor(&mut self) -> &mut Cursor {
+        if self.panels {
+            &mut self.pcur
+        } else {
+            &mut self.cur
+        }
+    }
+
+    pub fn at(&self) -> usize {
+        if self.panels {
+            self.pcur.sel
+        } else {
+            self.cur.sel
+        }
+    }
+
     pub fn count(&self, v: &View) -> usize {
-        rows(v, &picture(v), self.sort).len()
+        if self.panels {
+            rows(v, &picture(v), self.sort).len()
+        } else {
+            super::threats::count(v)
+        }
+    }
+
+    /// The list changed under the cursor: put it back on the row it was on.
+    pub fn keep(&mut self, v: &View) {
+        if !self.panels
+            && let Some(i) = self
+                .sel
+                .as_deref()
+                .and_then(|k| super::threats::position(v, k))
+        {
+            self.cur.sel = i;
+        }
+        let n = self.count(v);
+        self.cursor().clamp(n);
     }
 
     pub fn handle(&mut self, a: Action, v: &View) -> Vec<Effect> {
+        // `d`: the list, or the numbers behind it.
+        if a == Action::Char('d') {
+            self.panels = !self.panels;
+            return Vec::new();
+        }
+        if !self.panels {
+            return super::threats::handle(self, a, v);
+        }
         match a {
-            Action::Refresh | Action::Check => vec![
-                Own::fetch(Kind::Counters),
-                Own::fetch(Kind::Flows),
-                Own::fetch(Kind::Clients),
-                Own::fetch(Kind::SecLog),
-                Own::fetch(Kind::DnsState),
-                Own::fetch(Kind::Uci),
-                Own::fetch(Kind::Ifaces),
-            ],
+            Action::Esc => {
+                self.panels = false;
+                Vec::new()
+            }
+            Action::Refresh | Action::Check => read_again(),
             Action::Char('s') => {
                 self.sort = self.sort.next();
-                self.cur.sel = 0;
+                self.pcur.sel = 0;
                 vec![Effect::Toast(format!("sorted by {}", self.sort.word()))]
             }
             Action::Enter => {
@@ -833,7 +859,16 @@ impl Security {
         }
     }
 
-    fn egress(&mut self, f: &mut Frame, area: Rect, v: &View, p: &Picture) {
+    /// `mark`: None in the panels (the cursor is here); in the list, the device the
+    /// selected row is about (its place here, when it has live flows).
+    pub fn egress(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        v: &View,
+        p: &Picture,
+        mark: Option<Option<usize>>,
+    ) {
         let t = v.t;
         let shown = rows(v, p, self.sort);
         let flows: usize = p.devices.iter().map(|d| d.flows).sum();
@@ -869,7 +904,10 @@ impl Security {
             return f.render_widget(Paragraph::new(Line::styled(why, t.dim())), r);
         }
         let wide = r.width >= 70;
-        let sel = v.cur.min(shown.len() - 1);
+        let sel = match mark {
+            None => Some(v.cur.min(shown.len() - 1)),
+            Some(at) => at,
+        };
         let table: Vec<Row> = shown
             .iter()
             .map(|d| {
@@ -936,7 +974,9 @@ impl Security {
                 ],
             )
         };
-        self.cur.page = r.height.saturating_sub(1) as usize;
+        if mark.is_none() {
+            self.pcur.page = r.height.saturating_sub(1) as usize;
+        }
         widgets::table(
             f,
             r,
@@ -945,12 +985,15 @@ impl Security {
                 header,
                 widths,
                 rows: table,
-                selected: Some(sel),
+                selected: sel,
             },
         );
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
+        if !self.panels {
+            return super::threats::render(self, f, area, v);
+        }
         let t = v.t;
         let p = picture(v);
         let foot = footer(v, &p);
@@ -1026,7 +1069,7 @@ impl Security {
                 Constraint::Length(h(seg.len()).min(right.height / 2)),
             ])
             .areas(right);
-            self.egress(f, egress_a, v, &p);
+            self.egress(f, egress_a, v, &p, None);
             draw(f, seg_a, "Segmentation", seg_note(&p), seg);
             return;
         }
@@ -1055,7 +1098,7 @@ impl Security {
         ])
         .areas(body);
         draw(f, ing_a, "Ingress", ingress_note, ing);
-        self.egress(f, egress_a, v, &p);
+        self.egress(f, egress_a, v, &p, None);
         draw(f, seg_a, "Segmentation", seg_note(&p), seg);
         draw(f, dns_a, "DNS", String::new(), dns);
         draw(f, wifi_a, "Wi-Fi", String::new(), wifi);

@@ -28,11 +28,11 @@ expression: "stable.join(\"\\n\")"
 │ backup, and check the services afterwards                │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
+│ security-action  2 steps                                 │  │                                                                                              │
+│ What Enter on the Security screen does: one change on    │  │                                                                                              │
+│ the router, shown first, taken back by itself if the     │  │                                                                                              │
+│ router stops answering                                   │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │

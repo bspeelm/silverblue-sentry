@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Needs attention · nothing needs you · o shows 2 good to know ──────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│                                                                                    │ │ Nothing selected. d shows the numbers behind this page.             │
+│              ✓ Nothing needs you. How the network is covered is below.             │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │                                                                     │
+│ ✓ ok   10 devices on the network, none unaccounted for (1 with a private address,  │ │                                                                     │
+│        vouched for by the Wi-Fi password)                                          │ │                                                                     │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
+│        and nothing crosses right now                                               │ │                                                                     │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
+│        update by itself                                                            │ │                                                                     │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
+│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ o  everything   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

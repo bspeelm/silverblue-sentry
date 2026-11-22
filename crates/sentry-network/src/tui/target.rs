@@ -81,6 +81,9 @@ pub enum Own {
     },
     /// The audit report, over Maintenance (`F`, `:audit`), on this finding when one is named.
     OpenReport(Option<String>),
+    /// What Security's list asks for (`screens::threats`): an action started, a name or a
+    /// new Wi-Fi password answered.
+    Security(super::screens::threats::Want),
 }
 
 impl Own {
@@ -147,6 +150,9 @@ fn polls_of(id: ScreenId) -> Vec<Poll> {
             at(Kind::Uci, None),
             at(Kind::SecLog, None),
             at(Kind::DnsState, None),
+            // What the list's findings are also made of (the audit's own rule).
+            at(Kind::Listeners, None),
+            at(Kind::Services, None),
         ],
         // The run's own steps are the app's; the list is read from disk.
         ScreenId::Upgrade => Vec::new(),
@@ -216,6 +222,13 @@ impl NetworkTarget {
                     // A secret typed among a run's values shows as dots.
                     typed: |p, text| match p {
                         effect::Prompt::WfVar(_) => crate::guard::typed(text),
+                        // Security's new Wi-Fi password.
+                        effect::Prompt::Own(o) => match o.own.0.downcast_ref::<Own>() {
+                            Some(Own::Security(w)) if w.secret() => {
+                                Some("•".repeat(text.chars().count()))
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     },
                     ..Default::default()
@@ -479,6 +492,7 @@ impl Target for NetworkTarget {
             let scope = &self.router.scope;
             self.has_ring = sentry_core::recorder::ring::path(scope).exists();
             self.store.seen = crate::clients::Seen::load(scope);
+            self.store.blocks = crate::security::blocks::Blocks::load(scope);
             sentry_core::maint::retention::cap_reports(
                 &crate::audit::reports_dir(scope),
                 sentry_core::config::Config::load().0.retention.reports,
@@ -610,6 +624,10 @@ impl Target for NetworkTarget {
                 | Kind::Lookup
                 | Kind::Backup
                 | Kind::Flows
+                | Kind::Uci
+                | Kind::SecLog
+                | Kind::DnsState
+                | Kind::Counters
         ) {
             self.clamp(sh, cx);
         }
@@ -635,6 +653,11 @@ impl Target for NetworkTarget {
             // A run ended: what it may have made (a backup) is read again.
             Why::Run | Why::Changed => {
                 self.fetch(Kind::Backup, cx);
+                // And what a Security action changed: the config, and who is blocked.
+                self.fetch(Kind::Uci, cx);
+                if !cx.offline {
+                    self.store.blocks = crate::security::blocks::Blocks::load(&self.router.scope);
+                }
                 Vec::new()
             }
             // The lists are made from the app's records as they're drawn.
@@ -653,9 +676,30 @@ impl Target for NetworkTarget {
             Some(Own::OpenReport(id)) => {
                 return self.with_screens(sh, cx, |s, v| s.maint.open_report(v, id.as_deref()));
             }
+            Some(Own::Security(w)) => {
+                let w = w.clone();
+                return super::screens::threats::on_own(self, &w, sh, cx);
+            }
             None => {}
         }
         Vec::new()
+    }
+
+    /// Security's own prompts: a device's name, a new Wi-Fi password.
+    fn on_prompt(
+        &mut self,
+        own: &effect::Own,
+        answer: Option<&str>,
+        sh: &mut Shared,
+        cx: &Cx,
+    ) -> Vec<Effect> {
+        let Some(Own::Security(w)) = own.0.downcast_ref::<Own>() else {
+            return Vec::new();
+        };
+        let w = w.clone();
+        let fx = super::screens::threats::on_prompt(self, &w, answer, cx);
+        self.clamp(sh, cx);
+        fx
     }
 
     /// Nothing of a network's has the terminal.
@@ -687,7 +731,11 @@ impl Target for NetworkTarget {
         }
         // `?` on Security: what each number is, and what it is not.
         if help && cx.screen == ScreenId::Security {
-            return super::screens::security::help();
+            return if self.screens.security.panels {
+                super::screens::security::help()
+            } else {
+                super::screens::threats::help()
+            };
         }
         keys
     }
@@ -970,6 +1018,9 @@ impl Asks for NetworkTarget {
 
     fn apply_ask(&self, sh: &Shared, cx: &Cx) -> Option<Ask> {
         let v = self.view(sh, cx);
+        if cx.screen == ScreenId::Security {
+            return super::screens::threats::apply_ask(&v);
+        }
         super::ask::apply_rec(&v, &maint::pick_apply(&v)?, &|wf| sh.workflow_text(APP, wf))
     }
 

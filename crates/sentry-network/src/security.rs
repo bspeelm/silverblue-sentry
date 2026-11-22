@@ -21,6 +21,15 @@
 //! Marks are hints for the screen. Only two things here are findings (`audit::derive`): a
 //! live flow between zones the firewall doesn't join, and failed ssh logins.
 
+pub mod actions;
+pub mod attention;
+pub mod blocks;
+pub mod gather;
+pub mod names;
+pub mod run;
+
+pub use attention::{Act, Cover, Line, Rank, Row, ServerGuard, State, Subject, attention, posture};
+
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 

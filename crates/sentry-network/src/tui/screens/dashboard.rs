@@ -96,17 +96,17 @@ fn status_lines(v: &View, w: usize) -> Vec<Line<'static>> {
             Span::styled(said, t.s(c)),
         ]));
     }
-    // What flows through, from the last time Security read it (nothing is read for this).
-    if let Some((said, grave)) = super::security::status(v) {
-        // (Where the panel is narrow the uplink goes without saying.)
-        let said = if said.chars().count() > room {
-            said.replace("WAN rejects", "rejects")
-        } else {
-            said
+    // How many of Security's rows need attention, from the last time it read (nothing is
+    // read for this).
+    if let Some((said, grave)) = super::threats::status(v) {
+        let c = match (grave, said.as_str()) {
+            (true, _) => t.red,
+            (false, "all quiet") => t.green,
+            (false, _) => t.yellow,
         };
         lines.push(Line::from(vec![
             label(t, "security"),
-            Span::styled(trunc(&said, room), t.s(if grave { t.red } else { t.fg })),
+            Span::styled(trunc(&said, room), t.s(c)),
         ]));
     }
     if let Some(rep) = &s.report.value {

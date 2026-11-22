@@ -1338,8 +1338,30 @@ fn stations(s: &State) -> String {
         .join(", ")
 }
 
+/// What a caller adds to the guard's own confirmation.
+#[derive(Clone, Copy, Default)]
+pub struct Also<'a> {
+    /// Checked from this machine each time the router's state confirms, before the change
+    /// is kept: Err is why it isn't confirmed (and the router takes it back).
+    pub check: Option<&'a dyn Fn() -> Result<(), String>>,
+    /// Port forwards (`proto port → address`) the change is meant to close: their absence
+    /// afterwards isn't held against it, whatever the config expects.
+    pub closing: &'a [String],
+}
+
 /// The whole sequence. `say` gets each line for the window; the outcome is journalled.
 pub fn run(r: &Router, c: &Change, window: u64, say: &mut dyn FnMut(String)) -> Outcome {
+    run_also(r, c, window, &Also::default(), say)
+}
+
+/// [`run`], with what else must hold before the change is kept.
+pub fn run_also(
+    r: &Router,
+    c: &Change,
+    window: u64,
+    also: &Also,
+    say: &mut dyn FnMut(String),
+) -> Outcome {
     let _turn = match turn(&r.scope) {
         Ok(t) => t,
         Err(why) => return Outcome::Stopped(why),
@@ -1351,7 +1373,7 @@ pub fn run(r: &Router, c: &Change, window: u64, say: &mut dyn FnMut(String)) -> 
     // Nothing said about it, and no reason it ended, carries a secret it sets.
     let hide = c.hider(&r.scope);
     let mut said = |l: String| say(hide(l));
-    let o = run_with(r, c, window, &token, &mut said).said(&hide);
+    let o = run_with(r, c, window, &token, also, &mut said).said(&hide);
     journal(&r.scope, &token, c, &o);
     o
 }
@@ -1361,6 +1383,7 @@ fn run_with(
     c: &Change,
     window: u64,
     token: &str,
+    also: &Also,
     say: &mut dyn FnMut(String),
 ) -> Outcome {
     if pending(&r.scope).is_some() {
@@ -1485,7 +1508,13 @@ fn run_with(
         ) {
             Ok(text) => {
                 let s = parse_state(&text);
-                match confirm(c, &before, &s, &expected_forwards(&r.cfg)) {
+                let expected: Vec<String> = expected_forwards(&r.cfg)
+                    .into_iter()
+                    .filter(|f| !also.closing.contains(f))
+                    .collect();
+                let confirmed = confirm(c, &before, &s, &expected)
+                    .and_then(|()| also.check.map_or(Ok(()), |check| check()));
+                match confirmed {
                     Ok(()) if s.armed => match &good {
                         Some((at, was)) if steady(was, &s) => {
                             if at.elapsed() >= gap {

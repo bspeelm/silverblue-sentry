@@ -1021,3 +1021,140 @@ pub fn firmware(name: &str, action: &str) -> u8 {
         }
     }
 }
+
+/// `security [name] [--json]`: what needs attention and how the network is covered, from
+/// one read of the router (reads only). `security <name> plan|apply <action>`: the two
+/// steps of the `security-action` workflow (`plan` only reads).
+pub fn security(rest: &[String]) -> u8 {
+    use super::security::{actions::Do, gather, run};
+    let json = rest.iter().any(|a| a == "--json");
+    let words: Vec<&str> = rest
+        .iter()
+        .map(String::as_str)
+        .filter(|a| *a != "--json")
+        .collect();
+    let (name, step) = match words.as_slice() {
+        [] => (None, None),
+        [name] => (Some(*name), None),
+        [name, step @ ("plan" | "apply"), action] => (Some(*name), Some((*step, *action))),
+        _ => {
+            eprintln!("security [name] [--json] · security <name> plan|apply <action>");
+            return 2;
+        }
+    };
+    let (n, cfg) = match load(name) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let r = Router::new(&n, &cfg);
+    if let Some((step, action)) = step {
+        let d = match Do::parse(action) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("STOPPED, nothing was changed: {e}");
+                return 3;
+            }
+        };
+        let mut say = |l: String| println!("{l}");
+        return match step {
+            "plan" => match run::show(&r, &d, &mut say) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("STOPPED, nothing was changed: {e}");
+                    3
+                }
+            },
+            _ => run::apply(&r, &d, &mut say),
+        };
+    }
+    let g = match gather::gather(&r) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{n}: {e}");
+            return 1;
+        }
+    };
+    let said = gather::said(&r, &g);
+    if json {
+        let rows: Vec<_> = said
+            .rows
+            .iter()
+            .map(|x| {
+                serde_json::json!({
+                    "key": x.key,
+                    "rank": x.rank.word(),
+                    "title": x.title,
+                    "why": x.why,
+                    "seen": x.seen,
+                    "enter": x.act.enter(),
+                    "can_wait": x.can_wait,
+                })
+            })
+            .collect();
+        let covered: Vec<_> = said
+            .posture
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "what": l.what,
+                    "state": l.state.word(),
+                    "text": l.text,
+                })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "network": n,
+            "attention": rows,
+            "covered": covered,
+            "not_read": g.errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        return 0;
+    }
+    for l in security_text(&n, &said, &g.errors) {
+        println!("{l}");
+    }
+    0
+}
+
+/// The attention list and the posture as text.
+pub fn security_text(
+    name: &str,
+    said: &super::security::gather::Said,
+    not_read: &[(String, String)],
+) -> Vec<String> {
+    let mut l = vec![format!("{name} · security"), String::new()];
+    if said.rows.iter().all(|x| x.can_wait) {
+        l.push("Nothing needs you.".into());
+    } else {
+        l.push("Needs attention".into());
+    }
+    for x in &said.rows {
+        l.push(format!("  {:<8} {}", x.rank.word(), x.title));
+        l.push(format!("           {}", x.why));
+        l.extend(x.seen.iter().map(|s| format!("           · {s}")));
+        l.push(format!(
+            "           Enter on Security (4): {}",
+            x.act.enter()
+        ));
+    }
+    l.push(String::new());
+    l.push("How you're covered".into());
+    for c in &said.posture {
+        l.push(format!("  {:<5} {}", c.state.word(), c.text));
+    }
+    for (what, why) in not_read {
+        l.push(format!("  (not read: {what}: {why})"));
+    }
+    l.push(String::new());
+    l.push(
+        "One read: what takes two (a rate rising) isn't judged here. What a tool like this \
+         can't see: what is inside the traffic, and whatever a device does without passing \
+         the router."
+            .into(),
+    );
+    l
+}

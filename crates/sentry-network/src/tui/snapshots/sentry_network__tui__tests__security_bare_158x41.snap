@@ -42,4 +42,4 @@ expression: s
                                                                         └────────────────────────────────────────────────────────────────────────────────────┘
  0 flows listed
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- j/k  select   Enter  its flows   s  sort   /  filter   r  read again   A  ask Claude   ?  help   q  quit
+ j/k  select   Enter  its flows   s  sort   /  filter   r  read again   d  the list   A  ask Claude   ?  help   q  quit

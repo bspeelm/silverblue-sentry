@@ -186,6 +186,8 @@ pub struct Store {
     pub flows: Slot<collect::flows::Flows>,
     pub seclog: Slot<collect::seclog::SecLog>,
     pub dnsstate: Slot<collect::dnsstate::DnsState>,
+    /// What this machine remembers of the blocks made from Security (`blocks.toml`).
+    pub blocks: crate::security::blocks::Blocks,
     /// `seen.toml` was written by an audit since it was read here.
     seen_stale: bool,
     /// The clients were read and the list isn't made of that read yet (it waits for the
