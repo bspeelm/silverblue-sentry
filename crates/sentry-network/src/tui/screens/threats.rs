@@ -182,17 +182,27 @@ pub fn server_guard(v: &View) -> Option<crate::security::attention::ServerGuard>
 
 /// The page's own row that is already about an audit item's subject, by its key (a
 /// prefix), for the items that are this network's.
-fn audit_subject(what: &str) -> Option<&'static str> {
-    Some(match what {
-        "ssh-password" => "finding:net:ssh:password",
-        "admin-http" => "finding:net:luci:http",
-        "unknown-devices" => "finding:net:client:",
-        "crossing" => "finding:net:flow:",
-        "dns-filter" => "sec:blocklist",
-        "wan-input" => "finding:net:zone:",
-        "watch" => "finding:net:crowdsec:",
-        _ => return None,
-    })
+fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
+    let what = i.id.split(':').nth(1).unwrap_or("");
+    Some(
+        match what {
+            "ssh-password" => "finding:net:ssh:password",
+            "admin-http" => "finding:net:luci:http",
+            "unknown-devices" => "finding:net:client:",
+            "crossing" => "finding:net:flow:",
+            "dns-filter" => "sec:blocklist",
+            "wan-input" => "finding:net:zone:",
+            "watch" => "finding:net:crowdsec:",
+            // A door the page lists as one you haven't listed: `sec:door:<net>:<proto>:<port>`.
+            "door" => {
+                let mut end = i.id.rsplit(':');
+                let (port, proto) = (end.next()?, end.next()?);
+                return Some(format!("finding:net:forward:{proto}:{port}"));
+            }
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 /// The security audit's items this page lists (`Shared::sec`), joined with its own rows by
@@ -210,7 +220,8 @@ fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
             St::DoFirst => Rank::Now,
             _ => Rank::Look,
         };
-        if let Some(prefix) = audit_subject(what).filter(|_| own || what == "watch") {
+        if let Some(prefix) = audit_subject(i).filter(|_| own || what == "watch") {
+            let prefix = prefix.as_str();
             if let Some(r) = rows.iter_mut().find(|r| r.key.starts_with(prefix)) {
                 r.rank = r.rank.min(rank);
                 r.can_wait = false;
@@ -233,7 +244,8 @@ fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
                 "dns-filter" => s.read.dns.is_some(),
                 _ => false,
             };
-            if expected || read {
+            // (A door you listed is still the audit's to judge: what answers behind it.)
+            if (expected || read) && what != "door" {
                 continue;
             }
         }

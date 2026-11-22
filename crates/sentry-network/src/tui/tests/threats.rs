@@ -271,6 +271,144 @@ fn the_key_bar_names_what_enter_does_on_each_kind_of_row() {
     assert!(bar(&s).contains("Enter  keep updated"), "{}", bar(&s));
 }
 
+fn audit_item(
+    id: &str,
+    state: sentry_core::secaudit::State,
+    title: &str,
+    targets: &[&str],
+) -> sentry_core::secaudit::Item {
+    sentry_core::secaudit::Item {
+        id: id.into(),
+        group: sentry_core::secaudit::Group::GettingIn,
+        state,
+        rank: 0,
+        title: title.into(),
+        why: format!(
+            "The audit's why for {}.",
+            id.split(':').nth(1).unwrap_or_default()
+        ),
+        fix: "Fix it.".into(),
+        targets: targets.iter().map(|t| t.to_string()).collect(),
+        evidence: vec!["seen by the audit".into()],
+        brief: format!("Fix this finding of the security audit: {title}"),
+        question: (state == sentry_core::secaudit::State::Ask).then(|| format!("q:{id}")),
+    }
+}
+
+/// The security audit's items on this page: one row per subject. Where the page already
+/// has the row (the one with the action), it stays, more urgent if the audit says so and
+/// with the audit's why; what the page reads for itself isn't listed again; the rest are
+/// rows of their own whose Enter fixes, answers, or goes to Maintenance.
+#[test]
+fn the_audits_items_join_the_pages_own_rows() {
+    use sentry_core::secaudit::State;
+    let me = crate::tui::id_of(NAME);
+    let mut a = busy();
+    let before = {
+        let s = list(&mut a, 158, 60);
+        s.matches("A door from the internet").count()
+    };
+    assert!(before >= 1);
+    a.slot_mut().shared.sec_last = Some("2026-10-23T12:00:00Z".parse().unwrap());
+    a.slot_mut().shared.sec = vec![
+        // The page lists this door as one nobody listed: one row, with the action.
+        audit_item(
+            &format!("sec:door:{me}:udp:8000-8010"),
+            State::DoFirst,
+            "The internet can reach an old game server",
+            &[&me, "srv:myserver"],
+        ),
+        // A door you listed has no row here: what answers behind it is the audit's.
+        audit_item(
+            &format!("sec:door:{me}:tcp:443"),
+            State::Worth,
+            "The internet can reach a web app that is behind",
+            &[&me, "srv:myserver"],
+        ),
+        // The page reads who is on the network itself.
+        audit_item(
+            &format!("sec:unknown-devices:{me}"),
+            State::Worth,
+            "Devices nobody named are on the network",
+            &[&me],
+        ),
+        // The page has its own row for password logins.
+        audit_item(
+            &format!("sec:ssh-password:{me}"),
+            State::DoFirst,
+            "The router's ssh login takes passwords",
+            &[&me],
+        ),
+        // Nothing here says these: rows of the audit's own.
+        audit_item(
+            &format!("sec:flat:{me}"),
+            State::Worth,
+            "Every device at home shares one network",
+            &[&me],
+        ),
+        audit_item(
+            &format!("sec:restore:{me}"),
+            State::Ask,
+            "Have you ever restored from the backup?",
+            &[&me],
+        ),
+        audit_item(
+            &format!("sec:firmware:{me}"),
+            State::Worth,
+            "The router's firmware is behind",
+            &[&me],
+        ),
+    ];
+    let s = list(&mut a, 158, 60);
+    // Not twice: the door, the unnamed devices, password logins.
+    assert_eq!(s.matches("A door from the internet").count(), before, "{s}");
+    assert!(
+        s.contains("The internet can reach a web app that is behind"),
+        "{s}"
+    );
+    for gone in [
+        "The internet can reach an old game server",
+        "Devices nobody named are on the network",
+        "The router's ssh login takes passwords",
+    ] {
+        assert!(!s.contains(gone), "{gone}:\n{s}");
+    }
+    assert!(s.contains("audited 3 days ago · S shows it"), "{s}");
+    // The page's row has the action, and now the audit's why.
+    let s = on_row(
+        &mut a,
+        "A door from the internet is open that you haven't listed: game",
+    );
+    assert!(bar(&s).contains("Enter  close it"), "{}", bar(&s));
+    assert!(s.contains("The audit's why for door."), "{s}");
+    let s = on_row(&mut a, "log in over ssh with a password");
+    assert!(
+        s.contains("act now") && bar(&s).contains("Enter  keys only"),
+        "{s}"
+    );
+    // The audit's own rows, and what Enter does on each.
+    for (row, enter) in [
+        ("Every device at home shares one network", "Enter  fix"),
+        ("Have you ever restored from the backup?", "Enter  answer"),
+        ("The router's firmware is behind", "Enter  Maintenance"),
+    ] {
+        let s = on_row(&mut a, row);
+        assert!(bar(&s).contains(enter), "{row}: {}", bar(&s));
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.slot().screen, ScreenId::Maint);
+    // Put off like any row; marked expected, gone.
+    let s = on_row(&mut a, "Every device at home shares one network");
+    assert!(bar(&s).contains("x  expected   z  later"), "{}", bar(&s));
+    key(&mut a, KeyCode::Char('b'));
+    key(&mut a, KeyCode::Esc);
+    let s = list(&mut a, 158, 60);
+    assert!(
+        !s.contains("Every device at home shares one network"),
+        "{s}"
+    );
+}
+
 #[test]
 fn an_unknown_device_is_named_blocked_or_paused() {
     let _turn = runs();

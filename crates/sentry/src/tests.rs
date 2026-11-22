@@ -1582,8 +1582,10 @@ fn audit_facts(server: &str, network: &str) -> Vec<sentry_core::secaudit::Target
             wan_up: Some(true),
             forwards: Some(vec![Forward {
                 proto: "tcp".into(),
-                port: "443".into(),
-                to_port: "8443".into(),
+                // (Not one of the forwards the router fixture has: a door the page has
+                // no row of its own for.)
+                port: "9443".into(),
+                to_port: "9443".into(),
                 dest: AUDIT_CANARIES[0].into(),
                 zone: Some("dmz".into()),
             }]),
@@ -1637,7 +1639,7 @@ fn the_security_audit_is_the_windows_and_each_target_lists_its_rows() {
         .iter()
         .map(|i| format!("{} {:?} {:?}", i.id, i.state, i.targets))
         .collect();
-    let door = format!("sec:door:net:{network}:tcp:443");
+    let door = format!("sec:door:net:{network}:tcp:9443");
     assert!(ids.iter().any(|i| i.starts_with(&door)), "{ids:#?}");
     // The report is in front, in sections, and says what it isn't.
     let s = tall(&mut a);
