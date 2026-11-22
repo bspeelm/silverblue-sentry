@@ -12,7 +12,8 @@
 use std::time::Duration;
 
 use super::actions::{self, Do, Facts, Planned, Proof};
-use super::blocks::Blocks;
+use super::blocks::{Blocks, Filtered};
+use super::family;
 use crate::guard::{self, Also, Change, Outcome};
 use crate::remote::Router;
 use sentry_core::exec::Cmd;
@@ -31,8 +32,88 @@ fn services(asked: &'static str) -> &'static str {
     asked
 }
 
+/// Tests against the disposable router: the lookups a proof makes are answered as these
+/// say (`(ordinary, blocked)` per call, in order) instead of being asked, since that
+/// container may not reach the internet. An empty list asks for real.
+#[cfg(test)]
+pub static LOOKUPS: std::sync::Mutex<Vec<(bool, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// One lookup from the router (busybox `nslookup`, a read): what it printed. Err: the
+/// router has no lookup tool.
+fn lookup(r: &Router, name: &str, server: &str) -> Result<String, String> {
+    let o = r
+        .sh(&format!(
+            "command -v nslookup >/dev/null || exit 127; nslookup '{name}' '{server}' 2>&1"
+        ))
+        .timeout(Some(Duration::from_secs(20)))
+        .run()
+        .map_err(|e| e.to_string())?;
+    if o.code == 127 {
+        return Err("the router has no nslookup, so lookups can't be checked from it".into());
+    }
+    Ok(o.stdout)
+}
+
 /// Prove something from this machine. Ok: what was seen.
 pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
+    let svc = family::service();
+    #[cfg(test)]
+    if matches!(p, Proof::OwnResolver | Proof::Family) {
+        let mut l = LOOKUPS.lock().unwrap();
+        if !l.is_empty() {
+            let (ordinary, blocked) = l.remove(0);
+            return match (p, ordinary, blocked) {
+                (Proof::OwnResolver, true, _) => Ok("(test) the router looks names up".into()),
+                (Proof::Family, true, true) => Ok("(test) the family service blocks".into()),
+                _ => Err("(test) the lookup didn't come back as it should".into()),
+            };
+        }
+    }
+    match p {
+        // dnsmasq on the router's own loopback: what every device that isn't filtered asks.
+        Proof::OwnResolver => {
+            let out = lookup(r, svc.ordinary, "127.0.0.1")?;
+            if family::answered(&out).is_empty() {
+                return Err(format!(
+                    "the router's own resolver didn't answer for {}: its lookups don't work \
+                     as they are, so nothing is changed now",
+                    svc.ordinary
+                ));
+            }
+            Ok(format!(
+                "the router's own resolver answers for {}",
+                svc.ordinary
+            ))
+        }
+        // The service from the router: it answers an ordinary name and refuses its test.
+        Proof::Family => {
+            let server = svc.v4[0];
+            let out = lookup(r, svc.ordinary, server)?;
+            if family::answered(&out).is_empty() {
+                return Err(format!(
+                    "{} ({server}) didn't answer the router for {}: devices sent there would \
+                     get no answers",
+                    svc.name, svc.ordinary
+                ));
+            }
+            let out = lookup(r, svc.blocked_test, server)?;
+            if !family::blocked(&out) {
+                return Err(format!(
+                    "{} ({server}) gave an address for its own test name {}: it isn't \
+                     filtering as documented",
+                    svc.name, svc.blocked_test
+                ));
+            }
+            Ok(format!(
+                "{} answers the router for {} and refuses {}",
+                svc.name, svc.ordinary, svc.blocked_test
+            ))
+        }
+        _ => prove_access(r, p),
+    }
+}
+
+fn prove_access(r: &Router, p: Proof) -> Result<String, String> {
     match p {
         // Its own connection (never the shared one, which is already logged in) in batch
         // mode, where ssh can't ask for or type a password: it gets in by key or not at
@@ -96,6 +177,7 @@ pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
                 )),
             }
         }
+        Proof::OwnResolver | Proof::Family => prove(r, p),
     }
 }
 
@@ -104,9 +186,11 @@ struct Got {
     wan: String,
     blocks: Blocks,
     expected: Vec<String>,
+    counters: Option<crate::collect::counters::Counters>,
+    tables: Vec<String>,
 }
 
-fn read(r: &Router) -> Result<Got, String> {
+fn read(r: &Router, d: &Do) -> Result<Got, String> {
     let uci =
         crate::collect::uci::collect(r).map_err(|e| format!("the config couldn't be read: {e}"))?;
     // The uplink's zone: the firewall's zone that holds the uplink's interface.
@@ -114,16 +198,30 @@ fn read(r: &Router) -> Result<Got, String> {
         .ok()
         .map(|i| super::Nets::new(&i, Some(&uci)).wan_zone().to_string())
         .unwrap_or_else(|| "wan".into());
+    // Whose DNS redirect comes first: what fw4 counts, and the other tables (both only
+    // where the action is the family filter's; reads).
+    let (counters, tables) = if matches!(d, Do::Filter { .. }) {
+        (
+            crate::collect::counters::collect(r).ok(),
+            r.output(&r.sh("nft list ruleset"))
+                .map(|t| family::foreign_tables(&t))
+                .unwrap_or_default(),
+        )
+    } else {
+        (None, Vec::new())
+    };
     Ok(Got {
         uci,
         wan,
         blocks: Blocks::load(&r.scope),
         expected: guard::expected_forwards(&r.cfg),
+        counters,
+        tables,
     })
 }
 
 fn planned(r: &Router, d: &Do) -> Result<(Planned, Got), String> {
-    let got = read(r)?;
+    let got = read(r, d)?;
     let p = actions::plan(
         d,
         &Facts {
@@ -131,6 +229,8 @@ fn planned(r: &Router, d: &Do) -> Result<(Planned, Got), String> {
             wan: &got.wan,
             blocks: &got.blocks,
             expected: &got.expected,
+            counters: got.counters.as_ref(),
+            tables: &got.tables,
         },
     )?;
     Ok((p, got))
@@ -250,6 +350,13 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
         }
     }
     settle(r, d);
+    if let Do::Filter { .. } = d {
+        let svc = family::service();
+        say(format!(
+            "sentry can't test from the device itself: open {} on it; it should be blocked.",
+            svc.blocked_test
+        ));
+    }
     say("DONE.".into());
     0
 }
@@ -264,6 +371,19 @@ fn settle(r: &Router, d: &Do) {
         }
         Do::ForwardOn { section } | Do::ForwardRemove { section } => {
             b.door.remove(section);
+        }
+        // Who is filtered is what was kept: these tags, the ones already noted keeping
+        // their date.
+        Do::Filter { tags } => {
+            let now = jiff::Timestamp::now().as_second();
+            let svc = family::service();
+            b.filter.retain(|t, _| tags.contains(t));
+            for t in tags {
+                b.filter.entry(t.clone()).or_insert_with(|| Filtered {
+                    since: now,
+                    service: svc.id.into(),
+                });
+            }
         }
         _ => {}
     }

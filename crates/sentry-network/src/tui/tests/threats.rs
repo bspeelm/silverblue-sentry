@@ -239,7 +239,7 @@ fn a_calm_page_says_so_and_still_says_how_you_are_covered() {
         s.contains("Needs attention · nothing needs you · o shows"),
         "{s}"
     );
-    assert_eq!(s.matches("✓ ok ").count(), 6, "the whole cover: {s}");
+    assert_eq!(s.matches("✓ ok ").count(), 7, "the whole cover: {s}");
     assert!(
         s.lines()
             .nth(1)
@@ -247,8 +247,9 @@ fn a_calm_page_says_so_and_still_says_how_you_are_covered() {
             .contains("4 Security   6 Maintenance"),
         "no count: {s}"
     );
-    // The key bar names no Enter where there is no row.
-    assert!(!bar(&s).contains("Enter"), "{}", bar(&s));
+    // No row needs you: the cursor is on the family filter's entry, the one thing to
+    // choose on a calm page.
+    assert!(bar(&s).starts_with(" Enter  choose devices"), "{}", bar(&s));
     // The Dashboard says the same in two words.
     key(&mut a, KeyCode::Char('1'));
     let s = render_to_string(&mut a, 158, 41);
@@ -770,6 +771,8 @@ fn blocked_by_you_lists_sentrys_rules_and_enter_unblocks() {
     }
     key(&mut a, KeyCode::Char('4'));
     key(&mut a, KeyCode::Char('G'));
+    // (The last row is the family filter's entry: the door is just above it.)
+    key(&mut a, KeyCode::Char('k'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("The door game is closed"), "{s}");
     assert!(bar(&s).starts_with(" Enter  open again   "), "{}", bar(&s));
@@ -1243,7 +1246,7 @@ fn the_page_says_what_to_do_first_second_and_third() {
         " 2. look     12 of the router's packages can be updated",
         " 3. look     The router's remote login (ssh) still accepts a password",
         " 4. look     The router's admin page can be opened without encryption",
-        " 5. look     CrowdSec's blocker is installed on the router but not switched on",
+        " 5. look     CrowdSec is installed on the router but switched off: known attackers",
         " 6. look     Every device at home shares one network",
         " 7. look     The router forgets its log when it restarts",
         " 8. look     There is no backup of the router's configuration",
@@ -1503,4 +1506,318 @@ fn a_target_of_the_window_is_never_an_unnamed_device() {
     );
     let s = screen(&mut a, '2', 158, 41);
     assert!(s.contains("myserver") && s.contains("this machine"), "{s}");
+}
+
+/// The firewall's counters as a router without a package that forces DNS has them.
+fn dns_not_forced(a: &mut App) {
+    let mut c = counters_later(120);
+    c.rules
+        .as_mut()
+        .unwrap()
+        .retain(|r| !r.name.starts_with("ubus:"));
+    data(a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+}
+
+fn mac_of(a: &App, label: &str) -> String {
+    net(a)
+        .store
+        .clients
+        .iter()
+        .flatten()
+        .find(|c| c.label() == label)
+        .and_then(|c| c.mac.clone())
+        .unwrap_or_else(|| panic!("no client {label}"))
+}
+
+/// The family filter's list, open from its entry (the page's last row).
+fn filter_menu(a: &mut App) {
+    key(a, KeyCode::Char('4'));
+    key(a, KeyCode::Esc);
+    key(a, KeyCode::Char('G'));
+    key(a, KeyCode::Enter);
+    assert!(net(a).screens.security.filter.is_some(), "the list is open");
+}
+
+#[test]
+fn the_family_filter_is_chosen_in_one_list_and_applied_as_one_change() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filter_menu_158x41", s);
+    // Named first, the rest by what they are known by; how each is on the network; a
+    // private Wi-Fi address marked.
+    let at = |s: &str, what: &str| s.lines().position(|l| l.contains(what)).unwrap();
+    assert!(at(&s, "[ ] cam") < at(&s, "[ ] 00:00:5e:00:53:11"), "{s}");
+    let phone = line(&s, "[ ] phone");
+    assert!(phone.contains("Wi-Fi") && phone.contains("! │"), "{s}");
+    assert!(
+        bar(&s).starts_with(" Enter  apply   Space  tick   a  all named"),
+        "{}",
+        bar(&s)
+    );
+    insta::assert_snapshot!(
+        "threats_filter_menu_80x24",
+        render_to_string(&mut a, 80, 24)
+    );
+    // On the phone: it stays tickable, with the warning said plainly.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("It uses a private (random) Wi-Fi address: turn 'private address'"),
+        "{s}"
+    );
+    // An unnamed one can be named first.
+    key(&mut a, KeyCode::Char('G'));
+    assert!(bar(&render_to_string(&mut a, 158, 41)).contains("e  name it"));
+    key(&mut a, KeyCode::Char('e'));
+    assert!(
+        matches!(a.win.input, Input::Prompt(..)),
+        "a name is asked for"
+    );
+    key(&mut a, KeyCode::Esc);
+    // Space ticks one, a ticks every named one; Enter applies them all as one change.
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Char(' '));
+    assert!(render_to_string(&mut a, 158, 41).contains("1 ticked"));
+    key(&mut a, KeyCode::Char('a'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("5 ticked") && s.contains("[x] phone"), "{s}");
+    assert!(
+        s.contains("[ ] 00:00:5e:00:53:11"),
+        "unnamed ones aren't ticked by a: {s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(net(&a).screens.security.filter.is_none(), "the list closed");
+    let (name, action) = started(&a);
+    assert_eq!(name, "security-action");
+    let tags: Vec<&str> = action
+        .strip_prefix("filter:")
+        .unwrap_or_else(|| panic!("{action}"))
+        .split(',')
+        .collect();
+    assert_eq!(tags.len(), 5, "{action}");
+    assert!(
+        tags.iter().all(|t| blocks::is_tag(t)),
+        "tags, never MACs: {action}"
+    );
+    let mut sorted = tags.clone();
+    sorted.sort();
+    assert_eq!(tags, sorted);
+    // Who each tag is, noted here for the step (nothing is written in tests).
+    let b = &net(&a).store.blocks;
+    assert!(tags.iter().all(|t| b.device.contains_key(*t)), "{b:?}");
+    assert!(!b.device[tags[0]].zone.is_empty());
+    // The plan first (reads only), then the change waits for Enter; auto never answers it.
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(0));
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(
+        s.contains(&format!("$ sentry-network security plan {action}")),
+        "{s}"
+    );
+    assert!(
+        !s.contains(&mac_of(&a, "phone")),
+        "no MAC in the run's own words: {s}"
+    );
+    a.run_step_exit_for_test(0);
+    let run = wf(&a).unwrap();
+    assert!(matches!(run.next, Next::Confirm(1)), "{:?}", run.next);
+    assert!(run.wf.steps[1].risky);
+    ctrl(&mut a, 'a');
+    assert!(
+        matches!(wf(&a).unwrap().next, Next::Confirm(1)),
+        "auto answered it"
+    );
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(1));
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(
+        s.contains(&format!("$ sentry-network security apply {action}")),
+        "{s}"
+    );
+    a.run_step_exit_for_test(0);
+    assert!(wf(&a).is_none_or(|r| r.done()), "the run ended");
+
+    // Nothing changed in the list: said, nothing started.
+    runs_cleared();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    filter_menu(&mut a);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.toast_for_test(),
+        Some("nothing to change: the filter is on exactly these devices already")
+    );
+    assert!(wf(&a).is_none());
+
+    // A router where a package forces every lookup to itself: said before anything
+    // starts, and nothing does.
+    let mut a = armed(busy());
+    filter_menu(&mut a);
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Nothing was changed. The family filter can't work on this router yet")
+            && s.contains("https-dns-proxy"),
+        "{s}"
+    );
+    assert!(wf(&a).is_none());
+
+    // sentry's own targets aren't offered.
+    let mut a = armed(busy());
+    let cam = mac_of(&a, "cam");
+    a.win.system = vec![sentry_app::system::Sys {
+        peer: sentry_core::apply::session::Peer {
+            id: "srv:myserver".into(),
+            title: "myserver".into(),
+            ..Default::default()
+        },
+        line: sentry_app::system::SystemLine {
+            addrs: vec![cam.clone()],
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("[ ] cam") && !s.contains("[ ] myserver"), "{s}");
+}
+
+/// The fixture's config with sentry's family filter on these devices.
+fn filtered_uci(devs: &[(&str, &str)]) -> crate::collect::uci::Uci {
+    let mut add = String::new();
+    for (tag, mac) in devs {
+        let w = crate::security::family::Want {
+            tag: tag.to_string(),
+            mac: mac.to_string(),
+            zone: "lan".into(),
+        };
+        for l in
+            crate::security::family::device_lines(&w, "wan", crate::security::family::service())
+                .unwrap()
+        {
+            add.push_str(l.strip_prefix("uci set ").unwrap());
+            add.push('\n');
+        }
+    }
+    let text = fixture("network/uci.txt").replacen("@@dropbear", &format!("{add}@@dropbear"), 1);
+    crate::collect::uci::parse(&text, &crate::redact::Salt::fixed([7; 16]))
+}
+
+#[test]
+fn filtered_by_you_lists_the_routers_filters_and_enter_takes_one_off() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let (phone, cam) = (mac_of(&a, "phone"), mac_of(&a, "cam"));
+    let (tp, tc) = (
+        blocks::tag(NAME, &phone).unwrap(),
+        blocks::tag(NAME, &cam).unwrap(),
+    );
+    let gone = "0000abcd".to_string();
+    data(
+        &mut a,
+        Kind::Uci,
+        Ok(Payload::Uci(Box::new(filtered_uci(&[
+            (&tp, &phone),
+            (&tc, &cam),
+        ])))),
+    );
+    let now = a.win.now_override.unwrap().as_second();
+    {
+        let (slot, _) = a.parts();
+        let t: &mut NetworkTarget = slot.target.as_any_mut().downcast_mut().unwrap();
+        let b = &mut t.store.blocks;
+        for (tag, mac, label) in [(&tp, &phone, "phone"), (&gone, &cam, "old tablet")] {
+            b.device.insert(
+                tag.clone(),
+                blocks::Dev {
+                    mac: mac.clone(),
+                    label: label.into(),
+                    zone: "lan".into(),
+                    wifi: None,
+                },
+            );
+        }
+        // The phone's filter is noted; the cam's isn't (made elsewhere); the tablet's
+        // noted filter is no longer on the router.
+        for tag in [&tp, &gone] {
+            b.filter.insert(
+                tag.clone(),
+                blocks::Filtered {
+                    since: now - 3 * 86_400,
+                    service: "cleanbrowsing-family".into(),
+                },
+            );
+        }
+    }
+    let s = list(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filtered_158x41", s);
+    assert!(
+        s.contains("Filtered by you · family filter: 2 devices"),
+        "{s}"
+    );
+    assert!(line(&s, "│ phone ").contains("since 3 days ago"), "{s}");
+    assert!(
+        s.contains("! weak The family filter: see 6 and 7 above"),
+        "{s}"
+    );
+    // What differs between the router and this machine: a look each.
+    assert!(
+        s.contains("A family filter is on cam that sentry has no note of"),
+        "{s}"
+    );
+    assert!(
+        s.contains("The family filter on old tablet isn't on the router any more"),
+        "{s}"
+    );
+    // The one sentry has no note of: kept, noted here, nothing on the router.
+    on_row(&mut a, "that sentry has no note of");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("1  Keep it: note it here as filtered"), "{s}");
+    key(&mut a, KeyCode::Char('1'));
+    assert!(net(&a).store.blocks.filter.contains_key(&tc));
+    assert!(wf(&a).is_none());
+    // The one gone from the router: forgotten here.
+    on_row(&mut a, "isn't on the router any more");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('2'));
+    assert!(!net(&a).store.blocks.filter.contains_key(&gone));
+    key(&mut a, KeyCode::Esc);
+    let s = list(&mut a, 158, 41);
+    assert!(
+        !s.contains("that sentry has no note of") && !s.contains("isn't on the router any more"),
+        "{s}"
+    );
+    assert!(line(&s, "│ cam ").contains("since just now"), "{s}");
+    // Enter under Filtered by you takes one off: the filter on the rest, as one change.
+    key(&mut a, KeyCode::Char('G'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(bar(&s).starts_with(" Enter  take it off"), "{}", bar(&s));
+    let last = net(&a)
+        .store
+        .uci
+        .value
+        .as_ref()
+        .map(crate::security::family::found)
+        .unwrap();
+    let off = &last.last().unwrap().tag;
+    key(&mut a, KeyCode::Enter);
+    let (_, action) = started(&a);
+    let rest: Vec<&String> = last.iter().map(|f| &f.tag).filter(|t| *t != off).collect();
+    assert_eq!(action, format!("filter:{}", rest[0]));
+    // Clients marks the filtered ones.
+    let s = screen(&mut a, '2', 158, 41);
+    assert!(
+        s.contains("phone  (filtered)") && s.contains("cam  (filtered)"),
+        "{s}"
+    );
 }

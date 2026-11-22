@@ -228,12 +228,26 @@ pub struct Door {
     pub since: i64,
 }
 
+/// A device the family filter is on (`family.rs`), as this machine remembers it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Filtered {
+    /// Epoch seconds.
+    pub since: i64,
+    /// The service (`family::Service::id`).
+    pub service: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Blocks {
     pub device: BTreeMap<String, Dev>,
     pub block: BTreeMap<String, Note>,
     pub door: BTreeMap<String, Door>,
+    /// The devices the family filter is on, by tag: what the router had when the last
+    /// filter change was kept.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub filter: BTreeMap<String, Filtered>,
 }
 
 impl Blocks {

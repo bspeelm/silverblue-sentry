@@ -14,15 +14,15 @@ expression: s
 │              Enter: update the router's packages (Maintenance does it)       │
 │  3. look     The router's remote login (ssh) still accepts a password        │
 │              Enter: logins by key only (sentry checks its key works first)   │
-│              Then                                                            │
-│  4. look     The router's admin page can be opened without encryption        │
-│              Enter: make the admin page use encryption (HTTPS)               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ How you're covered ──────────────────────────────────────────────────────────┐
 │ ! weak Who is on the network: see 9 above                                    │
 │ ! weak Logging in to the router: see 3 and 4 above                           │
 │ ✗ off  Blocking attackers at the router: see 5 above                         │
-│ ✓ ok   5 other parts are fine (a taller window lists them)                   │
+│ ✓ ok   6 other parts are fine (a taller window lists them)                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Filtered by you · family filter: no device ──────────────────────────────────┐
+│ Choose devices…                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  Enter  Maintenance   x  expected   A  ask Claude   ?  help   q  quit

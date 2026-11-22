@@ -5,6 +5,7 @@
 
 pub mod clients;
 pub mod dashboard;
+pub mod filter;
 pub mod history;
 pub mod maint;
 pub mod network;
@@ -173,7 +174,7 @@ impl Screens {
             && c.nav(a, n)
         {
             // Security's list: the row the cursor is on now is the one it stays on.
-            if id == ScreenId::Security && !self.security.panels {
+            if id == ScreenId::Security && !self.security.panels && self.security.filter.is_none() {
                 let at = self.security.cur.sel;
                 self.security.sel = threats::row_key(&v.at(at));
             }
@@ -206,6 +207,9 @@ impl Screens {
             ScreenId::Clients => clients::hints(),
             ScreenId::Net => network::hints(),
             ScreenId::Security if self.security.panels => security::hints(),
+            ScreenId::Security if self.security.filter.is_some() => {
+                filter::hints(self.security.filter.as_ref().unwrap(), v)
+            }
             ScreenId::Security => threats::hints(v),
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => maint::hints(v, maint::ticked(v, &self.maint.ticks)),

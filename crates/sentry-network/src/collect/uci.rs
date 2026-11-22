@@ -302,8 +302,10 @@ impl Uci {
     }
 
     /// Every DNAT redirect, the disabled ones too.
+    /// (Sentry's own family filter is a redirect too, of DNS from inside: never a door.)
     pub fn forwards(&self) -> Vec<Redirect> {
         self.firewall("redirect")
+            .filter(|s| !crate::security::family::is_ours(s))
             .filter(|s| {
                 s.one("target")
                     .is_none_or(|t| t.eq_ignore_ascii_case("DNAT"))

@@ -1747,10 +1747,10 @@ fn the_security_audit_is_the_windows_and_each_target_lists_its_rows() {
         "{s}"
     );
     // Said once, as a row; the cover points at it, and keeps what the server counted.
-    assert_eq!(s.matches("not switched on").count(), 1, "{s}");
+    assert_eq!(s.matches("but switched off").count(), 1, "{s}");
     let edge = s
         .lines()
-        .find(|l| l.contains("CrowdSec's blocker is installed on the router"))
+        .find(|l| l.contains("CrowdSec is installed on the router"))
         .and_then(|l| l.trim_start_matches(['│', ' ']).split('.').next())
         .unwrap()
         .to_string();
@@ -2061,10 +2061,10 @@ fn the_edge_row_is_one_session_across_the_server_and_the_router() {
     let s = tall(&mut a);
     assert!(
         s.contains("edgesrv blocked 12 attacker(s) today (mostly http probing): see ")
-            && s.contains("CrowdSec's blocker is installed on the router but not switched on"),
+            && s.contains("CrowdSec is installed on the router but switched off"),
         "{s}"
     );
-    typed(&mut a, "/blocker");
+    typed(&mut a, "/CrowdSec is installed");
     key(&mut a, KeyCode::Enter);
     assert!(
         bar_of(&mut a).contains("Enter  finish it"),
@@ -2092,7 +2092,7 @@ fn the_edge_row_is_one_session_across_the_server_and_the_router() {
     key(&mut a, KeyCode::Esc);
     let s = tall(&mut a);
     assert!(
-        s.contains("refuses them too") && !s.contains("not switched on"),
+        s.contains("refuses them too") && !s.contains("but switched off"),
         "{s}"
     );
 }

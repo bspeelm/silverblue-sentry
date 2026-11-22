@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 7   6 Maintenance 8   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Family filter: which devices · 0 ticked · Enter applies them all ──────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│     device (named first)                                                           │ │ cam                                                                 │
+│ [ ] cam                                                            plugged in      │ │ not filtered                                                        │
+│ [ ] nas                                                            plugged in      │ │ A ticked device's name lookups go to CleanBrowsing Family instead   │
+│ [ ] phone                                                          Wi-Fi         ! │ │ of the router, so adult and other unwanted sites don't open on it.  │
+│ [ ] printer                                                                        │ │ Every other device is left as it is.                                │
+│ [ ] web                                                            server's side   │ │ What it is for: accidents and casual browsing. It doesn't stop a    │
+│ [ ] 00:00:5e:00:53:11                                              plugged in      │ │ VPN, mobile data, a browser's own encrypted lookups (DNS over       │
+│ [ ] 02:00:5e:00:53:21                                              Wi-Fi         ! │ │ HTTPS), or a device that changes its MAC.                           │
+│ [ ] 02:00:5e:00:53:22                                              plugged in      │ │ Enter shows the plan first: one change for every device ticked or   │
+│                                                                                    │ │ unticked, made through the guard.                                   │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  apply   Space  tick   a  all named   Esc  back   /  filter   A  ask Claude   ?  help   q  quit

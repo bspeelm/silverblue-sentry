@@ -1,0 +1,33 @@
+---
+source: crates/sentry-network/src/security/family.rs
+expression: text
+---
+uci set firewall.sentry_filter_ab12cd34=redirect
+uci set firewall.sentry_filter_ab12cd34.name='sentry-filter-ab12cd34'
+uci set firewall.sentry_filter_ab12cd34.src='lan'
+uci set firewall.sentry_filter_ab12cd34.src_mac='02:00:5e:00:53:21'
+uci set firewall.sentry_filter_ab12cd34.src_dport='53'
+uci set firewall.sentry_filter_ab12cd34.proto='tcp udp'
+uci set firewall.sentry_filter_ab12cd34.family='ipv4'
+uci set firewall.sentry_filter_ab12cd34.dest='wan'
+uci set firewall.sentry_filter_ab12cd34.dest_ip='185.228.168.168'
+uci set firewall.sentry_filter_ab12cd34.dest_port='53'
+uci set firewall.sentry_filter_ab12cd34.target='DNAT'
+uci set firewall.sentry_filter_ab12cd34.reflection='0'
+uci set firewall.sentry_filter_ab12cd34_v6in=rule
+uci set firewall.sentry_filter_ab12cd34_v6in.name='sentry-filter-ab12cd34-v6in'
+uci set firewall.sentry_filter_ab12cd34_v6in.src='lan'
+uci set firewall.sentry_filter_ab12cd34_v6in.src_mac='02:00:5e:00:53:21'
+uci set firewall.sentry_filter_ab12cd34_v6in.family='ipv6'
+uci set firewall.sentry_filter_ab12cd34_v6in.proto='tcp udp'
+uci set firewall.sentry_filter_ab12cd34_v6in.dest_port='53'
+uci set firewall.sentry_filter_ab12cd34_v6in.target='REJECT'
+uci set firewall.sentry_filter_ab12cd34_v6out=rule
+uci set firewall.sentry_filter_ab12cd34_v6out.name='sentry-filter-ab12cd34-v6out'
+uci set firewall.sentry_filter_ab12cd34_v6out.src='lan'
+uci set firewall.sentry_filter_ab12cd34_v6out.src_mac='02:00:5e:00:53:21'
+uci set firewall.sentry_filter_ab12cd34_v6out.dest='*'
+uci set firewall.sentry_filter_ab12cd34_v6out.family='ipv6'
+uci set firewall.sentry_filter_ab12cd34_v6out.proto='tcp udp'
+uci set firewall.sentry_filter_ab12cd34_v6out.dest_port='53'
+uci set firewall.sentry_filter_ab12cd34_v6out.target='REJECT'

@@ -63,10 +63,23 @@ fn name(c: &Client) -> String {
     }
 }
 
+/// The family filter is on it (sentry's rules for its MAC are on the router).
+fn filtered(v: &View, c: &Client) -> bool {
+    let Some(mac) = c.mac.as_deref() else {
+        return false;
+    };
+    super::filter::on_router(v)
+        .iter()
+        .any(|f| f.mac.eq_ignore_ascii_case(mac))
+}
+
 fn row(v: &View, c: &Client) -> Row {
     let now = v.now.as_second();
     Row {
-        name: name(c),
+        name: match filtered(v, c) {
+            true => format!("{}  (filtered)", name(c)),
+            false => name(c),
+        },
         private: c.private,
         link: link(&c.link),
         addr: c.addrs.first().cloned().unwrap_or_else(|| "–".into()),
@@ -220,6 +233,15 @@ pub fn detail(v: &View, c: &Client) -> Vec<Line<'static>> {
         l.push(kv(
             "",
             "leave_alone: nothing sentry does may touch it".into(),
+        ));
+    }
+    if filtered(v, c) {
+        l.push(kv(
+            "filter",
+            format!(
+                "family filter on: its lookups go to {} (Security, 4)",
+                crate::security::family::service().name
+            ),
         ));
     }
     l.push(Line::raw(""));

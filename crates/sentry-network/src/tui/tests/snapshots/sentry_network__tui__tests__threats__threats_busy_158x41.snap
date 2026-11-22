@@ -11,7 +11,7 @@ expression: s
 │  1. act now  An unlisted door from the internet is open: game (udp port 8000-8010) │ │ An unlisted door from the internet is open: game (udp port          │
 │              Enter: close it, remove it, or say it's meant to be open              │ │ 8000-8010)                                                          │
 │  2. act now  Udp port 1900 on the router is open to the internet (the kernel)      │ │                                                                     │
-│              Enter: fix it with Claude (it shows a plan, you approve)              │ │ A port forward lets anyone on the internet reach that device on     │
+│              Enter: with Claude, close the firewall rule or bind it inside         │ │ A port forward lets anyone on the internet reach that device on     │
 │  3. look     The router refused a login 3 times in the last 2 h 50 min             │ │ that port. If you set it up, say it is expected; if not, close it.  │
 │              Enter: logins by key only (sentry checks its key works first)         │ │                                                                     │
 │              Then                                                                  │ │ firewall.@redirect[0] · wan → 192.0.2.20:8000-8010                  │
@@ -33,13 +33,13 @@ expression: s
 ┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
 │ ! weak What the internet can reach: see 1 above                                    │ │                                                                     │
 │ ! weak Who is on the network: see 8 and 9 above                                    │ └─────────────────────────────────────────────────────────────────────┘
-│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
-│        and nothing crosses right now                                               │ │ rejected   21/min                             █ 31.2k since 1d ago  │
-│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │ forward       port       to                     new/min  total live │
-│        update by itself                                                            │ │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
-│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
-│ ! weak Logging in to the router: see 6 and 7 above                                 │ │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
-│ ? ?    The security audit of every target has never run · S runs it                │ │            3 refused · 1 left before logging in · in the last 2h 50 │
-└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+│ ! weak Logging in to the router: see 6 and 7 above                                 │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
+│ ? ?    The security audit of every target has never run · S runs it                │ │ rejected   21/min                             █ 31.2k since 1d ago  │
+│ ✓ ok   4 other parts are fine (a taller window lists them)                         │ │ forward       port       to                     new/min  total live │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
+┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
+│ Choose devices…                                                                    │ │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
+└────────────────────────────────────────────────────────────────────────────────────┘ │            3 refused · 1 left before logging in · in the last 2h 50 │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Enter  close it   x  expected   z  later   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

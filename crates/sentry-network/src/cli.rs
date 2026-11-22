@@ -1017,10 +1017,18 @@ pub fn security(rest: &[String]) -> u8 {
                 })
             })
             .collect();
+        let filtered: Vec<_> = said
+            .filtered
+            .iter()
+            .map(|(who, since)| serde_json::json!({ "device": who, "since": since }))
+            .collect();
         let v = serde_json::json!({
             "network": n,
             "attention": rows,
             "covered": covered,
+            "filtered": filtered,
+            "service": super::security::family::service().name,
+            "audited": said.audited.map(|t| t.to_string()),
             "not_read": g.errors,
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -1069,6 +1077,30 @@ pub fn security_text(
     }
     for (what, why) in not_read {
         l.push(format!("  (not read: {what}: {why})"));
+    }
+    if !said.filtered.is_empty() {
+        l.push(String::new());
+        l.push(format!(
+            "Filtered by you (family filter, {})",
+            super::security::family::service().name
+        ));
+        let now = jiff::Timestamp::now().as_second();
+        for (who, since) in &said.filtered {
+            l.push(match since {
+                Some(at) => format!(
+                    "  {who}, since {} ago",
+                    super::security::attention::lasting(now.saturating_sub(*at).max(0) as u64)
+                ),
+                None => format!("  {who} (this machine has no note of when)"),
+            });
+        }
+    }
+    if let Some(at) = said.audited {
+        l.push(String::new());
+        l.push(format!(
+            "The security audit's own rows are from its latest report ({}).",
+            at.strftime("%Y-%m-%d %H:%M UTC")
+        ));
     }
     l.push(String::new());
     l.push(

@@ -8,6 +8,8 @@
 //! first. Nothing here is a bare toggle, and none asks the user to type a command.
 
 use super::blocks::{self, Blocks, Reach};
+use super::family;
+use crate::collect::counters::Counters;
 use crate::collect::uci::Uci;
 
 /// One action, as the workflow's `action` value says it.
@@ -43,6 +45,11 @@ pub enum Do {
         tag: String,
         secs: u32,
     },
+    /// The family filter on exactly these devices (by tag, sorted), off for every other:
+    /// one change, however many devices it adds or takes off.
+    Filter {
+        tags: Vec<String>,
+    },
 }
 
 impl Do {
@@ -59,7 +66,17 @@ impl Do {
             Do::ListRefresh => "blocklist-refresh".into(),
             Do::ListSchedule => "blocklist-schedule".into(),
             Do::Kick { tag, secs } => format!("kick:{tag}:{secs}"),
+            Do::Filter { tags } if tags.is_empty() => "filter:none".into(),
+            Do::Filter { tags } => format!("filter:{}", tags.join(",")),
         }
+    }
+
+    /// The family filter on these devices: sorted, each once.
+    pub fn filter<I: IntoIterator<Item = String>>(tags: I) -> Self {
+        let mut tags: Vec<String> = tags.into_iter().collect();
+        tags.sort();
+        tags.dedup();
+        Do::Filter { tags }
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -99,6 +116,15 @@ impl Do {
             ["admin-https"] => Do::AdminHttps,
             ["blocklist-refresh"] => Do::ListRefresh,
             ["blocklist-schedule"] => Do::ListSchedule,
+            ["filter", "none"] => Do::Filter { tags: Vec::new() },
+            ["filter", list] => {
+                let tags = list.split(',').map(tag).collect::<Result<Vec<_>, _>>()?;
+                let d = Do::filter(tags);
+                if d.word() != s {
+                    return Err(format!("`{s}` isn't the filter's list of devices, sorted"));
+                }
+                d
+            }
             ["kick", t, n] => Do::Kick {
                 tag: tag(t)?,
                 secs: n
@@ -121,6 +147,10 @@ pub enum Proof {
     KeyLogin,
     /// The admin page answers on HTTPS at the address ssh reaches the router at.
     Https,
+    /// The router still looks up an ordinary name through its own resolver.
+    OwnResolver,
+    /// The family service answers the router, and refuses its own test name.
+    Family,
 }
 
 impl Proof {
@@ -130,6 +160,12 @@ impl Proof {
                 "a new connection logs in with a key (nothing on it could type a password)"
             }
             Proof::Https => "the admin page answers on HTTPS from this machine",
+            Proof::OwnResolver => {
+                "the router still looks up an ordinary name (openwrt.org) through its own resolver"
+            }
+            Proof::Family => {
+                "CleanBrowsing Family answers the router, and refuses its own test name (pornhub.com)"
+            }
         }
     }
 }
@@ -203,6 +239,10 @@ pub struct Facts<'a> {
     pub blocks: &'a Blocks,
     /// `network_config.yaml` expects these forwards (as the guard words them).
     pub expected: &'a [String],
+    /// What the firewall counts (None: not read): whose DNS redirect comes first.
+    pub counters: Option<&'a Counters>,
+    /// Other nft tables that redirect DNS themselves (`family::foreign_tables`).
+    pub tables: &'a [String],
 }
 
 fn forward(f: &Facts, section: &str) -> Result<crate::collect::uci::Redirect, String> {
@@ -496,6 +536,7 @@ pub fn plan(d: &Do, f: &Facts) -> Result<Planned, String> {
             runs: LIST_SCHEDULE.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         },
+        Do::Filter { tags } => filter_plan(tags, f)?,
         Do::Kick { tag, secs } => {
             let dev = who(tag)?;
             let ap = dev.wifi.as_deref().ok_or(format!(
@@ -527,6 +568,178 @@ pub fn plan(d: &Do, f: &Facts) -> Result<Planned, String> {
                 ..Default::default()
             }
         }
+    })
+}
+
+/// "a", "a and b", "a, b and c".
+fn and(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [most @ .., last] => format!("{} and {last}", most.join(", ")),
+    }
+}
+
+fn cap_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// What a filter plan says once, whatever it changes: what it is for and what it isn't.
+pub const FILTER_LIMITS: &str = "What it is for: accidents and casual browsing. It doesn't \
+     stop a VPN, mobile data, a browser's own encrypted lookups (DNS over HTTPS), or a device \
+     that changes its MAC.";
+
+/// The family filter on exactly `tags`: what it changes against what the router has.
+fn filter_plan(tags: &[String], f: &Facts) -> Result<Planned, String> {
+    let svc = family::service();
+    let have = family::found(f.uci);
+    let label = |t: &str| {
+        f.blocks
+            .device
+            .get(t)
+            .map(|d| d.label.clone())
+            .filter(|l| !l.is_empty())
+            .or_else(|| have.iter().find(|h| h.tag == t).map(|h| h.mac.clone()))
+            .unwrap_or_else(|| format!("the device {t}"))
+    };
+    let mut want = Vec::new();
+    for t in tags {
+        let w = match (f.blocks.device.get(t), have.iter().find(|h| &h.tag == t)) {
+            (Some(d), _) => family::Want {
+                tag: t.clone(),
+                mac: d.mac.clone(),
+                zone: d.zone.clone(),
+            },
+            (None, Some(h)) => family::Want {
+                tag: t.clone(),
+                mac: h.mac.clone(),
+                zone: h.zone.clone(),
+            },
+            (None, None) => {
+                return Err(format!(
+                    "sentry doesn't know which device `{t}` is any more: tick it on Security again"
+                ));
+            }
+        };
+        want.push(w);
+    }
+    let d = family::delta(f.uci, &want, f.wan, svc)?;
+    if d.is_empty() {
+        return Err(match tags.len() {
+            0 => "the family filter isn't on any device: nothing to change".into(),
+            _ => "the family filter is already on exactly these devices: nothing to change".into(),
+        });
+    }
+    // What makes it work at all: nothing of another program's comes first in the zone.
+    let on: Vec<&family::Want> = want
+        .iter()
+        .filter(|w| d.add.contains(&w.tag) || d.redo.contains(&w.tag))
+        .collect();
+    for w in &on {
+        let Some(c) = f.counters else {
+            return Err(
+                "the router's firewall rules couldn't be read, so sentry can't tell whether a \
+                 filter would work there: read again (r) on Security"
+                    .into(),
+            );
+        };
+        if let Some(why) = family::refused(&w.zone, &family::hijacked(c, &w.zone), f.tables) {
+            return Err(format!(
+                "the family filter can't work on this router yet: {why}"
+            ));
+        }
+    }
+    let added: Vec<String> = d.add.iter().chain(&d.redo).map(|t| label(t)).collect();
+    let removed: Vec<String> = d.remove.iter().map(|t| label(t)).collect();
+    let title = match (added.as_slice(), removed.as_slice()) {
+        ([], r) => format!("Family filter: off for {}", and(r)),
+        (a, []) => format!("Family filter: on for {}", and(a)),
+        (a, r) => format!("Family filter: on for {}, off for {}", and(a), and(r)),
+    };
+    let mut says = Vec::new();
+    if !added.is_empty() {
+        says.push(format!(
+            "The name lookups of {} go to {} instead of the router: adult and other unwanted \
+             sites don't open there by name.",
+            and(&added),
+            svc.name
+        ));
+        says.push(format!(
+            "How: for each device, one firewall rule sends whatever it asks on the DNS port \
+             (53) to {} ({}), matched by the device's MAC. Its lookups over IPv6 are refused, \
+             so it asks again over IPv4 at once (sent to a service outside, some devices' \
+             IPv6 lookups would get no answer and keep them waiting).",
+            svc.name, svc.v4[0]
+        ));
+    }
+    if !removed.is_empty() {
+        says.push(format!(
+            "{} go back to the router's own lookups: exactly the rules sentry added for {} are \
+             removed.",
+            cap_first(&and(&removed)),
+            if removed.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    if !d.keep.is_empty() {
+        let kept: Vec<String> = d.keep.iter().map(|t| label(t)).collect();
+        says.push(format!(
+            "{} {} filtered as before.",
+            cap_first(&and(&kept)),
+            if kept.len() == 1 { "stays" } else { "stay" }
+        ));
+    }
+    says.push("Every other device is left as it is.".into());
+    if !added.is_empty() {
+        says.push(FILTER_LIMITS.into());
+        says.push(format!(
+            "A filtered device's lookups skip the router's own blocklist; {} blocks malware \
+             and scam sites too.",
+            svc.name
+        ));
+        for w in &on {
+            let wifi = f
+                .blocks
+                .device
+                .get(&w.tag)
+                .is_some_and(|d| d.wifi.is_some());
+            if wifi && crate::config::local_mac(&w.mac) {
+                says.push(format!(
+                    "{} uses a private (random) Wi-Fi address: turn 'private address' off on \
+                     the device for this Wi-Fi, or it will slip out of the filter.",
+                    label(&w.tag)
+                ));
+            }
+        }
+        says.push(format!(
+            "sentry can't test from the device itself: once this is kept, open {} on {}; it \
+             should be blocked.",
+            svc.blocked_test,
+            if added.len() == 1 { "it" } else { "each" }
+        ));
+    }
+    says.push(format!(
+        "The rules are named {}<tag>: Enter under Filtered by you takes a device off.",
+        family::PREFIX
+    ));
+    Ok(Planned {
+        title,
+        says,
+        proofs: if added.is_empty() {
+            vec![Proof::OwnResolver]
+        } else {
+            vec![Proof::OwnResolver, Proof::Family]
+        },
+        guard: Some(Guarded {
+            configs: "firewall",
+            lines: d.lines,
+            services: "firewall",
+            closing: Vec::new(),
+        }),
+        ..Default::default()
     })
 }
 
@@ -586,6 +799,8 @@ mod tests {
             wan: "wan",
             blocks: b,
             expected,
+            counters: None,
+            tables: &[],
         }
     }
 
@@ -866,6 +1081,161 @@ mod tests {
             ["uci delete firewall.sentry_block_ab12cd34"]
         );
         staged(&p);
+    }
+
+    /// Three devices this machine knows: two plugged in, one on Wi-Fi with a private MAC.
+    fn kids() -> Blocks {
+        let mut b = Blocks::default();
+        for (tag, n, label, wifi) in [
+            ("0000000a", 0x31, "kid's tablet", Some("phy0-ap0")),
+            ("0000000b", 0x32, "games console", None),
+            ("0000000c", 0x33, "kid's laptop", None),
+        ] {
+            b.device.insert(
+                tag.into(),
+                Dev {
+                    mac: format!("02:00:5e:00:53:{n:x}"),
+                    label: label.into(),
+                    zone: "lan".into(),
+                    wifi: wifi.map(str::to_string),
+                },
+            );
+        }
+        b
+    }
+
+    #[test]
+    fn the_family_filter_is_one_change_for_any_number_of_devices() {
+        // Words: the whole set, sorted; none is a word too.
+        let d = Do::filter(["0000000c".to_string(), "0000000a".into(), "0000000a".into()]);
+        assert_eq!(d.word(), "filter:0000000a,0000000c");
+        assert_eq!(Do::parse("filter:0000000a,0000000c"), Ok(d));
+        assert_eq!(Do::parse("filter:none"), Ok(Do::Filter { tags: vec![] }));
+        for bad in [
+            "filter:",
+            "filter:0000000c,0000000a",
+            "filter:kids",
+            "filter:02:00:5e:00:53:31",
+        ] {
+            assert!(Do::parse(bad).is_err(), "{bad}");
+        }
+        let u = uci("@@firewall\nfirewall.@defaults[0]=defaults\n");
+        let b = kids();
+        let calm = Counters {
+            rules: Some(Vec::new()),
+            ..Default::default()
+        };
+        let f = Facts {
+            counters: Some(&calm),
+            ..facts(&u, &b, &[])
+        };
+        let all = ["0000000a", "0000000b", "0000000c"].map(String::from);
+        // Nothing asked, nothing there: nothing to do.
+        assert!(
+            plan(&Do::filter([]), &f)
+                .unwrap_err()
+                .contains("nothing to change")
+        );
+        // One device.
+        let p = plan(&Do::filter(all[1..2].to_vec()), &f).unwrap();
+        assert_eq!(p.title, "Family filter: on for games console");
+        assert_eq!(p.proofs, [Proof::OwnResolver, Proof::Family]);
+        assert_eq!(staged(&p).lines.len(), 29);
+        // Three: one change, one guard, one approval.
+        let p = plan(&Do::filter(all.to_vec()), &f).unwrap();
+        assert_eq!(
+            p.title,
+            "Family filter: on for kid's tablet, games console and kid's laptop"
+        );
+        assert_eq!(staged(&p).lines.len(), 3 * 29);
+        let text = p.text().join("\n");
+        insta::assert_snapshot!("family_plan_three", text);
+        for said in [
+            "accidents and casual browsing",
+            "DNS over HTTPS",
+            "skip the router's own blocklist",
+            "kid's tablet uses a private (random) Wi-Fi address",
+            "sentry can't test from the device itself: once this is kept, open pornhub.com",
+            "Every other device is left as it is.",
+        ] {
+            assert!(text.contains(said), "{said}:\n{text}");
+        }
+        // Only the tablet is on Wi-Fi: only it is warned of.
+        assert_eq!(text.matches("private (random)").count(), 1);
+        // A device this machine has no note of, and none on the router: nothing guessed.
+        assert!(
+            plan(&Do::filter(["00000099".to_string()]), &f)
+                .unwrap_err()
+                .contains("tick it on Security again")
+        );
+        // The firewall not read: sentry can't tell whether it would work.
+        let blind = facts(&u, &b, &[]);
+        assert!(
+            plan(&Do::filter(all.to_vec()), &blind)
+                .unwrap_err()
+                .contains("couldn't be read")
+        );
+    }
+
+    #[test]
+    fn a_router_that_forces_every_lookup_to_itself_refuses_the_filter() {
+        let u = uci("@@firewall\nfirewall.@defaults[0]=defaults\n");
+        let b = kids();
+        let c = crate::collect::counters::parse(&crate::collect::fixture("network/counters.txt"))
+            .unwrap();
+        let f = Facts {
+            counters: Some(&c),
+            ..facts(&u, &b, &[])
+        };
+        let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
+        assert!(
+            e.contains("can't work on this router yet") && e.contains("https-dns-proxy"),
+            "{e}"
+        );
+        // Another zone, where nothing forces DNS: it can.
+        let mut g = kids();
+        g.device.get_mut("0000000a").unwrap().zone = "guest".into();
+        let f = Facts {
+            counters: Some(&c),
+            ..facts(&u, &g, &[])
+        };
+        assert!(plan(&Do::filter(["0000000a".to_string()]), &f).is_ok());
+    }
+
+    #[test]
+    fn taking_devices_off_touches_only_their_rules() {
+        let svc = family::service();
+        let mut text = String::from("@@firewall\nfirewall.@defaults[0]=defaults\n");
+        for (t, n) in [("0000000a", 0x31), ("0000000b", 0x32)] {
+            let w = family::Want {
+                tag: t.into(),
+                mac: format!("02:00:5e:00:53:{n:x}"),
+                zone: "lan".into(),
+            };
+            for l in family::device_lines(&w, "wan", svc).unwrap() {
+                text.push_str(l.strip_prefix("uci set ").unwrap());
+                text.push('\n');
+            }
+        }
+        let u = uci(&text);
+        let b = kids();
+        // Taking one off needs no reading of what forces DNS: nothing is added.
+        let f = facts(&u, &b, &[]);
+        let p = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap();
+        assert_eq!(p.title, "Family filter: off for games console");
+        assert_eq!(p.proofs, [Proof::OwnResolver]);
+        assert_eq!(staged(&p).lines.len(), 3);
+        assert!(
+            p.text()
+                .join("\n")
+                .contains("Kid's tablet stays filtered as before")
+        );
+        let p = plan(&Do::filter([]), &f).unwrap();
+        assert_eq!(
+            p.title,
+            "Family filter: off for kid's tablet and games console"
+        );
+        assert_eq!(staged(&p).lines.len(), 6);
     }
 
     #[test]

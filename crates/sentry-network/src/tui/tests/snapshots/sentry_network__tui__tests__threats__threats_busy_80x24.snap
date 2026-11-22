@@ -8,21 +8,21 @@ expression: s
 
 ┌ Needs attention · 10 · o shows 2 good to know ───────────────────────────────┐
 │              Start here                                                      │
-│  1. act now  An unlisted door from the internet is open: game…               │
-│              Enter: close it, remove it, or say it's meant to be open        │
-│  2. act now  Udp port 1900 on the router is open to the internet…            │
-│              Enter: fix it with Claude (it shows a plan, you approve)        │
+│  1. act now  An unlisted door from the internet is open: game (udp port      │
+│              8000-8010)                                                      │
+│  2. act now  Udp port 1900 on the router is open to the internet (the        │
+│              kernel)                                                         │
 │  3. look     The router refused a login 3 times in the last 2 h 50 min       │
-│              Enter: logins by key only (sentry checks its key works first)   │
-│              Then                                                            │
-│  4. look     192.0.2.77 is using a port ordinary devices rarely use…         │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ How you're covered ──────────────────────────────────────────────────────────┐
 │ ! weak What the internet can reach: see 1 above                              │
 │ ! weak Who is on the network: see 8 and 9 above                              │
 │ ! weak Logging in to the router: see 6 and 7 above                           │
 │ ? ?    The security audit of every target has never run · S runs it          │
-│ ✓ ok   3 other parts are fine (a taller window lists them)                   │
+│ ✓ ok   4 other parts are fine (a taller window lists them)                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Filtered by you · family filter: no device ──────────────────────────────────┐
+│ Choose devices…                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  Enter  close it   x  expected   z  later   A  ask Claude   ?  help   q  quit
