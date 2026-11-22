@@ -297,3 +297,33 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Each target has its own sudo password; a prompt belongs to the target that asked and is shown only while that target is in view.
 - This machine's reboot waits while another target is at work, says for which, and goes when that settles.
 - `q` with several targets lists what each has going; quitting does for each what it did for one.
+
+## A36. Plans are a session's (2026-11, replaces A31's plan writer)
+- There is no plan writer. A session whose ask names a plan (a server's item, a workflow here) researches first (the ledger, the notes, the web) and answers with its assessment and one plan, or with a verdict `status = "wait"` (nothing changed, put off in `later.toml`, a `kind = "wait"` log entry). What it answered is kept as `plans/<key>.md` (the assessment and the plan's block); a ready plan on disk opens the session on it, at Review.
+- `p` reads the kept plan, `P` starts over (the old one goes to `plans/done/`), `Enter` in the Plan view applies it in a session, `x` drops it. The document writer writes reviews only.
+- A workflow starts without a start box (replaces A34's "the box that says what starting does"): Enter was the approval; values are asked first, confirm steps still ask.
+
+## A37. One sudo password per target (2026-11, replaces the terminal handover of A27/A28 and extends A35)
+- Asked once, in the window (the session's line, or the same line in the key bar), when the first thing needs root and sudo there wants a password; held in memory for that target while the window is open. `C-f`, quitting and a password sudo refuses forget it.
+- Everything that needs root uses it: a workflow's sudo step, a session's, a server action, a kill, the reboot, the audit's sudo fix, the inventory and Claude's queued root reads. The step's shell gets a `sudo` stand-in that reads it through a pipe only the wrapper holds: no argv, environment, file or log has it. Nothing sentry runs for Claude or as a step has a stdin.
+- The terminal is handed over only for an editor, a shell step, a pager, `toolbox enter` and Claude Code, never for sudo. `sentry workflow` in a terminal still lets sudo ask there.
+- Stopping a step reaches what it started as root: each sudo runs in its own session, and the wrapper signals those groups, waits 5 s and kills what stays.
+
+## A38. Auto mode (2026-11)
+- `C-a` toggles it per target; off at start, never saved. Turning it on asks for the sudo password at once when sudo wants one.
+- One pure rule (`auto::answers`) is asked at each decision point: a session's brief, plan and requests, a workflow's values when each has a default, its confirm steps, the log note, a series' next row. At most a fixed number in a row, and never while the user types.
+- Never answered: a reboot, a manual or shell step, a step with `risky = true`, a command that upgrades, rebases, rolls back or flashes, what `claude::grantable` refuses, a box (actions, kill, cleanup), a wrong password, a verdict that isn't done. The one exception is a step with `stage = true`, which lint allows only where the command stages an `rpm-ostree upgrade` without a reboot.
+- What auto answered is logged: the tag `auto`, "confirmed by auto" in the step's row, an "Answered by auto" section.
+
+## A39. The network target (2026-11)
+- A third kind of target (`crates/sentry-network`; `sentry-network …` and `sentry network …` are the one binary): a home network through its router, OpenWrt over ssh as root, described in `~/.config/sentry/network_config.yaml`, which sentry never rewrites. Scope `net:<name>`; in the strip after the servers (`:net <name>`).
+- Nothing is installed on the router and nothing runs there between two looks. Screens: Dashboard, Clients (`2`), Network, Maintenance, Upgrade, History. Fixtures are synthetic; a real router is only ever read while developing, and everything that changes one is proven against a disposable router (`scripts/live-router.sh`).
+- Secrets never leave the read that found them: a `uci` option that holds one is a tag (`redacted:<8 hex>`, a keyed hash with the network's own salt) from the parser on. Config backups are the router's own archive, encrypted on this machine as it arrives (age, recipients only); the plain archive never touches this disk.
+- Workflows are the shared format with a router's `Env`: `config-backup`, `package-update` (named packages only; auto confirms it only when the simulated transaction touches nothing but leaves), `guarded-change`, and `firmware-upgrade` as a draft.
+
+## A40. A router's read grammar and the guard (2026-11)
+- The login is root, so sentry reads every line itself. A read is plain commands from a fixed list with literal arguments; the router runs what sentry rebuilt from its own reading, never the line as written. What follows a pipe is done on this machine, on the scrubbed output. Everything Claude is shown is scrubbed (secrets as tags, the uplink's addresses, MACs, SSIDs, hostnames).
+- Every other line is one of: never (whoever allows it), a request the user is shown and allows (apply sessions only), only as a guard step, only as a workflow step (upgrades, the flash, a reboot). A router's session allows nothing by auto and has no web.
+- The guard is the one way the network, firewall, wireless, dhcp, dropbear and uhttpd configs change: preflight, snapshot, a detached revert armed on the router before anything is staged, then stage, commit, reload, reconnect on a new connection and confirm twice a moment apart. Kept only when the router says its own claim was the one that held; a Wi-Fi or uplink change stays armed until the user says keep. While armed, the snapshot and a one-shot boot hook are on the router's flash, so a restart inside the window reverts too; both are removed after.
+- A secret a guarded change sets is never written down on this machine: the run's `state.json`, its step logs, the guard's `pending.json`, the maintenance log and its ledger, a kept plan and what goes back to Claude have its tag, and the value is held in memory by the window that was given it. What is typed for it shows as dots. A tag is never applied as a value: a run resumed after a restart, or a plan opened later, stops at its guard step with nothing changed and says the value must be given again.
+
