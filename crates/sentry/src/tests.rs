@@ -301,6 +301,18 @@ fn local_wf(name: &str, steps: &str) -> std::sync::MutexGuard<'static, ()> {
 
 /// A workflow of the server's own (in its scratch directory), known to its slot.
 fn server_wf(a: &mut App, server: &str, name: &str, steps: &str) {
+    // A server's runs are kept by its name, in the one scratch root every test of this
+    // process shares: two tests with one name would each find the other's run in progress
+    // (or remove it). So a name is one test's, and taking it twice fails here, every time.
+    static TAKEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    {
+        let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !taken.iter().any(|t| t == server),
+            "the server name {server:?} is another test's: its runs would be shared"
+        );
+        taken.push(server.to_string());
+    }
     let _ = std::fs::remove_dir_all(sentry_server::workflow::root(server));
     let text = format!("name = \"{name}\"\ndescription = \"test\"\n{steps}");
     let path = sentry_core::paths::config_dir().join(format!("{server}-{name}.toml"));
@@ -2113,7 +2125,7 @@ fn plan_of(steps: &str) -> String {
 fn a_step_for_a_busy_target_waits_and_says_so() {
     use sentry_core::apply::session::{Phase, Turn};
     for outlast in [false, true] {
-        let name = if outlast { "busylong" } else { "busy" };
+        let name = if outlast { "heldlong" } else { "held" };
         let mut a = two_with(name, false);
         server_wf(&mut a, name, "harmless", &step("one", "auto", "true"));
         begin(&mut a, SRV, "harmless");
