@@ -74,6 +74,8 @@ pub enum ScreenId {
     Clients,
     Net,
     Cont,
+    /// A network's security view (`4` in sentry-network, where the others have Containers).
+    Security,
     /// This machine's Flatpaks (`5` in sentry).
     Flat,
     /// A server's services and timers (`5` in sentry-server).
@@ -85,12 +87,13 @@ pub enum ScreenId {
 }
 
 impl ScreenId {
-    pub const ALL: [ScreenId; 11] = [
+    pub const ALL: [ScreenId; 12] = [
         ScreenId::Dash,
         ScreenId::Proc,
         ScreenId::Clients,
         ScreenId::Net,
         ScreenId::Cont,
+        ScreenId::Security,
         ScreenId::Flat,
         ScreenId::Svc,
         ScreenId::Maint,
@@ -104,7 +107,7 @@ impl ScreenId {
             ScreenId::Dash => '1',
             ScreenId::Proc | ScreenId::Clients => '2',
             ScreenId::Net => '3',
-            ScreenId::Cont => '4',
+            ScreenId::Cont | ScreenId::Security => '4',
             ScreenId::Flat | ScreenId::Svc => '5',
             ScreenId::Maint => '6',
             ScreenId::Clean => '7',
@@ -120,6 +123,7 @@ impl ScreenId {
             ScreenId::Clients => "Clients",
             ScreenId::Net => "Network",
             ScreenId::Cont => "Containers",
+            ScreenId::Security => "Security",
             ScreenId::Flat => "Flatpaks",
             ScreenId::Svc => "Services",
             ScreenId::Maint => "Maintenance",
@@ -136,6 +140,7 @@ impl ScreenId {
             ScreenId::Clients => "Clnt",
             ScreenId::Net => "Net",
             ScreenId::Cont => "Cont",
+            ScreenId::Security => "Sec",
             ScreenId::Flat => "Flat",
             ScreenId::Svc => "Svc",
             ScreenId::Maint => "Maint",
@@ -153,6 +158,7 @@ impl ScreenId {
             ScreenId::Clients => "clients",
             ScreenId::Net => "network",
             ScreenId::Cont => "containers",
+            ScreenId::Security => "security",
             ScreenId::Flat => "flatpaks",
             ScreenId::Svc => "services",
             ScreenId::Maint => "maintenance",
@@ -422,6 +428,14 @@ mod tests {
         // A network's Clients has Processes' key, in no set that has Processes.
         assert_eq!((Clients.key(), Proc.key()), ('2', '2'));
         assert_eq!(set.from_name("clients"), None);
-        assert_eq!(ScreenId::ALL.len(), 11);
+        // Its Security has Containers' key, likewise.
+        assert_eq!((Security.key(), Cont.key()), ('4', '4'));
+        assert_eq!(set.from_name("security"), None);
+        let net = ScreenSet {
+            ids: &[Dash, Clients, Net, Security, Maint],
+            aliases: &[],
+        };
+        assert_eq!(net.from_name("sec"), Some(Security));
+        assert_eq!(ScreenId::ALL.len(), 12);
     }
 }
