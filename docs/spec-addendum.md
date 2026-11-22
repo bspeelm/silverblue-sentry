@@ -397,7 +397,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 
 ## A51. A family filter on the devices you tick (2026-11)
 - On a network's Security page, "Filtered by you" › "Choose devices…" opens a list of the devices on the network (named first; sentry's own targets and devices left alone aren't offered). Space ticks, `a` ticks every named one, `e` names one first, Enter applies the whole list as one change, Esc leaves. Enter on a filtered device takes it off. The service is CleanBrowsing Family; only ticked devices are filtered.
-- On the router it is firewall config only: per device a DNS redirect by MAC to the family service over IPv4, and DNS over IPv6 from it refused so it falls back to IPv4. sentry's sections only (name and section both sentry's, a salted tag, never a MAC, in the run and the log). DHCP and DNS config are never touched.
+- On the router a device's filter is firewall config only: per device a DNS redirect by MAC to the family service over IPv4, and DNS over IPv6 from it refused so it falls back to IPv4. sentry's sections only (name and section both sentry's, a salted tag, never a MAC, in the run and the log). DHCP and DNS config aren't touched for it (the takeover, A52, is the one exception).
 - Where another program's DNS redirect comes first in the router's firewall (https-dns-proxy's "force DNS"), no firewall section can win: the filter refuses with a plain explanation and changes nothing. Someone's own DNS redirect in the config is put behind sentry's.
 - Proofs before and while the guard confirms: the router still looks names up through its own resolver; the family service answers the router and refuses its documented test name. What can't be proven from the router (a device really redirected) is said, with the test site to open on it.
 - A filter the router has and this machine has no note of, or the reverse, is a "look" row: keep or take off; put back or forget.
@@ -413,3 +413,12 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Another program or table that forces lookups is still refused, by name.
 - The names that keep Firefox's own encrypted lookups and iCloud Private Relay off stay refused after the takeover, by entries of sentry's in dnsmasq's settings (the proxy adds its own only while it forces lookups); the hand-back takes sentry's away and the proxy's are back at once. If the router stops refusing them while filters exist, that is an act-now row.
 - The takeover touches the DHCP settings. What another package left waiting there goes through only if it changes nothing; a real pending change stops it before anything is armed, naming the option. A revert restores those settings too.
+
+## A53. The three joined (2026-11)
+- Enter on the Security page's firmware, packages or backup row (the security audit's item) does what that item's Enter on Maintenance does: for the firmware, the draft's box and then the run, or the box that says a backup key is needed first. It no longer sends you to Maintenance.
+- The audit's certificate, end-of-support and log items say on the Security page what Enter does ("renew or replace it with Claude", "plan the upgrade with Claude", "keep the log longer, with Claude"); a door's certificate and a door show the door's numbers. A machine's end of support and its log stay that machine's, on its own Maintenance.
+- The security audit says whether the family filter is on and for how many devices (never which), and, when it has stopped working, one do-first item per way (forced lookups in front of it, a browser's own encrypted lookups no longer kept off, nobody's lookups forced). On the Security page each joins the page's own row.
+- CrowdSec switched off on the router is one sentence in the audit, on the page and in the finding.
+- After a router's firmware upgrade the audit's task is due again (as after any target's firmware or OS upgrade). The upgrade's last check reads the family filter back and says in one line that it is in place for N devices, or for which it isn't whole; it never fails the step for it.
+- The flash refuses while a guarded change is waiting to be kept, and holds the guard's lock while it flashes, so no Security action or family filter is armed across a flash.
+- Auto mode never applies a Security action (`security … apply`), besides `guard apply`.
