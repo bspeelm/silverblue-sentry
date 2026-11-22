@@ -333,34 +333,14 @@ pub fn decide(
 
 /// Ask one door, for real: curl on this machine, as described at the top.
 pub fn ask(addr: &str, port: u16) -> Option<Answered> {
-    // (Test knob: `SENTRY_PROBE_PREFIX`, words put before curl, so the disposable targets'
-    // rootless network is reached from its own namespace: scripts/live-resolution.sh.)
-    let prefix: Vec<String> = std::env::var("SENTRY_PROBE_PREFIX")
-        .map(|p| p.split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default();
+    let prefix = prefix();
     decide(addr, port, Timestamp::now(), |url, checked| {
         let start = match prefix.split_first() {
             Some((bin, rest)) => Cmd::host(bin).args(rest).arg("curl"),
             None => Cmd::host("curl"),
         };
-        let mut c = start.args([
-            "-sS",
-            "--max-time",
-            "5",
-            "--max-filesize",
-            "1000000",
-            "-A",
-            "sentry-security-audit",
-            "-o",
-            "-",
-            "-w",
-            WRITE_OUT,
-        ]);
-        if !checked {
-            c = c.arg("-k");
-        }
-        match c
-            .arg(url)
+        match start
+            .args(curl_args(url, checked))
             .timeout(Some(std::time::Duration::from_secs(8)))
             .run()
         {
@@ -368,6 +348,51 @@ pub fn ask(addr: &str, port: u16) -> Option<Answered> {
             Err(e) => (-1, String::new(), e.to_string()),
         }
     })
+}
+
+/// curl's arguments for one try: never through a proxy (a proxy variable in the
+/// environment must not send a request meant for the user's own server through a third
+/// party), only HTTP and HTTPS, no redirect followed, 5 s.
+pub fn curl_args(url: &str, checked: bool) -> Vec<String> {
+    let mut v: Vec<String> = [
+        "-sS",
+        "--noproxy",
+        "*",
+        "--proto",
+        "=http,https",
+        "--max-time",
+        "5",
+        "--max-filesize",
+        "1000000",
+        "-A",
+        "sentry-security-audit",
+        "-o",
+        "-",
+        "-w",
+        WRITE_OUT,
+    ]
+    .map(String::from)
+    .to_vec();
+    if !checked {
+        v.push("-k".into());
+    }
+    v.push(url.into());
+    v
+}
+
+/// Words put before curl: a test knob (`SENTRY_PROBE_PREFIX`, so the disposable targets'
+/// rootless network is reached from its own namespace: scripts/live-resolution.sh). Only
+/// in builds with the `testing` feature; a release build never reads it.
+#[cfg(feature = "testing")]
+fn prefix() -> Vec<String> {
+    std::env::var("SENTRY_PROBE_PREFIX")
+        .map(|p| p.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(not(feature = "testing"))]
+fn prefix() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -562,6 +587,20 @@ mod tests {
             a.unwrap().web,
             Web::NoAnswer("the connection was refused".into())
         );
+        // Never through a proxy, only HTTP(S), nothing followed; `-k` only on the second try.
+        let args = curl_args("https://192.0.2.93:8443/", true);
+        let pair = |a: &str, b: &str| args.windows(2).any(|w| w[0] == a && w[1] == b);
+        assert!(
+            pair("--noproxy", "*") && pair("--proto", "=http,https"),
+            "{args:?}"
+        );
+        assert!(pair("-A", "sentry-security-audit") && pair("--max-time", "5"));
+        assert!(!args.iter().any(|a| a == "-L" || a == "-k"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://192.0.2.93:8443/")
+        );
+        assert!(curl_args("https://192.0.2.93:8443/", false).contains(&"-k".to_string()));
         // Only an address literal is ever put into a URL.
         assert_eq!(url("https", "myserver.example", 443), None);
         assert_eq!(
