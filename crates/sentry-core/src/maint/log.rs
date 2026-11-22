@@ -1,7 +1,8 @@
 //! The maintenance log: what was maintained, when and how, written for the next person or
 //! agent who plans a change. `log/` under [`super::root`]:
 //!
-//! - one file per workflow run, `YYYY-MM-DD-HHMM-<item|workflow>-<workflow>.md`: a `+++` TOML
+//! - one file per workflow run, `YYYY-MM-DD-HHMM-<item|workflow>-<workflow>.md` (`HHMM.SS`
+//!   when another entry of that minute has the name: [`write`]): a `+++` TOML
 //!   header with fixed fields and `key:value` tags (filter on those), then the steps as a
 //!   table, what went wrong or was done by hand, the user's note, and the plan applied;
 //! - `LOG.md`, an index of every entry, newest first, one table row each.
@@ -493,34 +494,108 @@ pub fn dir(server: &str) -> PathBuf {
     super::root(server).join("log")
 }
 
-/// Write an entry (replacing the same run's earlier one) and the index.
+/// Write an entry (replacing the same run's earlier one) and the index. Its file is
+/// [`LogEntry::file_name`] when that is free; when another entry has it (two of the same
+/// kind within one minute) a name with the entry's seconds is used, `HHMM.SS` (then
+/// `HHMM.SS-2`, … for the same second), and of two in one minute the earlier keeps the plain
+/// name: sorting the names still sorts the entries by time ([`place`]).
 pub fn write(entry: &LogEntry) -> anyhow::Result<PathBuf> {
     let d = dir(&entry.head.server);
     std::fs::create_dir_all(&d)?;
     // The same run logged again (a note added): replace it.
-    for old in list(&entry.head.server) {
+    for (p, old) in list_paths_in(&d) {
         if old.head.run.is_some() && old.head.run == entry.head.run {
-            let _ = std::fs::remove_file(d.join(old.file_name()));
+            let _ = std::fs::remove_file(p);
         }
     }
-    let p = d.join(entry.file_name());
+    let p = place(&d, entry)?;
     paths::write_atomic(&p, entry.to_md().as_bytes())?;
     write_index(&entry.head.server)?;
     Ok(p)
 }
 
+fn when(e: &LogEntry) -> Option<jiff::Timestamp> {
+    e.head.ended.or(e.head.started)
+}
+
+/// The `n`th name with a disambiguator, before `-<what>.md`: `2026-11-22-1405-x.md` →
+/// `2026-11-22-1405.07-x.md` (the entry's seconds), then `…1405.07-2-x.md`. A dot sorts
+/// after the plain name's dash, and two digits of seconds sort by time.
+fn with_seconds(e: &LogEntry, n: usize) -> String {
+    let plain = e.file_name();
+    let at = "YYYY-MM-DD-HHMM".len();
+    let tie = if n > 1 {
+        format!("-{n}")
+    } else {
+        String::new()
+    };
+    match when(e) {
+        Some(t) if plain.is_char_boundary(at) && plain.len() > at => {
+            format!("{}.{}{tie}{}", &plain[..at], t.strftime("%S"), &plain[at..])
+        }
+        // (Undated: a number.)
+        _ => plain.replacen(".md", &format!(".{n}.md"), 1),
+    }
+}
+
+/// The first of [`with_seconds`]'s names nobody has in `d`.
+fn free_name(d: &Path, e: &LogEntry) -> String {
+    (1..)
+        .map(|n| with_seconds(e, n))
+        .find(|n| !d.join(n).exists())
+        .expect("a free name")
+}
+
+/// Where `entry` goes in `d`: its plain name when free. When another entry has it, the
+/// later of the two takes a name with its seconds, so the plain name stays the earliest's.
+fn place(d: &Path, entry: &LogEntry) -> anyhow::Result<PathBuf> {
+    let plain = d.join(entry.file_name());
+    if !plain.exists() {
+        return Ok(plain);
+    }
+    let occupant = std::fs::read_to_string(&plain)
+        .ok()
+        .and_then(|t| LogEntry::parse(&t).ok());
+    match occupant {
+        // The one there is later: it moves, this one takes the plain name.
+        Some(o) if when(&o) > when(entry) => {
+            std::fs::rename(&plain, d.join(free_name(d, &o)))?;
+            Ok(plain)
+        }
+        // An earlier one stays (and what isn't an entry is left alone).
+        _ => Ok(d.join(free_name(d, entry))),
+    }
+}
+
+/// The file in `d` that holds `e`: its plain name first, else whichever has it.
+fn locate(d: &Path, e: &LogEntry) -> Option<PathBuf> {
+    let plain = d.join(e.file_name());
+    let holds = std::fs::read_to_string(&plain)
+        .ok()
+        .and_then(|t| LogEntry::parse(&t).ok())
+        .is_some_and(|x| &x == e);
+    if holds {
+        return Some(plain);
+    }
+    list_paths_in(d)
+        .into_iter()
+        .find(|(_, x)| x == e)
+        .map(|(p, _)| p)
+}
+
 /// Remove the entries `drop` picks (a check's older runs), then rewrite the index.
 pub fn remove_where(server: &str, drop: impl Fn(&LogEntry) -> bool) -> anyhow::Result<()> {
-    let d = dir(server);
-    for old in list(server).iter().filter(|e| drop(e)) {
-        let _ = std::fs::remove_file(d.join(old.file_name()));
+    for (p, _) in list_paths_in(&dir(server)).iter().filter(|(_, e)| drop(e)) {
+        let _ = std::fs::remove_file(p);
     }
     write_index(server)
 }
 
 /// Write `new` in place of `old` (a note added to an entry that has no run to match on).
 pub fn write_replacing(old: &LogEntry, new: &LogEntry) -> anyhow::Result<PathBuf> {
-    let _ = std::fs::remove_file(dir(&old.head.server).join(old.file_name()));
+    if let Some(p) = locate(&dir(&old.head.server), old) {
+        let _ = std::fs::remove_file(p);
+    }
     write(new)
 }
 
@@ -530,7 +605,13 @@ pub fn list(server: &str) -> Vec<LogEntry> {
 }
 
 pub fn list_in(d: &Path) -> Vec<LogEntry> {
-    let mut v: Vec<LogEntry> = std::fs::read_dir(d)
+    list_paths_in(d).into_iter().map(|(_, e)| e).collect()
+}
+
+/// Every entry with the file it is in, newest first: by its time, never by its name (an
+/// older entry's name may be any; files that aren't entries are skipped).
+pub fn list_paths_in(d: &Path) -> Vec<(PathBuf, LogEntry)> {
+    let mut v: Vec<(PathBuf, LogEntry)> = std::fs::read_dir(d)
         .into_iter()
         .flatten()
         .flatten()
@@ -538,9 +619,13 @@ pub fn list_in(d: &Path) -> Vec<LogEntry> {
         .filter(|p| {
             p.extension().is_some_and(|x| x == "md") && p.file_name().is_some_and(|n| n != "LOG.md")
         })
-        .filter_map(|p| LogEntry::parse(&std::fs::read_to_string(p).ok()?).ok())
+        .filter_map(|p| {
+            let e = LogEntry::parse(&std::fs::read_to_string(&p).ok()?).ok()?;
+            Some((p, e))
+        })
         .collect();
-    v.sort_by_key(|e| std::cmp::Reverse(e.head.ended.or(e.head.started)));
+    // (Same time: the later name first, as newest first by name would have it.)
+    v.sort_by(|(pa, a), (pb, b)| when(b).cmp(&when(a)).then_with(|| pb.cmp(pa)));
     v
 }
 
@@ -558,13 +643,29 @@ fn write_index(server: &str) -> anyhow::Result<()> {
 
 /// Rewrite `LOG.md` in `d` from the entries there.
 pub fn write_index_in(d: &Path, server: &str) -> anyhow::Result<()> {
-    let text = ledger(server, &list_in(d));
+    let named: Vec<(String, LogEntry)> = list_paths_in(d)
+        .into_iter()
+        .map(|(p, e)| {
+            let n = p
+                .file_name()
+                .map_or_else(|| e.file_name(), |n| n.to_string_lossy().into_owned());
+            (n, e)
+        })
+        .collect();
+    let text = ledger_named(server, &named);
     paths::write_atomic(&d.join("LOG.md"), text.as_bytes())?;
     Ok(())
 }
 
 /// The ledger's text: what each entry is, enough to choose which to read.
 pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
+    let named: Vec<(String, LogEntry)> =
+        entries.iter().map(|e| (e.file_name(), e.clone())).collect();
+    ledger_named(server, &named)
+}
+
+/// [`ledger`] with each entry's file as it is on disk.
+pub fn ledger_named(server: &str, entries: &[(String, LogEntry)]) -> String {
     let server = super::label(server);
     let mut s = format!(
         "# Maintenance ledger · {server}\n\n\
@@ -581,7 +682,7 @@ pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
          | When | Item | Kind | Change | Workflow | Result | Summary | Tags | Entry |\n\
          |---|---|---|---|---|---|---|---|---|\n"
     );
-    for e in entries {
+    for (file, e) in entries {
         let h = &e.head;
         let change = match (&h.from, &h.to) {
             (Some(f), Some(t)) => format!("{f} → {t}"),
@@ -600,8 +701,8 @@ pub fn ledger(server: &str, entries: &[LogEntry]) -> String {
             h.result,
             cell(&h.summary),
             cell(&h.tags.join(" ")),
-            e.file_name(),
-            e.file_name()
+            file,
+            file
         ));
     }
     s
@@ -836,5 +937,99 @@ mod tests {
             row.ends_with("[2026-10-27-1504-compose-bump.md](2026-10-27-1504-compose-bump.md) |"),
             "{row}"
         );
+    }
+
+    fn task_at(server: &str, id: &str, at: &str) -> LogEntry {
+        let mut e = LogEntry::task(server, id, "Do it", None);
+        e.head.started = Some(at.parse().unwrap());
+        e.head.ended = Some(at.parse().unwrap());
+        e
+    }
+
+    /// Two entries of the same kind and key within one minute both stay, each with its own
+    /// file and its own row in the ledger; names still sort by time; a later one written
+    /// first moves aside for an earlier one.
+    #[test]
+    fn two_entries_in_one_minute_both_stay() {
+        let server = "log-naming";
+        let _ = std::fs::remove_dir_all(dir(server));
+        let a = task_at(server, "backup", "2026-11-22T14:05:10Z");
+        let b = task_at(server, "backup", "2026-11-22T14:05:40Z");
+        // Written out of order: the later one first.
+        let pb = write(&b).unwrap();
+        let pa = write(&a).unwrap();
+        let c = task_at(server, "backup", "2026-11-22T14:05:40Z");
+        let mut c = c;
+        c.head.summary = "again".into();
+        let pc = write(&c).unwrap();
+        let name = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name(&pa), "2026-11-22-1405-backup-by-hand.md");
+        assert_eq!(
+            name(&pb),
+            "2026-11-22-1405-backup-by-hand.md",
+            "(then moved)"
+        );
+        assert_eq!(name(&pc), "2026-11-22-1405.40-2-backup-by-hand.md");
+        let mut files: Vec<String> = std::fs::read_dir(dir(server))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "LOG.md")
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            [
+                "2026-11-22-1405-backup-by-hand.md",
+                "2026-11-22-1405.40-2-backup-by-hand.md",
+                "2026-11-22-1405.40-backup-by-hand.md",
+            ]
+        );
+        // By name and by time agree (the same second is a tie either way).
+        let on_disk = list_paths_in(&dir(server));
+        assert_eq!(on_disk.len(), 3);
+        assert_eq!(on_disk[2].1, a, "the earliest is last, newest first");
+        assert!(on_disk.iter().any(|(_, e)| e == &b) && on_disk.iter().any(|(_, e)| e == &c));
+        // Each is found by its tag, as done-detection looks.
+        let tagged = list(server)
+            .into_iter()
+            .filter(|e| e.head.tags.contains(&"task:backup".to_string()))
+            .count();
+        assert_eq!(tagged, 3);
+        // The ledger links each file once.
+        let ledger = std::fs::read_to_string(dir(server).join("LOG.md")).unwrap();
+        for f in &files {
+            assert_eq!(ledger.matches(&format!("]({f})")).count(), 1, "{ledger}");
+        }
+        // Replacing one replaces that one, wherever it is.
+        let mut c2 = c.clone();
+        c2.head.summary = "noted".into();
+        write_replacing(&c, &c2).unwrap();
+        let all = list(server);
+        assert_eq!(all.len(), 3);
+        assert!(all.contains(&c2) && !all.contains(&c) && all.contains(&b));
+        remove_where(server, |e| e.head.summary == "noted").unwrap();
+        assert_eq!(list(server).len(), 2);
+        let _ = std::fs::remove_dir_all(dir(server));
+    }
+
+    /// A directory of entries named as before (and one whose name says nothing) still reads.
+    #[test]
+    fn old_names_still_read() {
+        let d = std::env::temp_dir().join(format!("sentry-log-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let a = task_at("", "x", "2026-01-02T03:04:00Z");
+        let b = task_at("", "y", "2026-01-02T05:00:00Z");
+        std::fs::write(d.join(a.file_name()), a.to_md()).unwrap();
+        std::fs::write(d.join("renamed-by-hand.md"), b.to_md()).unwrap();
+        std::fs::write(d.join("notes.md"), "not an entry").unwrap();
+        let v = list_in(&d);
+        assert_eq!(v, [b.clone(), a.clone()]);
+        write_index_in(&d, "").unwrap();
+        let ledger = std::fs::read_to_string(d.join("LOG.md")).unwrap();
+        assert!(ledger.contains("](renamed-by-hand.md)"), "{ledger}");
+        assert!(ledger.contains(&format!("]({})", a.file_name())));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

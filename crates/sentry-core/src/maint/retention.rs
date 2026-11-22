@@ -59,9 +59,9 @@ pub fn purge(server: &str, runs: &Path, k: &Retention, now: Timestamp) -> Purged
 fn purge_log(d: &Path, server: &str, k: &Retention, now: Timestamp) -> usize {
     let cutoff = months_ago(now, k.log_months);
     let mut n = 0;
-    for e in super::log::list_in(d).iter().skip(k.log_keep) {
+    for (p, e) in super::log::list_paths_in(d).iter().skip(k.log_keep) {
         let when = e.head.ended.or(e.head.started).map(|t| t.as_second());
-        if when.is_some_and(|w| w < cutoff) && std::fs::remove_file(d.join(e.file_name())).is_ok() {
+        if when.is_some_and(|w| w < cutoff) && std::fs::remove_file(p).is_ok() {
             n += 1;
         }
     }
@@ -226,6 +226,41 @@ mod tests {
         };
         assert_eq!(purge_log(&d, "", &k, now), 0, "a recent entry stays");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Two old entries of one minute (one named with its seconds) both go, and a newer
+    /// one of another minute stays.
+    #[test]
+    fn same_minute_entries_are_pruned_by_their_own_files() {
+        use super::super::log::{self, LogEntry};
+        let server = "retain-same-minute";
+        let _ = std::fs::remove_dir_all(log::dir(server));
+        let at = |t: &str| {
+            let mut e = LogEntry::task(server, "x", "X", None);
+            e.head.ended = Some(t.parse().unwrap());
+            e
+        };
+        for t in [
+            "2024-01-01T10:00:05Z",
+            "2024-01-01T10:00:50Z",
+            "2026-10-20T10:00:00Z",
+        ] {
+            log::write(&at(t)).unwrap();
+        }
+        assert_eq!(log::list(server).len(), 3);
+        let now: Timestamp = "2026-10-27T00:00:00Z".parse().unwrap();
+        let k = Retention {
+            log_keep: 0,
+            ..Default::default()
+        };
+        assert_eq!(purge_log(&log::dir(server), server, &k, now), 2);
+        let left = log::list(server);
+        assert_eq!(left.len(), 1);
+        assert_eq!(
+            left[0].head.ended,
+            Some("2026-10-20T10:00:00Z".parse().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(log::dir(server));
     }
 
     #[test]
