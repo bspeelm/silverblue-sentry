@@ -28,7 +28,7 @@ It is opinionated about one kind of setup and encodes procedures proven on one m
 
 ## Status and safety
 
-**v0.4.0, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine. The quick-update kernel path (`rpm-ostree upgrade`, both reboots, layering the kmod, the GL runtimes) has been run end to end on that machine. Some paths have still only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree rollback`/`cleanup`, `akmods` building a kmod, `flatpak uninstall`, `podman` prune/remove.
+**v0.5.0, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine, a real server and a real OpenWrt router. The quick-update kernel path (`rpm-ostree upgrade`, both reboots, layering the kmod, the GL runtimes) has been run end to end on that machine. Some paths have still only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree rollback`/`cleanup`, `akmods` building a kmod, `flatpak uninstall`, `podman` prune/remove, and on a router the `firmware-upgrade` workflow (a draft) and a reboot in the middle of a guarded change.
 
 - Nothing runs in the background: no services, timers or autostart. The recorder is a foreground process you start and stop.
 - Every destructive action shows a preview, waits for your confirmation, and streams its output. Reboots never happen on their own.
@@ -48,23 +48,19 @@ make install-binary      # builds sentry and copies it to ~/.local/bin, with sen
 
 `make uninstall-binary` removes all three again, and `make check` runs the build, tests, clippy and fmt.
 
-From a release. **v0.4.0 and earlier** are two separate binaries, `sentry` and `sentry-server`, from before the one window with targets, auto mode and `sentry-network` (x86_64; built on Fedora 44 and linked only against glibc):
+From a release (x86_64; built on Fedora 44 and linked only against glibc). One binary, `sentry`; make the two links yourself:
 
 ```sh
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.4.0/silverblue-sentry-0.4.0-x86_64-linux-gnu.tar.gz
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.4.0/silverblue-sentry-0.4.0-x86_64-linux-gnu.tar.gz.sha256
-sha256sum -c silverblue-sentry-0.4.0-x86_64-linux-gnu.tar.gz.sha256
-tar xf silverblue-sentry-0.4.0-x86_64-linux-gnu.tar.gz
-install -Dm755 silverblue-sentry-0.4.0/sentry ~/.local/bin/sentry
-install -Dm755 silverblue-sentry-0.4.0/sentry-server ~/.local/bin/sentry-server   # optional: servers over ssh
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.5.0/silverblue-sentry-0.5.0-x86_64-linux-gnu.tar.gz
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.5.0/silverblue-sentry-0.5.0-x86_64-linux-gnu.tar.gz.sha256
+sha256sum -c silverblue-sentry-0.5.0-x86_64-linux-gnu.tar.gz.sha256
+tar xf silverblue-sentry-0.5.0-x86_64-linux-gnu.tar.gz
+install -Dm755 silverblue-sentry-0.5.0/sentry ~/.local/bin/sentry
+ln -sfn sentry ~/.local/bin/sentry-server    # optional: servers over ssh
+ln -sfn sentry ~/.local/bin/sentry-network   # optional: a network through its router
 ```
 
-The next release ships the one binary, `sentry`. Install it the same way and make the two links yourself:
-
-```sh
-ln -sfn sentry ~/.local/bin/sentry-server
-ln -sfn sentry ~/.local/bin/sentry-network
-```
+v0.4.0 and earlier shipped two separate binaries, `sentry` and `sentry-server`; if you are upgrading, the old `sentry-server` file is replaced by the link.
 
 Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reached through `flatpak-spawn --host`, so `sentry` works from either side. It leaves files only under `~/.config/sentry`, `~/.local/share/sentry` and `~/.cache/sentry` (or the `XDG_*_HOME` locations).
 
