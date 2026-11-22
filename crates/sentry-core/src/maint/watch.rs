@@ -135,6 +135,39 @@ mod tests {
         assert_eq!(w, Watch::default());
     }
 
+    /// On disk (a scratch scope of this test's own): written with its header, read back
+    /// the same, and an empty or missing file is nothing unwatched.
+    #[test]
+    fn the_file_reads_back_as_written() {
+        let scope = "watch-file-test";
+        let _ = std::fs::remove_file(path(scope));
+        assert_eq!(load(scope), Watch::default());
+        let mut w = Watch::default();
+        w.add(
+            "timer",
+            "report.timer",
+            "2026-11-21".parse().unwrap(),
+            "retired; v2 runs",
+        );
+        save(scope, &w).unwrap();
+        let text = std::fs::read_to_string(path(scope)).unwrap();
+        assert!(
+            text.starts_with("# What sentry no longer watches here"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[[unwatched]]")
+                && text.contains("kind = \"timer\"")
+                && text.contains("name = \"report.timer\"")
+                && text.contains("since = \"2026-11-21\"")
+                && text.contains("why = \"retired; v2 runs\""),
+            "{text}"
+        );
+        assert_eq!(load(scope), w);
+        assert!(path(scope).ends_with("servers/watch-file-test/watch.toml"));
+        let _ = std::fs::remove_file(path(scope));
+    }
+
     #[test]
     fn a_key_is_a_kind_and_a_name() {
         assert_eq!(split("timer:backup.timer"), Some(("timer", "backup.timer")));
