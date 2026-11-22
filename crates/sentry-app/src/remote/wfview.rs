@@ -139,6 +139,26 @@ fn running(a: Action, v: &Shown, s: &Session) -> Vec<Effect> {
                 ],
                 yes: Some(("reboot".into(), vec![Effect::Wf(WfCmd::Go)])),
             })],
+            // A confirm step that says what it will do first (a router's flash): its box,
+            // and Enter there runs it.
+            Next::Confirm(i) if s.wf.steps[i].ask.is_some() => {
+                let step = &s.wf.steps[i];
+                let said = preview(&s.run.state, step.ask.as_deref().unwrap_or(""));
+                // Paragraphs, as the box wraps them (the file's own line breaks aren't kept).
+                let lines: Vec<Line<'static>> = said
+                    .split("\n\n")
+                    .flat_map(|p| {
+                        let p = p.split_whitespace().collect::<Vec<_>>().join(" ");
+                        [Line::styled(p, t.fg()), Line::raw("")]
+                    })
+                    .collect();
+                vec![Effect::Confirm(Modal {
+                    title,
+                    color: if step.risky { t.red } else { t.yellow },
+                    lines,
+                    yes: Some((step.id.clone(), vec![Effect::Wf(WfCmd::Go)])),
+                })]
+            }
             _ => vec![Effect::Wf(WfCmd::Go)],
         },
         Action::Char('s') => match idx {
@@ -323,6 +343,12 @@ fn card(v: &Shown, s: &Session) -> Vec<Line<'static>> {
                 t.s(t.yellow),
             ));
             out.extend(cmd.map(|c| Line::styled(c, t.fg())));
+            if step.ask.is_some() {
+                out.push(Line::styled(
+                    "Enter first shows what this step does, and runs it from there.",
+                    t.s(t.yellow),
+                ));
+            }
             out.push(Line::styled(
                 format!(
                     "[Enter] run{}   [L] log   [a] abandon",

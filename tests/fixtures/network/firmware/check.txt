@@ -1,0 +1,43 @@
+owut - OpenWrt Upgrade Tool 2026.07.08~db17536e-r1 (/usr/bin/owut)
+ASU-Server     https://sysupgrade.openwrt.org
+Upstream       https://downloads.openwrt.org
+Target         x86/64
+Profile        generic
+Package-arch   x86_64
+Root-FS-type   squashfs
+Sys-type       combined
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.6 r33311-981c978eff (kernel 6.12.112)
+Build-commit   https://git.openwrt.org/?p=openwrt/openwrt.git;a=shortlog;h=981c978eff
+Build-FS-type  squashfs
+Build-at       2026-10-17T21:45:38Z (~36 days ago)
+Image-prefix   openwrt-25.12.6-x86-64-generic
+Image-URL      https://downloads.openwrt.org/releases/25.12.6/targets/x86/64
+Image-file     openwrt-25.12.6-x86-64-generic-squashfs-combined.img.gz
+Installed       12 packages
+Top-level        8 packages
+Default          5 packages
+User-installed   3 packages (top-level only)
+
+Package version changes:
+  base-files                     1711~f5dae5ece4                1718~981c978eff
+  dnsmasq                        2.93-r1                        2.93-r2
+  example-addon                  1.2.3-r1                       1.2.4-r1
+  kmod-nft-core                  6.12.94-r1                     6.12.112-r1
+  luci-app-example               26.180.75667~128a781           26.325.27163~92d84fc
+  uhttpd                         2026.06.16~7b1bec45-r1         2026.11.05~93b05e0b-r1
+6 packages are out-of-date
+
+Default package analysis:
+  Default                        Provided-by
+  nftables                       nftables-json
+
+There are currently package build failures for 25.12.6 x86_64:
+  Feed: packages
+    2 unshown
+  Feed: video
+    3 unshown
+5 package build failures don't affect this device, details at
+  https://downloads.openwrt.org/releases/faillogs-25.12/x86_64/
+
+It is safe to proceed with an upgrade

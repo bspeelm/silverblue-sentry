@@ -84,6 +84,10 @@ pub enum Own {
     /// What Security's list asks for (`screens::threats`): an action started, a name or a
     /// new Wi-Fi password answered.
     Security(super::screens::threats::Want),
+    /// Enter in the firmware draft's box: the firmware upgrade starts, draft as it is.
+    FirmwareStart,
+    /// After a draft's good run, the user said so: `draft = true` out of this file.
+    Undraft(std::path::PathBuf),
 }
 
 impl Own {
@@ -186,6 +190,11 @@ pub struct NetworkTarget {
     /// The secrets this window's runs were given (a guarded change's new passphrase):
     /// in memory only, so that nothing written down afterwards says one.
     given: Vec<String>,
+    /// The user said go in the firmware draft's box: the next start of that workflow may be
+    /// the draft (taken by `begin_run`, whatever it starts).
+    draft_ok: bool,
+    /// A draft ran end to end: its file, to offer taking `draft = true` out (`settled`).
+    undraft: Option<std::path::PathBuf>,
     /// Every fetch asked for, in order (tests: nothing is spawned there, this still counts).
     #[cfg(any(test, feature = "testing"))]
     pub asked: Vec<Kind>,
@@ -265,6 +274,8 @@ impl NetworkTarget {
             ring_failed: false,
             due: HashMap::new(),
             given: Vec::new(),
+            draft_ok: false,
+            undraft: None,
             #[cfg(any(test, feature = "testing"))]
             asked: Vec::new(),
         }
@@ -737,6 +748,36 @@ impl Target for NetworkTarget {
                 let w = w.clone();
                 return super::screens::threats::on_own(self, &w, sh, cx);
             }
+            Some(Own::FirmwareStart) => {
+                self.draft_ok = true;
+                return vec![Effect::Wf(sentry_app::effect::WfCmd::BeginWith(
+                    super::screens::maint::FIRMWARE_WF.into(),
+                    BTreeMap::new(),
+                ))];
+            }
+            Some(Own::Undraft(path)) => {
+                if cx.offline {
+                    return vec![Effect::Toast("(offline: nothing written)".into())];
+                }
+                return match workflow::undraft(path) {
+                    Ok(()) => {
+                        let name = super::screens::maint::FIRMWARE_WF;
+                        if let Some(e) = sh.wf_entries.iter_mut().find(|e| e.path == *path)
+                            && let Ok(w) = e.wf.as_mut()
+                        {
+                            w.draft = false;
+                        }
+                        vec![Effect::Toast(format!(
+                            "{name} is no longer a draft (in {})",
+                            path.display()
+                        ))]
+                    }
+                    Err(e) => vec![Effect::Toast(format!(
+                        "couldn't change {}: {e}",
+                        path.display()
+                    ))],
+                };
+            }
             None => {}
         }
         Vec::new()
@@ -905,6 +946,36 @@ impl Changes for NoChanges {
 }
 
 impl Upkeep for NetworkTarget {
+    /// After a draft's good run: the offer to take `draft = true` out of its file.
+    fn settled(&mut self, cx: &Cx) -> Vec<Effect> {
+        let Some(path) = self.undraft.take() else {
+            return Vec::new();
+        };
+        let t = cx.theme;
+        vec![Effect::Confirm(Modal {
+            title: "The firmware upgrade ran end to end".into(),
+            color: t.green,
+            lines: vec![
+                Line::styled(
+                    "It is still marked as a draft, which only its own row's box can start.",
+                    t.fg(),
+                ),
+                Line::styled(
+                    format!(
+                        "Mark it as proven: `draft = true` comes out of {} (nothing else in it changes).",
+                        path.display()
+                    ),
+                    t.fg(),
+                ),
+                Line::styled("Esc leaves it a draft.", t.dim()),
+            ],
+            yes: Some((
+                "mark it proven".into(),
+                vec![Effect::own(Own::Undraft(path))],
+            )),
+        })]
+    }
+
     /// The config's `maintenance.cadence`, for the workflows this network has.
     fn derived_tasks(&self, sh: &Shared) -> Vec<Task> {
         crate::maint::cadence_tasks(&self.router.cfg, &sh.workflows)
@@ -1302,14 +1373,36 @@ impl Host for NetworkTarget {
                 self.given.push(v);
             }
         }
-        match workflow::begin_hiding(entry, &self.router, vars, &self.given) {
+        // A draft starts only right after its box said go (`Own::FirmwareStart`), and only
+        // the firmware's: whatever starts next, the acknowledgment is used up.
+        let ack =
+            std::mem::take(&mut self.draft_ok) && entry.name == super::screens::maint::FIRMWARE_WF;
+        let begun = if ack {
+            workflow::begin_acknowledged(entry, &self.router, vars, &self.given)
+        } else {
+            workflow::begin_hiding(entry, &self.router, vars, &self.given)
+        };
+        match begun {
             Ok(s) => Ok(Box::new(s)),
             Err(e) => Err(e.to_string()),
         }
     }
 
+    /// The run in progress, picked up. A firmware upgrade whose wait for the router gave up
+    /// looks again at once: when the router answers, it carries on with its checks.
     fn resume_run(&self) -> Option<Box<dyn WfRun>> {
-        let s = workflow::resume(&self.router)?;
+        let mut s = workflow::resume(&self.router)?;
+        if s.wf.name == super::screens::maint::FIRMWARE_WF
+            && let Some(i) = s.next.idx()
+            && s.wf.steps[i].id == "wait"
+            && matches!(
+                s.next,
+                sentry_core::workflows::runner::Next::Stopped(_)
+                    | sentry_core::workflows::runner::Next::Manual { failed: true, .. }
+            )
+        {
+            let _ = s.retry();
+        }
         Some(Box::new(s))
     }
 
@@ -1329,8 +1422,18 @@ impl Host for NetworkTarget {
 
     /// A step ended: what it may have made (a backup) is read again, so the Items row
     /// follows the run.
-    fn step_ended(&mut self, _run: &dyn WfRun, cx: &Cx) {
+    fn step_ended(&mut self, run: &dyn WfRun, cx: &Cx) {
         self.fetch(Kind::Backup, cx);
+        // A draft that just ran end to end, well: offered to be one no longer.
+        use sentry_core::workflows::state::RunStatus;
+        // (The file says whether it is a draft: the run's own copy may have been started
+        // as one let through.)
+        if run.done() && run.run().state.status == RunStatus::Done && !cx.offline {
+            self.undraft = workflow::list_for(&self.router.scope)
+                .into_iter()
+                .find(|e| e.name == run.wf().name && e.wf.as_ref().is_ok_and(|w| w.draft))
+                .map(|e| e.path);
+        }
     }
 
     /// No workflow reboots a router by a reboot step (the firmware's flash waits for the

@@ -152,6 +152,10 @@ pub fn never(cmd: &str) -> Option<&'static str> {
                     if verb("firmware") && verb("flash") {
                         return Some("it flashes firmware");
                     }
+                    // The firmware it would flash, and what is installed after one.
+                    if verb("firmware") && (verb("download") || verb("add-missing")) {
+                        return Some("it is part of a firmware upgrade");
+                    }
                     // A router's packages, when more than leaves may be in the
                     // transaction (the workflow's risky step, however a file marks it).
                     if verb("packages")

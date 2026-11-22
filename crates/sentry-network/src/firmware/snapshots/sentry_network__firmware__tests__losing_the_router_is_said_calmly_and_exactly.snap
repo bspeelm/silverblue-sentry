@@ -1,0 +1,10 @@
+---
+source: crates/sentry-network/src/firmware/tests.rs
+expression: "l.join(\"\\n\")"
+---
+The router hasn't answered for 15 min since the flash started.
+What was running when contact was lost: the flash (owut checking the image once more, then writing it and restarting the router).
+Your settings were backed up at 2026-11-22 10:00 (2026-11-22T100000Z-25.12.5.tar.gz.age), before anything was flashed.
+Nothing more happens by itself. A router writing its firmware can take longer than usual: if its light says it is still busy, leave its power on.
+When it answers again, open this run (0): it carries on with the checks after the restart.
+If it never answers, it is brought back by the device's own recovery procedure (its OpenWrt page describes it), and the backup puts your settings back.

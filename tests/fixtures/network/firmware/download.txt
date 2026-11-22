@@ -1,0 +1,37 @@
+owut - OpenWrt Upgrade Tool 2026.07.08~db17536e-r1 (/usr/bin/owut)
+ASU-Server     https://sysupgrade.openwrt.org
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.6 r33311-981c978eff (kernel 6.12.112)
+
+Package version changes:
+  dnsmasq                        2.93-r1                        2.93-r2
+6 packages are out-of-date
+
+Request:
+  Version 25.12.6 r33311-981c978eff (kernel 6.12.112)
+Request hash:
+  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+--
+Status:   queued - 0 ahead of you
+Progress:   0s total =   0s in queue +   0s in build
+--
+Status:   building_image
+Progress:  40s total =   0s in queue +  40s in build
+--
+Status:   done
+Progress:  76s total =   0s in queue +  76s in build
+
+Build succeeded in  76s total =   0s in queue +  76s to build:
+  version_number = 25.12.6
+  version_code   = r33311-981c978eff (requested r33311-981c978eff)
+  kernel_version = 6.12.112
+  rootfs_size_mb = default
+  init-script    = no-init-script
+
+Image source: https://sysupgrade.openwrt.org/store/0123456789abcdef/openwrt-25.12.6-0123456789ab-x86-64-generic-squashfs-combined.img.gz
+Image saved : /tmp/sentry-firmware.bin
+Manifest    : /tmp/sentry-firmware-manifest.json
+Verifying   : /tmp/sentry-firmware.bin (15247680 bytes) against /tmp/sentry-firmware.sha256sums
+  Saved sha256 matches
+  verifying sysupgrade tar file integrity
+Checks complete, image is valid.

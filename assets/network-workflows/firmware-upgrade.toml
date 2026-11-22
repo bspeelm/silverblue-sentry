@@ -1,66 +1,124 @@
 name = "firmware-upgrade"
-description = "Upgrade the router's firmware with owut, after a config backup, and check it came back"
-# A DRAFT: this has never been run end to end on a router. sentry refuses to start it until
-# you have read the steps and deleted the next line.
+description = "Upgrade the router to the newest release of its series, keeping its settings and add-on packages"
+# A DRAFT until it has been run end to end on a router once: sentry starts it only from the
+# firmware row (Maintenance), after a box that says what has and hasn't been proven, and
+# never by auto mode or a series. After a good run it offers to take the next line out.
 draft = true
-# `owut` (OpenWrt's attended-sysupgrade client) asks sysupgrade.openwrt.org for an image
-# with the packages the router has, downloads and verifies it, and flashes it keeping the
-# config; the router then restarts. The first two steps run on this machine; the owut steps
-# run on the router; `firmware flash` runs here, holds sentry's sysupgrade lock for as long
-# as owut works, and waits for the router to come back. Auto mode never confirms the flash.
-# Built-in: network.
+# How it works: `owut` (OpenWrt's upgrade tool, on the router) has the upgrade server build
+# an image with every package installed now, downloads it into the router's memory and
+# verifies it; sentry checks it again and the router's own `sysupgrade --test` takes it; the
+# flash keeps the configuration and restarts the router. Every step runs here, by this
+# program (`sentry-network firmware <step>`). Built-in: network.
 
 [[steps]]
 id = "check"
-title = "Is there a newer release? (asked from this machine)"
+title = "Is the router ready? (its release, free memory, a backup key, nothing else changing it)"
 run = "sentry-network firmware check"
 gate = "auto"
+on_fail = "manual"
+manual = """
+Nothing was changed. The log (L) says what stands in the way; r checks again once it is
+sorted."""
 
 [[steps]]
 id = "backup"
-title = "Back the config up first (encrypted, on this machine)"
-run = "sentry-network backup"
+title = "Back the router's settings up first (encrypted, on this machine) and check the backup"
+run = "sentry-network firmware backup"
 gate = "auto"
 on_fail = "manual"
 manual = """
-No backup was made, so nothing is flashed. The log (L) says why. Retry (r) once it can be
-made; don't skip this one."""
+No backup, so nothing is flashed. The log (L) says why; r tries again. Don't skip this one."""
 
 [[steps]]
-id = "owut-check"
-title = "owut check: what the router would be upgraded to (it asks the upgrade server)"
-run = "owut check"
-gate = "confirm"
+id = "plan"
+title = "What the upgrade would change (owut asks the upgrade server; nothing is written)"
+run = "sentry-network firmware plan"
+gate = "auto"
+on_fail = "manual"
+manual = """
+Stopped before anything was downloaded: the log (L) says what owut warned about and what it
+means. Nothing was changed. If it's the upgrade server not having the release ready yet, r
+asks again later; otherwise abandon (a) and leave the router as it is."""
 
 [[steps]]
 id = "download"
-title = "owut download: fetch the image and verify it"
-run = "owut download"
+title = "Download the new firmware into the router's memory and check it (nothing is flashed yet)"
+run = "sentry-network firmware download"
 gate = "confirm"
 on_fail = "manual"
 manual = """
-The image wasn't downloaded or didn't verify: nothing was flashed. The log (L) says why
-(often the upgrade server is still building it: retry (r) in a few minutes)."""
+The image wasn't downloaded or didn't check out: nothing was flashed, and it was removed
+from the router's memory. The log (L) says why (often the upgrade server is still building
+it: r tries again in a few minutes)."""
 
 [[steps]]
 id = "flash"
-title = "Flash it: the router restarts, and everything on the network drops for a few minutes"
+title = "Flash it: the router restarts, and the internet and Wi-Fi are off for a few minutes"
 run = "sentry-network firmware flash"
 gate = "confirm"
 risky = true
+ask = """
+This writes the new firmware to the router and restarts it.
+
+What happens: owut checks the downloaded image once more, then the router closes every
+connection, writes the new firmware to its storage and starts again on it. sentry waits and
+then checks that everything is back.
+
+How long: usually 3 to 5 minutes. During that time there is no internet and no Wi-Fi for
+any device on this network, this machine included. sentry waits up to 15 minutes before it
+says the router hasn't come back.
+
+What is kept: all of the router's settings (network, Wi-Fi, firewall, passwords, its ssh
+keys) and every package installed now; an encrypted backup of the settings was made by
+this run before anything was downloaded.
+
+What can't be helped from here: if the flash itself fails, nothing automatic can rescue the
+router; it is then brought back by the device's own recovery procedure (on its OpenWrt
+page). Have those instructions at hand, on paper or another device, before you go on.
+
+Never turn the router off while it is flashing."""
 on_fail = "manual"
 manual = """
-The router didn't come back within ten minutes, or came back on the old release. Check it
-by hand (its LEDs, a cable to a LAN port, http://<its address>). If it runs the old release,
-nothing was flashed: abandon (a). If it doesn't answer at all, see OpenWrt's failsafe mode;
-the config backup made above restores it (`sentry-network backup decrypt`)."""
+The flash didn't start, or owut refused the image: the log (L) says which. The router runs
+as it did; nothing was flashed. Abandon (a) to remove the image from its memory."""
+
+[[steps]]
+id = "wait"
+title = "Wait for the router to restart and answer again (up to 15 minutes)"
+run = "sentry-network firmware wait"
+gate = "auto"
+on_fail = "manual"
+manual = """
+The router hasn't answered since the flash. The log (L) says what was running when contact
+was lost and when your settings were backed up. When the router answers again, open this
+run (0): it carries on by itself. If it never does, the device's own recovery procedure
+brings it back, and the backup restores your settings."""
 
 [[steps]]
 id = "after"
-title = "The new release runs, the services are up, the clients are back, the audit is clean"
+title = "Check the new release: version, add-on packages, services, internet, devices, audit, a fresh backup"
 run = "sentry-network firmware after"
 gate = "auto"
 on_fail = "manual"
 manual = """
-The router is back but something isn't as it should be: the log (L) says what. Retry (r)
-checks again (clients take a minute or two to return)."""
+The router is back but something isn't as it should be: the log (L) says what. Devices take
+a few minutes to return; r checks again."""
+
+[[steps]]
+id = "add-missing"
+title = "Install again the add-on packages the new firmware came without"
+run = "sentry-network firmware add-missing"
+gate = "confirm"
+risky = true
+when = "firmware_missing"
+on_fail = "manual"
+manual = """
+Not every package went back on: the log (L) says which and why. The router runs; r tries
+again."""
+
+[[steps]]
+id = "forget"
+title = "Remove the downloaded image from the router's memory"
+run = "sentry-network firmware forget"
+gate = "auto"
+rollback = true

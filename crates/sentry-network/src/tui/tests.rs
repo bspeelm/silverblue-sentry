@@ -2040,17 +2040,16 @@ fn the_items_and_what_they_ask_for() {
     assert!(!s.contains("package(s) could be upgraded"), "{s}");
     let bar = s.lines().last().unwrap();
     assert!(
-        bar.contains("Enter  about") && bar.contains("z  later") && bar.contains("R  review"),
+        bar.contains("Enter  upgrade") && bar.contains("z  later") && bar.contains("R  review"),
         "{bar}"
     );
-    // Enter on the firmware's row says how it stands, and that its workflow is a draft:
-    // nothing is started, and the box has nothing to say yes to.
+    // Enter on the firmware's row: this config has no backup key, so the upgrade isn't
+    // offered, and the box says what to set. Nothing is started.
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("firmware-upgrade is a draft: it has never been run end to end on a router.")
-            && s.contains("delete `draft = true` from its file to use it")
-            && s.contains("Until then Enter starts nothing here; A asks Claude about it."),
+        s.contains("A firmware upgrade starts with an encrypted backup")
+            && s.contains("backup.recipients"),
         "{s}"
     );
     assert!(a.box_yes_for_test().is_none() && a.slot().run.is_none());
@@ -2093,7 +2092,10 @@ fn the_items_and_what_they_ask_for() {
     key(&mut a, KeyCode::Char('k'));
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
-    assert!(s.contains("firmware-upgrade is a draft"), "{s}");
+    assert!(
+        s.contains("A firmware upgrade starts with an encrypted backup"),
+        "{s}"
+    );
     assert!(a.slot().run.is_none());
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('j'));
@@ -5111,6 +5113,7 @@ fn live_security() {
         "something is said to be missing"
     );
 }
+mod firmware;
 mod threats;
 
 // ------------------------------------------------------------- a resolved row leaves at once

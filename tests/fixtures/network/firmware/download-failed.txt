@@ -1,0 +1,15 @@
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.6 r33311-981c978eff (kernel 6.12.112)
+--
+Status:   queued - 3 ahead of you
+Progress:   0s total =   0s in queue +   0s in build
+--
+Status:   failed
+Progress:  12s total =   9s in queue +   3s in build
+
+Build failed in  12s total =   9s in queue +   3s to build:
+ASU server error =
+Received incorrect version r33300-0000000000 (requested r33311-981c978eff)
+ERROR: Build failed with status 500 (--version-to 25.12.6 --device x86/64:generic:squashfs)
+The above errors are often due to the upgrade server lagging behind the
+build server, first suggestion is to wait a while and try again.

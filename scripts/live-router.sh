@@ -3,7 +3,8 @@
 #   live_router_policy, live_guard_keeps, live_guard_reverts, live_guard_wifi_asks,
 #   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
 #   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update,
-#   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only
+#   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only,
+#   live_firmware_upgrade
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -29,7 +30,19 @@
 #     DSA ports, no bridge. `ip` shows the container's own interface, which podman (pasta)
 #     gives this machine's addresses: never paste its output anywhere.
 #   - dnsmasq doesn't run (its jail can't be made); its reload is still a command that exits 0.
-#   - sysupgrade/owut flashing, and a reboot (which would only stop the container).
+#   - sysupgrade/owut flashing, and a reboot (which would only stop the container). For the
+#     firmware upgrade there are stand-ins (`stubs`): `/usr/bin/owut` prints sentry's
+#     synthetic fixtures and makes a random "image" with a real checksum and a manifest of
+#     the packages installed here; `/sbin/sysupgrade` is the real one but for `--test`
+#     (passes any file that isn't empty) and a flash, which is pretend: after 2 s dropbear
+#     stops (new logins fail; sessions already open stay, unlike a real restart), the files
+#     in /tmp it was given go, then after a delay (8 s; 45 s in mode `slow`) the boot id
+#     changes (the container's boot_id is a file of the script's, bind-mounted over
+#     /proc/sys/kernel/random/boot_id), os-release says 25.12.6, `partx-utils` is removed in
+#     mode `missing`, and dropbear starts again. Nothing is written to any storage but the
+#     container's, nothing restarts, the kernel and every other process stay as they were.
+#     The mode is in /etc/sentry-stub/mode (ok, warn, badsum, slow, missing); `seed` puts
+#     it back to ok and the release back to 25.12.5.
 #   - adblock-fast and its always-staged lines; the real router's package set.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -53,7 +66,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1
@@ -70,9 +83,85 @@ put() {
 
 # The synthetic /etc/config set and leases (documentation addresses, invented names), and
 # nothing staged, no guard left over. Run at `up` and before every test.
+# Stand-ins for the firmware upgrade (see the header): owut, sysupgrade's --test and flash,
+# a pretend restart. The real ones are kept beside them (owut.real, sysupgrade.real).
+stubs() {
+  local c=$1 f=tests/fixtures/network/firmware
+  "${P[@]}" exec "$c" sh -c 'mkdir -p /usr/share/sentry-stub /etc/sentry-stub; S=/usr/share/sentry-stub; cp /usr/lib/os-release $S/os-release; cp /etc/openwrt_release $S/openwrt_release; [ -e /usr/bin/owut.real ] || mv /usr/bin/owut /usr/bin/owut.real; [ -e /sbin/sysupgrade.real ] || mv /sbin/sysupgrade /sbin/sysupgrade.real; echo ok >/etc/sentry-stub/mode'
+  put "$c" /usr/share/sentry-stub/check.txt 644 <"$f/check.txt"
+  put "$c" /usr/share/sentry-stub/check-downgrade.txt 644 <"$f/check-downgrade.txt"
+  put "$c" /usr/share/sentry-stub/download.txt 644 <"$f/download.txt"
+  put "$c" /usr/bin/owut 755 <<'EOF'
+#!/bin/sh
+# A stand-in for owut (scripts/live-router.sh): sentry's synthetic fixtures, a random image.
+S=/usr/share/sentry-stub
+mode=$(cat /etc/sentry-stub/mode 2>/dev/null || echo ok)
+cmd=$1
+[ $# -gt 0 ] && shift
+img=/tmp/firmware.bin
+while [ $# -gt 0 ]; do
+  case "$1" in -i) img=$2; shift ;; esac
+  shift
+done
+stem=${img%.*}
+case "$cmd" in
+check)
+  [ "$mode" = warn ] && { cat $S/check-downgrade.txt; exit 0; }
+  cat $S/check.txt
+  ;;
+download)
+  [ "$mode" = warn ] && { cat $S/check-downgrade.txt; echo "ERROR: Update checks reveal package downgrades" >&2; exit 1; }
+  head -c 1048576 /dev/urandom >"$img"
+  sum=$(sha256sum "$img" | cut -d' ' -f1)
+  size=$(wc -c <"$img")
+  echo "$sum  $img" >"$stem.sha256sums"
+  [ "$mode" = badsum ] && sum=0000000000000000000000000000000000000000000000000000000000000000
+  {
+    printf '{"version_number":"25.12.6","version_code":"r33311-981c978eff","images":[{"type":"sysupgrade","name":"stub-sysupgrade.bin","sha256":"%s","size":%s}],"manifest":' "$sum" "$size"
+    ubus call rpc-sys packagelist '{"all":true}' | jsonfilter -e '@.packages'
+    printf '}\n'
+  } >"$stem-manifest.json"
+  sed "s#/tmp/sentry-firmware#$stem#g" $S/download.txt
+  /sbin/sysupgrade --test "$img" || { rm -f "$img"; exit 1; }
+  ;;
+install)
+  [ -s "$img" ] || { echo "ERROR: Image file '$img' does not exist" >&2; exit 1; }
+  sha256sum -c "$stem.sha256sums" >/dev/null 2>&1 || { echo "ERROR: sha256 doesn't match:" >&2; exit 1; }
+  echo "Installing $img and rebooting..."
+  /sbin/sysupgrade "$img"
+  ;;
+*)
+  echo "ERROR: '$cmd' isn't stubbed" >&2
+  exit 1
+  ;;
+esac
+EOF
+  put "$c" /sbin/sysupgrade 755 <<'EOF'
+#!/bin/sh
+# A stand-in for sysupgrade's --test and flash (scripts/live-router.sh); the rest is real.
+case "$1" in
+-T | --test)
+  [ -s "$2" ] && { echo "verifying sysupgrade tar file integrity" >&2; exit 0; }
+  echo "Image check failed." >&2
+  exit 1
+  ;;
+-*) exec /sbin/sysupgrade.real "$@" ;;
+esac
+[ -s "$1" ] || exec /sbin/sysupgrade.real "$@"
+mode=$(cat /etc/sentry-stub/mode 2>/dev/null || echo ok)
+down=8
+[ "$mode" = slow ] && down=45
+img=$1
+setsid sh -c "sleep 2; /etc/init.d/dropbear stop; rm -f ${img%.*}* /tmp/sentry-flash.log; sleep $down; cat /proc/sys/kernel/random/uuid >/run/sentry-boot/boot_id; sed -i 's/25\.12\.5/25.12.6/g' /usr/lib/os-release /etc/openwrt_release; [ $mode = missing ] && apk --no-network del -q partx-utils; /etc/init.d/dropbear start" </dev/null >/dev/null 2>&1 &
+exit 0
+EOF
+}
+
 seed() {
   local c=$1
   "${P[@]}" exec "$c" sh -c 'for p in /tmp/sentry-guard-*/pid /tmp/sentry-guard-*/sleep.pid; do [ -s "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null; done; rm -rf /tmp/.uci /tmp/sentry-guard* /etc/sentry-guard /etc/sentry-guard.last /etc/uci-defaults/zz-sentry-guard-* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
+  # The firmware stand-ins: back to the release it was, nothing downloaded, mode ok.
+  "${P[@]}" exec "$c" sh -c 'S=/usr/share/sentry-stub; [ -d $S ] || exit 0; for p in /proc/[0-9]*; do grep -q "run/sentry-bo[o]t" $p/cmdline 2>/dev/null && kill ${p#/proc/} 2>/dev/null; done; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release; echo ok >/etc/sentry-stub/mode; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log /tmp/sysupgrade.meta; apk --no-network info -e partx-utils >/dev/null 2>&1 || apk add -q partx-utils >/dev/null 2>&1; /etc/init.d/dropbear start >/dev/null 2>&1; true'
   put "$c" /etc/config/network 600 <<'EOF'
 config interface 'loopback'
 	option device 'lo'
@@ -264,6 +353,10 @@ networks:
       - { name: panel, mac: "02:00:5e:00:53:02", leave_alone: true }
     guard: { window: $window }
 EOF
+  # The firmware upgrade starts with a backup: to a throwaway key the test makes there.
+  if [[ $t == live_firmware_upgrade ]]; then
+    echo "    backup: { recipients: [\"$x/recipients.txt\"] }" >>"$x/config/sentry/network_config.yaml"
+  fi
 }
 
 env_of() {
@@ -277,11 +370,15 @@ up() {
   [[ -z "$(ctr)" ]] || die "a router is already up ($(ctr)): \`$0 down\` first"
   dir=$(mktemp -d "${TMPDIR:-/tmp}/sentry-router.XXXXXXXX")
   touch "$dir/.sentry-router"
+  mkdir -p "$dir/boot"
+  cat /proc/sys/kernel/random/uuid >"$dir/boot/boot_id"
   c="sentry-router-${dir##*.}"
   # SENTRY_LIVE_NET: a podman network to join (scripts/live-resolution.sh: it must reach
   # the server container beside it).
   "${P[@]}" run -d --name "$c" --label "$LABEL=1" --label "$LABEL.dir=$dir" \
     ${SENTRY_LIVE_NET:+--network "$SENTRY_LIVE_NET"} \
+    -v "$dir/boot:/run/sentry-boot:z" \
+    --mount "type=bind,src=$dir/boot/boot_id,dst=/proc/sys/kernel/random/boot_id,relabel=shared" \
     -p 127.0.0.1::22 "$IMAGE" /sbin/init >/dev/null
   port=$("${P[@]}" port "$c" 22/tcp | head -n1)
   port=${port##*:}
@@ -295,6 +392,7 @@ up() {
   done
   "${P[@]}" exec "$c" mkdir -p /etc/dropbear
   put "$c" /etc/dropbear/authorized_keys 600 <"$dir/key.pub"
+  stubs "$c"
   seed "$c"
   cat >"$dir/ssh_config" <<EOF
 Host $ALIAS

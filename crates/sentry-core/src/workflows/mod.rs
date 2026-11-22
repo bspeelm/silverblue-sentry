@@ -99,6 +99,10 @@ pub struct Step {
     /// of that kind auto mode may confirm, and only here, where the workflow says so.
     #[serde(default)]
     pub stage: bool,
+    /// A confirm step's box: said before it runs, Enter in the box runs it (a router's
+    /// flash: what happens, how long, what is kept). Where a target draws one.
+    #[serde(default)]
+    pub ask: Option<String>,
 }
 
 impl Step {

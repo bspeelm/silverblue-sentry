@@ -32,7 +32,9 @@ pub const BUILTINS: &[&str] = &["network"];
 /// `guard_waiting`: a guarded change is applied and still armed (it asks to be kept).
 /// `packages_leaf`: upgrading the run's `packages` would touch only packages on the short
 /// list auto mode may upgrade by itself (the whole transaction, as apk simulates it).
-pub const CONDS: &[&str] = &["guard_waiting", "packages_leaf"];
+/// `firmware_missing`: after a firmware upgrade, packages installed by name before it
+/// aren't installed now (the run's record says which).
+pub const CONDS: &[&str] = &["guard_waiting", "packages_leaf", "firmware_missing"];
 
 pub const RULES: LintRules = LintRules {
     builtins: BUILTINS,
@@ -129,6 +131,7 @@ impl Env for RouterEnv {
     fn cond(&self, name: &str) -> Result<bool, String> {
         match name {
             "guard_waiting" => Ok(crate::guard::pending(&self.r.scope).is_some()),
+            "firmware_missing" => Ok(crate::firmware::missing_now(&self.r.scope)),
             // The run in progress is this one: its `packages` value, simulated on the
             // router now. Anything that keeps it from being worked out isn't a yes.
             "packages_leaf" => {
@@ -210,6 +213,36 @@ pub fn begin_hiding(
         }
     }
     Session::begin(entry, r, shown, PROG, e).map(|s| s.on(WORDS).holding(held))
+}
+
+/// The one way a draft starts: the user read what has and hasn't been proven and said go
+/// (the firmware row's box, `NetworkTarget::begin_run` with its acknowledgment). Only the
+/// draft is let through: a workflow that doesn't parse or lint still doesn't start, nor
+/// one beside a run in progress.
+pub fn begin_acknowledged(
+    entry: &Entry,
+    r: &Router,
+    vars: BTreeMap<String, String>,
+    given: &[String],
+) -> anyhow::Result<Session> {
+    let mut e = entry.clone();
+    if let Ok(w) = e.wf.as_mut() {
+        w.draft = false;
+    }
+    begin_hiding(&e, r, vars, given)
+}
+
+/// Takes `draft = true` out of a workflow's file (after it ran end to end once, when the
+/// user says so). Only that line: the rest of the file is left as it is.
+pub fn undraft(path: &std::path::Path) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| l.replace(' ', "") != "draft=true")
+        .collect();
+    let mut out = kept.join("\n");
+    out.push('\n');
+    sentry_core::paths::write_atomic(path, out.as_bytes())
 }
 
 /// Tests that seed or read the generic directory take turns: it is one for the process.
@@ -554,5 +587,46 @@ mod change_tests {
             }
         ));
         assert!(!auto(&f, "download"), "owut download is a firmware command");
+        assert!(
+            !auto(&f, "add-missing"),
+            "what comes back after a flash is asked"
+        );
+        // Even with `risky` taken out of the file, and however the program is called.
+        for cmd in [
+            "sentry-network firmware download",
+            "sentry network firmware home download",
+            "sentry-network firmware add-missing",
+        ] {
+            let mut step = f.steps.iter().find(|s| s.id == "download").unwrap().clone();
+            step.risky = false;
+            assert!(!answers(true, &Asked::Step { step: &step, cmd }), "{cmd}");
+        }
+        // The flash says what happens before it runs; the reads in between need no key.
+        let flash = f.steps.iter().find(|s| s.id == "flash").unwrap();
+        let ask = flash.ask.as_deref().unwrap();
+        for said in [
+            "no internet",
+            "What is kept",
+            "recovery procedure",
+            "15 minutes",
+        ] {
+            assert!(ask.contains(said), "{said}");
+        }
+        let gates: Vec<(&str, Gate)> = f.steps.iter().map(|s| (s.id.as_str(), s.gate())).collect();
+        assert_eq!(
+            gates,
+            [
+                ("check", Gate::Auto),
+                ("backup", Gate::Auto),
+                ("plan", Gate::Auto),
+                ("download", Gate::Confirm),
+                ("flash", Gate::Confirm),
+                ("wait", Gate::Auto),
+                ("after", Gate::Auto),
+                ("add-missing", Gate::Confirm),
+                ("forget", Gate::Auto)
+            ]
+        );
+        assert!(f.steps.iter().find(|s| s.id == "forget").unwrap().rollback);
     }
 }

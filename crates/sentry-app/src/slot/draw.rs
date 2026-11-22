@@ -61,7 +61,13 @@ impl Slot {
             let waits = self
                 .reboot_held
                 .as_ref()
-                .map(|h| format!("the reboot waits for {}", h.2));
+                .map(|h| format!("the reboot waits for {}", h.2))
+                // A step that has run a while says for how long (a router's wait for its
+                // restart).
+                .or_else(|| {
+                    let secs = s.live()?.started.elapsed().as_secs();
+                    (secs >= 60).then(|| format!("running {} min", secs / 60))
+                });
             frame::draw_banner(
                 f,
                 areas.banner,

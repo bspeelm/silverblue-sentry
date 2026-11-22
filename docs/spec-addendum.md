@@ -381,3 +381,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 
 ## A49. Log entries of the same minute (2026-11)
 - An entry's file is `YYYY-MM-DD-HHMM-<what>.md` when that is free. When another entry has that name, the later of the two gets its seconds, `HHMM.SS-<what>.md` (`HHMM.SS-2-…` within the same second), so names still sort by time and the plain name stays the minute's earliest. Nothing reads entries by name: removal, replacement, retention and the ledger's links go by the file an entry is in; references (`run:<file>`, a review's run) keep naming the plain name as before.
+||||||| parent of 739fd22 (Router firmware upgrade: owut's check and download read from its source, a flash that says what happens, a draft started only from its box)
+
+## A50. The router's firmware upgrade, and how a draft starts (2026-11)
+- `firmware-upgrade` is rewritten from owut's own source and a real router's answers: check → backup → plan (owut check) → download (confirm) → flash (confirm, risky, a box first) → wait → after → add-missing (confirm, risky, only when packages went missing). Every step is `sentry-network firmware <step>`; the image is `/tmp/sentry-firmware.bin` on the router, its record `networks/<name>/firmware.json` here.
+- Only a patch release of the series the router runs; another series is refused with why. Anything owut warns about stops the plan before any download, said in plain words; what doesn't stop it is a short list (`firmware::HARMLESS`).
+- Without `backup.recipients` the upgrade isn't offered: the firmware row's box says what to set.
+- The download is checked by sentry too (the server's checksum and size, the version, every top-level package in the image, `sysupgrade --test`, memory left); anything wrong removes the image and nothing is flashed.
+- The flash runs apart from the ssh session (`setsid`); sentry then waits up to 15 minutes from the flash for a new boot. Not back: the wait fails with what was running, when the settings were backed up and that recovery is the device's own procedure; opening the window again later carries on with the checks once the router answers.
+- A draft starts in exactly one way: Enter on the firmware row opens a box that says what has and hasn't been proven, and its Enter starts the run. `:wf`, screen `0`, a series, a session's plan and auto mode still refuse it. After a good run sentry offers to take `draft = true` out of the file (only that line).
+- A confirm step may carry `ask = "…"` (workflow format): its Enter on screen `0` shows that text in a box first (network target).
+- Auto mode never confirms `firmware download` or `firmware add-missing`, besides `firmware flash`.

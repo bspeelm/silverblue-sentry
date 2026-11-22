@@ -1872,3 +1872,312 @@ fn live_security_ssh_keys_only() {
     assert_eq!(code, 3, "{said:#?}");
     assert!(said.iter().any(|l| l.contains("already off")), "{said:#?}");
 }
+
+/// The firmware upgrade through the window, against the stand-ins `scripts/live-router.sh`
+/// puts on the disposable router (a pretend owut, sysupgrade's `--test` and flash, a
+/// pretend restart that drops ssh logins and changes the boot id). In turn: a warning owut
+/// raises stops the plan before any download; an image whose checksum isn't the server's
+/// stops before the flash and is removed; the router not back by the deadline ends the
+/// wait failed, and a window opened once it answers carries on at the checks; a package
+/// missing after the flash is installed again by the step that offers it; a good run
+/// offers to take the draft off. Nothing here can flash, restart or write a real router.
+#[test]
+#[ignore]
+fn live_firmware_upgrade() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use sentry_app::effect::{Effect, WfCmd};
+    use sentry_app::{App, Event};
+    use sentry_core::workflows::runner::Next;
+    use sentry_core::workflows::state::RunStatus;
+    use std::time::Instant;
+
+    // The backup goes to a throwaway key in the scratch dir (the script's config names
+    // its file).
+    let Some(scratch) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    else {
+        return;
+    };
+    if std::env::var("SENTRY_ROUTER_SCRATCH").is_err() {
+        return;
+    }
+    let to = crate::backup::make_key(&scratch.join("identity.txt")).unwrap();
+    std::fs::write(scratch.join("recipients.txt"), format!("{to}\n")).unwrap();
+    // Short enough for a test; the stand-in comes back after 8 s, or 45 s when slow.
+    // SAFETY: these tests run one at a time (`--test-threads=1`), nothing reads it meanwhile.
+    unsafe { std::env::set_var("SENTRY_FIRMWARE_WAIT", "20") };
+    let Some(r) = router() else { return };
+    let name = r.name.clone();
+    // Until a new login is let in (the script's seed has just restarted dropbear; the
+    // pretend restart stops it for a while).
+    let answers = |r: &Router, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while r
+            .cmd("true")
+            .own_connection()
+            .timeout(Some(Duration::from_secs(5)))
+            .run()
+            .map_or(true, |o| o.code != 0)
+        {
+            assert!(Instant::now() < until, "the router never answered");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    };
+    answers(&r, 30);
+    let mode = |m: &str| {
+        on(
+            &r,
+            &format!(
+                "echo {m} >/etc/sentry-stub/mode; S=/usr/share/sentry-stub; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release"
+            ),
+        )
+    };
+    let image_there = |r: &Router| on(r, "ls /tmp/sentry-firmware.bin").code == 0;
+
+    let open = || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(
+            tx,
+            &crate::tui::id_of(&name),
+            crate::tui::target(router().unwrap()),
+        );
+        a.win.scripted_turns = true;
+        a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+        a.start(Instant::now());
+        a.slot_mut().auto_review.after_run = false;
+        a.slot_mut().auto_review.at_start = false;
+        // The window's first reads go first (dropbear lets few logins be made at once).
+        let until = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+        (a, rx)
+    };
+    let key = |a: &mut App, c: KeyCode| {
+        a.on_event(
+            Event::Key(KeyEvent::new(c, KeyModifiers::NONE)),
+            Instant::now(),
+        );
+    };
+    let screen = |a: &mut App| sentry_app::app::render_to_string(a, 158, 50);
+    // Until the run waits on a step (none: it ended), answering a note's prompt with none.
+    let settle = |a: &mut App, rx: &std::sync::mpsc::Receiver<Event>, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        loop {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+            if matches!(a.win.input, sentry_core::tui::input::Input::Prompt(..)) {
+                key(a, KeyCode::Enter);
+            }
+            match a.slot().run.as_ref() {
+                Some(s) if s.live().is_none() && s.done() => return None,
+                Some(s) if s.live().is_none() && !matches!(s.next(), Next::Run(_)) => {
+                    return Some(s.next().clone());
+                }
+                None => return None,
+                _ => {}
+            }
+            assert!(Instant::now() < until, "nothing settled: {}", screen(a));
+        }
+    };
+    let log = |a: &App| -> String {
+        a.slot()
+            .run
+            .as_ref()
+            .map(|s| {
+                s.as_any()
+                    .downcast_ref::<crate::workflow::Session>()
+                    .unwrap()
+                    .log
+                    .iter()
+                    .map(|(l, _)| l.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    };
+    let start = |a: &mut App| {
+        a.apply(
+            vec![Effect::own(crate::tui::Own::FirmwareStart)],
+            Instant::now(),
+        );
+        assert!(a.slot().run.is_some(), "{}", screen(a));
+        key(a, KeyCode::Char('0'));
+    };
+    let done_with = |a: &mut App| {
+        a.apply(vec![Effect::Wf(WfCmd::Abandon)], Instant::now());
+        a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+    };
+    let boot = |r: &Router| on(r, "cat /proc/sys/kernel/random/boot_id").stdout;
+
+    // 1. A warning owut raises stops the plan: nothing downloaded.
+    mode("warn");
+    let (mut a, rx) = open();
+    start(&mut a);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 2,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("STOPPED before anything was downloaded") && said.contains("older version"),
+        "{said}"
+    );
+    assert!(!image_there(&r));
+    done_with(&mut a);
+    drop(a);
+
+    // 2. The image isn't the one the server built: stopped before the flash, removed.
+    mode("badsum");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    let boot_before = boot(&r);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 3,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    assert!(log(&a).contains("checksum"), "{}", log(&a));
+    assert!(
+        !image_there(&r),
+        "the image was left in the router's memory"
+    );
+    assert_eq!(boot(&r), boot_before, "nothing restarted");
+    done_with(&mut a);
+    drop(a);
+
+    // 3. Not back by the deadline: the wait fails, calmly; a window opened when the router
+    //    answers again carries on at the checks.
+    mode("slow");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    assert!(image_there(&r));
+    // The flash's box first: what happens, then its Enter.
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("What can't be helped from here"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    for words in [
+        "hasn't answered for",
+        "What was running when contact was lost: the flash",
+        "Your settings were backed up at",
+        "device's own recovery procedure",
+    ] {
+        assert!(said.contains(words), "{words}: {said}");
+    }
+    drop(a);
+    // The stand-in comes back by itself.
+    answers(&r, 90);
+    let (mut a, rx) = open();
+    key(&mut a, KeyCode::Char('0'));
+    let next = settle(&mut a, &rx, 180);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    let s = a.slot().run.as_ref().unwrap();
+    assert_eq!(s.run().state.status, RunStatus::Done, "{}", log(&a));
+    let said = log(&a);
+    assert!(
+        said.contains("runs OpenWrt 25.12.6")
+            && said.contains("installed by name before are installed"),
+        "{said}"
+    );
+    // The good run offers to take the draft off (Esc: it stays one).
+    let s = screen(&mut a);
+    assert!(s.contains("The firmware upgrade ran end to end"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+    drop(a);
+
+    // 4. A package gone after the flash: named, and installed again by the step that offers
+    //    it (it asks: risky, never auto's).
+    mode("missing");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 240);
+    assert_eq!(next, Some(Next::Confirm(7)), "{}", log(&a));
+    assert!(
+        log(&a).contains("Missing since the flash: partx-utils"),
+        "{}",
+        log(&a)
+    );
+    assert_ne!(on(&r, "apk --no-network info -e partx-utils").code, 0);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 600);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    assert_eq!(
+        a.slot().run.as_ref().unwrap().run().state.status,
+        RunStatus::Done,
+        "{}",
+        log(&a)
+    );
+    assert_eq!(on(&r, "apk --no-network info -e partx-utils").code, 0);
+    let _ = std::fs::remove_file(scratch.join("identity.txt"));
+}

@@ -1,0 +1,64 @@
+---
+source: crates/sentry-network/src/tui/tests/firmware.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance   0 Upgrade ●
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ firmware-upgrade · waiting for confirm · 4 ──────────────┐  ┌ Log · step 5/9 · steps/flash.log ────────────────────────────────────────────────────────────┐
+│  home · firmware-upgrade                                 │  │ ▶ started firmware-upgrade on home                                                           │
+│  ⏸ waiting on you · Enter run the step                   │  │ ▶ 1/9 Is the router ready? (its release, free memory, a backup key, nothing else changing i… │
+│ ✓  1. Is the router ready? (its release, fr…  auto  0:00 │  │ $ sentry-network firmware check                                                              │
+│ ✓  2. Back the router's settings up first (encryp…  auto │  │                                                                                              │
+│ ✓  3. What the upgrade would change (owut asks th…  auto │  │                                                                                              │
+│ ✓  4. Download the new firmware into the route…  confirm │  │                                                                                              │
+│ ▶  5. Flash it: the router restarts, and the int…  risky │  │                                                                                              │
+│ ○  6. Wait for the router to restart and answer a…  auto │  │                                                                                              │
+│ ○  7. Check the new release: version, add-on pack…  auto │  │                                                                                              │
+│ ○  8. Install again the add-on packages the new …  risky │  │                                                                                              │
+│ ○  9. Remove the downloaded image from the router…  auto │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                    ┌ Flash it: the router restarts, and the internet and Wi-Fi are off for a few minut┐                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ This writes the new firmware to the router and restarts it.                      │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ What happens: owut checks the downloaded image once more, then the router closes │                                    │
+│                                    │ every connection, writes the new firmware to its storage and starts again on it. │                                    │
+│                                    │ sentry waits and then checks that everything is back.                            │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ How long: usually 3 to 5 minutes. During that time there is no internet and no   │                                    │
+│                                    │ Wi-Fi for any device on this network, this machine included. sentry waits up to  │                                    │
+│                                    │ 15 minutes before it says the router hasn't come back.                           │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ What is kept: all of the router's settings (network, Wi-Fi, firewall, passwords, │                                    │
+│                                    │ its ssh keys) and every package installed now; an encrypted backup of the        │                                    │
+│                                    │ settings was made by this run before anything was downloaded.                    │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ What can't be helped from here: if the flash itself fails, nothing automatic can │                                    │
+│                                    │ rescue the router; it is then brought back by the device's own recovery          │                                    │
+│                                    │ procedure (on its OpenWrt page). Have those instructions at hand, on paper or    │                                    │
+│                                    │ another device, before you go on.                                                │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ Never turn the router off while it is flashing.                                  │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │  Enter  flash    Esc  cancel                                                     │                                    │
+│                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+│                                                          │  ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                          │  │▶ Flash it: the router restarts, and the internet and Wi-Fi are off for a few minutes ·       │
+│                                                          │  │confirm                                                                                       │
+│                                                          │  │$ sentry-network firmware flash                                                               │
+│                                                          │  │Enter first shows what this step does, and runs it from there.                                │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  confirm   Esc  cancel

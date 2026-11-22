@@ -1,0 +1,39 @@
+{
+  "detail": "done",
+  "imagebuilder_status": "done",
+  "request": {
+    "distro": "openwrt",
+    "version": "25.12.6",
+    "version_code": "r33311-981c978eff",
+    "target": "x86/64",
+    "profile": "generic",
+    "packages": ["base-files", "dnsmasq", "example-addon", "luci-app-example", "uhttpd"]
+  },
+  "version_number": "25.12.6",
+  "version_code": "r33311-981c978eff",
+  "bin_dir": "0123456789abcdef",
+  "images": [
+    {
+      "filesystem": "squashfs",
+      "name": "openwrt-25.12.6-0123456789ab-x86-64-generic-squashfs-rootfs.img.gz",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "size": 4200000,
+      "type": "rootfs"
+    },
+    {
+      "filesystem": "squashfs",
+      "name": "openwrt-25.12.6-0123456789ab-x86-64-generic-squashfs-sysupgrade.img.gz",
+      "sha256": "211cb7a5297705eee8316805ef8c73c9e4deb1c38bdbb88ac99c9656de53beb0",
+      "sha256_unsigned": "211cb7a5297705eee8316805ef8c73c9e4deb1c38bdbb88ac99c9656de53beb0",
+      "size": 15247680,
+      "type": "sysupgrade"
+    }
+  ],
+  "manifest": {
+    "base-files": "1718~981c978eff",
+    "dnsmasq": "2.93-r2",
+    "example-addon": "1.2.4-r1",
+    "luci-app-example": "26.325.27163~92d84fc",
+    "uhttpd": "2026.11.05~93b05e0b-r1"
+  }
+}
