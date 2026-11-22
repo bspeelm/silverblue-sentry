@@ -1203,16 +1203,9 @@ pub fn check(r: &Router, o: &mut Out) -> u8 {
         );
         ok = false;
     }
-    if crate::guard::pending(&r.scope).is_some() {
-        (o.err)("A guarded change is still waiting to be kept or undone: finish it first.".into());
+    if let Err(e) = no_guard(&r.scope) {
+        (o.err)(e);
         ok = false;
-    }
-    match crate::guard::turn(&r.scope) {
-        Ok(t) => drop(t),
-        Err(e) => {
-            (o.err)(format!("{e}."));
-            ok = false;
-        }
     }
     match run_sh(r, "command -v owut", 30) {
         Ok(x) if x.code == 0 => {}
@@ -1529,6 +1522,17 @@ pub fn read_flash_log(text: &str) -> Flashing {
     Flashing::Starting
 }
 
+/// No guarded change is under way from this machine or waiting to be kept: the guard's
+/// lock, held while the caller keeps it, so none starts meanwhile.
+pub fn no_guard(scope: &str) -> Result<crate::guard::Turn, String> {
+    if crate::guard::pending(scope).is_some() {
+        return Err(
+            "A guarded change is still waiting to be kept or undone: finish it first.".into(),
+        );
+    }
+    crate::guard::turn(scope).map_err(|e| format!("{e}."))
+}
+
 /// `flash`: with sentry's sysupgrade lock held, the image is checked once more, what is
 /// there before is noted, and `owut install` is started apart from the session; ends when
 /// the router has gone (or owut refused).
@@ -1543,6 +1547,16 @@ pub fn flash(r: &Router, o: &mut Out) -> u8 {
         Err(e) => {
             (o.err)(format!("the sysupgrade lock: {e}"));
             return 1;
+        }
+    };
+    // Asked again here (the download's confirm may have waited a long time) and held: a
+    // guarded change armed across the flash would be kept unconfirmed, its snapshot and
+    // boot hook lost with the old firmware. (Never waits: the guard's lock is try-only.)
+    let _guard = match no_guard(&r.scope) {
+        Ok(t) => t,
+        Err(e) => {
+            (o.err)(format!("{e} Nothing was flashed."));
+            return 3;
         }
     };
     let now_sum = run_sh(r, &format!("sha256sum {IMAGE} 2>/dev/null"), 120)

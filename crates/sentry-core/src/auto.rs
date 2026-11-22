@@ -146,7 +146,9 @@ pub fn never(cmd: &str) -> Option<&'static str> {
                     if verb("guard") && verb("keep") {
                         return Some("keeping a change the router is about to take back is yours");
                     }
-                    if verb("guard") && verb("apply") {
+                    // (The Security page's actions, the family filter among them, are
+                    // guarded changes of their own: the page's Enter and its confirm.)
+                    if (verb("guard") || verb("security")) && verb("apply") {
                         return Some("it changes the config the network is reached through");
                     }
                     if verb("firmware") && verb("flash") {
@@ -293,6 +295,14 @@ mod tests {
                 false,
             ),
             (Asked::Plan(&["sentry network firmware home flash"]), false),
+            (
+                Asked::Plan(&["sentry-network security home apply filter:ab12cd34"]),
+                false,
+            ),
+            (
+                Asked::Plan(&["sentry-network security home plan filter:ab12cd34"]),
+                true,
+            ),
             (Asked::Plan(&["sentry-network packages preview"]), true),
             (
                 Asked::Plan(&["sentry-network guard preview configs=dhcp"]),

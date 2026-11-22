@@ -284,3 +284,34 @@ fn the_family_filter_is_said_after_the_flash() {
     let lost = family_after(&[], &noted).unwrap_err();
     assert!(lost.contains("tablet, laptop"), "{lost}");
 }
+
+/// The flash asks the guard again and holds its lock: no guarded change starts while the
+/// router is flashed, and none under way or waiting lets the flash start.
+#[test]
+fn no_guarded_change_crosses_a_flash() {
+    let scope = format!("net:fw-guard-{}", std::process::id());
+    {
+        let held = crate::guard::turn(&scope).expect("free");
+        let e = no_guard(&scope).err().expect("a guard under way stops it");
+        assert!(e.contains("one at a time"), "{e}");
+        drop(held);
+    }
+    let t = no_guard(&scope).expect("free again");
+    assert!(
+        crate::guard::turn(&scope).is_err(),
+        "while the flash holds it, no guard starts"
+    );
+    drop(t);
+    let p = crate::guard::pending_path(&scope);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let waiting = crate::guard::Pending {
+        token: "t".into(),
+        deadline: 0,
+        change: crate::guard::Change::parse("dhcp", "uci set dhcp.lan.limit=9", "", false).unwrap(),
+    };
+    std::fs::write(&p, serde_json::to_string(&waiting).unwrap()).unwrap();
+    assert!(crate::guard::pending(&scope).is_some());
+    let e = no_guard(&scope).err().expect("a change waiting stops it");
+    assert!(e.contains("waiting to be kept"), "{e}");
+    let _ = std::fs::remove_dir_all(sentry_core::maint::data_root(&scope));
+}
