@@ -1766,7 +1766,7 @@ fn the_security_audit_is_the_windows_and_each_target_lists_its_rows() {
 fn the_audits_task_runs_the_audit() {
     let mut a = one();
     // (From tasks.toml a task is due at once; the derived one counts from the log.)
-    a.add_task_for_test(sentry_core::secaudit::task(None, &[]));
+    a.add_task_for_test(sentry_core::secaudit::task(None, &[], None));
     key(&mut a, KeyCode::Char('6'));
     typed(&mut a, "/Run the security audit");
     key(&mut a, KeyCode::Enter);
@@ -1794,6 +1794,109 @@ fn the_audits_task_runs_the_audit() {
             .any(|t| t == &format!("task:{}", sentry_core::secaudit::TASK_ID))
     });
     assert!(done);
+}
+
+/// The audit's task is this machine's, and an upgrade of firmware or of an operating
+/// system on ANY target makes it due again: what the window finds in the other targets'
+/// logs is handed to this machine's slot, said with where it ran.
+#[test]
+fn an_upgrade_on_any_target_makes_the_audit_due_again() {
+    use sentry_core::maint::log::LogEntry;
+    let (server, network) = ("upsrv", "upnet");
+    let mut a = three_with(server, network);
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    let audited = a.win.sec.report.as_ref().unwrap().at;
+    let again = |a: &mut App| {
+        a.survey();
+        // (A slot takes it in with its next event.)
+        key(a, KeyCode::Char('6'));
+        let sh = &a.slots[LOCAL].shared;
+        a.slots[LOCAL]
+            .target
+            .derived_tasks(sh)
+            .into_iter()
+            .find(|t| t.id == sentry_core::secaudit::TASK_ID)
+            .expect("the audit's task is this machine's")
+            .again
+            .map(|g| g.why)
+    };
+    assert_eq!(again(&mut a), None);
+    let run = |workflow: &str, hours: i64| {
+        let mut e = LogEntry::task("", "x", "x", None);
+        e.head.workflow = workflow.into();
+        e.head.result = "done".into();
+        e.head.ended = Some(audited + jiff::SignedDuration::from_hours(hours));
+        e
+    };
+    // An ordinary update on the server changes nothing.
+    a.slots[SRV].shared.log.push(run("package-update", 1));
+    assert_eq!(again(&mut a), None);
+    // The router's firmware was upgraded: due again, and it says where.
+    a.slots[NET].shared.log.push(run("firmware-upgrade", 2));
+    assert_eq!(
+        again(&mut a).as_deref(),
+        Some(format!("firmware-upgrade ran on {network} since the last security audit").as_str())
+    );
+    // The newest one says why; one from before the audit doesn't count.
+    a.slots[SRV].shared.log.push(run("release-upgrade", 3));
+    a.slots[NET].shared.log.push(run("firmware-upgrade", -30));
+    assert_eq!(
+        again(&mut a).as_deref(),
+        Some(format!("release-upgrade ran on {server} since the last security audit").as_str())
+    );
+    // A network or a server doesn't hand itself its own.
+    key(&mut a, KeyCode::F(3));
+    key(&mut a, KeyCode::Char('6'));
+    assert!(
+        a.slots[NET]
+            .shared
+            .sec_upgraded
+            .as_ref()
+            .is_some_and(|(_, what)| what.contains(server))
+    );
+}
+
+/// `S` is named in Maintenance's key bar on every target, and is the first to go when
+/// the bar is narrow.
+#[test]
+fn maintenance_names_the_audits_key_until_the_bar_is_narrow() {
+    let mut a = three_with("keysrv", "keynet");
+    for f in [1, 2, 3] {
+        key(&mut a, KeyCode::F(f));
+        key(&mut a, KeyCode::Char('6'));
+        let wide = render_to_string(&mut a, 240, 41);
+        let bar = wide.lines().last().unwrap();
+        assert!(bar.contains("S  security audit"), "F{f}: {bar}");
+        // Narrower: it goes before any other of the screen's keys.
+        let width = (60..240)
+            .rev()
+            .find(|w| {
+                let s = render_to_string(&mut a, *w, 41);
+                !s.lines().last().unwrap().contains("S  security audit")
+            })
+            .unwrap();
+        let narrow = render_to_string(&mut a, width, 41);
+        let (wide, narrow) = (
+            render_to_string(&mut a, width + 1, 41),
+            narrow.lines().last().unwrap().to_string(),
+        );
+        let rest = wide
+            .lines()
+            .last()
+            .unwrap()
+            .replace("S  security audit   ", "");
+        assert_eq!(
+            narrow.split_whitespace().collect::<Vec<_>>(),
+            rest.split_whitespace().collect::<Vec<_>>(),
+            "F{f}: only S went"
+        );
+    }
 }
 
 /// Enter on an audit item that spans targets is one session across them, started where

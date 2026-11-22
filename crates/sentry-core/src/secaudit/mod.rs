@@ -1091,11 +1091,24 @@ pub const TASK_ID: &str = "security-audit";
 /// audit is the whole system's, and this machine is where sentry runs). Due again before
 /// its time when a firmware or OS upgrade was logged after the last report: `logs` are the
 /// targets' maintenance logs.
-pub fn task(last: Option<Timestamp>, logs: &[LogEntry]) -> Task {
-    let again = upgraded_since(last, logs).map(|(at, what)| Again {
-        at,
-        why: format!("{what} since the last security audit"),
-    });
+pub fn task(
+    last: Option<Timestamp>,
+    logs: &[LogEntry],
+    elsewhere: Option<&(Timestamp, String)>,
+) -> Task {
+    // An upgrade anywhere changes what the audit would say: this machine's own log, and
+    // the newest one the window found in any other target's (`upgrade_in`, said with
+    // where it ran).
+    let here = upgrade_in(logs).map(|(at, wf)| (at, format!("{wf} ran")));
+    let again = [here, elsewhere.cloned()]
+        .into_iter()
+        .flatten()
+        .filter(|(at, _)| last.is_some_and(|l| *at > l))
+        .max_by_key(|(at, _)| *at)
+        .map(|(at, what)| Again {
+            at,
+            why: format!("{what} since the last security audit"),
+        });
     Task {
         id: TASK_ID.into(),
         title: "Run the security audit".into(),
@@ -1116,9 +1129,9 @@ pub fn task(last: Option<Timestamp>, logs: &[LogEntry]) -> Task {
     }
 }
 
-/// An upgrade of firmware or of an operating system that ended well after `last`.
-fn upgraded_since(last: Option<Timestamp>, logs: &[LogEntry]) -> Option<(Timestamp, String)> {
-    let last = last?;
+/// The newest upgrade of firmware or of an operating system in a log that ended well:
+/// when, and the workflow that did it.
+pub fn upgrade_in(logs: &[LogEntry]) -> Option<(Timestamp, String)> {
     logs.iter()
         .filter(|e| e.head.result == "done")
         .filter(|e| {
@@ -1135,9 +1148,8 @@ fn upgraded_since(last: Option<Timestamp>, logs: &[LogEntry]) -> Option<(Timesta
                 .any(|k| w.contains(k))
         })
         .filter_map(|e| Some((e.head.ended.or(e.head.started)?, e)))
-        .filter(|(at, _)| *at > last)
         .max_by_key(|(at, _)| *at)
-        .map(|(at, e)| (at, format!("{} ran", e.head.workflow)))
+        .map(|(at, e)| (at, e.head.workflow.clone()))
 }
 
 /// The log entry that marks the task done (the CLI writes it on this machine's log).

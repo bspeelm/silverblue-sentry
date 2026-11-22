@@ -268,6 +268,14 @@ impl App {
             all.push(self.with_one(i, |s, w| s.surveyed(w)));
         }
         self.win.system = all;
+        // The security audit's task is due again after an upgrade on any target.
+        let upgraded: Vec<_> = (0..self.slots.len())
+            .map(|i| self.slots[i].upgraded(&self.win))
+            .collect();
+        if upgraded != self.win.sec.upgraded {
+            self.win.sec.upgraded = upgraded;
+            self.win.sec.rev += 1;
+        }
     }
 
     fn with_one<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {

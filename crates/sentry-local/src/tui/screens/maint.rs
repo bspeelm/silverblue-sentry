@@ -391,7 +391,11 @@ pub fn all_tasks(v: &View) -> Vec<Task> {
 /// system's, kept here: this machine is where sentry runs).
 pub fn derived_tasks(cfg: &crate::config::Config, sh: &sentry_app::shared::Shared) -> Vec<Task> {
     let mut t = crate::jobs::state::tasks(cfg);
-    t.push(sentry_core::secaudit::task(sh.sec_last, &sh.log));
+    t.push(sentry_core::secaudit::task(
+        sh.sec_last,
+        &sh.log,
+        sh.sec_upgraded.as_ref(),
+    ));
     t
 }
 

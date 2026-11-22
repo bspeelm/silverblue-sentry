@@ -23,6 +23,9 @@ pub struct Done(pub Vec<TargetFacts>);
 
 /// The key that shows the audit (or runs it), on every target.
 pub const KEY: char = 'S';
+/// The key as Maintenance's key bar names it (Security names it itself): the last of
+/// the screen's hints, so the first to go when the bar is narrow.
+pub const HINT: (&str, &str) = ("S", "security audit");
 
 /// The writer's item while Claude reviews the audit's evidence.
 pub const REVIEW: &str = "(security)";
@@ -49,6 +52,9 @@ pub struct Sec {
     /// Counts every change of the report or the answers: a slot's copy of its items
     /// (`Shared::sec`) follows it.
     pub rev: u64,
+    /// Per slot, the newest firmware or OS upgrade its log has (`App::survey`), said
+    /// with where it ran.
+    pub upgraded: Vec<Option<(jiff::Timestamp, String)>>,
 }
 
 impl Sec {
@@ -66,6 +72,7 @@ impl Sec {
             collect: None,
             loaded: false,
             rev: 0,
+            upgraded: Vec::new(),
         }
     }
 
