@@ -45,6 +45,26 @@ pub const SERVICES: &[&str] = &[
     "network", "wifi", "firewall", "dnsmasq", "odhcpd", "uhttpd", "dropbear",
 ];
 
+/// Configs and services only sentry's own Security actions put under the guard, never a
+/// line of Claude's or a `guarded-change` (whose list is `policy::GUARDED`): the DNS
+/// proxy, whose forced lookups the family filter takes over (`security::family`). A
+/// wrong state there breaks every device's lookups, so it is snapshotted, committed,
+/// reloaded and restored like any guarded config.
+pub const ACTION_ONLY: &[&str] = &["https-dns-proxy"];
+
+/// The order services are reloaded in: the DNS proxy before the firewall (it hands the
+/// firewall its rules, which the firewall's reload then loads in one go).
+const ORDER: &[&str] = &[
+    "network",
+    "wifi",
+    "https-dns-proxy",
+    "firewall",
+    "dnsmasq",
+    "odhcpd",
+    "uhttpd",
+    "dropbear",
+];
+
 /// The verbs a staging line may use.
 const VERBS: &[&str] = &[
     "set", "add", "add_list", "del_list", "delete", "rename", "reorder",
@@ -261,6 +281,27 @@ impl Change {
         services: &str,
         alters_wan: bool,
     ) -> Result<Self, String> {
+        Self::parse_with(configs, lines, services, alters_wan, false)
+    }
+
+    /// The same, for one of sentry's own Security actions: [`ACTION_ONLY`] allowed too.
+    pub fn parse_action(
+        configs: &str,
+        lines: &str,
+        services: &str,
+        alters_wan: bool,
+    ) -> Result<Self, String> {
+        Self::parse_with(configs, lines, services, alters_wan, true)
+    }
+
+    fn parse_with(
+        configs: &str,
+        lines: &str,
+        services: &str,
+        alters_wan: bool,
+        action: bool,
+    ) -> Result<Self, String> {
+        let extra = |x: &str| action && ACTION_ONLY.contains(&x);
         let mut configs = list(configs);
         configs.dedup();
         if configs.is_empty() {
@@ -269,7 +310,10 @@ impl Change {
                     .into(),
             );
         }
-        if let Some(c) = configs.iter().find(|c| !GUARDED.contains(&c.as_str())) {
+        if let Some(c) = configs
+            .iter()
+            .find(|c| !GUARDED.contains(&c.as_str()) && !extra(c))
+        {
             return Err(format!(
                 "`{c}` isn't one of the guarded configs ({}): change it with a plain `uci` request",
                 GUARDED.join(", ")
@@ -278,7 +322,7 @@ impl Change {
         let asked = list(services);
         let mut services: Vec<String> = Vec::new();
         for s in asked {
-            if !SERVICES.contains(&s.as_str()) {
+            if !SERVICES.contains(&s.as_str()) && !extra(&s) {
                 return Err(format!(
                     "`{s}` isn't a service the guard reloads ({})",
                     SERVICES.join(", ")
@@ -288,7 +332,7 @@ impl Change {
                 services.push(s);
             }
         }
-        services.sort_by_key(|s| SERVICES.iter().position(|x| x == s));
+        services.sort_by_key(|s| ORDER.iter().position(|x| x == s));
         let mut out = Vec::new();
         // (Why a line isn't plain quotes the word: not one of a line that sets a secret.)
         let cmds = crate::policy::plain_commands(lines).map_err(|e| {
@@ -391,6 +435,9 @@ impl Change {
                 "dnsmasq" | "odhcpd" => &["dhcp", "network"],
                 "dropbear" => &["dropbear"],
                 "uhttpd" => &["uhttpd"],
+                // (Its reload also commits what is staged in dhcp: its own way, said in the
+                // family filter's plan; dhcp isn't snapshotted for it.)
+                "https-dns-proxy" => &["https-dns-proxy"],
                 _ => &[],
             };
             for c in reads {

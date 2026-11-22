@@ -123,7 +123,16 @@ pub fn open(v: &View) -> Menu {
     }
 }
 
-/// What would stop the filter working for a device in this zone (None: nothing seen).
+/// sentry has taken the forcing of lookups over already.
+pub fn taken(v: &View) -> bool {
+    v.s.uci
+        .value
+        .as_ref()
+        .is_some_and(|u| !family::dns_found(u).is_empty())
+}
+
+/// What would stop the filter working for a device in this zone (None: nothing seen, or
+/// only the DNS proxy's forcing, which the plan takes over).
 pub fn refused(v: &View, zone: &str) -> Option<String> {
     let c = v.s.counters.value.as_ref()?;
     family::refused(zone, &family::hijacked(c, zone), &[])
@@ -181,13 +190,52 @@ pub fn start(tags: Vec<String>, devs: Vec<DevRef>) -> Vec<Effect> {
     }))]
 }
 
+/// The filter off for every device: where sentry took the forcing of lookups over, one
+/// question first, whether to hand it back to the DNS proxy (the first answer, and what
+/// sentry recommends: nothing of sentry's is left).
+pub fn none(v: &View) -> Vec<Effect> {
+    if !taken(v) {
+        return start(Vec::new(), Vec::new());
+    }
+    let keep = vec![Effect::own(Own::Security(Want::Filter {
+        act: Do::Filter {
+            tags: Vec::new(),
+            keep: true,
+        },
+        devs: Vec::new(),
+    }))];
+    let mut c = sentry_core::tui::modal::Choice::numbered(
+        v.t,
+        "The family filter off for every device",
+        vec![
+            (
+                "Off, and hand the forcing of lookups back to the DNS proxy (recommended)".into(),
+                start(Vec::new(), Vec::new()),
+            ),
+            ("Off, and keep sentry's forcing of lookups".into(), keep),
+        ],
+    );
+    for l in [
+        "",
+        "sentry took over from the DNS proxy the job of sending every device's lookups",
+        "through the router. Handed back, the proxy does it again as before and nothing",
+        "of sentry's is left on the router. Either way the plan is shown first.",
+    ] {
+        c.lines.push(Line::styled(l, v.t.dim()));
+    }
+    vec![Effect::Choose(c)]
+}
+
 /// The filter on what the router has now, but for `tag`: Enter under Filtered by you.
 pub fn lift(v: &View, tag: &str) -> Vec<Effect> {
     let tags = on_router(v)
         .into_iter()
         .map(|f| f.tag)
         .filter(|t| t != tag)
-        .collect();
+        .collect::<Vec<_>>();
+    if tags.is_empty() {
+        return none(v);
+    }
     start(tags, Vec::new())
 }
 
@@ -284,7 +332,10 @@ pub fn handle(m: &mut Menu, a: Key, v: &View) -> (bool, Vec<Effect>) {
                         return (false, vec![Effect::Info("The family filter".into(), lines)]);
                     }
                 }
-                let tags = m.ticks.iter().cloned().collect();
+                let tags: Vec<String> = m.ticks.iter().cloned().collect();
+                if tags.is_empty() {
+                    return (true, none(v));
+                }
                 return (true, start(tags, devs));
             }
             _ => Vec::new(),
@@ -424,14 +475,23 @@ pub fn render(m: &mut Menu, f: &mut Frame, left: Rect, detail: Option<Rect>, v: 
                 .map(|c| family::hijacked(c, &e.dev.zone))
                 .filter(|w| !w.is_empty())
         {
-            say(
-                &format!(
-                    "It can't be filtered on this router yet: {} sends its lookups to the \
-                     router first (Enter says more).",
-                    who.join(", ")
-                ),
-                t.s(t.yellow),
-            );
+            if refused(v, &e.dev.zone).is_some() {
+                say(
+                    &format!(
+                        "It can't be filtered on this router yet: {} sends its lookups to the \
+                         router first (Enter says more).",
+                        who.join(", ")
+                    ),
+                    t.s(t.yellow),
+                );
+            } else if !taken(v) {
+                say(
+                    "The first use includes a one-time step: sentry takes over the router's \
+                     forcing of lookups from the DNS proxy, the same for every other device. \
+                     The plan shows it.",
+                    t.s(t.cyan),
+                );
+            }
         }
         say("", t.dim());
     }

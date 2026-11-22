@@ -267,6 +267,9 @@ pub enum Act {
         tag: String,
         on_router: bool,
     },
+    /// The filter is on the router but has stopped working (forced lookups in front of it,
+    /// or nobody's forced): the filter again on the same devices puts it right.
+    FilterRepair,
 }
 
 impl Act {
@@ -289,6 +292,7 @@ impl Act {
             Act::Maint => "Maintenance",
             Act::Group { .. } => "list them",
             Act::FilterDrift { .. } => "decide",
+            Act::FilterRepair => "put it right",
         }
     }
 
@@ -330,6 +334,7 @@ impl Act {
                 on_router: true, ..
             } => "Enter: keep it, or take it off the router",
             Act::FilterDrift { .. } => "Enter: put it back on the router, or forget it",
+            Act::FilterRepair => "Enter: put the filter right (its plan first)",
         }
     }
 }
@@ -628,6 +633,47 @@ pub fn raw(s: &State) -> Vec<Row> {
     // The family filter where the router and this machine's note of it differ.
     if let Some(u) = s.read.uci {
         let on = super::family::found(u);
+        // It has stopped working: something forces lookups in front of it again, or nothing
+        // forces them at all.
+        let forced: Vec<String> = s
+            .read
+            .counters
+            .map(|c| {
+                let mut z: Vec<String> = on.iter().map(|f| f.zone.clone()).collect();
+                z.sort();
+                z.dedup();
+                z.iter()
+                    .flat_map(|z| super::family::hijacked(c, z))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !on.is_empty() && !forced.is_empty() {
+            out.push(own(
+                "sec:filter:forced",
+                Rank::Now,
+                "The family filter has stopped working: the router's own forced lookups are \
+                 back in front of it"
+                    .into(),
+                "Its rules are still on the router, but the DNS proxy's forcing of lookups is \
+                 first again (after an update of the package, or a change in its settings), \
+                 so the filtered devices' lookups go to the router like everyone's. Enter \
+                 puts the filter back in front (its plan first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
+        } else if !on.is_empty() && unforced(u) {
+            out.push(own(
+                "sec:filter:unforced",
+                Rank::Now,
+                "Lookups aren't forced through the router for anyone".into(),
+                "sentry took the forcing of lookups over for the family filter, and its rules \
+                 for that are gone from the router while the DNS proxy's own forcing is off: \
+                 any device can ask another service and skip the router's blocklist and the \
+                 family filter. Enter puts sentry's rules back (its plan first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
+        }
         let label = |tag: &str, mac: &str| filtered_label(s.blocks, s.read.clients, tag, mac);
         for f in &on {
             if !s.blocks.filter.contains_key(&f.tag) {
@@ -1722,6 +1768,13 @@ pub fn filtered_label(b: &Blocks, clients: Option<&[Client]>, tag: &str, mac: &s
         .unwrap_or_else(|| mac.to_string())
 }
 
+/// sentry took the forcing of lookups over and its rules for it are gone, while the DNS
+/// proxy's own is off: nobody's lookups are forced through the router.
+fn unforced(u: &crate::collect::uci::Uci) -> bool {
+    super::family::proxy_forces(u).is_some_and(|(_, on)| !on)
+        && super::family::dns_found(u).is_empty()
+}
+
 /// The family filter's line of the cover: "Family filter: on 2 devices (a, b)".
 fn say_family(
     s: &State,
@@ -1763,7 +1816,23 @@ fn say_family(
             )
         }
     };
+    let proxy_only = blocked.iter().all(|b| b == super::family::PROXY);
+    let unforced = !names.is_empty() && unforced(u);
     let (state, text) = match (names.len(), blocked.is_empty()) {
+        _ if unforced => (
+            Cover::Off,
+            format!(
+                "Family filter: {who}, but lookups aren't forced through the router for anyone"
+            ),
+        ),
+        (0, false) if proxy_only => (
+            Cover::Ok,
+            format!(
+                "Family filter ({}): on no device · its first use takes over the router's \
+                 forcing of lookups, the same for everyone else",
+                svc.name
+            ),
+        ),
         (0, false) => (
             Cover::Ok,
             format!(
@@ -1773,10 +1842,10 @@ fn say_family(
             ),
         ),
         (_, false) => (
-            Cover::Weak,
+            Cover::Off,
             format!(
-                "Family filter: {who}, but {} sends their lookups to the router first, so \
-                 they aren't filtered",
+                "Family filter: {who}, but the router's forced lookups ({}) are in front of \
+                 them again, so they aren't filtered",
                 blocked.join(", ")
             ),
         ),

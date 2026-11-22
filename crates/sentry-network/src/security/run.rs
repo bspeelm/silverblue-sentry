@@ -24,12 +24,48 @@ use sentry_core::exec::Cmd;
 pub static NO_FIREWALL_RELOAD: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-fn services(asked: &'static str) -> &'static str {
+fn services(asked: &'static str) -> String {
     #[cfg(test)]
-    if asked == "firewall" && NO_FIREWALL_RELOAD.load(std::sync::atomic::Ordering::Relaxed) {
-        return "";
+    if NO_FIREWALL_RELOAD.load(std::sync::atomic::Ordering::Relaxed) {
+        return asked
+            .split(',')
+            .filter(|s| *s != "firewall")
+            .collect::<Vec<_>>()
+            .join(",");
     }
-    asked
+    asked.to_string()
+}
+
+/// What the DNS proxy hands the firewall now (procd's service data; a read).
+fn forced(r: &Router) -> Option<Vec<family::Forced>> {
+    r.output(&r.sh(&format!(
+        "ubus call service list '{{\"name\":\"{}\"}}'",
+        family::PROXY
+    )))
+    .ok()
+    .and_then(|t| family::parse_forced(&t).ok())
+}
+
+/// The precedence proof's read: each zone sentry's filter or takeover is in, its NAT chain
+/// and its forward chain as fw4 loaded them.
+fn chains(r: &Router, zone: &str) -> Result<String, String> {
+    #[cfg(test)]
+    if NO_FIREWALL_RELOAD.load(std::sync::atomic::Ordering::Relaxed) {
+        // The disposable router can't load a firewall: the chains are made from the
+        // config the way fw4.uc orders them (the procd-supplied rules first, then the
+        // config's redirects in order), by `family::simulated`.
+        let uci = crate::collect::uci::collect(r).map_err(|e| e.to_string())?;
+        return Ok(family::simulated(
+            &uci,
+            zone,
+            &forced(r).unwrap_or_default(),
+        ));
+    }
+    let script = format!(
+        "nft list chain inet fw4 dstnat_{zone}; echo @@forward; nft list chain inet fw4 forward_{zone}"
+    );
+    r.output(&r.sh(&script))
+        .map_err(|e| format!("the firewall's rules for {zone} couldn't be read back ({e})"))
 }
 
 /// Tests against the disposable router: its dnsmasq doesn't run, and what it sends to port
@@ -107,6 +143,23 @@ pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
                 svc.name, svc.ordinary, svc.blocked_test
             ))
         }
+        // Who comes first, read back from the firewall as it is loaded now.
+        Proof::Precedence => {
+            let uci = crate::collect::uci::collect(r)
+                .map_err(|e| format!("the config couldn't be read: {e}"))?;
+            let mut zones: Vec<String> = family::found(&uci).into_iter().map(|f| f.zone).collect();
+            zones.sort();
+            zones.dedup();
+            let mut seen = Vec::new();
+            for z in &zones {
+                let rejects = family::dns_found(&uci)
+                    .iter()
+                    .filter(|(_, kind, src)| kind == "rule" && src == z)
+                    .count();
+                seen.push(family::precedence(z, &chains(r, z)?, rejects)?);
+            }
+            Ok(seen.join("; "))
+        }
         _ => prove_access(r, p),
     }
 }
@@ -175,7 +228,7 @@ fn prove_access(r: &Router, p: Proof) -> Result<String, String> {
                 )),
             }
         }
-        Proof::OwnResolver | Proof::Family => prove(r, p),
+        Proof::OwnResolver | Proof::Family | Proof::Precedence => prove(r, p),
     }
 }
 
@@ -186,6 +239,7 @@ struct Got {
     expected: Vec<String>,
     counters: Option<crate::collect::counters::Counters>,
     tables: Vec<String>,
+    forced: Option<Vec<family::Forced>>,
 }
 
 fn read(r: &Router, d: &Do) -> Result<Got, String> {
@@ -216,6 +270,33 @@ fn read(r: &Router, d: &Do) -> Result<Got, String> {
     } else {
         (None, Vec::new())
     };
+    // What the DNS proxy hands the firewall: what a takeover reproduces (a read).
+    let forced = matches!(d, Do::Filter { .. }).then(|| forced(r)).flatten();
+    // (The disposable router has no nft: what fw4 would count is made from procd's data,
+    // a DNS redirect of the proxy's in each zone it names.)
+    #[cfg(test)]
+    let counters = match (counters, &forced) {
+        (Some(mut c), Some(f)) if c.rules.is_none() => {
+            c.rules = Some(
+                f.iter()
+                    .filter(|x| x.kind == "redirect")
+                    .map(|x| crate::collect::counters::Counted {
+                        chain: format!("dstnat_{}", x.src),
+                        name: format!("ubus:{}[instance1] redirect 0", family::PROXY),
+                        on: "udp:53".into(),
+                        packets: 0,
+                        bytes: 0,
+                        role: crate::collect::counters::Role::DnsRedirect {
+                            zone: x.src.clone(),
+                            proto: "udp".into(),
+                        },
+                    })
+                    .collect(),
+            );
+            Some(c)
+        }
+        (c, _) => c,
+    };
     Ok(Got {
         uci,
         wan,
@@ -223,6 +304,7 @@ fn read(r: &Router, d: &Do) -> Result<Got, String> {
         expected: guard::expected_forwards(&r.cfg),
         counters,
         tables,
+        forced,
     })
 }
 
@@ -237,6 +319,7 @@ fn planned(r: &Router, d: &Do) -> Result<(Planned, Got), String> {
             expected: &got.expected,
             counters: got.counters.as_ref(),
             tables: &got.tables,
+            forced: got.forced.as_deref(),
         },
     )?;
     Ok((p, got))
@@ -245,7 +328,7 @@ fn planned(r: &Router, d: &Do) -> Result<(Planned, Got), String> {
 fn change(p: &Planned) -> Result<Option<Change>, String> {
     p.guard
         .as_ref()
-        .map(|g| Change::parse(g.configs, &g.lines.join("; "), services(g.services), false))
+        .map(|g| Change::parse_action(g.configs, &g.lines.join("; "), &services(g.services), false))
         .transpose()
 }
 
@@ -302,9 +385,15 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
                 .unwrap_or_default();
             // Held before the change is kept: every proof, once more, on the router as
             // it is now.
-            let check = || p.proofs.iter().try_for_each(|x| prove(r, *x).map(|_| ()));
+            let check = || {
+                p.proofs
+                    .iter()
+                    .chain(&p.after)
+                    .try_for_each(|x| prove(r, *x).map(|_| ()))
+            };
             let also = Also {
-                check: (!p.proofs.is_empty()).then_some(&check as &dyn Fn() -> Result<(), String>),
+                check: (!p.proofs.is_empty() || !p.after.is_empty())
+                    .then_some(&check as &dyn Fn() -> Result<(), String>),
                 closing: &closing,
             };
             let o = guard::run_also(r, &c, r.cfg.guard.window, &also, say);
@@ -380,7 +469,7 @@ fn settle(r: &Router, d: &Do) {
         }
         // Who is filtered is what was kept: these tags, the ones already noted keeping
         // their date.
-        Do::Filter { tags } => {
+        Do::Filter { tags, .. } => {
             let now = jiff::Timestamp::now().as_second();
             let svc = family::service();
             b.filter.retain(|t, _| tags.contains(t));

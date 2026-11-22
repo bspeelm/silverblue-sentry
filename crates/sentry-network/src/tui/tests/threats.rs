@@ -1656,16 +1656,37 @@ fn the_family_filter_is_chosen_in_one_list_and_applied_as_one_change() {
     );
     assert!(wf(&a).is_none());
 
-    // A router where a package forces every lookup to itself: said before anything
-    // starts, and nothing does.
+    // A router where the DNS proxy forces every lookup to itself (the fixture's): the
+    // list says the first use takes that over, and Enter starts the one plan.
+    runs_cleared();
     let mut a = armed(busy());
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filter_menu_takeover_158x41", s);
+    assert!(
+        s.contains("The first use includes a one-time step: sentry takes over")
+            && !s.contains("can't"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    assert!(started(&a).1.starts_with("filter:"));
+    runs_cleared();
+
+    // Another program forcing them: said before anything starts, and nothing does.
+    let mut a = armed(busy());
+    let mut c = counters_later(120);
+    for r in c.rules.iter_mut().flatten() {
+        r.name = r.name.replace("https-dns-proxy", "other-dns");
+    }
+    data(&mut a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
     filter_menu(&mut a);
     key(&mut a, KeyCode::Char(' '));
     key(&mut a, KeyCode::Enter);
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("Nothing was changed. The family filter can't work on this router yet")
-            && s.contains("https-dns-proxy"),
+            && s.contains("other-dns"),
         "{s}"
     );
     assert!(wf(&a).is_none());
@@ -1719,7 +1740,26 @@ fn live_family_filter() {
         }
     };
     key(&mut a, KeyCode::Char('4'));
-    pump(&mut a, 15);
+    for _ in 0..60 {
+        pump(&mut a, 1);
+        let t = net(&a);
+        if t.store.clients.is_some()
+            && t.store.uci.value.is_some()
+            && t.store.counters.value.is_some()
+        {
+            break;
+        }
+    }
+    {
+        let t = net(&a);
+        println!(
+            "read: clients {} · config {} · counters {} · unreachable {}",
+            t.store.clients.is_some(),
+            t.store.uci.value.is_some(),
+            t.store.counters.value.is_some(),
+            t.store.unreachable.is_some()
+        );
+    }
     let mut said = String::new();
     let page = render_to_string(&mut a, 158, 41);
     said.push_str(&page);
@@ -1728,7 +1768,7 @@ fn live_family_filter() {
     key(&mut a, KeyCode::Enter);
     assert!(
         net(&a).screens.security.filter.is_some(),
-        "the list opened:\n{page}"
+        "the list didn't open"
     );
     key(&mut a, KeyCode::Home);
     key(&mut a, KeyCode::Char(' '));
@@ -1747,13 +1787,14 @@ fn live_family_filter() {
         .iter()
         .cloned()
         .collect();
-    key(&mut a, KeyCode::Enter);
-    let after = render_to_string(&mut a, 158, 41);
-    said.push_str(&after);
+    // The menu doesn't say "can't" where the DNS proxy's forcing can be taken over: the
+    // detail says the first use includes it. Enter isn't pressed here (it would start the
+    // workflow); the plan is shown the way its first step shows it: reads only.
+    let said_menu = menu.contains("can't be filtered on this router yet");
+    key(&mut a, KeyCode::Esc);
     assert!(wf(&a).is_none(), "nothing may start on a real router here");
-    // The plan those two would get where nothing comes first: pure, from the live reads.
     let t = net(&a);
-    let mut b = t.store.blocks.clone();
+    let r = t.router.clone();
     let view = crate::tui::screens::View {
         t: &a.win.theme,
         s: &t.store,
@@ -1769,6 +1810,8 @@ fn live_family_filter() {
         system: &[],
         group: None,
     };
+    // Who the two are, noted in the scratch data dir as the screen notes them.
+    let mut b = crate::security::blocks::Blocks::load(&r.scope);
     for e in crate::tui::screens::filter::menu_rows(&view) {
         if ticks.contains(&e.dev.tag) {
             b.device.insert(
@@ -1782,55 +1825,82 @@ fn live_family_filter() {
             );
         }
     }
-    let uci = t.store.uci.value.as_ref().expect("the config was read");
-    let mut c = t
+    b.save(&r.scope).unwrap();
+    let forced = t
         .store
         .counters
         .value
-        .clone()
-        .expect("the counters were read");
-    let forced = crate::security::family::hijacked(&c, "lan");
-    if let Some(rules) = c.rules.as_mut() {
-        rules.retain(|x| !x.name.starts_with("ubus:"));
-    }
-    let wan = view
-        .s
-        .ifaces
-        .value
         .as_ref()
-        .map(|i| {
-            crate::security::Nets::new(i, Some(uci))
-                .wan_zone()
-                .to_string()
-        })
-        .unwrap_or_else(|| "wan".into());
-    let f = crate::security::actions::Facts {
-        uci,
-        wan: &wan,
-        blocks: &b,
-        expected: &[],
-        counters: Some(&c),
-        tables: &[],
-    };
-    let plan =
-        crate::security::actions::plan(&crate::security::actions::Do::filter(ticks.clone()), &f);
-    said.push_str("\n--- the plan where nothing came first ---\n");
-    match &plan {
-        Ok(p) => said.push_str(&p.text().join("\n")),
-        Err(e) => said.push_str(e),
+        .map(|c| crate::security::family::hijacked(c, "lan"))
+        .unwrap_or_default();
+    let mut shown = Vec::new();
+    let plan = crate::security::run::show(
+        &r,
+        &crate::security::actions::Do::filter(ticks.clone()),
+        &mut |l| shown.push(l),
+    );
+    said.push_str("\n--- the plan as its first step shows it ---\n");
+    said.push_str(&shown.join("\n"));
+    if let Err(e) = &plan {
+        said.push_str(&format!("\nSTOPPED: {e}"));
     }
     std::fs::write(&out, &said).unwrap();
     // What may be printed: shapes, not names.
     println!(
-        "ticked {} · forced DNS here: {:?} · refused on Enter: {} · plan: {}",
+        "ticked {} · forced DNS here: {:?} · menu says can't: {} · plan: {}",
         ticks.len(),
         forced,
-        after.contains("can't work on this router yet"),
-        plan.as_ref().map_or("refused", |p| if p.guard.is_some() {
-            "made"
-        } else {
-            "empty"
-        })
+        said_menu,
+        match &plan {
+            Ok(()) => "shown".to_string(),
+            Err(e) => format!("stopped ({} chars)", e.len()),
+        }
+    );
+}
+
+/// A filter that has stopped working is an act-now row: the DNS proxy's forcing back in
+/// front of it, or nobody's lookups forced at all. Enter is the filter again on the same
+/// devices.
+#[test]
+fn a_family_filter_that_stopped_working_is_said_and_put_right() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    let phone = mac_of(&a, "phone");
+    let tp = blocks::tag(NAME, &phone).unwrap();
+    // The fixture's counters have the proxy's redirect first.
+    data(
+        &mut a,
+        Kind::Uci,
+        Ok(Payload::Uci(Box::new(filtered_uci(&[(&tp, &phone)])))),
+    );
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(&s, "The family filter has stopped working").contains("act now"),
+        "{s}"
+    );
+    on_row(&mut a, "The family filter has stopped working");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(started(&a).1, format!("filter:{tp}"));
+    runs_cleared();
+    // sentry's forcing gone and the proxy's off: nobody's lookups forced.
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(&s, "Lookups aren't forced through the router for anyone").contains("act now"),
+        "{s}"
+    );
+    assert!(
+        s.contains("✗ off  Family filter") || s.contains("The family filter: see"),
+        "{s}"
     );
 }
 
@@ -1853,6 +1923,55 @@ fn filtered_uci(devs: &[(&str, &str)]) -> crate::collect::uci::Uci {
     }
     let text = fixture("network/uci.txt").replacen("@@dropbear", &format!("{add}@@dropbear"), 1);
     crate::collect::uci::parse(&text, &crate::redact::Salt::fixed([7; 16]))
+}
+
+/// The last device off, where sentry took the forcing of lookups over: one question,
+/// hand it back (the first answer) or keep it.
+#[test]
+fn the_last_device_off_offers_to_hand_the_forcing_back() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let phone = mac_of(&a, "phone");
+    let tp = blocks::tag(NAME, &phone).unwrap();
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    let forced =
+        crate::security::family::parse_forced(&fixture("network/service-https-dns-proxy.json"))
+            .unwrap();
+    let mut fw = String::new();
+    for l in crate::security::family::takeover_lines("config", &forced)
+        .unwrap()
+        .iter()
+        .skip(1)
+    {
+        fw.push_str(l.strip_prefix("uci set ").unwrap());
+        fw.push('\n');
+    }
+    u.configs
+        .get_mut("firewall")
+        .unwrap()
+        .extend(crate::collect::uci::show(&fw));
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(!s.contains("aren't forced"), "sentry forces them: {s}");
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("1  Off, and hand the forcing of lookups back to the DNS proxy (recommended)")
+            && s.contains("2  Off, and keep sentry's forcing of lookups"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    assert_eq!(started(&a).1, "filter:none");
+    runs_cleared();
 }
 
 #[test]

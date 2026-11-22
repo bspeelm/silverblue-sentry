@@ -49,6 +49,9 @@ pub enum Do {
     /// one change, however many devices it adds or takes off.
     Filter {
         tags: Vec<String>,
+        /// With no device left: keep sentry's forcing of lookups instead of handing it
+        /// back to the DNS proxy (`filter:none:keep`).
+        keep: bool,
     },
 }
 
@@ -66,8 +69,9 @@ impl Do {
             Do::ListRefresh => "blocklist-refresh".into(),
             Do::ListSchedule => "blocklist-schedule".into(),
             Do::Kick { tag, secs } => format!("kick:{tag}:{secs}"),
-            Do::Filter { tags } if tags.is_empty() => "filter:none".into(),
-            Do::Filter { tags } => format!("filter:{}", tags.join(",")),
+            Do::Filter { tags, keep: true } if tags.is_empty() => "filter:none:keep".into(),
+            Do::Filter { tags, .. } if tags.is_empty() => "filter:none".into(),
+            Do::Filter { tags, .. } => format!("filter:{}", tags.join(",")),
         }
     }
 
@@ -76,7 +80,7 @@ impl Do {
         let mut tags: Vec<String> = tags.into_iter().collect();
         tags.sort();
         tags.dedup();
-        Do::Filter { tags }
+        Do::Filter { tags, keep: false }
     }
 
     pub fn parse(s: &str) -> Result<Self, String> {
@@ -116,7 +120,14 @@ impl Do {
             ["admin-https"] => Do::AdminHttps,
             ["blocklist-refresh"] => Do::ListRefresh,
             ["blocklist-schedule"] => Do::ListSchedule,
-            ["filter", "none"] => Do::Filter { tags: Vec::new() },
+            ["filter", "none"] => Do::Filter {
+                tags: Vec::new(),
+                keep: false,
+            },
+            ["filter", "none", "keep"] => Do::Filter {
+                tags: Vec::new(),
+                keep: true,
+            },
             ["filter", list] => {
                 let tags = list.split(',').map(tag).collect::<Result<Vec<_>, _>>()?;
                 let d = Do::filter(tags);
@@ -151,6 +162,9 @@ pub enum Proof {
     OwnResolver,
     /// The family service answers the router, and refuses its own test name.
     Family,
+    /// Read back from the firewall as loaded: every filtered device's rule before the
+    /// catch-all, no other program's DNS redirect in front, the 853 refusal there.
+    Precedence,
 }
 
 impl Proof {
@@ -165,6 +179,9 @@ impl Proof {
             }
             Proof::Family => {
                 "CleanBrowsing Family answers the router, and refuses its own test name (pornhub.com)"
+            }
+            Proof::Precedence => {
+                "the firewall as loaded has each filtered device's rule before the catch-all, no other program's in front, and port 853 still refused"
             }
         }
     }
@@ -189,6 +206,8 @@ pub struct Planned {
     /// What it does and what it doesn't, in plain words.
     pub says: Vec<String>,
     pub proofs: Vec<Proof>,
+    /// Proven only once the change is made, before it is kept.
+    pub after: Vec<Proof>,
     pub guard: Option<Guarded>,
     /// Commands run on the router as written, after the guard's part.
     pub runs: Vec<String>,
@@ -203,6 +222,11 @@ impl Planned {
             l.push(String::new());
             l.push("Proven first, and again before the change is kept:".into());
             l.extend(self.proofs.iter().map(|p| format!("  {}", p.says())));
+        }
+        if !self.after.is_empty() {
+            l.push(String::new());
+            l.push("Proven once the change is made, before it is kept:".into());
+            l.extend(self.after.iter().map(|p| format!("  {}", p.says())));
         }
         if let Some(g) = &self.guard {
             l.push(String::new());
@@ -243,6 +267,8 @@ pub struct Facts<'a> {
     pub counters: Option<&'a Counters>,
     /// Other nft tables that redirect DNS themselves (`family::foreign_tables`).
     pub tables: &'a [String],
+    /// What the DNS proxy hands the firewall (None: not read).
+    pub forced: Option<&'a [family::Forced]>,
 }
 
 fn forward(f: &Facts, section: &str) -> Result<crate::collect::uci::Redirect, String> {
@@ -536,7 +562,7 @@ pub fn plan(d: &Do, f: &Facts) -> Result<Planned, String> {
             runs: LIST_SCHEDULE.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         },
-        Do::Filter { tags } => filter_plan(tags, f)?,
+        Do::Filter { tags, keep } => filter_plan(tags, *keep, f)?,
         Do::Kick { tag, secs } => {
             let dev = who(tag)?;
             let ap = dev.wifi.as_deref().ok_or(format!(
@@ -594,7 +620,7 @@ pub const FILTER_LIMITS: &str = "What it is for: accidents and casual browsing. 
      that changes its MAC.";
 
 /// The family filter on exactly `tags`: what it changes against what the router has.
-fn filter_plan(tags: &[String], f: &Facts) -> Result<Planned, String> {
+fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned, String> {
     let svc = family::service();
     let have = family::found(f.uci);
     let label = |t: &str| {
@@ -627,19 +653,17 @@ fn filter_plan(tags: &[String], f: &Facts) -> Result<Planned, String> {
         };
         want.push(w);
     }
-    let d = family::delta(f.uci, &want, f.wan, svc)?;
-    if d.is_empty() {
-        return Err(match tags.len() {
-            0 => "the family filter isn't on any device: nothing to change".into(),
-            _ => "the family filter is already on exactly these devices: nothing to change".into(),
-        });
-    }
-    // What makes it work at all: nothing of another program's comes first in the zone.
-    let on: Vec<&family::Want> = want
-        .iter()
-        .filter(|w| d.add.contains(&w.tag) || d.redo.contains(&w.tag))
-        .collect();
-    for w in &on {
+    let taken = !family::dns_found(f.uci).is_empty();
+    // Whose forced lookups come first: another program's is refused; the DNS proxy's is
+    // taken over, once, in this same change (`family`'s notes on what that is). A filter
+    // already in place that the proxy's forcing is back in front of is put right too.
+    let mut takeover = false;
+    let adding = want.iter().any(|w| {
+        !have
+            .iter()
+            .any(|h| h.tag == w.tag && h.whole() && h.zone == w.zone)
+    });
+    if !want.is_empty() && (adding || f.counters.is_some()) {
         let Some(c) = f.counters else {
             return Err(
                 "the router's firewall rules couldn't be read, so sentry can't tell whether a \
@@ -647,20 +671,114 @@ fn filter_plan(tags: &[String], f: &Facts) -> Result<Planned, String> {
                     .into(),
             );
         };
-        if let Some(why) = family::refused(&w.zone, &family::hijacked(c, &w.zone), f.tables) {
-            return Err(format!(
-                "the family filter can't work on this router yet: {why}"
-            ));
+        for w in &want {
+            let hijack = family::hijacked(c, &w.zone);
+            if let Some(why) = family::refused(&w.zone, &hijack, f.tables) {
+                return Err(format!(
+                    "the family filter can't work on this router yet: {why}"
+                ));
+            }
+            takeover |= hijack.iter().any(|h| h == family::PROXY);
         }
     }
+    // (An earlier takeover's sections are made again from what the proxy hands over now:
+    // counted as gone where sentry's filters are put in front of a DNS redirect.)
+    let gone: std::collections::BTreeSet<String> = match takeover {
+        true => family::dns_found(f.uci)
+            .into_iter()
+            .map(|(s, _, _)| s)
+            .collect(),
+        false => Default::default(),
+    };
+    let mut d = family::delta_without(f.uci, &want, f.wan, svc, &gone)?;
+    if takeover {
+        let (sec, _) = family::proxy_forces(f.uci).ok_or(
+            "the router's firewall says the DNS proxy forces lookups, but its settings weren't \
+             read: read again (r) on Security",
+        )?;
+        let forced = f.forced.ok_or(
+            "what the DNS proxy hands the firewall couldn't be read, so sentry can't take its \
+             place exactly",
+        )?;
+        for s in gone.iter().rev() {
+            d.lines.insert(0, format!("uci delete firewall.{s}"));
+        }
+        d.lines.extend(family::takeover_lines(&sec, forced)?);
+    }
+    // sentry's forcing gone while the proxy's is off (nobody's lookups forced): made again,
+    // from the proxy's own settings, without touching them.
+    let remake = !want.is_empty()
+        && !takeover
+        && !taken
+        && family::proxy_forces(f.uci).is_some_and(|(_, on)| !on)
+        && !have.is_empty();
+    if remake {
+        let mut l = family::takeover_lines("config", &family::default_forced(f.uci))?;
+        l.remove(0);
+        d.lines.extend(l);
+    }
+    // The last device off: the forcing goes back to the DNS proxy, unless asked to stay.
+    let handback = want.is_empty() && taken && !keep_forcing;
+    if handback {
+        d.lines.extend(family::handback_lines(f.uci));
+    }
+    if d.is_empty() {
+        return Err(match tags.len() {
+            0 => "the family filter isn't on any device: nothing to change".into(),
+            _ => "the family filter is already on exactly these devices: nothing to change".into(),
+        });
+    }
+    let on: Vec<&family::Want> = want
+        .iter()
+        .filter(|w| d.add.contains(&w.tag) || d.redo.contains(&w.tag))
+        .collect();
     let added: Vec<String> = d.add.iter().chain(&d.redo).map(|t| label(t)).collect();
     let removed: Vec<String> = d.remove.iter().map(|t| label(t)).collect();
     let title = match (added.as_slice(), removed.as_slice()) {
+        ([], []) if takeover => {
+            "Family filter: put back in front of the router's forced lookups".into()
+        }
+        ([], []) if remake => "Family filter: lookups forced through the router again".into(),
+        ([], []) => "Family filter: the router's forced lookups handed back".into(),
         ([], r) => format!("Family filter: off for {}", and(r)),
         (a, []) => format!("Family filter: on for {}", and(a)),
         (a, r) => format!("Family filter: on for {}, off for {}", and(a), and(r)),
     };
     let mut says = Vec::new();
+    if takeover {
+        says.push(format!(
+            "First, once: sentry takes over from the DNS proxy ({}) the job of sending every \
+             device's lookups through the router. Nothing changes for the household: lookups \
+             are still forced through the router as before, and encrypted lookups (port 853) \
+             still refused; sentry does it so the devices you picked can be sent to {} first.",
+            family::PROXY,
+            svc.name
+        ));
+        says.push(
+            "The DNS proxy and then the firewall are reloaded: a few seconds, with lookups \
+             forced by the old rules until the new ones are in. The proxy's reload saves \
+             whatever its neighbours left pending in the DHCP settings and restarts the \
+             router's own resolver, as it does every time it reloads: a second or two \
+             without answers."
+                .into(),
+        );
+    }
+    if remake {
+        says.push(
+            "sentry's rules that force every device's lookups through the router are gone \
+             (the DNS proxy's own forcing is off): they are made again from the proxy's \
+             settings, ahead of nothing but the filtered devices' rules."
+                .into(),
+        );
+    }
+    if handback {
+        says.push(format!(
+            "The last device is off, so the job of forcing lookups through the router goes \
+             back to the DNS proxy ({}) and sentry's own rules for it are removed: nothing of \
+             sentry's is left. The proxy and the firewall are reloaded (a few seconds).",
+            family::PROXY
+        ));
+    }
     if !added.is_empty() {
         says.push(format!(
             "The name lookups of {} go to {} instead of the router: adult and other unwanted \
@@ -725,18 +843,33 @@ fn filter_plan(tags: &[String], f: &Facts) -> Result<Planned, String> {
         "The rules are named {}<tag>: Enter under Filtered by you takes a device off.",
         family::PREFIX
     ));
+    let proxy = takeover || handback;
     Ok(Planned {
         title,
         says,
-        proofs: if added.is_empty() {
+        proofs: if added.is_empty() && !takeover {
             vec![Proof::OwnResolver]
         } else {
             vec![Proof::OwnResolver, Proof::Family]
         },
+        // Once the change is made: who comes first, as the firewall has it loaded.
+        after: if !want.is_empty() && (takeover || taken || remake) {
+            vec![Proof::Precedence]
+        } else {
+            Vec::new()
+        },
         guard: Some(Guarded {
-            configs: "firewall",
+            configs: if proxy {
+                "firewall,https-dns-proxy"
+            } else {
+                "firewall"
+            },
             lines: d.lines,
-            services: "firewall",
+            services: if proxy {
+                "https-dns-proxy,firewall"
+            } else {
+                "firewall"
+            },
             closing: Vec::new(),
         }),
         ..Default::default()
@@ -801,6 +934,7 @@ mod tests {
             expected,
             counters: None,
             tables: &[],
+            forced: None,
         }
     }
 
@@ -1110,7 +1244,17 @@ mod tests {
         let d = Do::filter(["0000000c".to_string(), "0000000a".into(), "0000000a".into()]);
         assert_eq!(d.word(), "filter:0000000a,0000000c");
         assert_eq!(Do::parse("filter:0000000a,0000000c"), Ok(d));
-        assert_eq!(Do::parse("filter:none"), Ok(Do::Filter { tags: vec![] }));
+        assert_eq!(
+            Do::parse("filter:none"),
+            Ok(Do::Filter {
+                tags: vec![],
+                keep: false
+            })
+        );
+        assert_eq!(
+            Do::parse("filter:none:keep").map(|d| d.word()),
+            Ok("filter:none:keep".into())
+        );
         for bad in [
             "filter:",
             "filter:0000000c,0000000a",
@@ -1177,19 +1321,152 @@ mod tests {
         );
     }
 
+    const PROXY_ON: &str =
+        "@@https-dns-proxy\nhttps-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='1'\n";
+
+    fn forced() -> Vec<family::Forced> {
+        family::parse_forced(&crate::collect::fixture(
+            "network/service-https-dns-proxy.json",
+        ))
+        .unwrap()
+    }
+
     #[test]
-    fn a_router_that_forces_every_lookup_to_itself_refuses_the_filter() {
-        let u = uci("@@firewall\nfirewall.@defaults[0]=defaults\n");
+    fn where_the_dns_proxy_forces_lookups_the_first_filter_takes_that_over() {
+        let u = uci(&format!(
+            "@@firewall\nfirewall.@defaults[0]=defaults\n{PROXY_ON}"
+        ));
         let b = kids();
         let c = crate::collect::counters::parse(&crate::collect::fixture("network/counters.txt"))
             .unwrap();
+        let fd = forced();
+        // What the proxy hands over isn't read: nothing guessed.
         let f = Facts {
             counters: Some(&c),
             ..facts(&u, &b, &[])
         };
         let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
+        assert!(e.contains("couldn't be read"), "{e}");
+        // Read: one change, the takeover with the filter's own rules.
+        let f = Facts {
+            counters: Some(&c),
+            forced: Some(&fd),
+            ..facts(&u, &b, &[])
+        };
+        let p = plan(&Do::filter(["0000000a".to_string(), "0000000b".into()]), &f).unwrap();
+        let g = p.guard.as_ref().unwrap();
+        assert_eq!(g.configs, "firewall,https-dns-proxy");
+        let c2 = Change::parse_action(g.configs, &g.lines.join("; "), g.services, false).unwrap();
+        // The proxy is reloaded before the firewall.
+        assert_eq!(c2.services, ["https-dns-proxy", "firewall"]);
+        // Not a change Claude's own lines may make.
+        assert!(Change::parse(g.configs, &g.lines.join("; "), g.services, false).is_err());
+        let at = |what: &str| g.lines.iter().position(|l| l.contains(what)).unwrap();
         assert!(
-            e.contains("can't work on this router yet") && e.contains("https-dns-proxy"),
+            g.lines
+                .contains(&"uci set https-dns-proxy.config.force_dns='0'".to_string())
+        );
+        // The catch-all and the 853 refusal as the proxy had them, after both devices.
+        assert!(at("sentry_filter_0000000b=redirect") < at("sentry_dns_0=redirect"));
+        for want in [
+            "uci set firewall.sentry_dns_0.src_dport='53'",
+            "uci set firewall.sentry_dns_0.dest_port='53'",
+            "uci set firewall.sentry_dns_0.family='any'",
+            "uci set firewall.sentry_dns_1=rule",
+            "uci set firewall.sentry_dns_1.dest='*'",
+            "uci set firewall.sentry_dns_1.dest_port='853'",
+            "uci set firewall.sentry_dns_1.target='REJECT'",
+        ] {
+            assert!(g.lines.iter().any(|l| l == want), "{want}: {:#?}", g.lines);
+        }
+        assert_eq!(p.after, [Proof::Precedence]);
+        let text = p.text().join("\n");
+        insta::assert_snapshot!("family_plan_takeover", text);
+        assert!(text.contains("Nothing changes for the household"), "{text}");
+        assert!(text.contains("reloaded: a few seconds"), "{text}");
+
+        // Taken over before: the filter on one more device is ahead of sentry's catch-all.
+        let mut text = String::from("@@firewall\nfirewall.@defaults[0]=defaults\n");
+        for l in g.lines.iter().filter(|l| !l.contains("https-dns-proxy")) {
+            if let Some(x) = l.strip_prefix("uci set ") {
+                text.push_str(x);
+                text.push('\n');
+            }
+        }
+        text.push_str("@@https-dns-proxy\nhttps-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n");
+        let taken = uci(&text);
+        let calm = crate::collect::counters::Counters {
+            rules: Some(Vec::new()),
+            ..Default::default()
+        };
+        let f = Facts {
+            counters: Some(&calm),
+            forced: Some(&[]),
+            ..facts(&taken, &b, &[])
+        };
+        let p = plan(
+            &Do::filter(["0000000a".into(), "0000000b".into(), "0000000c".into()]),
+            &f,
+        )
+        .unwrap();
+        let g = p.guard.as_ref().unwrap();
+        assert_eq!(g.configs, "firewall", "the proxy isn't touched again");
+        assert!(
+            g.lines
+                .last()
+                .unwrap()
+                .starts_with("uci reorder firewall.sentry_filter_0000000c="),
+            "{:#?}",
+            g.lines
+        );
+        assert_eq!(p.after, [Proof::Precedence]);
+        // The last device off: handed back by default, nothing of sentry's left.
+        let p = plan(&Do::filter([]), &f).unwrap();
+        let g = p.guard.as_ref().unwrap();
+        assert_eq!(g.services, "https-dns-proxy,firewall");
+        assert!(
+            g.lines
+                .contains(&"uci set https-dns-proxy.config.force_dns='1'".to_string())
+        );
+        assert!(
+            g.lines
+                .contains(&"uci delete firewall.sentry_dns_0".to_string())
+        );
+        assert!(p.text().join("\n").contains("nothing of sentry's is left"));
+        // Or kept, if asked.
+        let p = plan(&Do::parse("filter:none:keep").unwrap(), &f).unwrap();
+        let g = p.guard.as_ref().unwrap();
+        assert!(
+            !g.lines
+                .iter()
+                .any(|l| l.contains("sentry_dns") || l.contains("force_dns"))
+        );
+
+        // Another program's forcing: refused, said plainly.
+        let mut other = c.clone();
+        for r in other.rules.iter_mut().flatten() {
+            r.name = r.name.replace("https-dns-proxy", "other-dns");
+        }
+        let f = Facts {
+            counters: Some(&other),
+            forced: Some(&fd),
+            ..facts(&u, &b, &[])
+        };
+        let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
+        assert!(
+            e.contains("can't work on this router yet") && e.contains("other-dns"),
+            "{e}"
+        );
+        // Another nft table on DNS: refused, naming it.
+        let tables = vec!["ip other".to_string()];
+        let f = Facts {
+            counters: Some(&calm),
+            tables: &tables,
+            ..facts(&u, &b, &[])
+        };
+        let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
+        assert!(
+            e.contains("ip other") && e.contains("won't work against it"),
             "{e}"
         );
         // Another zone, where nothing forces DNS: it can.

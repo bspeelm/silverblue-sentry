@@ -26,8 +26,8 @@ expression: s
 │        and nothing crosses right now                                               │ │                                                                     │
 │ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
 │        update by itself                                                            │ │                                                                     │
-│ ✓ ok   Family filter: on no device; it can't work on this router yet               │ │                                                                     │
-│        (https-dns-proxy sends every lookup to the router first)                    │ │                                                                     │
+│ ✓ ok   Family filter (CleanBrowsing Family): on no device · its first use takes    │ │                                                                     │
+│        over the router's forcing of lookups, the same for everyone else            │ │                                                                     │
 │ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
 │ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
 │ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │

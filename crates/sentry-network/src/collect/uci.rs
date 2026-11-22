@@ -24,7 +24,7 @@ pub const AUDITED: &[&str] = &[
     "network", "firewall", "wireless", "dhcp", "dropbear", "uhttpd",
 ];
 
-pub const SCRIPT: &str = "for c in firewall dropbear uhttpd wireless dhcp network system; do \
+pub const SCRIPT: &str = "for c in firewall dropbear uhttpd wireless dhcp network system https-dns-proxy; do \
      echo @@$c; uci show $c 2>/dev/null; done; echo @@changes; uci changes";
 
 /// One section: its name (`@zone[0]`, `web_https`), its type and its options.

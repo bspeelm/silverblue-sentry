@@ -31,8 +31,10 @@
 //! (https-dns-proxy's `force_dns`, which hands fw4 `redirect to :53` for its source
 //! interfaces, by default `lan`) always comes first, and no section of the firewall config
 //! can be put ahead of it: the device's lookups would be sent to the router before sentry's
-//! redirect is ever looked at. On such a zone the filter **refuses** ([`hijacked`]), with
-//! a plain explanation, instead of making a change that does nothing. A redirect of the
+//! redirect is ever looked at. Where that program is the DNS proxy, the plan **takes its
+//! forcing over** in the same change (below: "taking over"); for any other ([`hijacked`])
+//! the filter refuses with a plain explanation instead of making a change that does
+//! nothing. A redirect of the
 //! same kind that is a section of the config (someone's own "intercept DNS" rule) can be
 //! put behind sentry's: the plan reorders sentry's sections ahead of the first one
 //! ([`delta`]). Another nft table with its own NAT chain on DNS is a priority sentry can't
@@ -289,23 +291,32 @@ pub fn foreign_tables(ruleset: &str) -> Vec<String> {
     out
 }
 
-/// What is wrong with filtering a device in this zone, said plainly (None: nothing).
+/// The DNS proxy package whose forced lookups sentry knows how to take over.
+pub const PROXY: &str = "https-dns-proxy";
+
+/// What is wrong with filtering a device in this zone, said plainly (None: nothing, or
+/// only what the takeover handles: the DNS proxy's own forcing, [`takeover_needed`]).
 pub fn refused(zone: &str, hijack: &[String], tables: &[String]) -> Option<String> {
-    if !hijack.is_empty() {
+    let others: Vec<&String> = hijack.iter().filter(|h| *h != PROXY).collect();
+    if !others.is_empty() {
         return Some(format!(
-            "the router already sends every name lookup from {} to itself ({}'s \"force \
-             DNS\"), and the firewall puts that program's rule before any rule sentry can \
-             add: a filter set up now would do nothing there. Switching that program's \
-             \"force DNS\" off is a change sentry doesn't make by itself yet",
+            "the router already sends every name lookup from {} to itself ({}), and the \
+             firewall puts that program's rule before any rule sentry can add: a filter set \
+             up now would do nothing there, and sentry doesn't know how to take that \
+             program's place",
             super::attention::side(zone),
-            hijack.join(", ")
+            others
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !tables.is_empty() {
         return Some(format!(
             "another firewall table ({}) redirects name lookups itself, and which of it and \
              the router's own firewall comes first isn't something sentry can tell from the \
-             settings",
+             settings: sentry won't work against it",
             tables.join(", ")
         ));
     }
@@ -348,10 +359,22 @@ fn dns_redirect(s: &Section, zone: &str) -> bool {
 /// The lines that make the router's filters exactly `want` (by tag): deletes first, then
 /// the new sections, then what puts them ahead of someone's own DNS redirect.
 pub fn delta(uci: &Uci, want: &[Want], wan: &str, svc: &Service) -> Result<Delta, String> {
+    delta_without(uci, want, wan, svc, &BTreeSet::new())
+}
+
+/// The same, with these other sections deleted first by the same change (the lines that
+/// delete them are the caller's, put in front).
+pub fn delta_without(
+    uci: &Uci,
+    want: &[Want],
+    wan: &str,
+    svc: &Service,
+    gone: &BTreeSet<String>,
+) -> Result<Delta, String> {
     let have = found(uci);
     let mut d = Delta::default();
     let wanted: BTreeSet<&str> = want.iter().map(|w| w.tag.as_str()).collect();
-    let mut deleted: BTreeSet<String> = BTreeSet::new();
+    let mut deleted: BTreeSet<String> = gone.clone();
     let mut del = |f: &Found, lines: &mut Vec<String>| {
         for s in &f.sections {
             lines.push(format!("uci delete firewall.{s}"));
@@ -429,6 +452,332 @@ pub fn answered(text: &str) -> Vec<String> {
 pub fn blocked(text: &str) -> bool {
     let a = answered(text);
     text.contains("NXDOMAIN") || (!a.is_empty() && a.iter().all(|x| x == "0.0.0.0" || x == "::"))
+}
+
+// ---- taking over the DNS proxy's forced lookups
+//
+// What https-dns-proxy's `force_dns` does (read on a real router, OpenWrt 25.12,
+// `/etc/init.d/https-dns-proxy` of `2026.05.06-r1`, and its procd service data):
+// - `start_instance` hands procd, as the FIRST instance's `data.firewall`, for each
+//   interface of `force_dns_src_interface` (default `lan`) and each port of
+//   `force_dns_port` (default `53 853`, plus every dnsmasq instance's own port): a
+//   `redirect` (DNAT, `tcp udp`, `src_dport 53`, `dest_port <port>`, `family any`,
+//   `reflection 0`) when something on the router listens on that port, else a `rule`
+//   (`dest '*'`, `tcp udp`, `dest_port <port>`, REJECT). On the real router: the redirect of
+//   53 to the router and the reject of 853 (DNS over TLS), lan only. fw4 puts these
+//   `ubus_rules` before the config's own.
+// - With it on, the dnsmasq instances get `server=/use-application-dns.net/` and the two
+//   iCloud Private Relay names (no answer for them: Firefox then keeps its own encrypted
+//   lookups off, iCloud Private Relay is off), unless `canary_domains_*` say no. They are
+//   added on start (`dnsmasq_doh_server add`) and removed only on stop (`... remove`).
+//   `restart` is `reload` in that script, so a reload with `force_dns` off stops
+//   handing the firewall rules over and leaves those dnsmasq lines where they are
+//   (inferred from the script, not watched).
+// - Nothing else in the script reads `force_dns` (`notrack_dns`, the DoH upstreams and
+//   dnsmasq's `server`/`noresolv` lines are independent of it).
+// - Any reload of it commits whatever is staged in `dhcp` (`uci_changes dhcp` →
+//   `uci_commit dhcp`) and then restarts dnsmasq: it does that on every reload, sentry's
+//   or the interface triggers'. (On the real router the staged `dhcp` lines are
+//   adblock-fast's `serversfile`, equal to what is saved.)
+//
+// The takeover, one change with the filter's own rules: `force_dns '0'` in the package's
+// config, and sections of sentry's in the firewall config that are what the package's
+// rules were (`sentry_dns_<n>` / `sentry-dns-<n>`, from its procd data, read when the plan
+// is made), appended after the per-device filters, so those come first in `dstnat_<zone>`.
+// The guard snapshots and restores both configs and reloads the package before the
+// firewall: until fw4's reload (one nft transaction) the old rules are still loaded, so no
+// device's lookups are unforced in between.
+
+/// A section of the DNS takeover's starts with this.
+pub const DNS_SECTION: &str = "sentry_dns_";
+/// Its `name`.
+pub const DNS_PREFIX: &str = "sentry-dns-";
+
+/// One rule the DNS proxy hands the firewall (`data.firewall` in its procd service data).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Forced {
+    /// `redirect` or `rule`.
+    pub kind: String,
+    pub target: String,
+    pub src: String,
+    pub dest: Option<String>,
+    pub proto: String,
+    pub src_dport: Option<String>,
+    pub dest_port: Option<String>,
+    pub family: Option<String>,
+}
+
+/// `ubus call service list '{"name":"https-dns-proxy"}'` → its instances' firewall rules.
+pub fn parse_forced(json: &str) -> Result<Vec<Forced>, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    let Some(inst) = v[PROXY]["instances"].as_object() else {
+        return Ok(out);
+    };
+    let s = |x: &serde_json::Value, k: &str| match &x[k] {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    };
+    for i in inst.values() {
+        for r in i["data"]["firewall"].as_array().into_iter().flatten() {
+            out.push(Forced {
+                kind: s(r, "type").unwrap_or_default(),
+                target: s(r, "target").unwrap_or_default(),
+                src: s(r, "src").unwrap_or_default(),
+                dest: s(r, "dest"),
+                proto: s(r, "proto").unwrap_or_default(),
+                src_dport: s(r, "src_dport"),
+                dest_port: s(r, "dest_port"),
+                family: s(r, "family"),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The DNS proxy's own setting, as its config has it (None: the package isn't there).
+/// Its default is on.
+pub fn proxy_forces(uci: &Uci) -> Option<(String, bool)> {
+    let c = uci.config(PROXY);
+    let s = c
+        .iter()
+        .find(|s| s.kind == "main")
+        .or_else(|| c.iter().find(|s| s.name == "config"))?;
+    Some((s.name.clone(), s.flag("force_dns", true)))
+}
+
+/// sentry's takeover sections on the router, in the config's order: (section, kind, src).
+pub fn dns_found(uci: &Uci) -> Vec<(String, String, String)> {
+    uci.config("firewall")
+        .iter()
+        .filter_map(|s| {
+            let n = s.name.strip_prefix(DNS_SECTION)?;
+            let ok = !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && s.one("name") == Some(format!("{DNS_PREFIX}{n}").as_str())
+                && (s.kind == "redirect" || s.kind == "rule");
+            ok.then(|| {
+                (
+                    s.name.clone(),
+                    s.kind.clone(),
+                    s.one("src").unwrap_or_default().to_string(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// A word uci and fw4 take as written (a zone, a port list, a protocol list).
+fn plain(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" _-*:".contains(&b))
+}
+
+/// The lines that take the forcing over: the package's setting off, and its rules as
+/// sentry's sections. Err: a rule sentry can't reproduce exactly.
+pub fn takeover_lines(proxy_section: &str, forced: &[Forced]) -> Result<Vec<String>, String> {
+    if forced.is_empty() {
+        return Err("the DNS proxy says it forces lookups but hands the firewall no rule".into());
+    }
+    if !plain(proxy_section) {
+        return Err(format!("`{proxy_section}` isn't a section uci names"));
+    }
+    let mut l = vec![format!("uci set {PROXY}.{proxy_section}.force_dns='0'")];
+    for (i, f) in forced.iter().enumerate() {
+        let sec = format!("firewall.{DNS_SECTION}{i}");
+        let kind = match f.kind.as_str() {
+            "redirect" if f.target.eq_ignore_ascii_case("DNAT") => "redirect",
+            "rule" if f.target.eq_ignore_ascii_case("REJECT") => "rule",
+            k => {
+                return Err(format!(
+                    "the DNS proxy hands the firewall a `{k}` sentry doesn't know"
+                ));
+            }
+        };
+        let mut opts: Vec<(&str, String)> = vec![
+            ("name", format!("{DNS_PREFIX}{i}")),
+            ("src", f.src.clone()),
+            ("proto", f.proto.clone()),
+            ("target", f.target.to_ascii_uppercase()),
+        ];
+        for (k, v) in [
+            ("dest", &f.dest),
+            ("src_dport", &f.src_dport),
+            ("dest_port", &f.dest_port),
+            ("family", &f.family),
+        ] {
+            if let Some(v) = v {
+                opts.push((k, v.clone()));
+            }
+        }
+        if kind == "redirect" {
+            opts.push(("reflection", "0".into()));
+        }
+        if let Some((k, v)) = opts.iter().find(|(_, v)| !plain(v)) {
+            return Err(format!(
+                "the DNS proxy's `{k}` (`{v}`) isn't something sentry copies"
+            ));
+        }
+        l.push(format!("uci set {sec}={kind}"));
+        for (k, v) in opts {
+            l.push(format!("uci set {sec}.{k}='{v}'"));
+        }
+    }
+    Ok(l)
+}
+
+/// What the DNS proxy would hand the firewall with `force_dns` on, from its own settings,
+/// the way its init script makes it (for each `force_dns_src_interface`, each port of
+/// `force_dns_port`: a redirect where something listens on it, a refusal where nothing
+/// does). Used only where sentry's sections are gone and the proxy's forcing is off, so its
+/// procd data has nothing to copy: taken as 53 listening and the rest not (inferred: the
+/// router's own resolver is on 53, nothing on 853).
+pub fn default_forced(uci: &Uci) -> Vec<Forced> {
+    let c = uci.config(PROXY);
+    let main = c.iter().find(|s| s.kind == "main");
+    let get = |k: &str, d: &str| {
+        main.and_then(|s| s.one(k))
+            .filter(|v| !v.is_empty())
+            .unwrap_or(d)
+            .to_string()
+    };
+    let mut out = Vec::new();
+    for iface in get("force_dns_src_interface", "lan")
+        .split([' ', ','])
+        .filter(|x| !x.is_empty())
+    {
+        for p in get("force_dns_port", "53 853")
+            .split([' ', ','])
+            .filter(|x| !x.is_empty())
+        {
+            out.push(match p {
+                "53" => Forced {
+                    kind: "redirect".into(),
+                    target: "DNAT".into(),
+                    src: iface.into(),
+                    dest: None,
+                    proto: "tcp udp".into(),
+                    src_dport: Some("53".into()),
+                    dest_port: Some("53".into()),
+                    family: Some("any".into()),
+                },
+                p => Forced {
+                    kind: "rule".into(),
+                    target: "REJECT".into(),
+                    src: iface.into(),
+                    dest: Some("*".into()),
+                    proto: "tcp udp".into(),
+                    src_dport: None,
+                    dest_port: Some(p.into()),
+                    family: None,
+                },
+            });
+        }
+    }
+    out
+}
+
+/// The lines that hand the forcing back: sentry's sections gone, the package's setting on.
+pub fn handback_lines(uci: &Uci) -> Vec<String> {
+    let mut l: Vec<String> = dns_found(uci)
+        .into_iter()
+        .map(|(s, _, _)| format!("uci delete firewall.{s}"))
+        .collect();
+    if let Some((sec, false)) = proxy_forces(uci) {
+        l.push(format!("uci set {PROXY}.{sec}.force_dns='1'"));
+    }
+    l
+}
+
+/// The precedence, read back from the firewall as loaded (`nft list chain inet fw4
+/// dstnat_<zone>` then `forward_<zone>`, cut at `@@forward`): no DNS redirect of the
+/// proxy's left, every device's filter before the catch-all, the catch-all there, and the
+/// rejects that were the proxy's present. Ok: what was seen.
+pub fn precedence(zone: &str, text: &str, rejects: usize) -> Result<String, String> {
+    let (nat, fwd) = text.split_once("@@forward").unwrap_or((text, ""));
+    let rule_of = |l: &str, p: &str| l.contains(&format!("\"!fw4: {p}"));
+    let lines: Vec<&str> = nat.lines().collect();
+    if lines
+        .iter()
+        .any(|l| rule_of(l, "ubus:") && l.contains("dport 53"))
+    {
+        return Err(format!(
+            "another program's DNS redirect is still first in {zone}'s rules"
+        ));
+    }
+    let catch = lines
+        .iter()
+        .position(|l| rule_of(l, DNS_PREFIX) && l.contains("redirect"));
+    let last_filter = lines
+        .iter()
+        .rposition(|l| rule_of(l, PREFIX) && !l.contains("-v6"));
+    let Some(catch) = catch else {
+        return Err(format!(
+            "sentry's catch-all redirect of lookups isn't among {zone}'s rules"
+        ));
+    };
+    if last_filter.is_some_and(|f| f > catch) {
+        return Err(format!(
+            "a device's filter comes after the catch-all in {zone}'s rules"
+        ));
+    }
+    let seen = fwd.lines().filter(|l| rule_of(l, DNS_PREFIX)).count();
+    if seen < rejects {
+        return Err(format!(
+            "{zone}'s refusal of encrypted lookups (port 853) isn't loaded"
+        ));
+    }
+    Ok(format!(
+        "in {zone}'s rules every filtered device comes before the catch-all, and the forced \
+         lookups' other rules are loaded"
+    ))
+}
+
+/// Tests on a router that can't load a firewall: the two chains as fw4 would load them
+/// from this config and these procd-supplied rules (fw4.uc's order: the procd rules
+/// first, then the config's, each in order), in `nft list chain`'s words as far as
+/// [`precedence`] reads them. It shows the order the config makes, never what nft did.
+#[cfg(test)]
+pub fn simulated(uci: &Uci, zone: &str, forced: &[Forced]) -> String {
+    let mut nat = Vec::new();
+    let mut fwd = Vec::new();
+    for (i, f) in forced.iter().enumerate().filter(|(_, f)| f.src == zone) {
+        let c = format!("comment \"!fw4: ubus:{PROXY}[instance1] {} {i}\"", f.kind);
+        match f.kind.as_str() {
+            "redirect" => nat.push(format!("udp dport 53 counter redirect to :53 {c}")),
+            _ => fwd.push(format!(
+                "tcp dport {} counter jump handle_reject {c}",
+                f.dest_port.as_deref().unwrap_or("")
+            )),
+        }
+    }
+    for s in uci.config("firewall") {
+        if s.one("src") != Some(zone) || !s.flag("enabled", true) {
+            continue;
+        }
+        let name = s.one("name").unwrap_or(&s.name);
+        let port = s.one("src_dport").or(s.one("dest_port")).unwrap_or("");
+        match s.kind.as_str() {
+            "redirect" => nat.push(format!(
+                "udp dport {port} counter {} comment \"!fw4: {name}\"",
+                match s.one("dest_ip") {
+                    Some(ip) => format!("dnat ip to {ip}:53"),
+                    None => "redirect to :53".into(),
+                }
+            )),
+            "rule" if s.one("dest").is_some() => fwd.push(format!(
+                "tcp dport {port} counter jump handle_reject comment \"!fw4: {name}\""
+            )),
+            _ => {}
+        }
+    }
+    format!(
+        "table inet fw4 {{\n\tchain dstnat_{zone} {{\n{}\n\t}}\n}}\n@@forward\ntable inet fw4 {{\n\tchain forward_{zone} {{\n{}\n\t}}\n}}\n",
+        nat.join("\n"),
+        fwd.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -609,9 +958,11 @@ mod tests {
             .unwrap();
         assert_eq!(hijacked(&c, "lan"), ["https-dns-proxy"]);
         assert!(hijacked(&c, "guest").is_empty());
-        let why = refused("lan", &hijacked(&c, "lan"), &[]).unwrap();
+        // The DNS proxy's forcing is taken over, not refused; anyone else's is.
+        assert!(refused("lan", &hijacked(&c, "lan"), &[]).is_none());
+        let why = refused("lan", &["other-dns".to_string()], &[]).unwrap();
         assert!(
-            why.contains("would do nothing") && why.contains("https-dns-proxy"),
+            why.contains("would do nothing") && why.contains("other-dns"),
             "{why}"
         );
         assert!(refused("guest", &[], &[]).is_none());
@@ -620,6 +971,95 @@ mod tests {
                   table ip other {\n\tchain pre {\n\t\ttype nat hook prerouting priority -110; policy accept;\n\t\tudp dport 53 dnat to 192.0.2.53\n\t}\n}\n";
         assert_eq!(foreign_tables(rs), ["ip other"]);
         assert!(refused("lan", &[], &foreign_tables(rs)).is_some());
+    }
+
+    #[test]
+    fn the_takeover_is_what_the_proxy_handed_the_firewall() {
+        let f = parse_forced(&crate::collect::fixture(
+            "network/service-https-dns-proxy.json",
+        ))
+        .unwrap();
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!(
+            (f[0].kind.as_str(), f[0].dest_port.as_deref()),
+            ("redirect", Some("53"))
+        );
+        assert_eq!(
+            (f[1].kind.as_str(), f[1].dest.as_deref()),
+            ("rule", Some("*"))
+        );
+        let l = takeover_lines("config", &f).unwrap();
+        insta::assert_snapshot!("family_takeover_lines", l.join("\n"));
+        let c = crate::guard::Change::parse_action(
+            "firewall,https-dns-proxy",
+            &l.join("; "),
+            "https-dns-proxy,firewall",
+            false,
+        );
+        assert!(c.is_ok(), "{c:?}");
+        // As the router would have it after: sentry's sections found, and handed back.
+        let mut text = String::from("@@firewall\n");
+        for x in l.iter().filter_map(|x| x.strip_prefix("uci set firewall.")) {
+            text.push_str(&format!("firewall.{x}\n"));
+        }
+        text.push_str(
+            "firewall.sentry_dns_kids=redirect\nfirewall.sentry_dns_kids.name='sentry-dns-kids'\n",
+        );
+        text.push_str("@@https-dns-proxy\nhttps-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n");
+        let u = uci_of_all(&text);
+        assert_eq!(dns_found(&u).len(), 2, "a look-alike isn't sentry's");
+        assert_eq!(proxy_forces(&u), Some(("config".into(), false)));
+        assert_eq!(
+            handback_lines(&u),
+            [
+                "uci delete firewall.sentry_dns_0",
+                "uci delete firewall.sentry_dns_1",
+                "uci set https-dns-proxy.config.force_dns='1'"
+            ]
+        );
+        // What can't be copied exactly isn't.
+        let mut odd = f.clone();
+        odd[0].src = "lan; reboot".into();
+        assert!(takeover_lines("config", &odd).is_err());
+        assert!(takeover_lines("config", &[]).is_err());
+    }
+
+    #[test]
+    fn precedence_is_read_back_from_the_chains() {
+        let nat = |rules: &[&str]| {
+            format!(
+                "table inet fw4 {{\n\tchain dstnat_lan {{\n{}\n\t}}\n}}\n@@forward\n\t\ttcp dport 853 counter jump handle_reject comment \"!fw4: sentry-dns-1\"\n",
+                rules.join("\n")
+            )
+        };
+        let filt = "\t\tmeta nfproto ipv4 udp dport 53 ether saddr 02:00:5e:00:53:31 counter dnat ip to 185.228.168.168:53 comment \"!fw4: sentry-filter-0000000a\"";
+        let catch = "\t\tudp dport 53 counter redirect to :53 comment \"!fw4: sentry-dns-0\"";
+        let theirs = "\t\tudp dport 53 counter redirect to :53 comment \"!fw4: ubus:https-dns-proxy[instance1] redirect 0\"";
+        assert!(precedence("lan", &nat(&[filt, catch]), 1).is_ok());
+        assert!(
+            precedence("lan", &nat(&[catch, filt]), 1)
+                .unwrap_err()
+                .contains("after the catch-all")
+        );
+        assert!(
+            precedence("lan", &nat(&[theirs, filt, catch]), 1)
+                .unwrap_err()
+                .contains("still first")
+        );
+        assert!(
+            precedence("lan", &nat(&[filt]), 1)
+                .unwrap_err()
+                .contains("catch-all")
+        );
+        assert!(
+            precedence("lan", &nat(&[filt, catch]), 2)
+                .unwrap_err()
+                .contains("853")
+        );
+    }
+
+    fn uci_of_all(text: &str) -> Uci {
+        crate::collect::uci::parse(text, &Salt::fixed([7; 16]))
     }
 
     #[test]

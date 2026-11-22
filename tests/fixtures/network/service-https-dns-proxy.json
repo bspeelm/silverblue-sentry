@@ -1,0 +1,65 @@
+{
+	"https-dns-proxy": {
+		"instances": {
+			"instance1": {
+				"running": true,
+				"pid": 1301,
+				"command": [
+					"/usr/sbin/https-dns-proxy",
+					"-r",
+					"https://doh.example.net/dns-query",
+					"-a",
+					"127.0.0.1",
+					"-p",
+					"5053"
+				],
+				"data": {
+					"firewall": [
+						{
+							"type": "redirect",
+							"target": "DNAT",
+							"src": "lan",
+							"proto": "tcp udp",
+							"src_dport": "53",
+							"dest_port": "53",
+							"family": "any",
+							"reflection": false
+						},
+						{
+							"type": "rule",
+							"src": "lan",
+							"dest": "*",
+							"proto": "tcp udp",
+							"dest_port": "853",
+							"target": "REJECT"
+						}
+					],
+					"mdns": {
+						"https-dns-proxy_5053": {
+							"service": "_https-dns-proxy._udp.local",
+							"port": 5053,
+							"txt": [
+								"DNS over HTTPS proxy"
+							]
+						}
+					}
+				}
+			},
+			"instance2": {
+				"running": true,
+				"pid": 1302,
+				"data": {
+					"mdns": {
+						"https-dns-proxy_5054": {
+							"service": "_https-dns-proxy._udp.local",
+							"port": 5054,
+							"txt": [
+								"DNS over HTTPS proxy"
+							]
+						}
+					}
+				}
+			}
+		}
+	}
+}

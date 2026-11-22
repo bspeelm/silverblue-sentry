@@ -353,7 +353,7 @@ pub fn verbs(v: &View, b: &Built) -> Option<Verbs> {
 fn expectable(a: &Act) -> bool {
     !matches!(
         a,
-        Act::Unblock { .. } | Act::Group { .. } | Act::FilterDrift { .. }
+        Act::Unblock { .. } | Act::Group { .. } | Act::FilterDrift { .. } | Act::FilterRepair
     )
 }
 
@@ -734,6 +734,10 @@ fn enter(v: &View, row: &Row, sec: &mut Security) -> Vec<Effect> {
         Act::Blocklist { .. } => start(Do::ListSchedule),
         Act::WifiKey => wifi_choice(v, row),
         Act::FilterDrift { tag, on_router } => drift_choice(v, row, tag, *on_router),
+        Act::FilterRepair => filter::start(
+            filter::on_router(v).into_iter().map(|f| f.tag).collect(),
+            Vec::new(),
+        ),
         // The audit's own: a session across whatever targets it names, or your answer.
         Act::Audit { id, asks } if *asks || claude() => vec![Effect::SecItem(id.clone())],
         Act::Audit { .. } => vec![Effect::SecShow],
@@ -1156,6 +1160,9 @@ fn enter_says(a: &Act) -> &'static str {
         Act::FilterDrift { .. } => {
             "Enter: put it back on the router (its plan first), or forget it here."
         }
+        Act::FilterRepair => {
+            "Enter: the filter again on the same devices, which puts sentry's rules back in front (its plan first, through the guard)."
+        }
         Act::Finding(_) | Act::Server { .. } | Act::Evidence => {
             "Enter: the numbers behind it. Nothing here needs changing on the router."
         }
@@ -1285,6 +1292,25 @@ fn detail_lines(v: &View, picked: Option<Sel>, w: usize) -> Vec<Line<'static>> {
                     wrap(&format!("It can't work on this router yet: {why}."), w)
                         .into_iter()
                         .map(|x| Line::styled(x, t.s(t.yellow))),
+                );
+            } else if !filter::taken(v)
+                && v.s
+                    .counters
+                    .value
+                    .as_ref()
+                    .is_some_and(|c| !crate::security::family::hijacked(c, "lan").is_empty())
+            {
+                l.push(Line::raw(""));
+                l.extend(
+                    wrap(
+                        "On this router the first use includes a one-time step: sentry takes \
+                         over from the DNS proxy the forcing of every device's lookups \
+                         through the router (nothing changes for the others), so the devices \
+                         you pick can come first.",
+                        w,
+                    )
+                    .into_iter()
+                    .map(|x| Line::styled(x, t.s(t.cyan))),
                 );
             }
             l.push(Line::raw(""));

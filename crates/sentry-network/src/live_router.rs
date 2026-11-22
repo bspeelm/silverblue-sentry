@@ -2457,3 +2457,236 @@ fn live_security_filter() {
     );
     secrun::LOOKUPS.lock().unwrap().clear();
 }
+
+/// A stand-in for the DNS proxy package on the disposable router: its config with
+/// `force_dns '1'`, and a procd service that hands the firewall what the real one hands
+/// it with that on (the redirect of 53 and the refusal of 853 for lan, as read from a real
+/// router's procd data) and nothing with it off. Not the package: no DoH, no dnsmasq
+/// lines.
+const STAND_IN: &str = r#"#!/bin/sh /etc/rc.common
+START=20
+USE_PROCD=1
+start_service() {
+	local f
+	config_load https-dns-proxy
+	config_get_bool f config force_dns 1
+	procd_open_instance instance1
+	procd_set_param command /bin/sleep 86400
+	procd_open_data
+	if [ "$f" = 1 ]; then
+		json_add_array firewall
+		json_add_object ''
+		json_add_string type redirect
+		json_add_string target DNAT
+		json_add_string src lan
+		json_add_string proto 'tcp udp'
+		json_add_string src_dport 53
+		json_add_string dest_port 53
+		json_add_string family any
+		json_add_boolean reflection 0
+		json_close_object
+		json_add_object ''
+		json_add_string type rule
+		json_add_string src lan
+		json_add_string dest '*'
+		json_add_string proto 'tcp udp'
+		json_add_string dest_port 853
+		json_add_string target REJECT
+		json_close_object
+		json_close_array
+	fi
+	procd_close_data
+	procd_close_instance
+}
+"#;
+
+fn proxy_rules(r: &Router) -> usize {
+    let o = on(r, "ubus call service list '{\"name\":\"https-dns-proxy\"}'");
+    crate::security::family::parse_forced(&o.stdout)
+        .unwrap_or_default()
+        .len()
+}
+
+/// The family filter's first use on a router whose DNS proxy forces every lookup: the
+/// takeover and the filter as one guarded change, a proof failing once it is made (both
+/// configs back byte for byte, the proxy forcing again), then kept, the forcing put back
+/// in front after the proxy took it again, and the last device off handing it back with
+/// nothing of sentry's left. What this does NOT show: the container has no nft, so the
+/// read-back of who comes first is made from the config and procd's data the way fw4.uc
+/// orders them (`family::simulated`), and the forced-DNS detection from procd's data
+/// (`run::read` under test); that the real package's reload keeps its dnsmasq lines; that
+/// a device's lookups really go where the rules say.
+#[test]
+#[ignore]
+fn live_security_takeover() {
+    use crate::security::family;
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    let o = on(
+        &r,
+        &format!(
+            "printf \"config main 'config'\\n\\toption force_dns '1'\\n\\toption force_dns_port '53 853'\\n\" >/etc/config/https-dns-proxy \
+             && cat >/etc/init.d/https-dns-proxy <<'EOF'\n{STAND_IN}EOF\n\
+             chmod 755 /etc/init.d/https-dns-proxy && /etc/init.d/https-dns-proxy start && sleep 1"
+        ),
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(
+        proxy_rules(&r),
+        2,
+        "the stand-in hands the firewall its two rules"
+    );
+    const A: &str = "02:00:5e:00:53:61";
+    const B: &str = "02:00:5e:00:53:62";
+    let (ta, tb) = (
+        blocks::tag(&r.name, A).expect("a tag"),
+        blocks::tag(&r.name, B).expect("a tag"),
+    );
+    let mut b = Blocks::load(&r.scope);
+    for (t, mac, label) in [(&ta, A, "a tablet"), (&tb, B, "a console")] {
+        b.device.insert(
+            t.clone(),
+            Dev {
+                mac: mac.into(),
+                label: label.into(),
+                zone: "lan".into(),
+                wifi: None,
+            },
+        );
+    }
+    b.save(&r.scope).unwrap();
+    let both = Do::filter([ta.clone(), tb.clone()]).word();
+    let before = sums(&r, &["firewall", "https-dns-proxy"]);
+
+    // The plan: the takeover in it, reads only.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let mut shown = Vec::new();
+    secrun::show(&r, &Do::parse(&both).unwrap(), &mut |l| shown.push(l)).unwrap();
+    let text = shown.join("\n");
+    println!("{text}");
+    assert!(
+        text.contains("First, once: sentry takes over from the DNS proxy")
+            && text.contains("uci set https-dns-proxy.config.force_dns=0")
+            && text.contains("Nothing has changed."),
+        "{text}"
+    );
+    assert_eq!(sums(&r, &["firewall", "https-dns-proxy"]), before);
+
+    // A proof failing once the change is made: everything back, the proxy's setting too.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true, true, false, false, false, false, false, false];
+    let (code, said) = act(&r, &both);
+    assert_ne!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("REVERTED")), "{said:#?}");
+    assert_eq!(
+        sums(&r, &["firewall", "https-dns-proxy"]),
+        before,
+        "not byte for byte"
+    );
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "1"
+    );
+    assert_eq!(proxy_rules(&r), 2, "the proxy forces lookups again");
+    nothing_left(&r, r.cfg.guard.window);
+
+    // Kept: the proxy's setting off, sentry's catch-all after both devices.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
+    // The proof the guard held before keeping it, once more by hand.
+    let seen = secrun::prove(&r, crate::security::actions::Proof::Precedence).unwrap();
+    assert!(
+        seen.contains("every filtered device comes before the catch-all"),
+        "{seen}"
+    );
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "0"
+    );
+    assert_eq!(
+        proxy_rules(&r),
+        0,
+        "the proxy hands the firewall nothing now"
+    );
+    let shown = on(&r, "uci show firewall").stdout;
+    let at = |what: &str| {
+        shown
+            .lines()
+            .position(|l| l == what)
+            .unwrap_or_else(|| panic!("{what}:\n{shown}"))
+    };
+    assert!(
+        at(&format!("firewall.sentry_filter_{ta}=redirect")) < at("firewall.sentry_dns_0=redirect")
+    );
+    assert!(
+        at(&format!("firewall.sentry_filter_{tb}=redirect")) < at("firewall.sentry_dns_0=redirect")
+    );
+    for want in [
+        "firewall.sentry_dns_0.src_dport='53'",
+        "firewall.sentry_dns_0.dest_port='53'",
+        "firewall.sentry_dns_0.family='any'",
+        "firewall.sentry_dns_1=rule",
+        "firewall.sentry_dns_1.dest_port='853'",
+        "firewall.sentry_dns_1.target='REJECT'",
+    ] {
+        at(want);
+    }
+    nothing_left(&r, r.cfg.guard.window);
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    assert_eq!(family::dns_found(&uci).len(), 2);
+
+    // The proxy forcing again by itself (an update, the web UI): the same action puts the
+    // filter back in front.
+    let o = on(
+        &r,
+        "uci set https-dns-proxy.config.force_dns='1' && uci commit https-dns-proxy && /etc/init.d/https-dns-proxy reload && sleep 1",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(proxy_rules(&r), 2);
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "0"
+    );
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    assert_eq!(family::dns_found(&uci).len(), 2, "made again, not doubled");
+
+    // The last device off: handed back, nothing of sentry's left.
+    let (code, said) = act(&r, &Do::filter([ta.clone()]).word());
+    assert_eq!(code, 0, "{said:#?}");
+    let (code, said) = act(&r, "filter:none");
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("https-dns-proxy.config.force_dns=1")),
+        "{said:#?}"
+    );
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "1"
+    );
+    assert_eq!(proxy_rules(&r), 2);
+    assert_eq!(
+        on(&r, &format!("uci show firewall | grep -c -e sentry_dns_ -e sentry_filter_{ta} -e sentry_filter_{tb}; true"))
+            .stdout
+            .trim(),
+        "0",
+        "nothing of sentry's left"
+    );
+    nothing_left(&r, r.cfg.guard.window);
+    secrun::LOOKUPS.lock().unwrap().clear();
+    on(
+        &r,
+        "/etc/init.d/https-dns-proxy stop; rm -f /etc/init.d/https-dns-proxy /etc/config/https-dns-proxy",
+    );
+}

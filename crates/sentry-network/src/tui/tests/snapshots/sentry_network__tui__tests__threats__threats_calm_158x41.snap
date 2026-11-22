@@ -19,15 +19,15 @@ expression: s
 │        and nothing crosses right now                                               │ │ A filtered device's lookups skip the router's own blocklist; the    │
 │ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │ family service blocks malware and scam sites too.                   │
 │        update by itself                                                            │ │                                                                     │
-│ ✓ ok   Family filter: on no device; it can't work on this router yet               │ │ It can't work on this router yet: the router already sends every    │
-│        (https-dns-proxy sends every lookup to the router first)                    │ │ name lookup from your home side (lan) to itself (https-dns-proxy's  │
-│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │ "force DNS"), and the firewall puts that program's rule before any  │
-│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │ rule sentry can add: a filter set up now would do nothing there.    │
-│ ? ?    The security audit of every target has never run · S runs it                │ │ Switching that program's "force DNS" off is a change sentry doesn't │
-└────────────────────────────────────────────────────────────────────────────────────┘ │ make by itself yet.                                                 │
-┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ │                                                                     │
-│ Choose devices…                                                                    │ │ Enter: the list of devices. Tick the ones to filter; Enter there    │
-└────────────────────────────────────────────────────────────────────────────────────┘ │ shows the plan for all of them as one change.                       │
+│ ✓ ok   Family filter (CleanBrowsing Family): on no device · its first use takes    │ │ On this router the first use includes a one-time step: sentry takes │
+│        over the router's forcing of lookups, the same for everyone else            │ │ over from the DNS proxy the forcing of every device's lookups       │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │ through the router (nothing changes for the others), so the devices │
+│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │ you pick can come first.                                            │
+│ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ Enter: the list of devices. Tick the ones to filter; Enter there    │
+┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ │ shows the plan for all of them as one change.                       │
+│ Choose devices…                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │

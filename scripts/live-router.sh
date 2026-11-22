@@ -4,7 +4,7 @@
 #   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
 #   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update,
 #   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only,
-#   live_firmware_upgrade, live_security_filter
+#   live_firmware_upgrade, live_security_filter, live_security_takeover
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -67,7 +67,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade live_security_filter"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade live_security_filter live_security_takeover"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1
@@ -164,7 +164,7 @@ EOF
 
 seed() {
   local c=$1
-  "${P[@]}" exec "$c" sh -c 'for p in /tmp/sentry-guard-*/pid /tmp/sentry-guard-*/sleep.pid; do [ -s "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null; done; rm -rf /tmp/.uci /tmp/sentry-guard* /etc/sentry-guard /etc/sentry-guard.last /etc/uci-defaults/zz-sentry-guard-* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
+  "${P[@]}" exec "$c" sh -c 'for p in /tmp/sentry-guard-*/pid /tmp/sentry-guard-*/sleep.pid; do [ -s "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null; done; rm -rf /tmp/.uci /tmp/sentry-guard* /etc/sentry-guard /etc/sentry-guard.last /etc/uci-defaults/zz-sentry-guard-* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy stop; rm -f /etc/init.d/https-dns-proxy /etc/config/https-dns-proxy; true'
   # The firmware stand-ins: back to the release it was, nothing downloaded, mode ok.
   "${P[@]}" exec "$c" sh -c 'S=/usr/share/sentry-stub; [ -d $S ] || exit 0; for p in /proc/[0-9]*; do grep -qE "run/sentry-bo[o]t|owut[^a-z]*[i]nstall" $p/cmdline 2>/dev/null && kill ${p#/proc/} 2>/dev/null; done; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release; echo ok >/etc/sentry-stub/mode; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log /tmp/sysupgrade.meta; apk --no-network info -e partx-utils >/dev/null 2>&1 || apk add -q partx-utils >/dev/null 2>&1; /etc/init.d/dropbear start >/dev/null 2>&1; true'
   put "$c" /etc/config/network 600 <<'EOF'

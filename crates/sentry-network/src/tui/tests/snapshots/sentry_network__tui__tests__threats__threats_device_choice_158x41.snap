@@ -21,8 +21,8 @@ expression: s
 │        and nothing crosses right no│                                                                                  │                                    │
 │ ✓ ok   Bad sites are filtered, 1042│ 1  It's mine: give it a name                                                     │                                    │
 │        update by itself            │ 2  Block it from the internet (it stays on your network)                         │                                    │
-│ ✓ ok   Family filter: on no device;│ 3  Block it from everything, the router included                                 │                                    │
-│        (https-dns-proxy sends every│ 4  Pause its internet for an hour                                                │                                    │
+│ ✓ ok   Family filter (CleanBrowsing│ 3  Block it from everything, the router included                                 │                                    │
+│        over the router's forcing of│ 4  Pause its internet for an hour                                                │                                    │
 │ ✓ ok   2 Wi-Fi networks, password-p│ 5  Pause its internet until tomorrow morning                                     │                                    │
 │ ! weak Remote login (ssh) takes a p│ 6  Look again in a week                                                          │                                    │
 │        without encryption          │                                                                                  │                                    │
