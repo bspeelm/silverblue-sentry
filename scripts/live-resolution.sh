@@ -146,6 +146,8 @@ run_test() {
 servers:
   scratch:
     ssh: scratch
+    # (Root reads for the audit's second run: the inventory, once the password is held.)
+    sudo: [docker ps, docker inspect, journalctl]
 YAML
   cat >"$x/config/sentry/network_config.yaml" <<YAML
 networks:

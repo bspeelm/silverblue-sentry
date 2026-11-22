@@ -188,6 +188,11 @@ fn inventory_age(hours: i64) -> String {
     }
 }
 
+/// `29 more days`.
+fn more_days(d: i64) -> String {
+    format!("{d} more day{}", if d == 1 { "" } else { "s" })
+}
+
 /// The certificate a door showed this machine, as an item of its own.
 fn cert(n: &TargetFacts, f: &Forward, targets: &[&str], out: &mut Out) {
     let Some(t) = f.probe.as_ref().and_then(|a| a.tls.as_ref()) else {
@@ -200,7 +205,7 @@ fn cert(n: &TargetFacts, f: &Forward, targets: &[&str], out: &mut Out) {
         ev.push(if d < 0 {
             format!("it expired {} ago", plural((-d) as usize, "day", "days"))
         } else {
-            format!("it is good for {} more", plural(d as usize, "day", "days"))
+            format!("it is good for {}", more_days(d))
         });
     }
     let fake = "Nobody can then tell your server from someone pretending to be it, and \
@@ -258,10 +263,7 @@ fn cert(n: &TargetFacts, f: &Forward, targets: &[&str], out: &mut Out) {
             fine(format!(
                 "The certificate on port {port} is {}{}",
                 i.said(),
-                d.map_or(String::new(), |d| format!(
-                    " and good for {} more",
-                    plural(d as usize, "day", "days")
-                ))
+                d.map_or(String::new(), |d| format!(" and good for {}", more_days(d)))
             )),
         ),
     };

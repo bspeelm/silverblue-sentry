@@ -82,7 +82,9 @@ impl Issuer {
             Issuer::Public => "from a public authority",
             Issuer::SelfSigned => "self-signed",
             Issuer::Private => "from an authority this machine doesn't know",
-            Issuer::Unknown => "from an authority that couldn't be told",
+            Issuer::Unknown => {
+                "from an issuer sentry couldn't tell (it asked by address, not by name)"
+            }
         }
     }
 }
@@ -198,8 +200,9 @@ pub fn issuer_of(stderr: &str) -> Issuer {
     } else if e.contains("unable to get local issuer") || e.contains("unable to get issuer") {
         Issuer::Private
     } else if e.contains("subject name") || e.contains("host name") || e.contains("hostname") {
-        // The chain was trusted; only the name (an address here) didn't match.
-        Issuer::Public
+        // Only the name (an address here) is said not to match: curl may say so before
+        // it judges the chain, so who vouches for it isn't known from this.
+        Issuer::Unknown
     } else {
         Issuer::Unknown
     }
@@ -296,7 +299,8 @@ pub fn decide(
             web: Web::NeedsName,
             tls: None,
         },
-        35 | 52 | 56 => {
+        // (28: a plain HTTP server may wait for a line a TLS handshake never sends.)
+        28 | 35 | 52 | 56 => {
             let http = url("http", addr, port)?;
             let (code, out, _) = get(&http, true);
             match code {
@@ -459,7 +463,7 @@ mod tests {
             issuer_of(
                 "curl: (60) SSL: no alternative certificate subject name matches target ipv4 address '192.0.2.93'"
             ),
-            Issuer::Public
+            Issuer::Unknown
         );
         assert_eq!(e("certificate has expired (10)"), Issuer::Unknown);
     }
@@ -543,6 +547,15 @@ mod tests {
         ]);
         assert!(
             matches!(a.unwrap().web, Web::Unclear(w) if w.starts_with("closes the connection"))
+        );
+        // A plain HTTP server that waits on the handshake: tried over HTTP after it.
+        let (a, asked) = run(vec![
+            (28, String::new(), "timed out".into()),
+            (0, out(401, "", "", ""), String::new()),
+        ]);
+        assert_eq!(
+            (a.unwrap().web, asked[1].as_str()),
+            (Web::Login("401".into()), "http://192.0.2.93:8443/ checked")
         );
         let (a, _) = run(vec![(7, String::new(), "refused".into())]);
         assert_eq!(
