@@ -7,11 +7,13 @@
 //!
 //! Honesty: a rule fires only on evidence; what's missing is `CouldNotCheck` and says what it
 //! would take; what only the user knows is an `Ask` with a remembered answer; there is no
-//! score. Nothing here scans or probes: it reads configuration and state.
+//! score. Nothing here scans: it reads configuration and state, and asks each door to one
+//! of sentry's own servers once from this machine ([`probe`]: one request, no login).
 //!
 //! Privacy: the fields the rules only match on (addresses) are never serialized and never
 //! put into an item; evidence strings are written by the owning target, already scrubbed.
 
+pub mod probe;
 mod rules;
 pub mod sshd;
 
@@ -28,6 +30,7 @@ use crate::maint::log::LogEntry;
 use crate::maint::tasks::{Again, Source, Task};
 use crate::paths;
 
+pub use probe::{Answered, Issuer, Tls, Web};
 pub use rules::{EDGE_FIX, evaluate};
 
 // ---- what a target says
@@ -86,6 +89,34 @@ pub struct TargetFacts {
     pub firewall: Option<HostFw>,
     pub keys: Option<Keys>,
     pub router: Option<Router>,
+    /// A server whose root reads came from its inventory: how old that was, in hours.
+    pub inventory_hours: Option<i64>,
+    /// The system log (a server's).
+    pub logs: Option<Logs>,
+}
+
+/// How long a machine keeps its system log.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Logs {
+    /// It survives a restart (none: couldn't tell).
+    pub kept: Option<bool>,
+    /// How many days back its oldest entry is (none: couldn't be read).
+    pub days: Option<i64>,
+    /// The retention limit set in its config (`MaxRetentionSec=1month`), when one is.
+    pub limit: Option<String>,
+}
+
+/// When an operating system release stops getting security fixes, as endoflife.date says.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Life {
+    /// `Debian 12`, `Fedora 44`.
+    pub release: String,
+    /// The last day of its security support (none: no end announced).
+    pub ends: Option<Date>,
+    /// It couldn't be looked up: why.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -104,6 +135,10 @@ pub struct Os {
     /// Security updates install by themselves.
     pub auto_updates: Option<bool>,
     pub eol: Eol,
+    /// The release's support (none: not looked up).
+    pub life: Option<Life>,
+    /// What's waiting, in words (`2 app updates`).
+    pub detail: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -263,6 +298,9 @@ pub struct Forward {
     pub dest: String,
     /// The zone that address is in, when known.
     pub zone: Option<String>,
+    /// What answered when this machine asked once ([`probe`]); none: not asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<Answered>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -297,6 +335,12 @@ pub struct Zone {
     pub reaches: Vec<String>,
     /// Devices seen there (none: not counted).
     pub devices: Option<usize>,
+    /// Of those, named in sentry's config.
+    pub named: Option<usize>,
+    /// Of those, on Wi-Fi.
+    pub wifi: Option<usize>,
+    /// Of those, on a cable.
+    pub wired: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -623,6 +667,9 @@ pub struct Report {
     pub errors: Vec<Missing>,
     #[serde(default)]
     pub diff: Diff,
+    /// What guards the system while sentry is closed ([`alone`]).
+    #[serde(default)]
+    pub alone: String,
 }
 
 fn open(s: State) -> bool {
@@ -703,6 +750,7 @@ impl Report {
                 })
                 .collect(),
             diff,
+            alone: alone(facts),
         }
     }
 
@@ -715,12 +763,29 @@ impl Report {
         Ok((r, path))
     }
 
+    /// "Do these first": the [`FIRST`] most pressing, by rank.
+    pub fn first(&self) -> Vec<&Item> {
+        let mut v = self.of(State::DoFirst);
+        v.sort_by_key(|i| i.rank);
+        v.truncate(FIRST);
+        v
+    }
+
+    /// "Worth doing": what didn't fit in "Do these first" (by rank), then the rest.
+    pub fn worth(&self) -> Vec<&Item> {
+        let mut over = self.of(State::DoFirst);
+        over.sort_by_key(|i| i.rank);
+        let mut v: Vec<&Item> = over.into_iter().skip(FIRST).collect();
+        v.extend(self.of(State::Worth));
+        v
+    }
+
     /// One line for a log entry or a toast.
     pub fn summary(&self) -> String {
         format!(
             "{} to do first, {} worth doing, {} fine, {} couldn't be checked or need an answer",
-            self.of(State::DoFirst).len(),
-            self.of(State::Worth).len(),
+            self.first().len(),
+            self.worth().len(),
             self.of(State::Fine).len(),
             self.of(State::Ask).len() + self.of(State::CouldNotCheck).len()
         )
@@ -806,6 +871,82 @@ pub fn latest() -> Option<Report> {
     latest_in(&dir())
 }
 
+/// At most this many in "Do these first": a short list is one that gets done.
+pub const FIRST: usize = 5;
+
+/// What guards the system while sentry is closed, in one plain line: sentry itself only
+/// looks while it is open; CrowdSec's bans and automatic security updates go on without it.
+pub fn alone(facts: &[TargetFacts]) -> String {
+    let enforced = facts
+        .iter()
+        .any(|f| f.watch.as_ref().is_some_and(|w| w.enforces == Some(true)));
+    let mut parts = Vec::new();
+    for f in facts.iter().filter(|f| f.unreachable.is_none()) {
+        let w = f.watch.as_ref();
+        if w.is_some_and(|w| w.crowdsec == Some(true)) {
+            let there = w
+                .and_then(|w| w.bouncers.as_ref())
+                .is_some_and(|b| !b.is_empty());
+            parts.push(format!(
+                "CrowdSec on {} bans attackers{}",
+                f.name,
+                match (enforced, there) {
+                    (true, _) => " and the router blocks them",
+                    (false, true) => " and blocks them there",
+                    (false, false) => ", but nothing blocks them yet",
+                }
+            ));
+        }
+        match f.os.as_ref().and_then(|o| o.auto_updates) {
+            Some(true) => parts.push(format!("{} installs security updates by itself", f.name)),
+            Some(false) => parts.push(format!(
+                "{} doesn't install security updates by itself",
+                f.name
+            )),
+            None => {}
+        }
+    }
+    let mut line =
+        "sentry only looks while it is open: nothing of it runs in the background.".to_string();
+    if !parts.is_empty() {
+        line.push_str(&format!(" Without it: {}.", parts.join("; ")));
+    }
+    line
+}
+
+/// The endoflife.date product and cycle of an `/etc/os-release`, and the release in words
+/// (`("debian", "12", "Debian 12")`). None: a system sentry doesn't know where to look up.
+pub fn release_of(os_release: &str) -> Option<(String, String, String)> {
+    let get = |k: &str| {
+        os_release
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{k}=")))
+            .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string())
+    };
+    let id = get("ID")?.to_ascii_lowercase();
+    let version = get("VERSION_ID")?;
+    let major = version.split('.').next().unwrap_or("").to_string();
+    let minor2 = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let (product, cycle, name) = match id.as_str() {
+        "debian" | "raspbian" => ("debian", major, "Debian"),
+        "ubuntu" => ("ubuntu", version.clone(), "Ubuntu"),
+        "fedora" => ("fedora", major, "Fedora"),
+        "alpine" => ("alpine", minor2, "Alpine"),
+        "rhel" => ("rhel", major, "Red Hat Enterprise Linux"),
+        "rocky" => ("rocky-linux", major, "Rocky Linux"),
+        "almalinux" => ("almalinux", major, "AlmaLinux"),
+        "centos" => ("centos-stream", major, "CentOS Stream"),
+        "opensuse-leap" => ("opensuse", version.clone(), "openSUSE Leap"),
+        "linuxmint" => ("linuxmint", version.clone(), "Linux Mint"),
+        _ => return None,
+    };
+    if cycle.is_empty() || !cycle.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let label = format!("{name} {cycle}");
+    Some((product.to_string(), cycle, label))
+}
+
 // ---- in words
 
 /// What a tool like this can and cannot do: the report's first lines.
@@ -818,11 +959,54 @@ pub const LIMITS: [&str; 3] = [
      It makes that cost less: fewer doors, fewer old holes, less to reach from one device.",
 ];
 
-fn section(out: &mut String, title: &str, items: &[&Item], rep: &Report, detail: bool) {
-    if items.is_empty() {
+fn one(out: &mut String, i: &Item, rep: &Report, detail: bool) {
+    let mark = if rep.diff.new.contains(&i.id) {
+        " [new]"
+    } else if rep.diff.worse.contains(&i.id) {
+        " [worse]"
+    } else {
+        ""
+    };
+    out.push_str(&format!("  - {}{mark}\n", i.title));
+    if detail {
+        if !i.why.is_empty() {
+            out.push_str(&format!("      Why: {}\n", i.why));
+        }
+        if !i.fix.is_empty() {
+            out.push_str(&format!("      What it takes: {}\n", i.fix));
+        }
+        for e in &i.evidence {
+            out.push_str(&format!("      · {e}\n"));
+        }
+    }
+    if let Some(q) = i.question.as_ref().filter(|_| i.state == State::Ask) {
+        out.push_str(&format!(
+            "      Answer: sentry audit security answers {q} yes|no (if you don't know, \
+             leave it: it is asked again)\n"
+        ));
+    }
+}
+
+/// A section: `lead` first as it is ranked (what didn't fit in "Do these first"), then
+/// `items` by what an attacker would try.
+fn section(
+    out: &mut String,
+    title: &str,
+    lead: &[&Item],
+    items: &[&Item],
+    rep: &Report,
+    detail: bool,
+) {
+    if items.is_empty() && lead.is_empty() {
         return;
     }
-    out.push_str(&format!("\n{title} ({})\n", items.len()));
+    out.push_str(&format!("\n{title} ({})\n", lead.len() + items.len()));
+    if !lead.is_empty() {
+        out.push_str("\n  As pressing as those first, after the five\n");
+        for i in lead {
+            one(out, i, rep, detail);
+        }
+    }
     for g in Group::ALL {
         let of: Vec<&&Item> = items.iter().filter(|i| i.group == g).collect();
         if of.is_empty() {
@@ -830,33 +1014,10 @@ fn section(out: &mut String, title: &str, items: &[&Item], rep: &Report, detail:
         }
         out.push_str(&format!("\n  {}\n", g.title()));
         if g == Group::GettingIn && !rep.observed {
-            out.push_str("  (inferred from configuration, not observed from outside)\n");
+            out.push_str("  (read from the router's settings, not seen from outside)\n");
         }
         for i in of {
-            let mark = if rep.diff.new.contains(&i.id) {
-                " [new]"
-            } else if rep.diff.worse.contains(&i.id) {
-                " [worse]"
-            } else {
-                ""
-            };
-            out.push_str(&format!("  - {}{mark}\n", i.title));
-            if detail {
-                if !i.why.is_empty() {
-                    out.push_str(&format!("      Why: {}\n", i.why));
-                }
-                if !i.fix.is_empty() {
-                    out.push_str(&format!("      What it takes: {}\n", i.fix));
-                }
-                for e in &i.evidence {
-                    out.push_str(&format!("      · {e}\n"));
-                }
-            }
-            if let Some(q) = &i.question {
-                out.push_str(&format!(
-                    "      Answer: sentry audit security answers {q} yes|no\n"
-                ));
-            }
+            one(out, i, rep, detail);
         }
     }
 }
@@ -881,19 +1042,27 @@ pub fn render(r: &Report) -> String {
         .collect();
     out.push_str(&format!("\nLooked at: {}\n", names.join(", ")));
 
-    let first = {
-        let mut v = r.of(State::DoFirst);
-        v.sort_by_key(|i| i.rank);
-        v
-    };
+    if !r.alone.is_empty() {
+        out.push_str(&format!("{}\n", r.alone));
+    }
+
+    let first = r.first();
+    let over = r.of(State::DoFirst).len() - first.len();
     if first.is_empty() {
         out.push_str("\nDo these first (0)\n  Nothing the audit can see needs doing first.\n");
     } else {
         // Ranked, not grouped: the order is the point.
         out.push_str(&format!("\nDo these first ({})\n", first.len()));
+        if over > 0 {
+            out.push_str(&format!(
+                "  (the {FIRST} most pressing; {over} more as pressing {} first under Worth \
+                 doing)\n",
+                if over == 1 { "comes" } else { "come" }
+            ));
+        }
         if !r.observed && first.iter().any(|i| i.group == Group::GettingIn) {
             out.push_str(
-                "  (what the internet can reach is inferred from configuration, not observed \
+                "  (what the internet can reach is read from the router's settings, not seen \
                  from outside)\n",
             );
         }
@@ -913,14 +1082,23 @@ pub fn render(r: &Report) -> String {
             }
         }
     }
-    section(&mut out, "Worth doing", &r.of(State::Worth), r, true);
-    section(&mut out, "Fine", &r.of(State::Fine), r, false);
-    let mut rest = r.of(State::Ask);
-    rest.extend(r.of(State::CouldNotCheck));
+    let all = r.worth();
+    let (lead, worth) = all.split_at(over);
+    section(&mut out, "Worth doing", lead, worth, r, true);
+    section(&mut out, "Fine", &[], &r.of(State::Fine), r, false);
     section(
         &mut out,
-        "Couldn't check / need your answer",
-        &rest,
+        "Couldn't check",
+        &[],
+        &r.of(State::CouldNotCheck),
+        r,
+        true,
+    );
+    section(
+        &mut out,
+        "Needs your answer",
+        &[],
+        &r.of(State::Ask),
         r,
         true,
     );
@@ -1007,6 +1185,70 @@ pub fn review_brief(r: &Report) -> String {
         }
     }
     out
+}
+
+// ---- behind each door
+
+/// The doors [`probe_doors`] asks: (network index, forward index, address, port). Only a
+/// TCP forward of one port, to an address one of sentry's own machines says is its own,
+/// and not its ssh login (that one is read from its settings).
+pub fn doors_to_ask(facts: &[TargetFacts]) -> Vec<(usize, usize, String, u16)> {
+    let mut v = Vec::new();
+    for (n, f) in facts.iter().enumerate() {
+        let Some(fw) = f.router.as_ref().and_then(|r| r.forwards.as_ref()) else {
+            continue;
+        };
+        for (i, d) in fw.iter().enumerate() {
+            let Ok(port) = d.to_port.parse::<u16>() else {
+                continue;
+            };
+            let Some(host) = facts
+                .iter()
+                .find(|h| h.kind != Kind::Network && h.addrs.contains(&d.dest))
+            else {
+                continue;
+            };
+            let ssh = port == 22
+                || host.listeners.iter().flatten().any(|l| {
+                    l.port == port && l.process.as_deref().is_some_and(|p| p.contains("sshd"))
+                });
+            if d.proto == "tcp" && !ssh {
+                v.push((n, i, d.dest.clone(), port));
+            }
+        }
+    }
+    v
+}
+
+/// Ask every door to one of sentry's own machines once from this machine, side by side
+/// ([`probe::ask`]); what each said goes on its forward.
+pub fn probe_doors(facts: &mut [TargetFacts]) {
+    probe_doors_with(facts, probe::ask)
+}
+
+pub fn probe_doors_with(
+    facts: &mut [TargetFacts],
+    ask: impl Fn(&str, u16) -> Option<Answered> + Sync,
+) {
+    let doors = doors_to_ask(facts);
+    let said: Vec<Option<Answered>> = std::thread::scope(|sc| {
+        let ask = &ask;
+        let hs: Vec<_> = doors
+            .iter()
+            .map(|(_, _, addr, port)| sc.spawn(move || ask(addr, *port)))
+            .collect();
+        hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    for ((n, i, _, _), a) in doors.into_iter().zip(said) {
+        if let Some(f) = facts[n]
+            .router
+            .as_mut()
+            .and_then(|r| r.forwards.as_mut())
+            .and_then(|v| v.get_mut(i))
+        {
+            f.probe = a;
+        }
+    }
 }
 
 // ---- the outside check

@@ -157,6 +157,8 @@ pub fn facts(
                 .map(|d| (now - d.timestamp).max(0) / 86_400),
             auto_updates: None,
             eol: Default::default(),
+            life: None,
+            detail: Vec::new(),
         }
     });
     if let Some(r) = read {
@@ -175,6 +177,39 @@ pub fn facts(
     }
     t.keys = keys;
     t
+}
+
+/// What else waits besides the system (counts sentry already has, only when taken after
+/// the last good quick-update: `still_waiting`), and how long ago that run was, in days.
+pub fn waiting(os: &mut Os, flatpak: Option<usize>, toolbox: Option<usize>, ran: Option<i64>) {
+    let system = os.updates.unwrap_or(0) as usize;
+    if system > 0 {
+        os.detail.push(match os.security.filter(|n| *n > 0) {
+            Some(1) => "a system update waits, with a security advisory".into(),
+            Some(n) => format!("a system update waits, with {n} security advisories"),
+            None => "a system update waits".into(),
+        });
+    }
+    if let Some(n) = flatpak.filter(|n| *n > 0) {
+        os.detail.push(format!(
+            "{n} app update{} waiting (Flatpak)",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(n) = toolbox.filter(|n| *n > 0) {
+        os.detail.push(format!(
+            "{n} package update{} waiting in toolboxes",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    // (What the system has waiting stays unknown when it wasn't checked.)
+    let more = flatpak.unwrap_or(0) + toolbox.unwrap_or(0);
+    if os.updates.is_some() || more > 0 {
+        os.updates = Some((system + more) as u32);
+    }
+    if let Some(d) = ran {
+        os.updated_days = Some(d);
+    }
 }
 
 /// Read this machine and say what it knows.
@@ -199,6 +234,25 @@ pub fn collect() -> TargetFacts {
         jiff::Timestamp::now().as_second(),
     );
     t.errors = errors;
+    if let Some(os) = t.os.as_mut() {
+        os.life = Some(sentry_app::remote::upstream::os_life(&os_release));
+        let log = crate::maint::log::list(crate::maint::LOCAL);
+        let fresh = |at: jiff::Timestamp| crate::maint::local::still_waiting(at, &log);
+        let fp = crate::cache::load::<Vec<crate::collectors::flatpak::FpUpdate>>(
+            crate::cache::FLATPAK_UPDATES,
+        )
+        .filter(|c| fresh(c.fetched_at))
+        .map(|c| c.data.len());
+        let tbx = crate::cache::load::<crate::collectors::toolbox::ToolboxUpdates>(
+            crate::cache::TOOLBOX_UPDATES,
+        )
+        .filter(|c| fresh(c.fetched_at))
+        .map(|c| c.data.values().map(|b| b.updates.len()).sum());
+        let now = jiff::Timestamp::now().as_second();
+        let ran = crate::maint::local::last_update_run(&log)
+            .map(|at| ((now - at.as_second()) / 86_400).max(0));
+        waiting(os, fp, tbx, ran);
+    }
     t
 }
 
@@ -255,6 +309,35 @@ mod tests {
         );
         assert_eq!(r.ssh_on, None);
         assert!(!script().contains("sudo"));
+    }
+
+    #[test]
+    fn what_waits_besides_the_system_is_counted_and_said() {
+        let mut os = Os {
+            updates: Some(1),
+            security: Some(2),
+            updated_days: Some(30),
+            ..Default::default()
+        };
+        waiting(&mut os, Some(3), Some(0), Some(4));
+        assert_eq!(os.updates, Some(4));
+        assert_eq!(os.updated_days, Some(4), "the last good quick-update");
+        assert_eq!(
+            os.detail,
+            [
+                "a system update waits, with 2 security advisories",
+                "3 app updates waiting (Flatpak)"
+            ]
+        );
+        // Counts that aren't known (or are from before the last run) change nothing.
+        let mut os = Os {
+            updates: Some(0),
+            updated_days: Some(30),
+            ..Default::default()
+        };
+        waiting(&mut os, None, None, None);
+        assert_eq!((os.updates, os.updated_days), (Some(0), Some(30)));
+        assert!(os.detail.is_empty());
     }
 
     #[test]

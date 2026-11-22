@@ -6,7 +6,10 @@ use std::collections::BTreeSet;
 use jiff::civil::Date;
 
 use super::rank::{EXPOSED, FLAT, OUTDATED, RECOVERY, WEAK_LOGIN};
-use super::{Answers, Ctr, Eol, Forward, Group, Item, Kind, Router, Software, State, TargetFacts};
+use super::{
+    Answers, Ctr, Eol, Forward, Group, Issuer, Item, Kind, Life, Router, Software, State,
+    TargetFacts, Web,
+};
 use Group::{GettingIn, KnownHoles, Logins, MovingAround, Recovering};
 use State::{Ask, CouldNotCheck, DoFirst, Fine, Worth};
 
@@ -166,6 +169,105 @@ fn ctr_powers(c: &Ctr) -> Vec<&'static str> {
     v
 }
 
+/// How old what was read as root is, said where it was used.
+fn inventory_age(hours: i64) -> String {
+    let age = if hours < 1 {
+        "less than an hour ago".to_string()
+    } else if hours < 48 {
+        format!("{} ago", plural(hours as usize, "hour", "hours"))
+    } else {
+        format!("{} ago", plural((hours / 24) as usize, "day", "days"))
+    };
+    if hours >= 72 {
+        format!(
+            "what runs there is from the server's inventory, read {age}: it may be out of \
+             date (press I on the server target to read it again)"
+        )
+    } else {
+        format!("what runs there is from the server's inventory, read {age}")
+    }
+}
+
+/// The certificate a door showed this machine, as an item of its own.
+fn cert(n: &TargetFacts, f: &Forward, targets: &[&str], out: &mut Out) {
+    let Some(t) = f.probe.as_ref().and_then(|a| a.tls.as_ref()) else {
+        return;
+    };
+    let id = format!("sec:cert:{}:{}:{}", n.id, f.proto, f.port);
+    let port = f.port.as_str();
+    let mut ev = vec![format!("the certificate is {}", t.issuer.said())];
+    if let Some(d) = t.days_left {
+        ev.push(if d < 0 {
+            format!("it expired {} ago", plural((-d) as usize, "day", "days"))
+        } else {
+            format!("it is good for {} more", plural(d as usize, "day", "days"))
+        });
+    }
+    let fake = "Nobody can then tell your server from someone pretending to be it, and \
+                people learn to click the warning away.";
+    let (state, rank, s) = match (t.days_left, t.issuer) {
+        (Some(d), _) if d < 0 => (
+            DoFirst,
+            WEAK_LOGIN,
+            says(
+                format!("The certificate the internet sees on port {port} has expired"),
+                "Browsers and apps warn or refuse to connect. People learn to click the \
+                 warning away, which is what someone posing as your server needs.",
+                "Renew it, and have it renew by itself; a session with Claude can find what \
+                 issues it.",
+            ),
+        ),
+        (Some(d), _) if d < 14 => (
+            Worth,
+            0,
+            says(
+                format!(
+                    "The certificate the internet sees on port {port} expires in {}",
+                    plural(d as usize, "day", "days")
+                ),
+                "When it lapses, browsers and apps warn or refuse to connect.",
+                "Make sure it renews by itself before then; a session with Claude can check.",
+            ),
+        ),
+        (_, Issuer::SelfSigned) => (
+            Worth,
+            0,
+            says(
+                format!("Port {port} shows the internet a self-signed certificate"),
+                fake,
+                "Use a certificate from a public authority (Let's Encrypt is free and renews \
+                 by itself).",
+            ),
+        ),
+        (_, Issuer::Private) => (
+            Worth,
+            0,
+            says(
+                format!(
+                    "Port {port} shows the internet a certificate from an authority browsers \
+                     don't know"
+                ),
+                fake,
+                "Use a certificate from a public authority (Let's Encrypt is free and renews \
+                 by itself).",
+            ),
+        ),
+        (d, i) => (
+            Fine,
+            0,
+            fine(format!(
+                "The certificate on port {port} is {}{}",
+                i.said(),
+                d.map_or(String::new(), |d| format!(
+                    " and good for {} more",
+                    plural(d as usize, "day", "days")
+                ))
+            )),
+        ),
+    };
+    out.add(id, GettingIn, state, rank, s, targets, ev);
+}
+
 fn door(
     n: &TargetFacts,
     f: &Forward,
@@ -191,13 +293,14 @@ fn door(
                 format!(
                     "The internet can reach {proto} port {port} on a device sentry doesn't manage"
                 ),
-                "sentry can't see what answers there, how old it is, or whether it needs a login.",
-                "If it's a machine of yours, add it to sentry as a server. If nothing should be \
-                 reachable there, remove the forward on the router.",
+                "sentry can't see what answers there, how old it is, or whether it asks for a \
+                 login.",
+                "If it is a machine of yours, add it to sentry as a server. If nothing should \
+                 answer there, remove the forward on the router.",
             ),
             &[&n.id],
             vec![format!(
-                "the router forwards {proto} {port} to an address no managed machine has"
+                "the router forwards {proto} {port} to an address no machine sentry manages has"
             )],
         );
         return;
@@ -209,10 +312,17 @@ fn door(
     )];
     let targets = [n.id.as_str(), h.id.as_str()];
     let (Some(listeners), Ok(to)) = (&h.listeners, f.to_port.parse::<u16>()) else {
-        let why = if h.listeners.is_none() {
-            "What listens there couldn't be read."
+        let (why, fix) = if h.listeners.is_none() {
+            (
+                "What listens there couldn't be read.",
+                "Run the audit again (S) when the server answers.",
+            )
         } else {
-            "It's a range of ports: sentry doesn't match those one by one."
+            (
+                "It is a range of ports, which sentry doesn't follow one by one.",
+                "Make sure each port of the range is meant to be open; a session with Claude \
+                 can go through them.",
+            )
         };
         out.add(
             id,
@@ -222,7 +332,7 @@ fn door(
             says(
                 format!("The internet can reach {proto} port {port} on {}", h.name),
                 why,
-                "Run the audit again when the server answers; a range is yours to judge.",
+                fix,
             ),
             &targets,
             ev,
@@ -266,32 +376,56 @@ fn door(
             .find(|s| s.container.as_deref() == Some(c.name.as_str()))
     });
     if let Some(p) = &l.process {
-        ev.push(format!("answered by the process {p}"));
+        ev.push(format!("answered by the program {p}"));
     }
     if let Some(c) = ctr {
         doors.ctrs.insert((h.id.clone(), c.name.clone()));
-        ev.push(format!("the container {} (image {})", c.name, c.image));
+        ev.push(format!(
+            "the container {} runs the image {}",
+            c.name, c.image
+        ));
         for p in ctr_powers(c) {
             ev.push(format!("that container {p}"));
         }
     }
-    if let Some(s) = sw {
-        doors.software.insert((h.id.clone(), s.id.clone()));
-        ev.push(version(s));
+    match sw {
+        Some(s) => {
+            doors.software.insert((h.id.clone(), s.id.clone()));
+            ev.push(version(s));
+            match s.eol {
+                Eol::Past(d) => ev.push(format!("its support ended {d} days ago")),
+                Eol::Soon(d) => ev.push(format!("its support ends in {d} days")),
+                Eol::Supported => ev.push("its version is still supported".into()),
+                Eol::Unknown => {}
+            }
+        }
+        None if ctr.is_some() => ev.push(
+            "sentry doesn't follow this app's updates: add it to the server's maintenance \
+             items to know when it falls behind"
+                .into(),
+        ),
+        None => {}
     }
     let what = sw
-        .map(|s| s.id.clone())
+        .map(|s| match &s.running {
+            Some(v) => format!("{} {v}", s.id),
+            None => s.id.clone(),
+        })
         .or(ctr.map(|c| c.name.clone()))
         .or(l.process.clone());
     if what.is_none() {
-        ev.push(if h.containers.is_none() {
-            "what answers there couldn't be identified (the server's containers weren't read)"
+        ev.push(if h.containers.is_none() && h.kind == Kind::Server {
+            "what answers there couldn't be named: open the server target and press I (it reads \
+             what needs root), then run the audit again (S)"
                 .into()
         } else {
-            "what answers there couldn't be identified".to_string()
+            "what answers there couldn't be named".to_string()
         });
     }
-    // `web on myserver`, or the server alone when sentry can't tell what answers.
+    if let Some(hours) = h.inventory_hours.filter(|_| h.containers.is_some()) {
+        ev.push(inventory_age(hours));
+    }
+    // `web 1.4 on myserver`, or the server alone when sentry can't tell what answers.
     let what = match what {
         Some(w) => format!("{w} on {}", h.name),
         None => h.name.clone(),
@@ -315,8 +449,8 @@ fn door(
                     ),
                     "Password guessing against ssh never stops, and it's automated. One weak or \
                      reused password is the whole server.",
-                    "Log in with a key, then turn password logins off (PasswordAuthentication \
-                     no). Or stop forwarding ssh and reach it through a VPN.",
+                    "Log in with a key, then turn password logins off. Or stop forwarding ssh \
+                     and reach the server through a VPN.",
                 ),
             ),
             Some(false) => (
@@ -346,10 +480,18 @@ fn door(
         return;
     }
 
+    if let Some(a) = &f.probe {
+        ev.push(format!(
+            "asked once from this machine, without a login: {}",
+            a.web.said()
+        ));
+    }
+    cert(n, f, &targets, out);
+
     let eol = sw.is_some_and(|s| matches!(s.eol, Eol::Past(_)));
     if eol || sw.is_some_and(|s| s.security) {
         let how = if eol {
-            "is no longer supported: it gets no security fixes"
+            "gets no security fixes any more"
         } else {
             "is missing security fixes that are already out"
         };
@@ -371,13 +513,47 @@ fn door(
         return;
     }
     let behind = sw.is_some_and(|s| s.behind);
+    let key = format!("door-login:{}:{proto}:{port}", n.id);
+    // A login seen, and nothing answered otherwise: nothing to ask.
+    if f.probe.as_ref().is_some_and(|a| a.web.asks_login()) && !answers.answers.contains_key(&key) {
+        let (state, s) = if behind {
+            (
+                Worth,
+                says(
+                    format!(
+                        "{what} is open to the internet ({proto} port {port}) and asks for a \
+                         login, but is behind its latest version"
+                    ),
+                    "No security fix is known to be missing, but what the internet can reach \
+                     is worth keeping current.",
+                    "Update it from the server's Maintenance screen.",
+                ),
+            )
+        } else {
+            (
+                Fine,
+                fine(format!(
+                    "{what} is open to the internet ({proto} port {port}) and asks for a login \
+                     first{}",
+                    if sw.is_some() {
+                        "; it is up to date"
+                    } else {
+                        ""
+                    }
+                )),
+            )
+        };
+        out.add(id, GettingIn, state, 0, s, &targets, ev);
+        return;
+    }
     let yes = if behind {
         (
             Worth,
             0,
             says(
                 format!(
-                    "{what} is open to the internet ({proto} port {port}) and behind its latest version"
+                    "{what} is open to the internet ({proto} port {port}) and behind its latest \
+                     version"
                 ),
                 "No security fix is known to be missing, but what the internet can reach is \
                  worth keeping current.",
@@ -389,14 +565,38 @@ fn door(
             Fine,
             0,
             fine(format!(
-                "{what} is open to the internet on {proto} port {port} on purpose: public, or behind its own login"
+                "{what} is open to the internet on {proto} port {port} on purpose: public, or \
+                 behind its own login"
             )),
+        )
+    };
+    let open = f.probe.as_ref().is_some_and(|a| a.web == Web::Open);
+    let question = if open {
+        says(
+            format!(
+                "{what} answers the internet on {proto} port {port} without asking for a \
+                 login. Is that on purpose: is all of it meant for anyone?"
+            ),
+            "Its front page is open to everyone. That is right for a public site, and wrong \
+             for anything private.",
+            "Answer yes if it is public on purpose, no if it isn't (then it needs a login in \
+             front of it, or the door closed).",
+        )
+    } else {
+        says(
+            format!(
+                "{what} is open to the internet on {proto} port {port}. Is everything it \
+                 serves meant for anyone, or behind its own login?"
+            ),
+            "sentry can see the door; whether what is behind it is private, only you know.",
+            "Answer yes or no. A second step at login (a code from your phone) is worth \
+             having on anything private.",
         )
     };
     out.asked(
         id,
         GettingIn,
-        format!("door-login:{}:{proto}:{port}", n.id),
+        key,
         answers,
         yes,
         (
@@ -404,7 +604,8 @@ fn door(
             EXPOSED,
             says(
                 format!(
-                    "{what} is open to the internet on {proto} port {port}, and something it serves needs no login"
+                    "{what} is open to the internet on {proto} port {port}, and something it \
+                     serves needs no login"
                 ),
                 "Anything there that isn't meant for everyone can be read or used by anyone \
                  who finds it, and scanners find every open port.",
@@ -412,14 +613,7 @@ fn door(
                  and reach it through a VPN.",
             ),
         ),
-        says(
-            format!(
-                "{what} is open to the internet on {proto} port {port}. Is everything it serves \
-                 there either meant for anyone, or behind its own login?"
-            ),
-            "sentry can see the door, not what's behind it.",
-            "Answer yes or no. A second step at login (2FA) on anything private is worth having.",
-        ),
+        question,
         &targets,
         ev,
     );
@@ -438,7 +632,8 @@ fn outside(n: &TargetFacts, r: &Router, out: &mut Out) {
                 "The check from outside didn't run",
                 "Without it, what the internet can reach is read from the router's \
                  configuration only.",
-                "See [audit] outside in config.toml.",
+                "Check the command in [audit] outside in config.toml (the README has two \
+                 examples).",
             ),
             &[&n.id],
             vec![e.clone()],
@@ -527,7 +722,8 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
             says(
                 "The router's firewall accepts whatever the internet sends to the router itself",
                 "Its admin page, ssh and every other service on it are then on the internet.",
-                "Set the uplink zone's input to REJECT or DROP (the default).",
+                "Set the router back to refusing what the internet sends it (the internet side's \
+                 input: REJECT, its default).",
             ),
             &t,
             vec![],
@@ -584,8 +780,9 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                     says(
                         format!("The router's own {what} can be reached from the internet"),
                         "Whoever gets into the router sees and can redirect everything at home.",
-                        "Stop it listening on the uplink, or remove the firewall rule that \
-                         lets it in. Reach the router from inside, or through a VPN.",
+                        "Stop it answering on the internet side, or remove the firewall rule \
+                         that lets it in; reach the router from home, or through a VPN (a private \
+                         tunnel into your network).",
                     ),
                     &t,
                     vec![format!("{} port {} answers on the uplink", l.proto, l.port)],
@@ -941,6 +1138,18 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                 (_, Some(n)) => vec![format!("{n} devices seen on it")],
                 _ => Vec::new(),
             };
+            // What is known of them without guessing what they are.
+            if let Some(z) = home.first().filter(|_| crowded) {
+                if let (Some(d), Some(named)) = (z.devices, z.named) {
+                    ev.push(format!(
+                        "{named} of them named in sentry, {} not",
+                        d.saturating_sub(named)
+                    ));
+                }
+                if let (Some(c), Some(w)) = (z.wired, z.wifi) {
+                    ev.push(format!("{c} on a cable, {w} on Wi-Fi"));
+                }
+            }
             if !kept.is_empty() {
                 ev.push(format!(
                     "only the server's side is separate ({})",
@@ -948,20 +1157,26 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                 ));
             }
             ev.push("no guest or gadgets network".into());
+            let radios = r.wifi.as_ref().is_some_and(|w| !w.is_empty());
             out.add(
                 id("flat"),
                 MovingAround,
                 Worth,
                 FLAT,
                 says(
-                    "Every device at home shares one network, so one compromised gadget can \
+                    "Every device at home shares one network, so one broken-into gadget can \
                      reach your computers",
                     "A TV, camera or smart-home gadget that gets broken into can talk to \
-                     every computer and phone beside it. sentry can't tell which of the \
-                     devices are gadgets: only that nothing keeps any of them apart.",
-                    "A separate network for gadgets and guests (its own Wi-Fi name, kept \
-                     apart from your computers by the router's firewall), then move the \
-                     gadgets onto it.",
+                     every computer and phone beside it. sentry can't tell which devices are \
+                     gadgets, only that nothing keeps any of them apart.",
+                    if radios {
+                        "A separate network for gadgets and guests, with its own Wi-Fi name, \
+                         that the router keeps apart from your computers; this router has \
+                         Wi-Fi, so it can run that network itself. Then move the gadgets onto it."
+                    } else {
+                        "A separate network for gadgets and guests, that the router keeps \
+                         apart from your computers. Then move the gadgets onto it."
+                    },
                 ),
                 &t,
                 ev,
@@ -1054,7 +1269,8 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                         ),
                         "A server the internet can reach shouldn't also be able to try the \
                          router's logins.",
-                        "Set that zone's input to REJECT and allow only DHCP and DNS from it.",
+                        "Make the router refuse that network's connections to itself, except \
+                         the two it needs (handing out addresses and name lookups: DHCP and DNS).",
                     );
                 }
                 out.add(zid, MovingAround, state, 0, s, &t, ev);
@@ -1179,7 +1395,8 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                 "The router forgets its log when it restarts",
                 "After a break-in, the log is how you find out what happened; an attacker \
                  only has to restart the router.",
-                "Send its log to the server (log_ip), or keep it in a file on storage.",
+                "Have it send its log to the server, or keep it on storage that survives a \
+                 restart (a USB stick).",
             ),
             &t,
             vec!["the log is kept in memory only".into()],
@@ -1273,7 +1490,202 @@ fn restore_ask(t: &TargetFacts, answers: &Answers, out: &mut Out) {
     );
 }
 
-fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
+/// When a machine's operating system release stops getting security fixes. A server the
+/// internet reaches weighs most; this machine, which nothing reaches from outside, least.
+fn os_life(h: &TargetFacts, life: &Life, exposed: bool, today: Date, out: &mut Out) {
+    let t = [h.id.as_str()];
+    let name = h.name.as_str();
+    let id = format!("sec:os-life:{}", h.id);
+    let rel = life.release.as_str();
+    if let Some(e) = &life.error {
+        out.add(
+            id,
+            KnownHoles,
+            CouldNotCheck,
+            0,
+            says(
+                format!("When {name}'s system stops getting security fixes couldn't be looked up"),
+                "",
+                "sentry looks it up on endoflife.date from this machine; it tries again at the \
+                 next audit (S).",
+            ),
+            &t,
+            vec![e.clone()],
+        );
+        return;
+    }
+    let Some(ends) = life.ends else {
+        out.add(
+            id,
+            KnownHoles,
+            Fine,
+            0,
+            fine(format!(
+                "{name}'s system ({rel}) has no end of security fixes announced"
+            )),
+            &t,
+            vec![],
+        );
+        return;
+    };
+    let days = (ends - today).get_days() as i64;
+    let ev = vec![format!(
+        "{rel}: security fixes until {ends}, says endoflife.date"
+    )];
+    let soon = if h.kind == Kind::Local { 60 } else { 182 };
+    let (state, rank, s) = if days < 0 {
+        (
+            if exposed && h.kind == Kind::Server {
+                DoFirst
+            } else {
+                Worth
+            },
+            OUTDATED,
+            says(
+                format!("{name}'s system ({rel}) no longer gets security fixes"),
+                if exposed {
+                    "Every hole found in it since its support ended stays open, on a machine \
+                     the internet can reach."
+                } else {
+                    "Every hole found in it since its support ended stays open."
+                },
+                "Upgrade to a supported release (with a backup first); a session with Claude \
+                 can plan it.",
+            ),
+        )
+    } else if days <= soon {
+        (
+            Worth,
+            0,
+            says(
+                format!(
+                    "{name}'s system ({rel}) stops getting security fixes in {}",
+                    plural(days as usize, "day", "days")
+                ),
+                "After that, holes found in it stay open.",
+                "Plan the move to the next release before then.",
+            ),
+        )
+    } else {
+        (
+            Fine,
+            0,
+            fine(format!(
+                "{name}'s system ({rel}) gets security fixes until {ends}"
+            )),
+        )
+    };
+    out.add(id, KnownHoles, state, rank, s, &t, ev);
+}
+
+/// How long a server keeps its system log.
+fn logs(h: &TargetFacts, out: &mut Out) {
+    let t = [h.id.as_str()];
+    let name = h.name.as_str();
+    let id = format!("sec:logs:{}", h.id);
+    let why = "After a break-in, the log is how you find out what happened.";
+    let unread = |out: &mut Out| {
+        out.add(
+            id.clone(),
+            Recovering,
+            CouldNotCheck,
+            0,
+            says(
+                format!("How long {name} keeps its system log couldn't be read"),
+                why,
+                if h.needs_inventory {
+                    "Open the server target and press I once (it reads what needs root), then \
+                     run the audit again (S)."
+                } else {
+                    "In server_config.yaml, add `journalctl` to the server's `sudo:` list \
+                     (sentry's own read-only reads), press I on the server target, then run the \
+                     audit again (S)."
+                },
+            ),
+            &t,
+            vec![],
+        );
+    };
+    let Some(l) = &h.logs else {
+        unread(out);
+        return;
+    };
+    let ev: Vec<String> = l
+        .limit
+        .iter()
+        .map(|x| format!("its log settings say {x}"))
+        .collect();
+    match (l.kept, l.days) {
+        (Some(false), _) => {
+            out.add(
+                id,
+                Recovering,
+                Worth,
+                0,
+                says(
+                    format!("{name} forgets its system log when it restarts"),
+                    "After a break-in, the log is how you find out what happened; an attacker \
+                     only has to restart the server.",
+                    "Keep the log on disk (journald's Storage=persistent); a session with \
+                     Claude can.",
+                ),
+                &t,
+                ev,
+            );
+        }
+        (_, Some(d)) if d < 14 => {
+            out.add(
+                id,
+                Recovering,
+                Worth,
+                0,
+                says(
+                    format!(
+                        "{name}'s system log goes back only {}",
+                        plural(d as usize, "day", "days")
+                    ),
+                    "A break-in is often found weeks later, when its traces are gone.",
+                    "Keep more of it (journald's size and age limits); a session with Claude \
+                     can.",
+                ),
+                &t,
+                ev,
+            );
+        }
+        (_, Some(d)) => {
+            out.add(
+                id,
+                Recovering,
+                Fine,
+                0,
+                fine(format!(
+                    "{name} keeps its system log, going back {}",
+                    plural(d as usize, "day", "days")
+                )),
+                &t,
+                ev,
+            );
+        }
+        (Some(true), None) => {
+            let mut ev = ev;
+            ev.push(
+                "how far back it goes needs root to read (press I on the server target)".into(),
+            );
+            out.add(
+                id,
+                Recovering,
+                Fine,
+                0,
+                fine(format!("{name} keeps its system log across restarts")),
+                &t,
+                ev,
+            );
+        }
+        (None, None) => unread(out),
+    }
+}
+
+fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, today: Date, out: &mut Out) {
     let t = [h.id.as_str()];
     let name = h.name.as_str();
     let exposed = doors.hosts.contains(&h.id);
@@ -1298,6 +1710,7 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
         }
         Some(os) => {
             let mut ev = vec![os.name.clone()];
+            ev.extend(os.detail.iter().cloned());
             if let Some(d) = os.updated_days {
                 ev.push(format!(
                     "last update run {} ago",
@@ -1452,6 +1865,9 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
             }
         }
     }
+    if let Some(life) = h.os.as_ref().and_then(|o| o.life.as_ref()) {
+        os_life(h, life, exposed, today, out);
+    }
     if let Some(sw) = &h.software {
         let rest: Vec<&Software> = sw
             .iter()
@@ -1518,18 +1934,42 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                 .iter()
                 .any(|s| s.security || matches!(s.eol, Eol::Past(_)))
         {
-            out.add(
-                id("apps-behind"),
-                KnownHoles,
-                Fine,
-                0,
-                fine(format!(
-                    "The {} on {name} are current",
-                    plural(sw.len(), "tracked app", "tracked apps")
-                )),
-                &t,
-                vec![],
-            );
+            // Current only where the newest version was looked up.
+            let unknown = sw.iter().filter(|s| s.latest.is_none()).count();
+            if unknown == sw.len() {
+                out.add(
+                    id("apps-behind"),
+                    KnownHoles,
+                    CouldNotCheck,
+                    0,
+                    says(
+                        format!(
+                            "Whether the tracked apps on {name} are current couldn't be looked up"
+                        ),
+                        "",
+                        "Press r on the server's Maintenance screen (it looks up what is newer), \
+                         then run the audit again (S).",
+                    ),
+                    &t,
+                    vec![],
+                );
+            } else {
+                out.add(
+                    id("apps-behind"),
+                    KnownHoles,
+                    Fine,
+                    0,
+                    fine(format!(
+                        "The {} on {name} are current",
+                        plural(sw.len() - unknown, "tracked app", "tracked apps")
+                    )),
+                    &t,
+                    (unknown > 0)
+                        .then(|| format!("{unknown} more couldn't be looked up"))
+                        .into_iter()
+                        .collect(),
+                );
+            }
         }
     }
 
@@ -1617,7 +2057,8 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
             says(
                 format!("{name} lets root itself log in over ssh with a password"),
                 "The one account every attacker tries, with no second step.",
-                "Set PermitRootLogin to prohibit-password or no.",
+                "Stop root logging in with a password (PermitRootLogin no, or \
+                 prohibit-password).",
             ),
             &t,
             vec![],
@@ -1666,7 +2107,7 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                         plural(k.loose, "private ssh key", "private ssh keys")
                     ),
                     "A key is a login; whoever copies it is you on every server it opens.",
-                    "chmod 600 on the key files.",
+                    "Make the key files readable by you alone; a session with Claude can.",
                 ),
                 &t,
                 vec![],
@@ -1717,7 +2158,7 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                         "A container is meant to be a box: with this, breaking into the app \
                          inside is breaking into the server.",
                         "Take that away if the app works without it (many do); for the \
-                         Docker socket, a read-only socket proxy.",
+                         Docker socket, give it a read-only stand-in (a socket proxy).",
                     ),
                     &t,
                     p.iter()
@@ -1790,8 +2231,8 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                     ),
                     "Anything else on its network, or anyone who gets one step in, can reach \
                      them too.",
-                    "Bind what only the server itself uses to 127.0.0.1 (in a compose file: \
-                     127.0.0.1:PORT:PORT).",
+                    "Make what only the server itself uses listen on 127.0.0.1, the address \
+                     only the server can reach; a session with Claude can.",
                 ),
                 &t,
                 wide.iter()
@@ -1841,6 +2282,9 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
     }
 
     // -- noticing and recovering
+    if h.kind == Kind::Server {
+        logs(h, out);
+    }
     if let Some(b) = &h.backup {
         if b.signals.is_empty() {
             out.asked(
@@ -2045,8 +2489,8 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
                 ),
                 "A banned address can still try every other door and device the router lets \
                  it reach.",
-                "Install CrowdSec's firewall bouncer on the router and register it with the \
-                 server's agent.",
+                "Install CrowdSec's blocker on the router (its firewall bouncer) and connect \
+                 it to the server's CrowdSec.",
             ),
         )
     } else if agent {
@@ -2055,7 +2499,8 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
             says(
                 format!("CrowdSec on {names} notices attackers, but nothing blocks them"),
                 "It decides who to ban; a bouncer is what enforces it.",
-                "Install a firewall bouncer, on the router for all doors or on the server.",
+                "Install CrowdSec's blocker (a firewall bouncer): on the router for every \
+                 door, or on the server.",
             ),
         )
     } else if jails > 0 {
@@ -2081,9 +2526,9 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
 }
 
 /// Every item, most pressing first: what to do first (by [`super::rank`]), what's worth
-/// doing, questions, what couldn't be checked, what's fine. `today` dates nothing yet but
-/// is where an answer's age would be judged.
-pub fn evaluate(facts: &[TargetFacts], answers: &Answers, _today: Date) -> Vec<Item> {
+/// doing, questions, what couldn't be checked, what's fine. `today` dates an operating
+/// system's end of support.
+pub fn evaluate(facts: &[TargetFacts], answers: &Answers, today: Date) -> Vec<Item> {
     let mut out = Out::default();
     for f in facts {
         if let Some(why) = &f.unreachable {
@@ -2160,7 +2605,7 @@ pub fn evaluate(facts: &[TargetFacts], answers: &Answers, _today: Date) -> Vec<I
         }
     }
     for h in &hosts {
-        host(h, &doors, answers, &mut out);
+        host(h, &doors, answers, today, &mut out);
     }
     watch(&hosts, &nets, &doors, &mut out);
 

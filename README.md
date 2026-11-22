@@ -389,19 +389,24 @@ Blocked and banned addresses never reach a report or Claude: only counts, scenar
 
 **`S`** on Maintenance or Security of any target (or `:audit security`) runs it in the window: while it reads, every target says so; then the report opens, each item is a row on the target it belongs to (the network's Security for its own and for what spans devices, Maintenance elsewhere), and Enter on a row is a session with Claude that fixes it, on whichever devices that takes. A question only you can answer is a pick: yes, no, or you don't know. After the checks Claude reads the evidence (addresses and names are never in it) and looks up advisories for the versions found: "What matters most here", at the top of the report. `S` again shows the report; `S` there runs the audit again. It is also a task every 30 days.
 
-`sentry audit security` reads this machine, every server and every network as one system and prints a short report in plain language: **Do these first**, **Worth doing**, **Fine**, and **Couldn't check / need your answer**. It follows what an attacker would try: getting in from the internet (each port the router forwards, matched with what answers on the server behind it), known holes (firmware, packages, the OS, tracked apps), logins (ssh passwords, Wi-Fi, sudo), moving around once inside (is the network split, is what the internet reaches kept apart, containers with too much control) and noticing and recovering (CrowdSec and where its bans are enforced, backups, logs).
+`sentry audit security` reads this machine, every server and every network as one system and prints a short report in plain language: **Do these first** (five at most; the rest of the pressing ones lead **Worth doing**), **Worth doing**, **Fine**, **Couldn't check**, and **Needs your answer** last. It follows what an attacker would try: getting in from the internet (each port the router forwards, matched with what answers on the server behind it), known holes (firmware, packages, the OS and when its release stops getting fixes, tracked apps), logins (ssh passwords, Wi-Fi, sudo), moving around once inside (is the network split, is what the internet reaches kept apart, containers with too much control) and noticing and recovering (CrowdSec and where its bans are enforced, backups, how long logs are kept). One line says what goes on while sentry is closed: sentry itself only looks while it is open.
 
-- It reads configuration and state. It never scans, probes or attacks anything, and gives no score.
+- It reads configuration and state, and gives no score. It never scans or attacks anything. The one thing it sends: for each port your router forwards to one of sentry's own servers, one request from this machine to that server's front page on that port (no login, nothing followed, 5 seconds), to say whether it asks for a login and what certificate it shows. A page that answers without a login is asked as a question, not called a fault.
+- What runs behind a door (the container, its image and version, the maintenance item that tracks it) comes from the server's inventory when its sudo asks for a password: press `I` on the server target first; the report says how old the inventory was.
 - A line appears only on evidence. What couldn't be read is listed as such, with what it would take.
 - What only you know (does that web app need a login? was a restore ever tested?) is asked once: `sentry audit security answers` lists the questions, `… answers <key> yes|no` remembers one with its date.
 - Reports are kept in `~/.config/sentry/system/security/` (the newest 24) and each is compared with the one before: new, fixed, worse.
-- What the internet can reach is inferred from the router's configuration. To have it confirmed from outside, give sentry a command of your own in `config.toml` and pass `--outside`. It gets your public address and the ports to try (the forwarded ones and a few management ports) and prints the open ones, one per line:
+- What the internet can reach is read from the router's settings. To have it confirmed from outside, give sentry a command of your own in `config.toml` and pass `--outside` (without one, `--outside` says what to put there). sentry never scans: the command is yours, and it must try the ports from somewhere outside your home network. sentry fills in `{address}` (your public IPv4 address) and `{ports}` (the forwarded ports and a few management ports, comma separated); the command prints the ports that answer, one per line. Two worked examples:
 
 ```toml
 [audit]
-# from a machine elsewhere:
+# 1. Through a remote shell host you have (a VPS, a friend's machine): ssh there and try
+#    each port with nc, two seconds each.
 outside = "ssh vps 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} $p && echo $p; done'"
-# or through a VPN's network namespace on this machine:
+
+# 2. Through a VPN on this machine, kept in a network namespace of its own (here one
+#    called `vpn`, set up by your VPN tool), so the tries leave through the VPN and arrive
+#    from outside like anyone else's:
 # outside = "sudo ip netns exec vpn sh -c 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} $p && echo $p; done'"
 ```
 

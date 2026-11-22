@@ -143,6 +143,7 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                             to_port: f.dest_port.clone().unwrap_or_else(|| f.port.clone()),
                             dest: f.dest_ip.clone(),
                             zone: zone.clone(),
+                            probe: None,
                         })
                         .collect::<Vec<_>>()
                 })
@@ -202,6 +203,9 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                             .map(|(_, d)| d.clone())
                             .collect(),
                         devices: None,
+                        named: None,
+                        wifi: None,
+                        wired: None,
                     })
                     .collect(),
             );
@@ -252,7 +256,8 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
         use crate::clients::Link;
         use crate::security::{End, Nets};
         let nets = Nets::new(ifaces, s.uci.as_ref());
-        let mut count: std::collections::BTreeMap<String, usize> = Default::default();
+        // (all, named, on Wi-Fi, on a cable) per zone.
+        let mut count: std::collections::BTreeMap<String, [usize; 4]> = Default::default();
         for c in clients {
             let zone = c
                 .addrs
@@ -267,11 +272,19 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                     _ => None,
                 });
             if let Some(z) = zone {
-                *count.entry(z).or_default() += 1;
+                let n = count.entry(z).or_default();
+                n[0] += 1;
+                n[1] += usize::from(c.known);
+                n[2] += usize::from(matches!(c.link, Link::Wifi { .. }));
+                n[3] += usize::from(matches!(c.link, Link::Wired { .. } | Link::Dmz { .. }));
             }
         }
         for z in zones.iter_mut().filter(|z| !z.wan) {
-            z.devices = Some(count.get(&z.name).copied().unwrap_or(0));
+            let [all, named, wifi, wired] = count.get(&z.name).copied().unwrap_or_default();
+            z.devices = Some(all);
+            z.named = Some(named);
+            z.wifi = Some(wifi);
+            z.wired = Some(wired);
         }
     }
     r.devices = s.clients.as_ref().map(|c| Devices {

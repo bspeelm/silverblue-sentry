@@ -239,9 +239,15 @@ pub fn document(sec: &Sec) -> String {
     for l in sentry_core::secaudit::render(r).lines() {
         let section = !l.starts_with(' ')
             && l.ends_with(')')
-            && ["Do these first", "Worth doing", "Fine", "Couldn't check"]
-                .iter()
-                .any(|s| l.starts_with(s));
+            && [
+                "Do these first",
+                "Worth doing",
+                "Fine",
+                "Couldn't check",
+                "Needs your answer",
+            ]
+            .iter()
+            .any(|s| l.starts_with(s));
         if section || l == "Not read" {
             out.push_str(&format!("## {l}\n"));
         } else if l.starts_with("Security audit · ") {
@@ -313,6 +319,7 @@ mod tests {
             items,
             errors: Vec::new(),
             diff: Default::default(),
+            alone: String::new(),
         });
         let ids = |sec: &Sec, me: &str, system: &[Sys]| -> Vec<String> {
             mine(sec, me, system).iter().map(|i| i.id.clone()).collect()

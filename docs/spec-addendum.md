@@ -366,3 +366,18 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - Shown: now / soon / normal / tidy. `routine` read as "recurring" on a one-time task; it never meant that. Files keep `level = "routine"` (written so, as before); `normal` is read too.
 - Whether a task recurs is said beside its name, and only then: "· every 30d". A task without it is done once.
 - A review is told that a level is priority only, that most one-time checks are `normal`, and that recurrence is `every`.
+
+## A48. The audit looks behind each door (2026-11)
+- For each TCP port a router forwards to one of sentry's own machines (not its ssh, not a range), sentry asks that machine once from this machine: `GET /` on the inside address and the port the forward arrives on, no login, no redirect followed, 5 s (`secaudit::probe`). First over HTTPS with the certificate checked (a failed check stops before any request), then without the check if that failed, or over plain HTTP if the port isn't TLS. Exactly one HTTP request per door; nothing of the answer is kept but its class and the certificate's days and kind of issuer.
+- A 401/403, a redirect to a login page or a page with a password field: "asks for a login", and the door's question isn't asked. A page with content: the question becomes "it answers without a login: is that on purpose?". Anything else leaves the question as it was. An answer given before still decides.
+- The door's item names what answers (the tracked item and its version, else the container, else the program) and whether it is behind; what runs there may come from the server's inventory, said with its age (older than three days: "may be out of date"); without it, the evidence says to press `I` on the server target.
+- A door that speaks HTTPS gets a certificate item: expired → do first; under 14 days → worth doing; self-signed or from an authority this machine doesn't know → worth doing; else fine.
+- The operating system's release (`/etc/os-release`) on every server and this machine is looked up on endoflife.date (a day's cache): past its end of support → do first on a server the internet reaches, worth doing elsewhere; within six months on a server, two months on this machine → worth doing. Not found or not known: couldn't check.
+- A server's system log: forgotten at a restart, or reaching back under 14 days → worth doing; read without root where the login may read the journal, else as root through the sudo list or the inventory; else couldn't check.
+- This machine's waiting updates count its Flatpak and toolbox updates (only counts taken after the last good quick-update), and "last update run" is that run.
+- The flat-network item says how many of the devices are named and how many are on a cable or on Wi-Fi, and that the router can run a separate network itself when it has Wi-Fi. It still never guesses what a device is.
+- The report: one line on what runs while sentry is closed (CrowdSec's bans, automatic security updates); "Do these first" holds five at most, the rest lead "Worth doing" and the header says how many; "Couldn't check" and "Needs your answer" are two sections, the questions last.
+- `--outside` without `[audit] outside` says in three lines what to put there.
+
+## A49. Log entries of the same minute (2026-11)
+- An entry's file is `YYYY-MM-DD-HHMM-<what>.md` when that is free. When another entry has that name, the later of the two gets its seconds, `HHMM.SS-<what>.md` (`HHMM.SS-2-…` within the same second), so names still sort by time and the plain name stays the minute's earliest. Nothing reads entries by name: removal, replacement, retention and the ledger's links go by the file an entry is in; references (`run:<file>`, a review's run) keep naming the plain name as before.

@@ -1,11 +1,13 @@
 //! What a server says to the security audit (`sentry audit security`, core `secaudit`):
 //! the audit's own snapshot plus one read without root (its addresses, the ssh server's
-//! settings, apt's automatic updates) and how sudo answers. Read-only; where root is
+//! settings, apt's automatic updates, its release, how its journal is kept) and how sudo
+//! answers; the release's end of support is looked up from this machine. Read-only; where root is
 //! needed and not at hand (`sshd -T` outside the sudo list, containers without an
 //! inventory) the section stays empty and the audit says it couldn't check.
 
 use sentry_core::secaudit::{
-    Backup, Ctr, Eol, Kind, Listen, Os, Software, Ssh, TargetFacts, Watch, backup_signal, sshd,
+    Backup, Ctr, Eol, Kind, Listen, Logs, Os, Software, Ssh, TargetFacts, Watch, backup_signal,
+    sshd,
 };
 
 use crate::collect::apt::Kind as AptKind;
@@ -26,7 +28,16 @@ pub fn script() -> String {
         "echo @@addrs; hostname -I 2>/dev/null; \
          echo @@sshd-on; systemctl is-active ssh.service sshd.service ssh.socket 2>/dev/null; \
          echo @@auto; apt-config dump 2>/dev/null | grep -i '^APT::Periodic::'; \
-         echo @@sshd; {}",
+         echo @@os; cat /etc/os-release 2>/dev/null; \
+         echo @@journal; test -d /var/log/journal && echo dir; \
+         (test -s /var/log/syslog || test -s /var/log/messages) && echo syslog; \
+         for f in /var/log/journal/*/system.journal; do test -r \"$f\" && echo readable; break; done; \
+         grep -hsE '^[[:space:]]*(Storage|MaxRetentionSec|SystemMaxUse)=' \
+         /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf \
+         /run/systemd/journald.conf.d/*.conf /usr/lib/systemd/journald.conf.d/*.conf; \
+         echo @@boots; for f in /var/log/journal/*/system.journal; do test -r \"$f\" && \
+         journalctl --list-boots -o json -q --no-pager 2>/dev/null | head -c 4000; break; done; \
+         echo; echo @@sshd; {}",
         sshd::files_script("")
     )
 }
@@ -41,6 +52,57 @@ pub struct Read {
     pub auto: Option<bool>,
     /// From the config files (none: not readable).
     pub ssh: Option<Ssh>,
+    /// `/etc/os-release` as it is.
+    pub os_release: String,
+    /// How its journal is kept.
+    pub journal: Journal,
+}
+
+/// How a server's journal is kept, as far as its login can read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Journal {
+    /// `/var/log/journal` exists (where `Storage=auto` keeps it on disk).
+    pub dir: bool,
+    /// The login can read the system's journal itself.
+    pub readable: bool,
+    /// A syslog daemon writes `/var/log/syslog` or `/var/log/messages` (kept on disk too).
+    pub syslog: bool,
+    /// `Storage=` as set (the last one wins).
+    pub storage: Option<String>,
+    /// `MaxRetentionSec=` / `SystemMaxUse=` as set.
+    pub limits: Vec<String>,
+    /// The oldest entry, in microseconds since the epoch (`--list-boots`).
+    pub first_us: Option<i64>,
+}
+
+/// `journalctl --list-boots -o json`'s first boot's first entry (the oldest; the text may
+/// be cut short after it).
+pub fn first_entry(json: &str) -> Option<i64> {
+    let at = json.find("\"first_entry\":")? + "\"first_entry\":".len();
+    let n: String = json[at..]
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    n.parse().ok()
+}
+
+/// What the journal says of how long the log is kept, `now` in seconds.
+pub fn logs(j: &Journal, now: i64) -> Logs {
+    let kept = match j.storage.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        _ if j.syslog => Some(true),
+        Some("volatile") | Some("none") => Some(false),
+        Some("persistent") => Some(true),
+        // auto (the default): on disk when the directory is there.
+        _ => Some(j.dir),
+    };
+    Logs {
+        kept,
+        days: j
+            .first_us
+            .map(|us| ((now - us / 1_000_000) / 86_400).max(0)),
+        limit: (!j.limits.is_empty()).then(|| j.limits.join(", ")),
+    }
 }
 
 pub fn parse(text: &str) -> Read {
@@ -58,6 +120,23 @@ pub fn parse(text: &str) -> Read {
             "addrs" => r.addrs.extend(l.split_whitespace().map(str::to_string)),
             "sshd-on" => states.push(l.trim()),
             "auto" => periodic.push(l.trim()),
+            "os" => {
+                r.os_release.push_str(l);
+                r.os_release.push('\n');
+            }
+            "journal" => match l.trim() {
+                "dir" => r.journal.dir = true,
+                "readable" => r.journal.readable = true,
+                "syslog" => r.journal.syslog = true,
+                t => {
+                    if let Some(v) = t.strip_prefix("Storage=") {
+                        r.journal.storage = Some(v.trim().to_string());
+                    } else if !t.is_empty() {
+                        r.journal.limits.push(t.to_string());
+                    }
+                }
+            },
+            "boots" if r.journal.first_us.is_none() => r.journal.first_us = first_entry(l),
             "sshd" => {
                 sshd_text.push_str(l);
                 sshd_text.push('\n');
@@ -125,6 +204,8 @@ pub fn facts(
         updated_days: a.stamp("upgrade").map(|t| (a.now - t).max(0) / 86_400),
         auto_updates: read.and_then(|r| r.auto),
         eol: Eol::Unknown,
+        life: None,
+        detail: Vec::new(),
     });
     t.listeners = s.listeners.as_ref().map(|ls| {
         ls.iter()
@@ -324,8 +405,31 @@ pub fn collect(r: &Remote) -> TargetFacts {
         today,
     );
     t.errors.extend(errors);
-    t.needs_inventory =
-        sudo == Some(SudoMode::Password) && crate::inventory::load(&r.name).is_none();
+    let inventory = crate::inventory::load(&r.name);
+    t.needs_inventory = sudo == Some(SudoMode::Password) && inventory.is_none();
+    let now = jiff::Timestamp::now();
+    // What needs root came from the inventory: how old it is.
+    if sudo == Some(SudoMode::Password) {
+        t.inventory_hours = inventory.as_ref().map(|c| c.age_secs(now) / 3600);
+    }
+    if let Some(read) = &read {
+        if let Some(os) = t.os.as_mut() {
+            os.life = Some(sentry_app::remote::upstream::os_life(&read.os_release));
+        }
+        // The system's journal: by the login where it may read it, else as root (the
+        // sudo list, or the inventory when sudo asks for a password).
+        let mut j = read.journal.clone();
+        if !j.readable {
+            j.first_us = r
+                .privileged(crate::collect::BOOTS_ARGV)
+                .and_then(|c| r.output(&c))
+                .ok()
+                .and_then(|t| first_entry(&t));
+        }
+        let l = logs(&j, now.as_second());
+        // Kept on disk, but how far back unread and not readable: say only what is known.
+        t.logs = Some(l);
+    }
     t
 }
 
@@ -443,6 +547,51 @@ mod tests {
         assert_eq!(t.sudo_nopasswd, None);
         let t = facts("myserver", &Server::default(), &s, None, None, None, today);
         assert!(t.ssh.is_none() && t.addrs.is_empty());
+    }
+
+    /// The release and the journal, as the one read without root prints them.
+    #[test]
+    fn the_release_and_how_long_the_log_is_kept() {
+        let text = "@@addrs\n@@os\nPRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\n\
+                    ID=debian\nVERSION_ID=\"12\"\n\
+                    @@journal\ndir\nreadable\nStorage=auto\nSystemMaxUse=500M\n\
+                    @@boots\n[{\"index\":-3,\"boot_id\":\"b1\",\"first_entry\":1700000000000000,\
+                    \"last_entry\":1700000100000000},{\"index\":-2,\"boot_id\":\"b2\",\"first_\n\
+                    @@sshd\n";
+        let r = parse(text);
+        assert_eq!(
+            sentry_core::secaudit::release_of(&r.os_release).map(|x| x.2),
+            Some("Debian 12".into())
+        );
+        assert_eq!(
+            r.journal,
+            Journal {
+                dir: true,
+                readable: true,
+                syslog: false,
+                storage: Some("auto".into()),
+                limits: vec!["SystemMaxUse=500M".into()],
+                first_us: Some(1_700_000_000_000_000),
+            }
+        );
+        let now = 1_700_000_000 + 40 * 86_400;
+        let l = logs(&r.journal, now);
+        assert_eq!((l.kept, l.days), (Some(true), Some(40)));
+        assert_eq!(l.limit.as_deref(), Some("SystemMaxUse=500M"));
+        // Kept in memory only, said by the setting or by the missing directory.
+        let mut j = r.journal.clone();
+        j.storage = Some("volatile".into());
+        assert_eq!(logs(&j, now).kept, Some(false));
+        let mut j = Journal::default();
+        assert_eq!(
+            (logs(&j, now).kept, logs(&j, now).days),
+            (Some(false), None)
+        );
+        // A syslog daemon's files are a log kept too.
+        j.syslog = true;
+        assert_eq!(logs(&j, now).kept, Some(true));
+        assert_eq!(first_entry("[]"), None);
+        assert!(script().contains("@@journal") && !script().contains("sudo"));
     }
 
     #[test]

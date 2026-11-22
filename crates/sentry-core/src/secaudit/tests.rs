@@ -19,6 +19,7 @@ fn forward(port: &str, to: &str) -> Forward {
         to_port: to.into(),
         dest: SERVER_ADDR.into(),
         zone: Some("dmz".into()),
+        probe: None,
     }
 }
 
@@ -118,6 +119,11 @@ fn srv() -> TargetFacts {
             security: Some(0),
             auto_updates: Some(true),
             updated_days: Some(3),
+            life: Some(Life {
+                release: "Debian 13".into(),
+                ends: Some(jiff::civil::date(2030, 6, 30)),
+                error: None,
+            }),
             ..Default::default()
         }),
         listeners: Some(vec![
@@ -164,8 +170,21 @@ fn srv() -> TargetFacts {
             signals: vec!["restic-backup.timer".into()],
             ..Default::default()
         }),
+        logs: Some(Logs {
+            kept: Some(true),
+            days: Some(90),
+            limit: None,
+        }),
         ..TargetFacts::new("srv:myserver", Kind::Server, "myserver")
     }
+}
+
+/// The good router, with what its one door said when this machine asked.
+fn door_said(n: &mut TargetFacts, web: Web, tls: Option<(Option<i64>, Issuer)>) {
+    n.router.as_mut().unwrap().forwards.as_mut().unwrap()[0].probe = Some(Answered {
+        web,
+        tls: tls.map(|(days_left, issuer)| Tls { days_left, issuer }),
+    });
 }
 
 fn answered() -> Answers {
@@ -203,7 +222,8 @@ fn a_system_in_good_order_is_all_fine_and_says_so() {
     for l in LIMITS {
         assert!(text.contains(l));
     }
-    assert!(text.contains("(inferred from configuration, not observed from outside)"));
+    assert!(text.contains("(read from the router's settings, not seen from outside)"));
+    assert!(text.contains("sentry only looks while it is open"));
 }
 
 #[test]
@@ -701,6 +721,113 @@ fn each_rule_fires_on_its_evidence_only() {
             "sec:watch",
             State::CouldNotCheck,
         ),
+        (
+            "an exposed server past its system's end of support",
+            |_, s| {
+                s.os.as_mut().unwrap().life.as_mut().unwrap().ends =
+                    Some(jiff::civil::date(2026, 6, 30))
+            },
+            "sec:os-life:srv:myserver",
+            State::DoFirst,
+        ),
+        (
+            "a server's system near its end of support",
+            |_, s| {
+                s.os.as_mut().unwrap().life.as_mut().unwrap().ends =
+                    Some(jiff::civil::date(2027, 3, 1))
+            },
+            "sec:os-life:srv:myserver",
+            State::Worth,
+        ),
+        (
+            "a system's end of support not looked up",
+            |_, s| {
+                s.os.as_mut().unwrap().life = Some(Life {
+                    error: Some("endoflife.date didn't answer".into()),
+                    ..Default::default()
+                })
+            },
+            "sec:os-life:srv:myserver",
+            State::CouldNotCheck,
+        ),
+        (
+            "tracked apps whose newest version wasn't looked up",
+            |_, s| s.software.as_mut().unwrap()[0].latest = None,
+            "sec:apps-behind:srv:myserver",
+            State::CouldNotCheck,
+        ),
+        (
+            "a server that forgets its log",
+            |_, s| s.logs.as_mut().unwrap().kept = Some(false),
+            "sec:logs:srv:myserver",
+            State::Worth,
+        ),
+        (
+            "a server's log that goes back days only",
+            |_, s| s.logs.as_mut().unwrap().days = Some(4),
+            "sec:logs:srv:myserver",
+            State::Worth,
+        ),
+        (
+            "a server's log unread",
+            |_, s| s.logs = None,
+            "sec:logs:srv:myserver",
+            State::CouldNotCheck,
+        ),
+        (
+            "a door's certificate expired",
+            |n, _| {
+                door_said(
+                    n,
+                    Web::Login("401".into()),
+                    Some((Some(-1), Issuer::Public)),
+                )
+            },
+            "sec:cert:net:home:tcp:443",
+            State::DoFirst,
+        ),
+        (
+            "a door's certificate about to expire",
+            |n, _| door_said(n, Web::Login("401".into()), Some((Some(5), Issuer::Public))),
+            "sec:cert:net:home:tcp:443",
+            State::Worth,
+        ),
+        (
+            "a door's certificate self-signed",
+            |n, _| {
+                door_said(
+                    n,
+                    Web::Login("401".into()),
+                    Some((Some(300), Issuer::SelfSigned)),
+                )
+            },
+            "sec:cert:net:home:tcp:443",
+            State::Worth,
+        ),
+        (
+            "a door's certificate from a private authority",
+            |n, _| {
+                door_said(
+                    n,
+                    Web::Login("401".into()),
+                    Some((Some(300), Issuer::Private)),
+                )
+            },
+            "sec:cert:net:home:tcp:443",
+            State::Worth,
+        ),
+        (
+            "a door's certificate public and current",
+            |n, _| {
+                door_said(
+                    n,
+                    Web::Login("401".into()),
+                    Some((Some(60), Issuer::Public)),
+                )
+            },
+            "sec:cert:net:home:tcp:443",
+            State::Fine,
+        ),
     ];
     let good = eval(net(), srv(), &answered());
     for (what, change, id, want) in table {
@@ -755,6 +882,26 @@ fn a_flat_home_network_is_said_only_on_evidence() {
         ]
     );
     assert!(i.fix.contains("separate network for gadgets"));
+    assert!(
+        i.fix
+            .contains("this router has Wi-Fi, so it can run that network itself")
+    );
+    // What is known of the devices without guessing their kind.
+    let mut n = net();
+    let r = n.router.as_mut().unwrap();
+    r.zones.as_mut().unwrap().pop();
+    let z = &mut r.zones.as_mut().unwrap()[1];
+    (z.named, z.wifi, z.wired) = (Some(6), Some(5), Some(3));
+    let items = eval(n, srv(), &answered());
+    let i = items.iter().find(|i| i.id == "sec:flat:net:home").unwrap();
+    assert_eq!(
+        i.evidence[..3],
+        [
+            "9 devices on lan",
+            "6 of them named in sentry, 3 not",
+            "3 on a cable, 5 on Wi-Fi"
+        ]
+    );
     // A handful, an unknown count, or a guest network: not said.
     assert_eq!(flat(Some(5), false).state, State::Fine);
     assert_eq!(flat(None, false).state, State::Fine);
@@ -1089,8 +1236,27 @@ fn private_values_never_leave_the_facts() {
         to: "lan".into(),
         flows: 1,
     }]);
+    // What a door said when this machine asked, and the certificate it showed.
+    r.forwards.as_mut().unwrap()[0].probe = Some(Answered {
+        web: Web::Open,
+        tls: Some(Tls {
+            days_left: Some(-2),
+            issuer: Issuer::SelfSigned,
+        }),
+    });
     s.software.as_mut().unwrap()[0].security = true;
     s.containers.as_mut().unwrap()[0].privileged = true;
+    s.inventory_hours = Some(80);
+    s.logs = Some(Logs {
+        kept: Some(true),
+        days: Some(3),
+        limit: Some("MaxRetentionSec=3day".into()),
+    });
+    s.os.as_mut().unwrap().life = Some(Life {
+        release: "Debian 11".into(),
+        ends: Some(jiff::civil::date(2026, 8, 31)),
+        error: None,
+    });
     let facts = [s, n];
     let rep = Report::build(&facts, &Answers::default(), None, at());
     let all = [
@@ -1109,7 +1275,17 @@ fn private_values_never_leave_the_facts() {
     let brief = &all[2];
     assert!(brief.contains("Never invent a finding the evidence below doesn't hold"));
     assert!(brief.contains("Look up security advisories for the exact software versions"));
-    assert!(brief.contains("[do first] web on myserver is open to the internet (tcp port 443)"));
+    assert!(
+        brief.contains("[do first] web 1.4 on myserver is open to the internet (tcp port 443)"),
+        "{brief}"
+    );
+    assert!(brief.contains("[do first] The certificate the internet sees on port 443 has expired"));
+    assert!(brief.contains("asked once from this machine, without a login: it shows a page"));
+    assert!(
+        brief.contains("[do first] myserver's system (Debian 11) no longer gets security fixes")
+    );
+    assert!(brief.contains("myserver's system log goes back only 3 days"));
+    assert!(brief.contains("read 3 days ago: it may be out of date"));
     assert!(brief.contains("web: running 1.4"));
     assert!(!brief.contains("sentry-changes"));
 }
@@ -1225,5 +1401,258 @@ fn names_that_look_like_a_backup_and_addresses_that_are_the_machines_own() {
     }
     for a in ["0.0.0.0", "*", "[::]", "192.0.2.93", ""] {
         assert!(!loopback(a), "{a}");
+    }
+}
+
+/// What answered behind the door decides whether it is asked: a login seen needs no
+/// question, a page open to all is asked as one ("is that on purpose?"), and nothing
+/// learned leaves the old question. An answer given before still counts.
+#[test]
+fn what_answers_behind_a_door_decides_the_question() {
+    let door = |web: Option<Web>, a: &Answers, s: TargetFacts| {
+        let mut n = net();
+        if let Some(w) = web {
+            door_said(&mut n, w, None);
+        }
+        eval(n, s, a)
+            .into_iter()
+            .find(|i| i.id == "sec:door:net:home:tcp:443")
+            .unwrap()
+    };
+    let none = Answers::default();
+    let i = door(Some(Web::Login("401".into())), &none, srv());
+    assert_eq!((i.state, i.question.as_deref()), (State::Fine, None));
+    assert_eq!(
+        i.title,
+        "web 1.4 on myserver is open to the internet (tcp port 443) and asks for a login \
+         first; it is up to date"
+    );
+    assert!(
+        i.evidence.iter().any(
+            |e| e == "asked once from this machine, without a login: it asks for a login (401)"
+        ),
+        "{:?}",
+        i.evidence
+    );
+    let mut s = srv();
+    s.software.as_mut().unwrap()[0].behind = true;
+    assert_eq!(door(Some(Web::LoginPage), &none, s).state, State::Worth);
+    let i = door(Some(Web::Open), &none, srv());
+    assert_eq!(i.state, State::Ask);
+    assert!(
+        i.title
+            .contains("without asking for a login. Is that on purpose"),
+        "{}",
+        i.title
+    );
+    let i = door(Some(Web::NotWeb), &none, srv());
+    assert_eq!(i.state, State::Ask);
+    assert!(i.title.contains("Is everything it serves meant for anyone"));
+    assert_eq!(door(None, &none, srv()).state, State::Ask);
+    // "No" stands whatever the page said.
+    let mut no = Answers::default();
+    no.set("door-login:net:home:tcp:443", false, day());
+    assert_eq!(
+        door(Some(Web::Login("403".into())), &no, srv()).state,
+        State::DoFirst
+    );
+
+    // What runs there: from the inventory, said with its age; without it, how to get it.
+    let mut s = srv();
+    s.inventory_hours = Some(5);
+    let i = door(None, &none, s);
+    assert!(
+        i.evidence
+            .iter()
+            .any(|e| e == "what runs there is from the server's inventory, read 5 hours ago"),
+        "{:?}",
+        i.evidence
+    );
+    assert!(
+        i.evidence
+            .iter()
+            .any(|e| e == "the container web runs the image example/web:1.4")
+    );
+    let mut s = srv();
+    s.containers = None;
+    s.listeners.as_mut().unwrap()[0].process = None;
+    let i = door(None, &none, s);
+    assert!(
+        i.title.starts_with("myserver is open to the internet"),
+        "{}",
+        i.title
+    );
+    assert!(
+        i.evidence
+            .iter()
+            .any(|e| e.contains("open the server target and press I")),
+        "{:?}",
+        i.evidence
+    );
+    // A container sentry doesn't follow is said so.
+    let mut s = srv();
+    s.software = Some(vec![]);
+    let i = door(None, &none, s);
+    assert!(i.title.starts_with("web on myserver"), "{}", i.title);
+    assert!(
+        i.evidence
+            .iter()
+            .any(|e| e.starts_with("sentry doesn't follow this app's updates"))
+    );
+
+    // Which doors are asked: TCP to one of sentry's own machines, never its ssh, never
+    // a device it doesn't manage, never a range.
+    let mut n = net();
+    let r = n.router.as_mut().unwrap();
+    let fw = r.forwards.as_mut().unwrap();
+    fw.push(forward("2222", "22"));
+    fw.push(Forward {
+        proto: "udp".into(),
+        ..forward("443", "8443")
+    });
+    fw.push(Forward {
+        dest: "198.51.100.9".into(),
+        ..forward("8080", "8080")
+    });
+    fw.push(forward("9000-9010", "9000-9010"));
+    let mut facts = vec![srv(), n];
+    assert_eq!(
+        doors_to_ask(&facts),
+        [(1, 0, SERVER_ADDR.to_string(), 8443)]
+    );
+    probe_doors_with(&mut facts, |addr, port| {
+        assert_eq!((addr, port), (SERVER_ADDR, 8443));
+        Some(Answered {
+            web: Web::Open,
+            tls: None,
+        })
+    });
+    let fw = facts[1].router.as_ref().unwrap().forwards.as_ref().unwrap();
+    assert_eq!(fw[0].probe.as_ref().unwrap().web, Web::Open);
+    assert!(fw[1..].iter().all(|f| f.probe.is_none()));
+}
+
+/// This machine weighs least: past its end of support is worth doing, not first; near it
+/// only in the last two months. Its waiting updates are said in a few words.
+#[test]
+fn this_machines_end_of_support_and_updates() {
+    let l = |ends: (i16, i8, i8), detail: Vec<String>| {
+        let t = TargetFacts {
+            os: Some(Os {
+                name: "Fedora Linux 44".into(),
+                updates: Some(3),
+                updated_days: Some(9),
+                detail,
+                life: Some(Life {
+                    release: "Fedora 44".into(),
+                    ends: Some(jiff::civil::date(ends.0, ends.1, ends.2)),
+                    error: None,
+                }),
+                ..Default::default()
+            }),
+            ..TargetFacts::new(LOCAL, Kind::Local, "this machine")
+        };
+        evaluate(&[t], &Answers::default(), day())
+    };
+    let items = l((2026, 11, 1), vec![]);
+    let i = items.iter().find(|i| i.id == "sec:os-life:local").unwrap();
+    assert_eq!(i.state, State::Worth);
+    assert!(
+        i.title
+            .starts_with("This machine's system (Fedora 44) no longer gets"),
+        "{}",
+        i.title
+    );
+    assert_eq!(
+        state(&l((2027, 1, 10), vec![]), "sec:os-life:local"),
+        Some(State::Worth)
+    );
+    assert_eq!(
+        state(&l((2027, 6, 2), vec![]), "sec:os-life:local"),
+        Some(State::Fine)
+    );
+    let items = l(
+        (2027, 6, 2),
+        vec!["2 app updates".into(), "1 system update".into()],
+    );
+    let os = items.iter().find(|i| i.id == "sec:os:local").unwrap();
+    assert_eq!(os.state, State::Worth);
+    assert!(
+        os.evidence.contains(&"2 app updates".to_string()),
+        "{:?}",
+        os.evidence
+    );
+    assert!(
+        os.evidence
+            .contains(&"last update run 9 days ago".to_string())
+    );
+}
+
+/// The operating system releases sentry knows where to look up, by `/etc/os-release`.
+#[test]
+fn a_release_is_looked_up_by_its_id_and_version() {
+    let r = |text: &str| release_of(text);
+    assert_eq!(
+        r("ID=debian\nVERSION_ID=\"12\"\n"),
+        Some(("debian".into(), "12".into(), "Debian 12".into()))
+    );
+    assert_eq!(
+        r("ID=ubuntu\nVERSION_ID=\"24.04\"\n").map(|x| x.1),
+        Some("24.04".into())
+    );
+    assert_eq!(
+        r("NAME=Fedora\nID=fedora\nVERSION_ID=44\nVARIANT_ID=silverblue\n"),
+        Some(("fedora".into(), "44".into(), "Fedora 44".into()))
+    );
+    assert_eq!(
+        r("ID=alpine\nVERSION_ID=3.20.3\n").map(|x| x.1),
+        Some("3.20".into())
+    );
+    assert_eq!(
+        r("ID=rocky\nVERSION_ID=\"9.4\"\n").map(|x| x.0),
+        Some("rocky-linux".into())
+    );
+    assert_eq!(r("ID=gentoo\nVERSION_ID=2.15\n"), None);
+    assert_eq!(r("ID=debian\n"), None, "testing/sid has no version");
+}
+
+/// The report as text: "Do these first" holds five at most (the rest lead "Worth doing",
+/// said in the header), questions come last, and one line says what goes on while sentry
+/// is closed.
+#[test]
+fn the_report_reads_in_order() {
+    let (mut n, mut s) = (net(), srv());
+    let r = n.router.as_mut().unwrap();
+    r.firmware.as_mut().unwrap().eol = Eol::Past(3);
+    r.zones.as_mut().unwrap()[2].reaches.push("lan".into());
+    r.wifi.as_mut().unwrap()[0].encryption = "none".into();
+    r.wan_input_accept = Some(true);
+    door_said(&mut n, Web::Open, Some((Some(-3), Issuer::SelfSigned)));
+    s.software.as_mut().unwrap()[0].security = true;
+    s.backup = Some(Backup::default());
+    s.logs = None;
+    let mut a = Answers::default();
+    a.set("backup-exists:srv:myserver", false, day());
+    let rep = Report::build(&[s, n], &a, None, at());
+    assert!(rep.of(State::DoFirst).len() > FIRST);
+    assert_eq!(rep.first().len(), FIRST);
+    let text = render(&rep);
+    insta::assert_snapshot!("render_capped", text);
+    let pos = |t: &str| text.find(t).unwrap_or_else(|| panic!("{t} in:\n{text}"));
+    assert!(pos("\nDo these first (5)") < pos("\nWorth doing ("));
+    assert!(pos("\nCouldn't check (") < pos("\nNeeds your answer ("));
+    assert!(text.contains("As pressing as those first, after the five"));
+    assert!(text.contains(
+        "sentry only looks while it is open: nothing of it runs in the background. Without \
+         it: CrowdSec on myserver bans attackers and the router blocks them; myserver installs \
+         security updates by itself."
+    ));
+    // Every title, why and fix is at most two sentences.
+    for i in &rep.items {
+        for t in [&i.title, &i.why, &i.fix] {
+            let inner = t.trim_end_matches(['.', '?']);
+            let sentences = inner.matches(". ").count() + inner.matches("? ").count();
+            assert!(sentences <= 1, "{}: {t}", i.id);
+        }
     }
 }

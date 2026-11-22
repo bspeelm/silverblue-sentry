@@ -1597,6 +1597,7 @@ fn audit_facts(server: &str, network: &str) -> Vec<sentry_core::secaudit::Target
                 to_port: "9443".into(),
                 dest: AUDIT_CANARIES[0].into(),
                 zone: Some("dmz".into()),
+                probe: None,
             }]),
             ..Default::default()
         }),
@@ -2494,6 +2495,71 @@ fn live_resolution() {
             report.errors
         );
     }
+    // Behind each door (scripts/live-resolution.sh forwards two to the server): joined to
+    // the server's listener and asked once from this machine. Without the inventory, what
+    // answers isn't named, and the item says how to get it.
+    let doors = |r: &sentry_core::secaudit::Report| {
+        let of = |port: u16| {
+            r.items
+                .iter()
+                .find(|i| i.id == format!("sec:door:net:{nn}:tcp:{port}"))
+                .cloned()
+                .unwrap_or_else(|| panic!("no door {port}: {:#?}", r.items))
+        };
+        let cert = r
+            .items
+            .iter()
+            .find(|i| i.id == format!("sec:cert:net:{nn}:tcp:9443"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no certificate item: {:#?}", r.items));
+        (of(8081), of(9443), cert)
+    };
+    let (http, tls, cert) = doors(&report);
+    use sentry_core::secaudit::State as Sec;
+    for d in [&http, &tls] {
+        assert!(d.targets.contains(&format!("srv:{sn}")), "{d:#?}");
+    }
+    assert!(
+        http.evidence
+            .iter()
+            .any(|e| e.ends_with("without a login: it asks for a login (401)")),
+        "{http:#?}"
+    );
+    assert_eq!(http.state, Sec::Fine, "{http:#?}");
+    assert!(
+        tls.evidence
+            .iter()
+            .any(|e| e.ends_with("it shows a page without asking for a login")),
+        "{tls:#?}"
+    );
+    assert_eq!(tls.state, Sec::Ask, "{tls:#?}");
+    assert!(tls.title.contains("Is that on purpose"), "{}", tls.title);
+    assert_eq!(cert.state, Sec::Worth, "{cert:#?}");
+    assert!(
+        cert.evidence
+            .iter()
+            .any(|e| e == "the certificate is self-signed")
+            && cert
+                .evidence
+                .iter()
+                .any(|e| e == "it is good for 29 more days" || e == "it is good for 30 more days"),
+        "{cert:#?}"
+    );
+    assert!(
+        http.evidence
+            .iter()
+            .any(|e| e.contains("open the server target and press I")),
+        "{http:#?}"
+    );
+    for i in &report.items {
+        assert!(
+            i.evidence.iter().all(|e| !e.contains(&addr)),
+            "an address in {}: {:?}",
+            i.id,
+            i.evidence
+        );
+    }
+    println!("doors: {} · {} · {}", http.title, tls.title, cert.title);
     let view = tall(&mut a);
     assert!(
         view.contains(" Security audit ") && view.contains("audited today"),
@@ -2666,8 +2732,31 @@ fn live_resolution() {
     }
     assert_eq!(files_with(&token), Vec::<std::path::PathBuf>::new());
     assert_eq!(files_with(&password), Vec::<std::path::PathBuf>::new());
+
+    // The audit again, now that the server's password is held: the server reads its
+    // inventory first, and the doors say what runs there from it, with its age.
+    assert!(a.holds_password_at(SRV));
+    let before = a.win.sec.report.as_ref().map(|r| r.at);
+    a.apply(vec![Effect::SecRun], Instant::now());
+    pump(&mut a, 180.0, &|a| {
+        !a.win.sec.busy() && a.win.sec.report.as_ref().map(|r| r.at) != before
+    });
+    let report = a.win.sec.report.clone().expect("the audit ran again");
+    let (http, _, _) = doors(&report);
+    assert!(
+        http.evidence
+            .iter()
+            .any(|e| e
+                == "what runs there is from the server's inventory, read less than an hour ago"),
+        "{http:#?}"
+    );
+    assert!(
+        !http.evidence.iter().any(|e| e.contains("press I")),
+        "{http:#?}"
+    );
     println!(
-        "live_resolution: one plan, two targets; the token went from the server to the router unseen"
+        "live_resolution: one plan, two targets; the token went from the server to the router unseen; \
+         the doors were joined and asked, with and without the inventory"
     );
 }
 

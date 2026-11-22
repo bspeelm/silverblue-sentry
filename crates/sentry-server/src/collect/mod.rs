@@ -49,6 +49,17 @@ pub fn group_journal(entries: Vec<journal::Entry>) -> Vec<JournalUnit> {
     out
 }
 
+/// The journal's boots, oldest first: how far back the system log goes (the security
+/// audit; root, or the inventory, where the login can't read the system's journal).
+pub const BOOTS_ARGV: &[&str] = &[
+    "journalctl",
+    "--list-boots",
+    "-o",
+    "json",
+    "-q",
+    "--no-pager",
+];
+
 pub const JOURNAL_ARGV: &[&str] = &[
     "journalctl",
     "-p",

@@ -1,0 +1,98 @@
+---
+source: crates/sentry-core/src/secaudit/tests.rs
+expression: text
+---
+Security audit · 2026-11-21 10:00 UTC
+This audit reads the configuration and state of the devices sentry manages. It doesn't attack anything and doesn't look inside your traffic.
+It can't see inside devices sentry doesn't manage (phones, TVs, cameras): only that they are there.
+It can't stop someone being tricked into giving a password away or installing something. It makes that cost less: fewer doors, fewer old holes, less to reach from one device.
+
+Looked at: myserver, home
+sentry only looks while it is open: nothing of it runs in the background. Without it: CrowdSec on myserver bans attackers and the router blocks them; myserver installs security updates by itself.
+
+Do these first (5)
+  (the 5 most pressing; 2 more as pressing come first under Worth doing)
+  (what the internet can reach is read from the router's settings, not seen from outside)
+  1. web 1.4 on myserver is open to the internet (tcp port 443) and is missing security fixes that are already out
+      Why: Published holes in software the internet can reach are found and tried by automated attacks within days, sometimes hours.
+      What it takes: Update it now (its row on the server's Maintenance screen), or close the door on the router until it is.
+      · the router forwards tcp 443 to myserver port 8443
+      · answered by the program docker-proxy
+      · the container web runs the image example/web:1.4
+      · web: running 1.4
+      · its version is still supported
+      · asked once from this machine, without a login: it shows a page without asking for a login
+  2. The router's firewall accepts whatever the internet sends to the router itself
+      Why: Its admin page, ssh and every other service on it are then on the internet.
+      What it takes: Set the router back to refusing what the internet sends it (the internet side's input: REJECT, its default).
+  3. The certificate the internet sees on port 443 has expired
+      Why: Browsers and apps warn or refuse to connect. People learn to click the warning away, which is what someone posing as your server needs.
+      What it takes: Renew it, and have it renew by itself; a session with Claude can find what issues it.
+      · the certificate is self-signed
+      · it expired 3 days ago
+  4. Wi-Fi 1 has no password: anyone nearby can join
+      Why: Whoever joins is inside your network, past the router's firewall.
+      What it takes: Set it to WPA2 or WPA3 with a long passphrase.
+      · Wi-Fi 1: encryption none
+  5. The router's firmware is no longer supported: it gets no more security fixes
+      Why: Holes found from now on stay open, on the device that faces the internet.
+      What it takes: Upgrade to a supported release (back the configuration up first).
+      · installed: 25.12.3
+      · latest of its series: 25.12.3
+      · support ended 3 days ago
+
+Worth doing (2)
+
+  As pressing as those first, after the five
+  - What the internet can reach (the dmz network) is allowed to open connections into lan
+      Why: If the server there is broken into, the attacker is one step from every device on those networks.
+      What it takes: Remove that forwarding on the router; allow only the single ports it really needs.
+      · firewall forwarding dmz → lan
+  - myserver's data has no backup
+      Why: Ransomware, a mistake or a dead disk then loses it for good.
+      What it takes: Set up a backup that leaves the machine (another disk or place), encrypted, on a schedule.
+      · you answered no on 2026-11-21
+
+Fine (16)
+
+  Getting in from the internet
+  (read from the router's settings, not seen from outside)
+  - Over IPv6, the firewall lets nothing from the internet reach devices at home
+
+  Known holes
+  - myserver installs security updates by itself
+  - myserver's system (Debian 13) gets security fixes until 2030-06-30
+  - myserver's system is up to date
+  - The router's packages are up to date
+
+  Logins
+  - The router's admin page is HTTPS only
+  - The router's ssh login takes keys only
+  - myserver's ssh login takes keys only
+  - On myserver, becoming root takes a password
+
+  Moving around once inside
+  - No connection was crossing between parts of the network kept apart (at the moment of the audit)
+  - None of the 1 container on myserver has more control of the server than a container needs
+  - The network is split into 3 parts (lan, dmz, iot)
+  - All 10 devices on the network are ones you named
+
+  Noticing and recovering
+  - The router blocks known bad names (DNS blocklist on and fresh)
+  - The router's configuration is backed up, encrypted, and matches the newest backup
+  - Attackers that CrowdSec catches on myserver are blocked at the router, for every door
+
+Couldn't check (1)
+
+  Noticing and recovering
+  - How long myserver keeps its system log couldn't be read
+      Why: After a break-in, the log is how you find out what happened.
+      What it takes: In server_config.yaml, add `journalctl` to the server's `sudo:` list (sentry's own read-only reads), press I on the server target, then run the audit again (S).
+
+Needs your answer (1)
+
+  Noticing and recovering
+  - Have you ever restored from the backup of the router's configuration to check it works?
+      Why: sentry can see that a backup exists, not that it can be used.
+      What it takes: Answer yes or no.
+      Answer: sentry audit security answers restore-tested:net:home yes|no (if you don't know, leave it: it is asked again)
