@@ -30,6 +30,12 @@ pub struct Container {
     /// `no`, `always`, `unless-stopped`, `on-failure` (empty when unset).
     #[serde(default)]
     pub restart_policy: String,
+    /// `--privileged`: every device and capability of the host.
+    #[serde(default)]
+    pub privileged: bool,
+    /// `--network host`: no network of its own.
+    #[serde(default)]
+    pub host_network: bool,
 }
 
 impl Container {
@@ -92,6 +98,10 @@ struct Inspect {
 struct HostConfig {
     #[serde(default)]
     restart_policy: Option<RestartPolicy>,
+    #[serde(default)]
+    privileged: bool,
+    #[serde(default)]
+    network_mode: String,
 }
 
 #[derive(Deserialize)]
@@ -195,6 +205,11 @@ pub fn parse_inspect(json: &str) -> Result<Vec<Container>, String> {
                     .and_then(|l| l.get("com.docker.compose.service").cloned()),
                 docker_sock: i.mounts.iter().any(|m| m.source.ends_with("/docker.sock")),
                 ports,
+                privileged: i.host_config.as_ref().is_some_and(|h| h.privileged),
+                host_network: i
+                    .host_config
+                    .as_ref()
+                    .is_some_and(|h| h.network_mode == "host"),
                 restart_policy: i
                     .host_config
                     .and_then(|h| h.restart_policy)

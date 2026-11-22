@@ -158,8 +158,8 @@ pub struct Software {
 pub struct Watch {
     /// CrowdSec's agent runs here (none: it isn't installed).
     pub crowdsec: Option<bool>,
-    /// The kinds of bouncer registered with it and still pulling.
-    pub bouncers: Vec<String>,
+    /// The kinds of bouncer registered with it and still pulling (none: not read).
+    pub bouncers: Option<Vec<String>>,
     /// fail2ban jails that are on.
     pub jails: Option<usize>,
     /// On a router: its firewall enforces CrowdSec's bans.
@@ -248,7 +248,6 @@ pub struct Packages {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Forward {
-    pub name: String,
     pub proto: String,
     /// The port, or `from-to`, the internet sees.
     pub port: String,
@@ -345,6 +344,38 @@ impl TargetFacts {
             ..Self::new(id, kind, name)
         }
     }
+}
+
+/// What looks like a backup by its name: a unit, a timer, a container, an app.
+const BACKUP_WORDS: &[&str] = &[
+    "backup",
+    "restic",
+    "borg",
+    "rsnapshot",
+    "duplicity",
+    "duplicati",
+    "dejadup",
+    "deja-dup",
+    "kopia",
+    "rclone",
+    "snapper",
+    "timeshift",
+    "sanoid",
+    "syncoid",
+    "vorta",
+];
+
+pub fn backup_signal(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    // (dpkg's own `dpkg-db-backup` keeps a copy of the package list, not of anyone's data.)
+    !n.starts_with("dpkg-") && BACKUP_WORDS.iter().any(|w| n.contains(w))
+}
+
+/// An address only the machine itself can reach (as `ss` and docker write them).
+pub fn loopback(addr: &str) -> bool {
+    let a = addr.trim_matches(|c| c == '[' || c == ']');
+    let a = a.split('%').next().unwrap_or(a);
+    a.starts_with("127.") || a == "::1" || a == "localhost"
 }
 
 // ---- what the audit says
@@ -518,6 +549,13 @@ impl Answers {
         self.answers.get(key).map(|a| a.answer == "yes")
     }
 
+    /// Remember an answer given today, on disk.
+    pub fn remember(key: &str, yes: bool) -> anyhow::Result<()> {
+        let mut a = Self::load();
+        a.set(key, yes, jiff::Zoned::now().date());
+        a.save()
+    }
+
     pub fn set(&mut self, key: &str, yes: bool, today: Date) {
         self.answers.insert(
             key.to_string(),
@@ -661,6 +699,26 @@ impl Report {
                 .collect(),
             diff,
         }
+    }
+
+    /// The whole of one audit: evaluate with the remembered answers, compare with the
+    /// report before, save.
+    pub fn finish(facts: &[TargetFacts]) -> anyhow::Result<(Self, PathBuf)> {
+        let prev = latest();
+        let r = Self::build(facts, &Answers::load(), prev.as_ref(), Timestamp::now());
+        let path = save(&r)?;
+        Ok((r, path))
+    }
+
+    /// One line for a log entry or a toast.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} to do first, {} worth doing, {} fine, {} couldn't be checked or need an answer",
+            self.of(State::DoFirst).len(),
+            self.of(State::Worth).len(),
+            self.of(State::Fine).len(),
+            self.of(State::Ask).len() + self.of(State::CouldNotCheck).len()
+        )
     }
 
     pub fn of(&self, s: State) -> Vec<&Item> {

@@ -158,8 +158,7 @@ pub struct Audit {
     /// The security audit's check from outside: a command of yours, run on this machine,
     /// given `{address}` (your uplink's public address) and `{ports}` (comma separated),
     /// that prints the ports it found open, one per line. None: nothing is checked from
-    /// outside. e.g. `ssh vps "nc -zvw2 {address} $(echo {ports} | tr , ' ') 2>&1 | awk '/succeeded|open/ {print $4}'"`,
-    /// or the same `nc` inside a VPN's network namespace.
+    /// outside (the README has examples: a host elsewhere over ssh, a VPN's namespace).
     pub outside: Option<String>,
 }
 

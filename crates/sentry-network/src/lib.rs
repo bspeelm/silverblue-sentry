@@ -30,6 +30,7 @@ pub mod read;
 pub mod recorder;
 pub mod redact;
 pub mod remote;
+pub mod secfacts;
 pub mod security;
 pub mod tui;
 pub mod workflow;

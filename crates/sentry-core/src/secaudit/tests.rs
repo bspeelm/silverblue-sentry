@@ -14,7 +14,6 @@ const WAN_ADDR: &str = "203.0.113.7";
 
 fn forward(port: &str, to: &str) -> Forward {
     Forward {
-        name: "web".into(),
         proto: "tcp".into(),
         port: port.into(),
         to_port: to.into(),
@@ -150,7 +149,7 @@ fn srv() -> TargetFacts {
         }]),
         watch: Some(Watch {
             crowdsec: Some(true),
-            bouncers: vec!["firewall".into()],
+            bouncers: Some(vec!["firewall".into()]),
             ..Default::default()
         }),
         backup: Some(Backup {
@@ -560,7 +559,7 @@ fn each_rule_fires_on_its_evidence_only() {
                 })
             },
             "sec:app:srv:myserver:db",
-            State::DoFirst,
+            State::Worth,
         ),
         (
             "an app not behind a door, behind",
@@ -637,18 +636,35 @@ fn each_rule_fires_on_its_evidence_only() {
         ),
         (
             "bans enforced on the server only",
-            |n, _| n.watch = None,
+            |n, _| {
+                n.watch = Some(Watch {
+                    enforces: Some(false),
+                    ..Default::default()
+                })
+            },
             "sec:watch",
             State::Worth,
         ),
         (
             "nothing watches the doors",
             |n, s| {
-                n.watch = None;
+                n.watch = Some(Watch::default());
                 s.watch = Some(Watch::default());
             },
             "sec:watch",
             State::Worth,
+        ),
+        (
+            "CrowdSec runs, its bouncers unread",
+            |n, s| {
+                n.watch = Some(Watch {
+                    enforces: Some(false),
+                    ..Default::default()
+                });
+                s.watch.as_mut().unwrap().bouncers = None;
+            },
+            "sec:watch",
+            State::CouldNotCheck,
         ),
         (
             "the watcher unread",
@@ -981,7 +997,7 @@ fn private_values_never_leave_the_facts() {
     let brief = &all[2];
     assert!(brief.contains("Never invent a finding the evidence below doesn't hold"));
     assert!(brief.contains("Look up security advisories for the exact software versions"));
-    assert!(brief.contains("[do first] web is open to the internet (port 443)"));
+    assert!(brief.contains("[do first] web on myserver is open to the internet (tcp port 443)"));
     assert!(brief.contains("web: running 1.4"));
     assert!(!brief.contains("sentry-changes"));
 }
@@ -996,7 +1012,10 @@ fn an_item_becomes_a_session_ask() {
         .find(|i| i.id == "sec:sudo:srv:myserver")
         .unwrap();
     let ask = i.ask();
-    assert!(ask.subject.starts_with("Security · On myserver"));
+    assert!(
+        ask.subject
+            .starts_with("Security · On myserver, your login")
+    );
     assert!(
         ask.question
             .contains("What it takes: Make sudo ask for a password")
@@ -1054,4 +1073,23 @@ fn the_task_is_due_every_30_days_and_after_an_upgrade() {
             .tags
             .contains(&format!("task:{TASK_ID}"))
     );
+}
+
+#[test]
+fn names_that_look_like_a_backup_and_addresses_that_are_the_machines_own() {
+    for (name, is) in [
+        ("restic-backup.timer", true),
+        ("borgmatic.service", true),
+        ("org.gnome.World.PikaBackup", true),
+        ("dpkg-db-backup.timer", false),
+        ("nginx.service", false),
+    ] {
+        assert_eq!(backup_signal(name), is, "{name}");
+    }
+    for a in ["127.0.0.53%lo", "[::1]", "127.0.0.1"] {
+        assert!(loopback(a), "{a}");
+    }
+    for a in ["0.0.0.0", "*", "[::]", "192.0.2.93", ""] {
+        assert!(!loopback(a), "{a}");
+    }
 }

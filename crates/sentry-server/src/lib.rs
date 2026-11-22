@@ -11,6 +11,7 @@ pub mod inventory;
 pub mod maint;
 pub mod recorder;
 pub mod remote;
+pub mod secfacts;
 pub mod tui;
 pub mod workflow;
 

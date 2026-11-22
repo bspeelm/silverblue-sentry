@@ -12,6 +12,7 @@ pub mod keyfile;
 pub mod maint;
 pub mod recorder;
 pub mod resume;
+pub mod secfacts;
 pub mod status;
 pub mod tui;
 pub mod workflows;

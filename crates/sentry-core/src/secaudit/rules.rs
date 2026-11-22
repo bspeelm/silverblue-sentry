@@ -47,7 +47,12 @@ impl Out {
         targets: &[&str],
         evidence: Vec<String>,
     ) -> &mut Item {
-        let mut brief = format!("Fix this finding of the security audit: {}", s.title);
+        // A title may start with this machine's name; a server's stays as the user wrote it.
+        let mut title = s.title;
+        if let Some(rest) = title.strip_prefix("this machine") {
+            title = format!("This machine{rest}");
+        }
+        let mut brief = format!("Fix this finding of the security audit: {title}");
         if !s.fix.is_empty() {
             brief.push_str(&format!("\nWhat it takes: {}", s.fix));
         }
@@ -59,7 +64,7 @@ impl Out {
             group,
             state,
             rank,
-            title: s.title,
+            title,
             why: s.why.to_string(),
             fix: s.fix.to_string(),
             targets: targets.iter().map(|t| t.to_string()).collect(),
@@ -178,8 +183,7 @@ fn door(
             ),
             &[&n.id],
             vec![format!(
-                "the router forwards {proto} {port} (\"{}\")",
-                f.name
+                "the router forwards {proto} {port} to an address no managed machine has"
             )],
         );
         return;
@@ -264,8 +268,20 @@ fn door(
     let what = sw
         .map(|s| s.id.clone())
         .or(ctr.map(|c| c.name.clone()))
-        .or(l.process.clone())
-        .unwrap_or_else(|| "something".into());
+        .or(l.process.clone());
+    if what.is_none() {
+        ev.push(if h.containers.is_none() {
+            "what answers there couldn't be identified (the server's containers weren't read)"
+                .into()
+        } else {
+            "what answers there couldn't be identified".to_string()
+        });
+    }
+    // `web on myserver`, or the server alone when sentry can't tell what answers.
+    let what = match what {
+        Some(w) => format!("{w} on {}", h.name),
+        None => h.name.clone(),
+    };
 
     // ssh: its own question, and one sentry can read.
     if l.process.as_deref().is_some_and(|p| p.contains("sshd")) || (to == 22 && ctr.is_none()) {
@@ -329,7 +345,7 @@ fn door(
             DoFirst,
             EXPOSED,
             says(
-                format!("{what} is open to the internet (port {port}) and {how}"),
+                format!("{what} is open to the internet ({proto} port {port}) and {how}"),
                 "Published holes in software the internet can reach are found and tried by \
                  automated attacks within days, sometimes hours.",
                 "Update it now (its row on the server's Maintenance screen), or close the \
@@ -347,7 +363,7 @@ fn door(
             0,
             says(
                 format!(
-                    "{what} is open to the internet (port {port}) and behind its latest version"
+                    "{what} is open to the internet ({proto} port {port}) and behind its latest version"
                 ),
                 "No security fix is known to be missing, but what the internet can reach is \
                  worth keeping current.",
@@ -359,7 +375,7 @@ fn door(
             Fine,
             0,
             fine(format!(
-                "Port {port} is open to the internet on purpose: {what}, public or behind its own login"
+                "{what} is open to the internet on {proto} port {port} on purpose: public, or behind its own login"
             )),
         )
     };
@@ -374,7 +390,7 @@ fn door(
             EXPOSED,
             says(
                 format!(
-                    "Port {port} is open to the internet and something behind it ({what}) needs no login"
+                    "{what} is open to the internet on {proto} port {port}, and something it serves needs no login"
                 ),
                 "Anything there that isn't meant for everyone can be read or used by anyone \
                  who finds it, and scanners find every open port.",
@@ -384,8 +400,8 @@ fn door(
         ),
         says(
             format!(
-                "Port {port} is open to the internet ({what}). Is everything it serves either \
-                 meant for anyone, or behind its own login?"
+                "{what} is open to the internet on {proto} port {port}. Is everything it serves \
+                 there either meant for anyone, or behind its own login?"
             ),
             "sentry can see the door, not what's behind it.",
             "Answer yes or no. A second step at login (2FA) on anything private is worth having.",
@@ -851,6 +867,8 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
                     "Wi-Fi uses WPA2 or WPA3 on {}",
                     if wifi.len() == 1 {
                         "its one network".to_string()
+                    } else if wifi.len() == 2 {
+                        "both networks".to_string()
                     } else {
                         format!("all {} networks", wifi.len())
                     }
@@ -1177,7 +1195,11 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
 }
 
 fn restore_ask(t: &TargetFacts, answers: &Answers, out: &mut Out) {
-    let name = &t.name;
+    let name = &if t.kind == Kind::Network {
+        "the router's configuration".to_string()
+    } else {
+        t.name.clone()
+    };
     out.asked(
         format!("sec:restore:{}", t.id),
         Recovering,
@@ -1187,20 +1209,20 @@ fn restore_ask(t: &TargetFacts, answers: &Answers, out: &mut Out) {
             Fine,
             0,
             fine(format!(
-                "You have restored from {name}'s backup at least once"
+                "You have restored from the backup of {name} at least once"
             )),
         ),
         (
             Worth,
             RECOVERY,
             says(
-                format!("{name}'s backup has never been restored to check it works"),
+                format!("The backup of {name} has never been restored to check it works"),
                 "A backup that can't be restored is found out on the worst day.",
                 "Restore it once somewhere harmless (for the router: decrypt it and look inside).",
             ),
         ),
         says(
-            format!("Have you ever restored from {name}'s backup to check it works?"),
+            format!("Have you ever restored from the backup of {name} to check it works?"),
             "sentry can see that a backup exists, not that it can be used.",
             "Answer yes or no.",
         ),
@@ -1235,7 +1257,10 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
         Some(os) => {
             let mut ev = vec![os.name.clone()];
             if let Some(d) = os.updated_days {
-                ev.push(format!("last updated {d} days ago"));
+                ev.push(format!(
+                    "last update run {} ago",
+                    plural(d as usize, "day", "days")
+                ));
             }
             let sec = os.security.unwrap_or(0);
             let (state, rank, s) = if let Eol::Past(d) = os.eol {
@@ -1309,7 +1334,17 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                     ),
                 )
             } else {
-                (Fine, 0, fine(format!("{name}'s system is up to date")))
+                (
+                    Fine,
+                    0,
+                    fine(match (os.updates, os.updated_days) {
+                        (None, Some(d)) => format!(
+                            "{name}'s system was updated {} ago",
+                            plural(d as usize, "day", "days")
+                        ),
+                        _ => format!("{name}'s system is up to date"),
+                    }),
+                )
             };
             out.add(id("os"), KnownHoles, state, rank, s, &t, ev);
             if os.reboot_pending {
@@ -1387,11 +1422,12 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                 out.add(
                     sid,
                     KnownHoles,
-                    DoFirst,
+                    Worth,
                     OUTDATED,
                     says(
                         format!("{} on {name} is no longer supported", s.id),
-                        "It gets no more security fixes.",
+                        "It gets no more security fixes. The internet can't reach it directly as far \
+                         as sentry sees.",
                         "Move to a supported version (its row on the Maintenance screen).",
                     ),
                     &t,
@@ -1787,8 +1823,7 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                 ),
                 says(
                     format!(
-                        "sentry found no sign of a backup on {name}. Is its data backed up \
-                         somewhere else?"
+                        "No sign of a backup was found on {name}. Is its data backed up somewhere else?"
                     ),
                     "sentry looks for known backup tools and timers; yours may be one it \
                      doesn't know.",
@@ -1856,9 +1891,17 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
     let agent = exposed
         .iter()
         .any(|h| h.watch.as_ref().is_some_and(|w| w.crowdsec == Some(true)));
-    let local_bouncer = exposed
-        .iter()
-        .any(|h| h.watch.as_ref().is_some_and(|w| !w.bouncers.is_empty()));
+    let local_bouncer = exposed.iter().any(|h| {
+        h.watch
+            .as_ref()
+            .is_some_and(|w| w.bouncers.as_ref().is_some_and(|b| !b.is_empty()))
+    });
+    // Where bans are enforced isn't known: the server's bouncers or the router weren't read.
+    let unread = exposed.iter().any(|h| {
+        h.watch
+            .as_ref()
+            .is_some_and(|w| w.crowdsec == Some(true) && w.bouncers.is_none())
+    }) || nets.iter().any(|n| n.watch.is_none());
     let jails: usize = exposed
         .iter()
         .filter_map(|h| h.watch.as_ref().and_then(|w| w.jails))
@@ -1876,8 +1919,14 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
                 }
                 None => {}
             }
-            if !w.bouncers.is_empty() {
-                ev.push(format!("{}: bouncers {}", h.name, w.bouncers.join(", ")));
+            match &w.bouncers {
+                Some(b) if !b.is_empty() => {
+                    ev.push(format!("{}: bouncers {}", h.name, b.join(", ")))
+                }
+                None if w.crowdsec == Some(true) => {
+                    ev.push(format!("{}: its bouncers couldn't be read", h.name))
+                }
+                _ => {}
             }
             if let Some(j) = w.jails.filter(|j| *j > 0) {
                 ev.push(format!(
@@ -1898,6 +1947,20 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
                 "Attackers that CrowdSec catches on {names} are blocked at the router, for \
                  every door"
             )),
+        )
+    } else if agent && unread {
+        (
+            CouldNotCheck,
+            says(
+                format!(
+                    "CrowdSec runs on {names}; whether anything blocks the attackers it \
+                     catches couldn't be read"
+                ),
+                "It decides who to ban; a bouncer (on the server or the router) is what \
+                 enforces it.",
+                "Allow `cscli bouncers` in the server's sudo list in server_config.yaml, and \
+                 run the audit again when the router answers.",
+            ),
         )
     } else if agent && local_bouncer {
         (
