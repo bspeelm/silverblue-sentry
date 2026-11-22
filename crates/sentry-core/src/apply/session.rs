@@ -1219,6 +1219,17 @@ impl Session {
             Do::Approve => {
                 let steps = self.run().map(|r| r.plan.steps.clone()).unwrap_or_default();
                 for (i, st) in steps.iter().enumerate() {
+                    // What sentry stops looking for is a judgement, not a routine answer.
+                    if let StepKind::Unwatch { what, .. } = &st.kind {
+                        return waits(
+                            self,
+                            format!(
+                                "step {} ({}): what sentry stops watching ({what}) is yours to decide · Enter applies the plan",
+                                i + 1,
+                                st.title
+                            ),
+                        );
+                    }
                     if let StepKind::Run(c) | StepKind::Check(c) = &st.kind
                         && !answers(true, &Asked::Plan(&[c.as_str()]))
                     {
@@ -3131,6 +3142,17 @@ mod tests {
             ),
         );
         assert_eq!(s.enter_word(), Some("apply the plan"));
+        // Auto never approves it: what sentry stops watching is the user's to decide.
+        s.auto = true;
+        assert!(s.auto_go().is_empty());
+        assert_eq!(s.phase, Phase::Review);
+        assert!(
+            s.chat.entries.iter().any(|(_, l)| l
+                .contains("what sentry stops watching (timer:report.timer) is yours to decide")),
+            "{:?}",
+            s.chat.entries
+        );
+        s.auto = false;
         assert_eq!(
             key(&mut s, KeyCode::Enter),
             [Fx::Unwatch {
