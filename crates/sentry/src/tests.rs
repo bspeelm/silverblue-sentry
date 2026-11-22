@@ -1049,3 +1049,64 @@ fn claude_is_offered_only_where_it_answers() {
     key(&mut a, KeyCode::Char('A'));
     assert_eq!(a.toast_for_test(), Some(sentry_network::tui::ask::NOT_YET));
 }
+
+/// The same task behaves the same on all three targets: Enter on a task done by hand
+/// opens an apply session with Claude at its brief (nothing sent, nothing logged, the task
+/// still due); `m` shows its steps, and that box's Enter is what marks it done.
+#[test]
+fn a_by_hand_task_is_a_session_with_claude_on_every_target() {
+    use sentry_core::apply::session::Phase;
+    let mut a = three();
+    // What must be hidden from Claude on a network is known once these are read.
+    for ev in [
+        sentry_network::tui::testing::ifaces_ev(NETWORK, &fixture("network/ifaces.txt")),
+        sentry_network::tui::testing::uci_ev(NETWORK, &fixture("network/uci.txt")),
+        sentry_network::tui::testing::clients_ev(NETWORK, &fixture("network/clients.txt")),
+    ] {
+        a.on_event(ev, Instant::now());
+    }
+    for slot in a.slots.iter_mut() {
+        slot.shared.tasks = vec![task("hand", "Tidy the thing by hand")];
+    }
+    for (i, f) in [(0, 1), (1, 2), (2, 3)] {
+        key(&mut a, KeyCode::F(f));
+        assert_eq!(a.focus, i);
+        key(&mut a, KeyCode::Char('6'));
+        typed(&mut a, "/Tidy the thing");
+        key(&mut a, KeyCode::Enter);
+        let s = screen(&mut a);
+        assert!(s.contains("Tidy the thing by hand"), "slot {i}: {s}");
+        assert!(
+            s.contains("By hand: Enter works it out with Claude"),
+            "slot {i}: {s}"
+        );
+        let logged = a.slots[i].shared.log.len();
+        key(&mut a, KeyCode::Enter);
+        let ses = a.apply_session_at(i).unwrap_or_else(|| {
+            panic!("slot {i}: Enter opens no session: {:?}", a.toast_for_test())
+        });
+        assert_eq!(ses.phase, Phase::Brief, "slot {i}");
+        let ap = ses.chat.ask.applying().expect("an apply session");
+        assert_eq!(ap.task.as_deref(), Some("hand"), "slot {i}");
+        assert!(a.box_yes_for_test().is_none(), "slot {i}: a box");
+        key(&mut a, KeyCode::Esc);
+        assert!(a.apply_session_at(i).is_none(), "slot {i}");
+        assert_eq!(a.slots[i].shared.log.len(), logged, "slot {i}: logged");
+        assert!(
+            screen(&mut a).contains("Tidy the thing by hand"),
+            "slot {i}: still due"
+        );
+        // m: the steps; the box's yes is the one thing that marks it done.
+        key(&mut a, KeyCode::Char('m'));
+        let s = screen(&mut a);
+        assert!(
+            s.contains("Look at it.") && s.contains("mark done"),
+            "slot {i}: {s}"
+        );
+        assert!(
+            matches!(a.box_yes_for_test(), Some([Effect::TaskDone(id)]) if id == "hand"),
+            "slot {i}"
+        );
+        key(&mut a, KeyCode::Char('n'));
+    }
+}

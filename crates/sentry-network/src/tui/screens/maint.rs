@@ -2,9 +2,12 @@
 //! audit's findings, the audit itself when it's due, what the firmware, the packages and
 //! the config backups ask for (`maint::recommend`), and the tasks due (`tasks.toml` over
 //! the config's cadences). Under it the Items: firmware, packages, backup, one cursor with
-//! the list; then what the last audit looked at. `F` opens the audit's report. The one thing started from here that does
-//! something is a workflow (`config-backup`, which only reads the router); everything else
-//! is looked at, marked expected or put off, and a by-hand task is done by hand.
+//! the list; then what the last audit looked at. `F` opens the audit's report. Enter does
+//! what the row is about, as on the other targets: a finding and a task done by hand are
+//! an apply session with Claude (it plans, you approve, sentry applies under the router's
+//! policy and guard), a workflow's row starts it, an item's row starts its workflow. Without
+//! Claude Code a finding opens in the report and a by-hand task shows its steps (`m` always
+//! does).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -33,7 +36,8 @@ use sentry_core::tui::widgets::{self, TableSpec, inner, panel};
 /// What Enter does on a row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// An audit finding (its id): its place in the report.
+    /// An audit finding (its id): Enter is its fix session (without Claude Code, its place
+    /// in the report).
     Finding(String),
     /// Audit the network now.
     Audit,
@@ -41,7 +45,8 @@ pub enum Action {
     Task(String),
     /// Start this workflow.
     Run(String),
-    /// Something of this item that sentry can't carry out yet: Enter says how it stands.
+    /// A row about this item: Enter is the item's own (its workflow, or how it stands
+    /// while that is a draft).
     About(ItemKind),
 }
 
@@ -260,6 +265,23 @@ pub fn pick(v: &View) -> Option<Rec> {
     recs(v).get(v.cur).cloned()
 }
 
+/// What Claude would apply for the selected row: the recommendation, or for an item's own
+/// row the same thing a row about it is (`A` → 1 there is its workflow with Claude).
+pub fn pick_apply(v: &View) -> Option<Rec> {
+    match sel(v)? {
+        Sel::Rec(r) => Some(r),
+        Sel::Item(i) => Some(Rec {
+            level: Level::Routine,
+            key: format!("item:{}", i.id),
+            title: format!("{}: {}", i.id, i.state),
+            why: String::new(),
+            action: Action::About(i.kind),
+            item: None,
+            can_wait: false,
+        }),
+    }
+}
+
 fn rec_key(r: &Rec) -> String {
     format!("{}:{}", r.key, r.title)
 }
@@ -285,6 +307,8 @@ pub enum SeriesKind {
 pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
     let has = |wf: &str| v.sh.workflows.iter().any(|w| w == wf);
     let run = |wf: &str| has(wf).then(|| SeriesKind::Workflow(wf.to_string()));
+    // A session is Claude's: without Claude Code such a row isn't a series' to do.
+    let session = || sentry_core::claude::available().then_some(SeriesKind::Session);
     match &x.action {
         Action::Run(wf) => run(wf),
         Action::Finding(id) if id == UNSAVED => run(BACKUP_WF),
@@ -292,10 +316,12 @@ pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
         Action::Task(id) => match task_of(v, id)?.action() {
             Do::Run(wf) => run(&wf),
             Do::Audit => Some(SeriesKind::Audit),
-            Do::ByHand => Some(SeriesKind::Session),
-            _ => None,
+            Do::ByHand => session(),
+            // An item's task is the item's workflow (nothing here has a plan document).
+            Do::Plan(it) => item_workflow(v, item_kind_of(v, &it)?).and_then(run),
+            Do::Job(_) => None,
         },
-        Action::Finding(_) => Some(SeriesKind::Session),
+        Action::Finding(_) => session(),
         Action::About(_) => None,
     }
 }
@@ -315,6 +341,50 @@ fn task_of(v: &View, id: &str) -> Option<Task> {
     all_tasks(v).into_iter().find(|t| t.id == id)
 }
 
+/// The kind of the item a task names (`plan <item>`), when the network has it.
+fn item_kind_of(v: &View, item: &str) -> Option<ItemKind> {
+    recommend::kinds(v.cfg)
+        .into_iter()
+        .find(|(id, _)| id == item)
+        .map(|(_, k)| k)
+}
+
+/// A workflow is still a draft (never run end to end): Enter doesn't start it.
+fn draft(v: &View, wf: &str) -> bool {
+    v.sh.wf_entries
+        .iter()
+        .find(|e| e.name == wf)
+        .is_some_and(|e| e.wf.as_ref().is_ok_and(|w| w.draft))
+}
+
+/// The workflow Enter starts for an item (None: it has none here, or only a draft).
+fn item_workflow(v: &View, kind: ItemKind) -> Option<&'static str> {
+    let wf = match kind {
+        ItemKind::Backup => BACKUP_WF,
+        ItemKind::Packages => PACKAGES_WF,
+        ItemKind::Firmware => FIRMWARE_WF,
+    };
+    (v.sh.workflows.iter().any(|w| w == wf) && !draft(v, wf)).then_some(wf)
+}
+
+/// What Enter is called on an item's row (and on a row about it).
+fn item_word(v: &View, kind: ItemKind) -> &'static str {
+    match (kind, item_workflow(v, kind)) {
+        (ItemKind::Backup, _) => "back up",
+        (_, Some(_)) => "upgrade",
+        (_, None) => "about",
+    }
+}
+
+/// Enter on a row that is a session's: the app asks the target for it (`Asks::apply_ask`,
+/// scrubbed), and the brief opens. Until what must be hidden is read, it says so.
+fn session(v: &View) -> Vec<Effect> {
+    match crate::tui::ask::scrub(v) {
+        Ok(_) => vec![Effect::ApplyAsk],
+        Err(why) => vec![Effect::Toast(why)],
+    }
+}
+
 /// The keys the selected row takes (the key bar shows only these).
 pub fn verbs(v: &View) -> Verbs {
     let only = |enter: &'static str| Verbs {
@@ -322,19 +392,15 @@ pub fn verbs(v: &View) -> Verbs {
         ..Default::default()
     };
     let series = pick(v).is_some_and(|r| series_kind(v, &r).is_some());
+    let claude = sentry_core::claude::available();
     let row = match sel(v) {
         None => return Verbs::default(),
-        Some(Sel::Item(i)) => {
-            return only(match i.kind {
-                ItemKind::Backup => "back up",
-                _ => "about",
-            });
-        }
+        Some(Sel::Item(i)) => return only(item_word(v, i.kind)),
         Some(Sel::Rec(r)) => r.action,
     };
     let vb = match row {
         Action::Run(_) => only("run"),
-        Action::About(_) => only("about"),
+        Action::About(kind) => only(item_word(v, kind)),
         Action::Finding(id) if id == UNSAVED => Verbs {
             dismiss: Some(Dismiss::Expected),
             ..only("back up")
@@ -342,7 +408,7 @@ pub fn verbs(v: &View) -> Verbs {
         Action::Finding(_) => Verbs {
             dismiss: Some(Dismiss::Expected),
             like: true,
-            ..only("in the report")
+            ..only(if claude { "fix" } else { "in the report" })
         },
         Action::Audit => only("audit"),
         Action::Task(id) => {
@@ -352,10 +418,12 @@ pub fn verbs(v: &View) -> Verbs {
                 every: true,
                 manual: what == Some(Do::ByHand),
                 dismiss: Some(Dismiss::Remove),
-                ..only(match what {
+                ..only(match &what {
+                    Some(Do::ByHand) if claude => "with Claude",
                     Some(Do::ByHand) => "its steps",
                     Some(Do::Audit) => "audit",
                     Some(Do::Run(_)) => "run",
+                    Some(Do::Plan(it)) => item_kind_of(v, it).map_or("do it", |k| item_word(v, k)),
                     _ => "do it",
                 })
             }
@@ -364,7 +432,7 @@ pub fn verbs(v: &View) -> Verbs {
     Verbs { series, ..vb }
 }
 
-/// The key bar: the row's keys (no Claude for a network yet, so no `A`), then the screen's.
+/// The key bar: the row's keys (`A` is named once, by the frame), then the screen's.
 /// `ticked`: how many rows are ticked for a series.
 pub fn hints(v: &View, ticked: usize) -> Hints {
     // (An empty list has no row to name keys for.)
@@ -387,6 +455,7 @@ pub fn hints(v: &View, ticked: usize) -> Hints {
         ("r", "refresh"),
         ("c", "audit"),
         ("F", "report"),
+        ("R", "review"),
         ("v", "records"),
     ]);
     h
@@ -400,14 +469,16 @@ pub fn help() -> Hints {
         .copied()
         .filter(|(k, _)| !not_here.contains(k))
         .chain([
-            ("x", "expected (a finding) · remove (a task); asks first"),
-            ("b", "a finding: expected (as x, without the box)"),
+            (
+                "x / b",
+                "expected (a finding; b without the box) · x removes a task; x asks first",
+            ),
             (
                 "r",
                 "refresh: fetch the package index again (apk update, tmpfs only), look upstream, audit",
             ),
             ("c", "audit the network now (it only reads)"),
-            ("F", "the audit report"),
+            ("F / R", "the audit report / Claude reviews the upkeep and the task list"),
             ("w", "the workflows (0)"),
             ("v", "records: tasks, the log, what's put off or expected"),
         ])
@@ -427,21 +498,29 @@ pub fn badge(v: &View) -> Option<(String, Color)> {
     }
 }
 
-/// Enter on a task: the audit, or (by hand) its steps.
+/// Enter on a task: its workflow, the audit, its item's own Enter, or (by hand) a session
+/// with Claude, who plans it and sentry applies it. Without Claude Code, or with `m`, the
+/// steps to do it yourself.
 pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     let Some(task) = task_of(v, id) else {
         return Vec::new();
     };
     match task.action() {
         Do::Audit => report::audit_now(),
+        Do::ByHand if sentry_core::claude::available() => session(v),
         Do::ByHand => task_manual(v, id),
+        Do::Run(wf) if wf == BACKUP_WF => backup_enter(v),
         Do::Run(wf) if v.sh.workflows.contains(&wf) => vec![Effect::StartWorkflow(wf)],
         Do::Run(wf) => vec![Effect::Toast(format!(
-            "this network has no workflow {wf}: d marks it done"
+            "this network has no workflow {wf} (0 lists the ones it has)"
         ))],
-        Do::Plan(it) => vec![Effect::Toast(format!(
-            "nothing is tracked on a network yet ({it}): d marks it done"
-        ))],
+        // An item's task: what Enter does on the item.
+        Do::Plan(it) => match item_kind_of(v, &it) {
+            Some(kind) => item_enter(v, kind),
+            None => vec![Effect::Toast(format!(
+                "{it} isn't an item of this network (its items: firmware, packages, backup)"
+            ))],
+        },
         Do::Job(j) => vec![Effect::Toast(format!(
             "{j} is a job of this machine's, not the network's: d marks it done"
         ))],
@@ -507,22 +586,11 @@ pub const FIRMWARE_WF: &str = "firmware-upgrade";
 /// workflow is still a draft, until the user makes it not one.
 fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
     let has = |wf: &str| v.sh.workflows.iter().any(|w| w == wf);
-    let draft = |wf: &str| {
-        v.sh.wf_entries
-            .iter()
-            .find(|e| e.name == wf)
-            .is_some_and(|e| e.wf.as_ref().is_ok_and(|w| w.draft))
-    };
-    let (title, wf) = match kind {
-        ItemKind::Backup => return backup_enter(v),
-        ItemKind::Packages if has(PACKAGES_WF) => {
-            return vec![Effect::StartWorkflow(PACKAGES_WF.into())];
-        }
-        ItemKind::Firmware if has(FIRMWARE_WF) && !draft(FIRMWARE_WF) => {
-            return vec![Effect::StartWorkflow(FIRMWARE_WF.into())];
-        }
-        ItemKind::Packages => ("Packages", PACKAGES_WF),
-        ItemKind::Firmware => ("Firmware", FIRMWARE_WF),
+    let (title, wf) = match (kind, item_workflow(v, kind)) {
+        (ItemKind::Backup, _) => return backup_enter(v),
+        (_, Some(wf)) => return vec![Effect::StartWorkflow(wf.into())],
+        (ItemKind::Packages, None) => ("Packages", PACKAGES_WF),
+        (ItemKind::Firmware, None) => ("Firmware", FIRMWARE_WF),
     };
     let mut lines = item_lines(v, kind);
     lines.push(Line::raw(""));
@@ -530,7 +598,7 @@ fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
         vec![
             format!("{wf} is a draft: it has never been run end to end on a router."),
             "Read its steps (0), then delete `draft = true` from its file to use it.".to_string(),
-            "Until then nothing here flashes firmware.".to_string(),
+            "Until then Enter starts nothing here; A asks Claude about it.".to_string(),
         ]
     } else {
         vec![format!("this network has no workflow {wf}")]
@@ -565,6 +633,9 @@ fn key(c: char, v: &View) -> Vec<Effect> {
         ('\n', Action::Run(wf)) if wf == BACKUP_WF => backup_enter(v),
         ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
         ('\n', Action::About(kind)) => item_enter(v, *kind),
+        // A finding: its fix session (the audit runs again after its plan). Without
+        // Claude Code, where it stands in the report.
+        ('\n', Action::Finding(_)) if sentry_core::claude::available() => session(v),
         ('\n', Action::Finding(id)) => vec![Effect::own(Own::OpenReport(Some(id.clone())))],
         ('\n', Action::Audit) => report::audit_now(),
         ('\n', Action::Task(id)) => task_enter(v, id),
@@ -676,15 +747,23 @@ impl Maint {
             }
             Key::Char(c @ ('x' | 'b' | 'B' | 'z' | 'd' | 'm' | 'e')) => key(c, v),
             Key::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
-            Key::Char('F') => self.open_report(v, None),
+            // The report, on the finding the cursor is on when it's on one.
+            Key::Char('F') => {
+                let id = match pick(v).map(|r| r.action) {
+                    Some(Action::Finding(id)) => Some(id),
+                    _ => None,
+                };
+                self.open_report(v, id.as_deref())
+            }
+            Key::Char('R') => vec![Effect::ReviewOpen],
             Key::Char('o') => vec![Effect::Everything],
             Key::Char('v') => vec![Effect::LogOpen(None)],
             _ => Vec::new(),
         }
     }
 
-    /// `F`, `:audit`, Enter on a finding: the audit report over the list, on that finding
-    /// when one is named; its reports are read from disk.
+    /// `F`, `:audit`: the audit report over the list, on that finding when one is named;
+    /// its reports are read from disk.
     pub fn open_report(&mut self, v: &View, id: Option<&str>) -> Vec<Effect> {
         self.view = Some(Sub::Report);
         self.report = ReportView::default();
@@ -791,13 +870,7 @@ impl Maint {
             Some(Sel::Item(i)) => {
                 let mut l = vec![
                     Line::styled(i.id.clone(), t.s(t.cyan)),
-                    Line::styled(
-                        match i.kind {
-                            ItemKind::Backup => "Enter: make a backup now (config-backup)",
-                            _ => "Enter: how it stands",
-                        },
-                        t.s(t.cyan),
-                    ),
+                    Line::styled(item_says(v, i.kind), t.s(t.cyan)),
                     Line::raw(""),
                 ];
                 l.extend(item_lines(v, i.kind));
@@ -809,14 +882,17 @@ impl Maint {
                 match &x.action {
                     Action::Run(wf) => {
                         l.push(Line::styled(
-                            format!("Enter: run {wf} (it only reads the router) · z: later"),
+                            format!("Enter: start {wf} · z: later"),
                             t.s(t.cyan),
                         ));
                         l.push(Line::raw(""));
                         l.extend(item_lines(v, ItemKind::Backup));
                     }
                     Action::About(kind) => {
-                        l.push(Line::styled("Enter: how it stands · z: later", t.s(t.cyan)));
+                        l.push(Line::styled(
+                            format!("{} · z: later", item_says(v, *kind)),
+                            t.s(t.cyan),
+                        ));
                         l.push(Line::raw(""));
                         l.extend(item_lines(v, *kind));
                     }
@@ -832,7 +908,12 @@ impl Maint {
                     }
                     Action::Finding(id) => {
                         l.push(Line::styled(
-                            "Enter: its place in the audit report · b or x: expected · z: later",
+                            if sentry_core::claude::available() {
+                                "Enter: fix it with Claude (it plans, you approve; the audit \
+                                 runs again after) · F: in the report · b or x: expected · z: later"
+                            } else {
+                                "Enter: its place in the audit report · b or x: expected · z: later"
+                            },
                             t.s(t.cyan),
                         ));
                         if let Some(fd) = finding(v, id) {
@@ -846,22 +927,7 @@ impl Maint {
                     )),
                     Action::Task(id) => {
                         if let Some(task) = task_of(v, id) {
-                            l.push(Line::styled(
-                                match task.action() {
-                                    Do::ByHand => {
-                                        "By hand: Enter (or m) shows its steps; d marks it done."
-                                            .to_string()
-                                    }
-                                    Do::Audit => {
-                                        "Enter audits now; it's done with the audit.".to_string()
-                                    }
-                                    Do::Run(wf) if v.sh.workflows.contains(&wf) => {
-                                        format!("Enter runs {wf}; it's done when that ends well.")
-                                    }
-                                    _ => "d marks it done.".to_string(),
-                                },
-                                t.s(t.cyan),
-                            ));
+                            l.push(Line::styled(task_says(v, &task), t.s(t.cyan)));
                             l.push(Line::styled(
                                 format!("{} · from {}", task.when(), task.source.word()),
                                 t.dim(),
@@ -877,6 +943,40 @@ impl Maint {
             }
         };
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
+    }
+}
+
+/// What Enter does on an item's row, in words.
+fn item_says(v: &View, kind: ItemKind) -> String {
+    match (kind, item_workflow(v, kind)) {
+        (ItemKind::Backup, _) => "Enter: make a backup now (config-backup)".into(),
+        (_, Some(wf)) => format!("Enter: start {wf} (each change is shown and confirmed)"),
+        (ItemKind::Firmware, None) if v.sh.workflows.iter().any(|w| w == FIRMWARE_WF) => {
+            format!("Enter: how it stands ({FIRMWARE_WF} is a draft: it starts nothing yet)")
+        }
+        (_, None) => "Enter: how it stands (this network has no workflow for it)".into(),
+    }
+}
+
+/// What Enter does on a task, in words (as the server's rows say it).
+fn task_says(v: &View, task: &Task) -> String {
+    match task.action() {
+        Do::ByHand if sentry_core::claude::available() => {
+            "By hand: Enter works it out with Claude (it plans, you approve, sentry applies; \
+             config changes go through the guard). m: its steps, to do it yourself."
+                .into()
+        }
+        Do::ByHand => "By hand: Enter (or m) shows its steps; d marks it done.".into(),
+        Do::Audit => "Enter audits now; it's done with the audit.".into(),
+        Do::Run(wf) if v.sh.workflows.contains(&wf) => {
+            format!("Enter starts {wf}; it's done when the run ends well.")
+        }
+        Do::Run(wf) => format!("This network has no workflow {wf}: x removes the task."),
+        Do::Plan(it) => match item_kind_of(v, &it) {
+            Some(kind) => format!("About {it}. {}", item_says(v, kind)),
+            None => format!("{it} isn't an item of this network: x removes the task."),
+        },
+        Do::Job(j) => format!("{j} is one of this machine's jobs: d marks it done."),
     }
 }
 

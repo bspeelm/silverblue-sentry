@@ -76,6 +76,27 @@ pub mod testing {
         )
     }
 
+    /// The same for the configuration (secrets tagged with a fixed salt).
+    pub fn uci_ev(network: &str, text: &str) -> super::Event {
+        let u = crate::collect::uci::parse(text, &crate::redact::Salt::fixed([7; 16]));
+        super::Event::Data(
+            super::id_of(network),
+            Box::new(Data(Kind::Uci, Box::new(Ok(Payload::Uci(Box::new(u)))))),
+        )
+    }
+
+    /// The same for the clients read.
+    pub fn clients_ev(network: &str, text: &str) -> super::Event {
+        let raw = crate::collect::clients::parse(text).map_err(crate::collect::CollectError::Parse);
+        super::Event::Data(
+            super::id_of(network),
+            Box::new(Data(
+                Kind::Clients,
+                Box::new(raw.map(|r| Payload::Clients(Box::new(r)))),
+            )),
+        )
+    }
+
     /// The fetches the network in slot `i` has asked for so far, in order (asked for: with
     /// the window offline none is started, but each is still counted).
     pub fn asked(a: &super::App, i: usize) -> Vec<&'static str> {

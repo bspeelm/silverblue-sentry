@@ -905,7 +905,7 @@ impl Asks for NetworkTarget {
 
     fn apply_ask(&self, sh: &Shared, cx: &Cx) -> Option<Ask> {
         let v = self.view(sh, cx);
-        super::ask::apply_rec(&v, &maint::pick(&v)?, &|wf| sh.workflow_text(APP, wf))
+        super::ask::apply_rec(&v, &maint::pick_apply(&v)?, &|wf| sh.workflow_text(APP, wf))
     }
 
     /// Nothing on a network has a plan document of its own.

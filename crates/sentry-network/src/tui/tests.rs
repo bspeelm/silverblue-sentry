@@ -1493,7 +1493,7 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
     let wide = render_to_string(&mut a, 200, 41);
     let bar = wide.lines().last().unwrap();
     for k in [
-        "Enter  in the report",
+        "Enter  fix",
         "Space  tick",
         "x  expected",
         "B  all like it",
@@ -1502,6 +1502,7 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
         "r  refresh",
         "c  audit",
         "F  report",
+        "R  review",
         "v  records",
         "A  ask Claude",
     ] {
@@ -1616,7 +1617,7 @@ fn maintenance_lists_the_findings_and_b_and_pattern_round_trip() {
 fn the_audit_report_view() {
     let mut a = messy();
     key(&mut a, KeyCode::Char('6'));
-    // Enter on a finding: the report, on that finding.
+    // F on a finding: the report, on that finding (Enter is its fix session).
     key(&mut a, KeyCode::Char('j'));
     let s = render_to_string(&mut a, 158, 41);
     let picked = s
@@ -1625,7 +1626,7 @@ fn the_audit_report_view() {
         .nth(1)
         .unwrap()
         .to_string();
-    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('F'));
     assert_eq!(*net(&a).asked.last().unwrap(), Kind::Report);
     let s = render_to_string(&mut a, 158, 41);
     insta::assert_snapshot!("report_158x41", s);
@@ -1842,7 +1843,7 @@ fn tasks_by_hand_work_on_a_network() {
     assert!(s.contains("Check UPnP is off"), "{s}");
     let bar = s.lines().last().unwrap();
     for k in [
-        "Enter  its steps",
+        "Enter  with Claude",
         "d  done",
         "e  every",
         "m  steps",
@@ -1850,13 +1851,55 @@ fn tasks_by_hand_work_on_a_network() {
     ] {
         assert!(bar.contains(k), "{k} in {bar}");
     }
-    // m (and Enter): its steps, and the box marks it done.
+    assert!(
+        s.contains("By hand: Enter works it out with Claude"),
+        "the row says what Enter does: {s}"
+    );
+    // Enter: an apply session with Claude, at its brief, as on a server and this machine.
+    // Nothing is sent, nothing is logged, and the task is still due.
+    let logged = a.slot().shared.log.len();
+    key(&mut a, KeyCode::Enter);
+    {
+        use sentry_core::apply::session::Phase;
+        let s = a.apply_session().expect("Enter opens a session");
+        assert_eq!(s.phase, Phase::Brief);
+        let ap = s.chat.ask.applying().cloned().expect("an apply session");
+        assert_eq!(ap.task.as_deref(), Some("check-upnp"));
+        assert!(ap.remote && ap.asks_each && ap.finding.is_none());
+        assert!(s.chat.ask.context.contains("1. Open the web interface"));
+    }
+    assert!(a.box_yes_for_test().is_none(), "no box that marks it done");
+    key(&mut a, KeyCode::Esc);
+    assert!(a.apply_session().is_none());
+    assert_eq!(a.slot().shared.log.len(), logged);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("Check UPnP is off"), "still due: {s}");
+    // m: its steps, to do it yourself; that box's Enter marks it done.
     key(&mut a, KeyCode::Char('m'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
         s.contains("Open the web interface") && s.contains("mark done"),
         "{s}"
     );
+    assert!(matches!(
+        a.box_yes_for_test(),
+        Some([super::target::Effect::TaskDone(id)]) if id == "check-upnp"
+    ));
+    // Without Claude Code, Enter is that box too, and the row says so.
+    key(&mut a, KeyCode::Char('n'));
+    sentry_core::claude::TEST_AVAILABLE.with(|c| c.set(false));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.lines().last().unwrap().contains("Enter  its steps"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none());
+    assert!(matches!(
+        a.box_yes_for_test(),
+        Some([super::target::Effect::TaskDone(_)])
+    ));
+    sentry_core::claude::TEST_AVAILABLE.with(|c| c.set(true));
     key(&mut a, KeyCode::Char('n'));
     // Space: a task done by hand can go in a series (a session with Claude does it, as
     // on the other targets); Esc unticks.
@@ -1993,7 +2036,7 @@ fn the_items_and_what_they_ask_for() {
     assert!(!s.contains("package(s) could be upgraded"), "{s}");
     let bar = s.lines().last().unwrap();
     assert!(
-        bar.contains("Enter  about") && bar.contains("z  later"),
+        bar.contains("Enter  about") && bar.contains("z  later") && bar.contains("R  review"),
         "{bar}"
     );
     // Enter on the firmware's row says how it stands, and that its workflow is a draft:
@@ -2003,7 +2046,7 @@ fn the_items_and_what_they_ask_for() {
     assert!(
         s.contains("firmware-upgrade is a draft: it has never been run end to end on a router.")
             && s.contains("delete `draft = true` from its file to use it")
-            && s.contains("Until then nothing here flashes firmware."),
+            && s.contains("Until then Enter starts nothing here; A asks Claude about it."),
         "{s}"
     );
     assert!(a.box_yes_for_test().is_none() && a.slot().run.is_none());
@@ -2026,7 +2069,7 @@ fn the_items_and_what_they_ask_for() {
     );
     let bar = s.lines().last().unwrap();
     assert!(
-        bar.starts_with(" Enter  about   o  everything   r  refresh"),
+        bar.starts_with(" Enter  upgrade   o  everything   r  refresh"),
         "{bar}"
     );
     // Enter on the packages starts package-update, which first asks which ones (never
@@ -3917,4 +3960,180 @@ fn a_guarded_changes_secret_is_never_written_down() {
     for d in kept_dirs() {
         let _ = std::fs::remove_dir_all(d);
     }
+}
+
+// ── Parity with the other targets: Enter does what the row is about ─────────────────────
+
+fn a_task(id: &str, title: &str, act: &str) -> sentry_core::maint::tasks::Task {
+    sentry_core::maint::tasks::Task {
+        id: id.into(),
+        title: title.into(),
+        why: "It is time.".into(),
+        level: sentry_core::maint::Level::Soon,
+        every: None,
+        act: act.into(),
+        item: None,
+        steps: "Look at it.".into(),
+        added: None,
+        review: None,
+        after: None,
+        again: None,
+        off: false,
+        source: Default::default(),
+    }
+}
+
+/// Enter on a finding is its fix session (the audit runs again after its plan), as on a
+/// server; `F` is where it stands in the report. Without Claude Code, Enter is the report.
+#[test]
+fn enter_on_a_finding_is_its_fix_session() {
+    use sentry_core::apply::session::Phase;
+    let mut a = messy();
+    key(&mut a, KeyCode::Char('6'));
+    typed(&mut a, "/ssh accepts passwords");
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(s.lines().last().unwrap().contains("Enter  fix"), "{s}");
+    assert!(s.contains("Enter: fix it with Claude"), "{s}");
+    let reports = |a: &App| net(a).asked.iter().filter(|k| **k == Kind::Report).count();
+    let before = reports(&a);
+    key(&mut a, KeyCode::Enter);
+    let ses = a.apply_session().expect("a fix session");
+    assert_eq!(ses.phase, Phase::Brief);
+    let ap = ses.chat.ask.applying().cloned().unwrap();
+    assert_eq!(ap.finding.as_deref(), Some("net:ssh:password"));
+    assert!(ap.reaudits && ap.remote && ap.asks_each);
+    assert!(net(&a).screens.maint.view.is_none() && reports(&a) == before);
+    key(&mut a, KeyCode::Esc);
+    // (`F` is the report, on it: `the_audit_report_view`.)
+    // No Claude Code: Enter is the report, and no session or series row.
+    sentry_core::claude::TEST_AVAILABLE.with(|c| c.set(false));
+    let s = render_to_string(&mut a, 200, 41);
+    let bar = s.lines().last().unwrap().to_string();
+    assert!(
+        bar.contains("Enter  in the report") && !bar.contains("Space  tick"),
+        "{bar}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none() && net(&a).screens.maint.view.is_some());
+    sentry_core::claude::TEST_AVAILABLE.with(|c| c.set(true));
+}
+
+/// Each kind of task, and what Enter does for it: the same table as a server's, with a
+/// network's items where a server has tracked ones.
+#[test]
+fn enter_on_each_kind_of_task() {
+    use super::target::Effect;
+    use sentry_app::target::Upkeep;
+    let _turn = runs();
+    let mut a = with_workflows(&fx_cfg(), None);
+    for (id, act) in [
+        ("hand", "by-hand"),
+        ("run", "run package-update"),
+        ("gone", "run no-such"),
+        ("pkgs", "plan packages"),
+        ("fw", "plan firmware"),
+        ("other", "plan nas"),
+        ("audit", "audit"),
+        ("job", "job cleanup-flatpak"),
+    ] {
+        a.add_task_for_test(a_task(id, &format!("Task {id}"), act));
+    }
+    key(&mut a, KeyCode::Char('6'));
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let cx = cx_on(&theme, ScreenId::Maint, None);
+    let enter = |id: &str| net(&a).task_enter(id, &a.slot().shared, &cx);
+    assert!(matches!(&enter("hand")[..], [Effect::ApplyAsk]));
+    assert!(matches!(&enter("run")[..], [Effect::StartWorkflow(w)] if w == "package-update"));
+    // An item's task is the item's own Enter: the packages' workflow; the firmware's is a
+    // draft, so how it stands, with nothing to say yes to.
+    assert!(matches!(&enter("pkgs")[..], [Effect::StartWorkflow(w)] if w == "package-update"));
+    assert!(matches!(&enter("fw")[..], [Effect::Confirm(m)] if m.yes.is_none()));
+    let toast = |id: &str| match &enter(id)[..] {
+        [Effect::Toast(t)] => t.clone(),
+        _ => panic!("{id}: not a toast"),
+    };
+    // What can't be done here says why, and never that `d` stands in for it.
+    for id in ["gone", "other"] {
+        assert!(!toast(id).contains("d marks it done"), "{}", toast(id));
+    }
+    assert!(toast("gone").contains("no workflow no-such"));
+    assert!(toast("other").contains("isn't an item of this network"));
+    assert!(toast("job").contains("a job of this machine's"));
+    assert!(matches!(&enter("audit")[..], [_, ..]));
+    assert!(net(&a).asked.iter().all(|k| *k != Kind::Audit));
+    // What a series can take: sessions and workflows, not what Enter can't do.
+    use sentry_app::target::SeriesStep;
+    let step = |id: &str| net(&a).series_step(&format!("task:{id}"), &a.slot().shared, &cx);
+    assert!(matches!(step("hand"), Some(SeriesStep::Session(_))));
+    assert!(matches!(step("run"), Some(SeriesStep::Workflow(w)) if w == "package-update"));
+    assert!(matches!(step("pkgs"), Some(SeriesStep::Workflow(w)) if w == "package-update"));
+    assert!(matches!(step("audit"), Some(SeriesStep::Audit)));
+    for id in ["gone", "other", "fw", "job"] {
+        assert!(step(id).is_none(), "{id}");
+    }
+}
+
+/// `A` on an item's own row offers its workflow with Claude, as a row about it does.
+#[test]
+fn an_items_row_can_be_applied_with_claude() {
+    use sentry_app::target::Asks;
+    let _turn = runs();
+    let mut a = with_workflows(&fx_cfg(), None);
+    upkeep(&mut a, backed_up(6, &[]));
+    key(&mut a, KeyCode::Char('6'));
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Char('k'));
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let mut cx = cx_on(&theme, ScreenId::Maint, None);
+    cx.everything = false;
+    let ask = net(&a)
+        .apply_ask(&a.slot().shared, &cx)
+        .expect("the packages item");
+    let ap = ask.applying().unwrap();
+    assert_eq!(ap.workflow.as_deref(), Some("package-update"));
+    assert_eq!(ap.key, "item:packages");
+}
+
+/// A series over a task done by hand and a workflow's row: the session first, then the
+/// workflow starts by itself.
+#[test]
+fn a_series_over_a_by_hand_task_and_a_workflow() {
+    use super::target::Effect;
+    use sentry_core::apply::session::{Phase, Turn};
+    let _turn = runs();
+    let mut a = with_workflows(&fx_cfg(), None);
+    a.add_task_for_test(a_task("hand", "Look at UPnP", "by-hand"));
+    a.add_task_for_test(a_task("backup", "Back the config up", "run config-backup"));
+    key(&mut a, KeyCode::Char('6'));
+    a.apply(
+        vec![Effect::SeriesStart(vec![
+            ("task:hand".into(), "Look at UPnP".into()),
+            ("task:backup".into(), "Back the config up".into()),
+        ])],
+        Instant::now(),
+    );
+    let s = a.apply_session().expect("the first row is a session");
+    assert_eq!(
+        (s.series, s.phase),
+        (Some((1, 2)), Phase::Thinking(Turn::Investigate))
+    );
+    assert_eq!(
+        s.chat
+            .ask
+            .applying()
+            .and_then(|ap| ap.task.clone())
+            .as_deref(),
+        Some("hand")
+    );
+    assert!(a.slot().run.is_none());
+    a.apply_answer_for_test(&plan_of("check = \"uci show upnpd\""));
+    // A router's plan is always the user's to approve.
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Review);
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"off\"\n```");
+    // The second row: its workflow, started by the series.
+    assert!(a.apply_session().is_none(), "the session closed");
+    let run = a.slot().run.as_ref().expect("the workflow started");
+    assert_eq!(run.wf().name, "config-backup");
 }
