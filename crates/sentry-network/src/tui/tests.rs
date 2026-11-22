@@ -5037,6 +5037,13 @@ fn live_security() {
         }
         a.tick(Instant::now());
     }
+    // The list first (what needs attention), then the numbers behind it.
+    let page = render_to_string(&mut a, 158, 41);
+    assert!(
+        page.contains("┌ Needs attention") && page.contains("┌ How you're covered"),
+        "the list isn't the first view"
+    );
+    key(&mut a, KeyCode::Char('d'));
     let s = render_to_string(&mut a, 158, 41);
     // (To look at it yourself: the screen goes to this file. It names your devices.)
     if let Ok(path) = std::env::var("SENTRY_LIVE_SCREEN") {

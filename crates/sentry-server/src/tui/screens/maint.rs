@@ -58,7 +58,16 @@ fn audit_same(i: &sentry_core::secaudit::Item, recs: &[Rec]) -> Option<usize> {
     let last = i.id.rsplit(':').next().unwrap_or("");
     let key = |f: &dyn Fn(&str) -> bool| recs.iter().position(|r| f(&r.key));
     match what {
-        "os" => key(&|k| k.ends_with(":updates") || k.starts_with("finding:srv:updates")),
+        // The updates waiting: their own row, or the routine run that takes them in.
+        "os" => key(&|k| k.ends_with(":updates") || k.starts_with("finding:srv:updates")).or_else(
+            || {
+                recs.iter().position(|r| match &r.action {
+                    Action::Run(wf) => wf == "apt-maintenance",
+                    Action::Task(_) => r.key.contains("apt-maintenance"),
+                    _ => false,
+                })
+            },
+        ),
         "reboot" => key(&|k| k == "reboot" || k == "finding:srv:reboot-required"),
         "app" => recs
             .iter()

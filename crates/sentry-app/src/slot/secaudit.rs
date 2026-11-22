@@ -133,11 +133,18 @@ impl Slot {
     /// Enter on one of the audit's rows: a pick for what only the user knows, else a
     /// session that fixes it.
     pub(crate) fn sec_item(&mut self, w: &mut Win, id: &str) {
-        let Some(item) = w
+        // (The slot's own copy first: it is the row that was entered.)
+        let Some(item) = self
+            .shared
             .sec
-            .report
-            .as_ref()
-            .and_then(|r| r.items.iter().find(|i| i.id == id))
+            .iter()
+            .find(|i| i.id == id)
+            .or_else(|| {
+                w.sec
+                    .report
+                    .as_ref()
+                    .and_then(|r| r.items.iter().find(|i| i.id == id))
+            })
             .cloned()
         else {
             return w.toast("the audit no longer lists it");

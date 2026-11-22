@@ -3339,6 +3339,73 @@ fn live_claude_reads() {
     assert!(sent.contains("$ sudo docker ps -aq   (exit 0)") && sent.contains("aaa1"));
 }
 
+/// The security audit's items that are this server's are recommendations here: one the
+/// list already has a row for (the updates waiting) joins that row, which keeps its
+/// action and takes the audit's why; the rest are rows whose Enter fixes or answers.
+#[test]
+fn the_security_audits_items_are_recommendations_and_join_the_rows_there_are() {
+    use sentry_core::secaudit::{Group, Item, State};
+    let item = |what: &str, state: State, title: &str| Item {
+        id: format!("sec:{what}:srv:myserver"),
+        group: Group::Logins,
+        state,
+        rank: 0,
+        title: title.into(),
+        why: format!("The audit's why for {what}."),
+        fix: String::new(),
+        targets: vec!["srv:myserver".into()],
+        evidence: Vec::new(),
+        brief: format!("Fix this finding of the security audit: {title}"),
+        question: (state == State::Ask).then(|| format!("q:{what}")),
+    };
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 60);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    let before = screen(&mut a);
+    assert!(before.contains("4 package update(s) waiting"), "{before}");
+    a.slot_mut().shared.sec = vec![
+        item("os", State::Worth, "4 updates are waiting on myserver"),
+        item(
+            "ssh-password",
+            State::DoFirst,
+            "myserver accepts ssh logins with a password",
+        ),
+        item(
+            "restore",
+            State::Ask,
+            "Have you ever restored from the backup of myserver?",
+        ),
+    ];
+    let s = screen(&mut a);
+    // The updates: still one row, the one that installs them.
+    assert!(
+        s.contains("4 package update(s) waiting") && !s.contains("4 updates are waiting on"),
+        "{s}"
+    );
+    assert!(s.contains("soon     myserver accepts ssh logins"), "{s}");
+    assert!(s.contains("Have you ever restored from the"), "{s}");
+    let bar = |a: &mut App| screen(a).lines().last().unwrap().to_string();
+    let typed = |a: &mut App, text: &str| {
+        for c in text.chars() {
+            key(a, KeyCode::Char(c));
+        }
+        key(a, KeyCode::Enter);
+    };
+    typed(&mut a, "/accepts ssh logins");
+    assert!(bar(&mut a).contains("Enter  fix"), "{}", bar(&mut a));
+    key(&mut a, KeyCode::Enter);
+    let brief = a.consent_text().expect("a session");
+    assert!(
+        brief.contains("Security audit · Logins")
+            && brief.contains("myserver accepts ssh logins with a password"),
+        "{brief}"
+    );
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Esc);
+    typed(&mut a, "/Have you ever restored");
+    assert!(bar(&mut a).contains("Enter  answer"), "{}", bar(&mut a));
+}
+
 #[test]
 fn the_maintenance_log_can_be_reviewed() {
     let mut a = app();
