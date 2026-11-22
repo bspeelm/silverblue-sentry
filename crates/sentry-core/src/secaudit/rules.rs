@@ -130,6 +130,20 @@ struct Doors {
     zones: BTreeSet<(String, String)>,
 }
 
+/// What finishing a router's bouncer takes, as a session is briefed (one across the server
+/// and the router) and as the report says it.
+pub const EDGE_FIX: &str = "Finish connecting the router's CrowdSec bouncer to the server's \
+CrowdSec, in one plan across both: on the server, make CrowdSec's local API reachable from the \
+router and from nothing else (it listens on loopback only: have it listen on the address the \
+router reaches, and let only the router through the server's firewall on that port); create a \
+bouncer key there (`cscli bouncers add`, captured as a secret); on the router set the bouncer's \
+API address and that key (a guarded change), switch it on and start it; then check on the \
+server that the bouncer pulls and on the router that its sets fill.";
+
+/// More devices than this on one home network, with no other to put gadgets on, is worth
+/// saying: a few computers and phones alone don't need splitting.
+const HANDFUL: usize = 5;
+
 fn version(sw: &Software) -> String {
     match (&sw.running, &sw.latest) {
         (Some(r), Some(l)) if sw.behind => format!("{}: running {r}, latest {l}", sw.id),
@@ -323,8 +337,8 @@ fn door(
                         h.name
                     ),
                     "If it takes passwords, anyone can keep guessing them.",
-                    "Allow `sshd -T` in the server's sudo list in server_config.yaml, or make \
-                     its ssh config readable, and run the audit again.",
+                    "Add `sshd -T` to the server's `sudo:` list in server_config.yaml, press I \
+                     on the server target, then run the audit again (S).",
                 ),
             ),
         };
@@ -906,23 +920,51 @@ fn router(n: &TargetFacts, r: &Router, doors: &Doors, answers: &Answers, out: &m
         let inside: Vec<_> = zones.iter().filter(|z| !z.wan).collect();
         let guest = r.wifi.iter().flatten().any(|w| w.guest);
         let devices = r.devices.as_ref().map(|d| d.total);
-        if inside.len() <= 1 && !guest {
+        // The home side: the zones that aren't a server's (where a door leads). A side
+        // kept for a server doesn't split the devices at home from each other.
+        let door = |z: &&&super::Zone| doors.zones.contains(&(n.id.clone(), z.name.clone()));
+        let mut home: Vec<&&super::Zone> = inside.iter().filter(|z| !door(z)).collect();
+        if home.is_empty() {
+            home = inside.iter().collect();
+        }
+        let kept: Vec<&str> = inside
+            .iter()
+            .filter(|z| door(z) && inside.len() > home.len())
+            .map(|z| z.name.as_str())
+            .collect();
+        // More than a handful on the one home network: which of them are gadgets isn't
+        // guessed, only that they all reach each other.
+        let crowded = home.len() == 1 && home[0].devices.is_some_and(|d| d > HANDFUL);
+        if (inside.len() <= 1 || crowded) && !guest {
+            let mut ev: Vec<String> = match (home.first().and_then(|z| z.devices), devices) {
+                (Some(d), _) if crowded => vec![format!("{d} devices on {}", home[0].name)],
+                (_, Some(n)) => vec![format!("{n} devices seen on it")],
+                _ => Vec::new(),
+            };
+            if !kept.is_empty() {
+                ev.push(format!(
+                    "only the server's side is separate ({})",
+                    kept.join(", ")
+                ));
+            }
+            ev.push("no guest or gadgets network".into());
             out.add(
                 id("flat"),
                 MovingAround,
                 Worth,
                 FLAT,
                 says(
-                    "Every device at home shares one network",
-                    "A TV, camera or gadget that gets broken into can reach your computers \
-                     and everything else.",
-                    "Put gadgets and guests on a network of their own that the router keeps \
-                     apart (a guest Wi-Fi).",
+                    "Every device at home shares one network, so one compromised gadget can \
+                     reach your computers",
+                    "A TV, camera or smart-home gadget that gets broken into can talk to \
+                     every computer and phone beside it. sentry can't tell which of the \
+                     devices are gadgets: only that nothing keeps any of them apart.",
+                    "A separate network for gadgets and guests (its own Wi-Fi name, kept \
+                     apart from your computers by the router's firewall), then move the \
+                     gadgets onto it.",
                 ),
                 &t,
-                devices
-                    .map(|n| vec![format!("{n} devices seen on it")])
-                    .unwrap_or_default(),
+                ev,
             );
         } else {
             out.add(
@@ -1548,9 +1590,11 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                                     "Whether {name}'s ssh login takes passwords couldn't be read"
                                 ),
                                 "Its ssh server is on and its settings need root to read.",
-                                "For a server: allow `sshd -T` in its sudo list in \
-                                 server_config.yaml. On this machine: run `sudo sshd -T | grep \
-                                 -i passwordauth` yourself.",
+                                "For a server: add `sshd -T` to its `sudo:` list in \
+                                 server_config.yaml, press I on the server target, then run \
+                                 the audit again (S). On this machine: ask Claude from \
+                                 Maintenance (A) to check it; sentry asks for the sudo \
+                                 password there.",
                             ),
                             &t,
                             vec![],
@@ -1707,8 +1751,8 @@ fn host(h: &TargetFacts, doors: &Doors, answers: &Answers, out: &mut Out) {
                 says(
                     format!("How {name}'s containers are confined couldn't be read"),
                     "Reading that takes root on the server.",
-                    "Open the server in sentry and press I (the inventory asks for the \
-                     password once), then run the audit again.",
+                    "Open the server target and press I once (it asks for the sudo password \
+                     and reads what needs root), then run the audit again (S).",
                 ),
                 &t,
                 vec![],
@@ -1909,6 +1953,13 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
     let at_router = nets
         .iter()
         .any(|n| n.watch.as_ref().is_some_and(|w| w.enforces == Some(true)));
+    // The router has the bouncer and it isn't switched on.
+    let router_off = !at_router
+        && nets
+            .iter()
+            .any(|n| n.watch.as_ref().is_some_and(|w| w.installed_off));
+    // What needs root on a server waits for its inventory (sudo asks for a password).
+    let waits = exposed.iter().any(|h| h.needs_inventory);
     let mut ev = Vec::new();
     for h in &exposed {
         if let Some(w) = &h.watch {
@@ -1940,6 +1991,9 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
     if at_router {
         ev.push("the router's firewall enforces CrowdSec's bans".into());
     }
+    if router_off {
+        ev.push("the router: CrowdSec's bouncer is installed, switched off".into());
+    }
     let (state, s) = if agent && at_router {
         (
             Fine,
@@ -1947,6 +2001,19 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
                 "Attackers that CrowdSec catches on {names} are blocked at the router, for \
                  every door"
             )),
+        )
+    } else if agent && router_off {
+        (
+            Worth,
+            says(
+                format!(
+                    "CrowdSec's blocker is installed on the router but not switched on: the \
+                     blocklist of {names} isn't enforced at the edge yet"
+                ),
+                "A banned address can still try every other door and device the router lets \
+                 it reach.",
+                EDGE_FIX,
+            ),
         )
     } else if agent && unread {
         (
@@ -1958,8 +2025,14 @@ fn watch(hosts: &[&TargetFacts], nets: &[&TargetFacts], doors: &Doors, out: &mut
                 ),
                 "It decides who to ban; a bouncer (on the server or the router) is what \
                  enforces it.",
-                "Allow `cscli bouncers` in the server's sudo list in server_config.yaml, and \
-                 run the audit again when the router answers.",
+                if waits {
+                    "Open the server target and press I once (it asks for the sudo password \
+                     and reads what needs root), then run the audit again (S)."
+                } else {
+                    "In server_config.yaml, add `cscli bouncers list -o json` to the server's \
+                     `sudo:` list (sentry's own read-only reads), press I on the server \
+                     target, then run the audit again (S)."
+                },
             ),
         )
     } else if agent && local_bouncer {

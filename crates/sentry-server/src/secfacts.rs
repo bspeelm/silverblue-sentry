@@ -245,6 +245,7 @@ pub fn facts(
             }),
             jails: s.jails.as_ref().map(Vec::len),
             enforces: None,
+            installed_off: false,
         });
         if cs.is_none() {
             t.watch.as_mut().unwrap().bouncers = Some(Vec::new());
@@ -323,6 +324,8 @@ pub fn collect(r: &Remote) -> TargetFacts {
         today,
     );
     t.errors.extend(errors);
+    t.needs_inventory =
+        sudo == Some(SudoMode::Password) && crate::inventory::load(&r.name).is_none();
     t
 }
 

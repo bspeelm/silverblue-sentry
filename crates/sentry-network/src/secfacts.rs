@@ -247,6 +247,33 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                 })
                 .collect()
         });
+    // How many devices each side holds (which of them are gadgets isn't guessed).
+    if let (Some(clients), Some(ifaces), Some(zones)) = (&s.clients, &s.ifaces, r.zones.as_mut()) {
+        use crate::clients::Link;
+        use crate::security::{End, Nets};
+        let nets = Nets::new(ifaces, s.uci.as_ref());
+        let mut count: std::collections::BTreeMap<String, usize> = Default::default();
+        for c in clients {
+            let zone = c
+                .addrs
+                .iter()
+                .filter_map(|a| a.parse::<std::net::IpAddr>().ok())
+                .find_map(|a| match nets.end(a) {
+                    End::Zone(z) => Some(z),
+                    _ => None,
+                })
+                .or_else(|| match &c.link {
+                    Link::Dmz { net, .. } => Some(net.clone()),
+                    _ => None,
+                });
+            if let Some(z) = zone {
+                *count.entry(z).or_default() += 1;
+            }
+        }
+        for z in zones.iter_mut().filter(|z| !z.wan) {
+            z.devices = Some(count.get(&z.name).copied().unwrap_or(0));
+        }
+    }
     r.devices = s.clients.as_ref().map(|c| Devices {
         total: c.len(),
         unknown: c.iter().filter(|c| c.unknown() && !c.leave_alone).count(),
@@ -272,6 +299,7 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
     // The services were read: a router without the bouncer is known not to enforce.
     t.watch = s.services.as_ref().map(|_| Watch {
         enforces: Some(s.crowdsec.as_ref().is_some_and(|b| b.on())),
+        installed_off: s.crowdsec.as_ref().is_some_and(|b| !b.on()),
         ..Default::default()
     });
     t.router = Some(r);

@@ -83,6 +83,14 @@ fn net() -> TargetFacts {
                     devices: Some(1),
                     ..Default::default()
                 },
+                // The gadgets' own network: what keeps the home side from being flat.
+                Zone {
+                    name: "iot".into(),
+                    input: "REJECT".into(),
+                    reaches: vec!["wan".into()],
+                    devices: Some(4),
+                    ..Default::default()
+                },
             ]),
             crossings: Some(vec![]),
             devices: Some(Devices {
@@ -441,10 +449,31 @@ fn each_rule_fires_on_its_evidence_only() {
             "one flat network",
             |n, _| {
                 let r = n.router.as_mut().unwrap();
-                r.zones.as_mut().unwrap().pop();
+                r.zones.as_mut().unwrap().truncate(2);
                 r.forwards.as_mut().unwrap()[0].zone = Some("lan".into());
             },
             "sec:flat:net:home",
+            State::Worth,
+        ),
+        (
+            // The server has its own side, and everything at home still shares one.
+            "a home network with only the server's side apart",
+            |n, _| {
+                n.router.as_mut().unwrap().zones.as_mut().unwrap().pop();
+            },
+            "sec:flat:net:home",
+            State::Worth,
+        ),
+        (
+            "the router's bouncer installed and switched off",
+            |n, _| {
+                n.watch = Some(Watch {
+                    enforces: Some(false),
+                    installed_off: true,
+                    ..Default::default()
+                });
+            },
+            "sec:watch",
             State::Worth,
         ),
         (
@@ -691,6 +720,89 @@ fn each_rule_fires_on_its_evidence_only() {
             "{what}"
         );
         assert!(i.brief.contains(&i.title));
+    }
+}
+
+/// The home side is one network only when more than a handful share it and nothing else is
+/// there to put gadgets on: a few devices, or a guest Wi-Fi, and it isn't said. What it
+/// says names no device and guesses no kind.
+#[test]
+fn a_flat_home_network_is_said_only_on_evidence() {
+    let flat = |devices: Option<usize>, guest: bool| {
+        let mut n = net();
+        let r = n.router.as_mut().unwrap();
+        r.zones.as_mut().unwrap().pop();
+        r.zones.as_mut().unwrap()[1].devices = devices;
+        r.wifi.as_mut().unwrap()[0].guest = guest;
+        let items = eval(n, srv(), &answered());
+        items
+            .into_iter()
+            .find(|i| i.id == "sec:flat:net:home")
+            .unwrap()
+    };
+    let i = flat(Some(9), false);
+    assert_eq!(i.state, State::Worth);
+    assert!(
+        i.title
+            .starts_with("Every device at home shares one network")
+    );
+    assert_eq!(
+        i.evidence,
+        [
+            "9 devices on lan",
+            "only the server's side is separate (dmz)",
+            "no guest or gadgets network"
+        ]
+    );
+    assert!(i.fix.contains("separate network for gadgets"));
+    // A handful, an unknown count, or a guest network: not said.
+    assert_eq!(flat(Some(5), false).state, State::Fine);
+    assert_eq!(flat(None, false).state, State::Fine);
+    assert_eq!(flat(Some(9), true).state, State::Fine);
+
+    // The router's bouncer installed and off: one sentence, and what a session is told
+    // is the whole job across both.
+    let mut n = net();
+    n.watch = Some(Watch {
+        enforces: Some(false),
+        installed_off: true,
+        ..Default::default()
+    });
+    let items = eval(n, srv(), &answered());
+    let w = items.iter().find(|i| i.id == "sec:watch").unwrap();
+    assert!(
+        w.title.starts_with(
+            "CrowdSec's blocker is installed on the router but not switched on: the blocklist of"
+        ) && w.title.ends_with("isn't enforced at the edge yet"),
+        "{}",
+        w.title
+    );
+    assert!(w.targets.len() == 2 && w.brief.contains("captured as a secret"));
+
+    // What needs root on a server is asked for in sentry's own terms, never a command.
+    let mut s = srv();
+    s.watch.as_mut().unwrap().bouncers = None;
+    s.needs_inventory = true;
+    let mut n = net();
+    n.watch = Some(Watch {
+        enforces: Some(false),
+        ..Default::default()
+    });
+    let items = eval(n, s, &answered());
+    let w = items.iter().find(|i| i.id == "sec:watch").unwrap();
+    assert_eq!(w.state, State::CouldNotCheck);
+    assert!(
+        w.fix.starts_with("Open the server target and press I once"),
+        "{}",
+        w.fix
+    );
+    for i in &items {
+        assert!(
+            !i.fix.contains("sudo sshd") && !i.fix.contains("yourself"),
+            "{}: {}",
+            i.id,
+            i.fix
+        );
     }
 }
 

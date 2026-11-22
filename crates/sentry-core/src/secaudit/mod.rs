@@ -28,7 +28,7 @@ use crate::maint::log::LogEntry;
 use crate::maint::tasks::{Again, Source, Task};
 use crate::paths;
 
-pub use rules::evaluate;
+pub use rules::{EDGE_FIX, evaluate};
 
 // ---- what a target says
 
@@ -67,6 +67,9 @@ pub struct TargetFacts {
     pub unreachable: Option<String>,
     /// (section, why it's missing)
     pub errors: Vec<(String, String)>,
+    /// A server whose sudo asks for a password, with nothing read as root yet: what
+    /// needs root there waits for its inventory (`I` on the server target).
+    pub needs_inventory: bool,
     /// Its own addresses. Match only: never serialized, never in an item.
     #[serde(skip)]
     pub addrs: Vec<String>,
@@ -164,6 +167,8 @@ pub struct Watch {
     pub jails: Option<usize>,
     /// On a router: its firewall enforces CrowdSec's bans.
     pub enforces: Option<bool>,
+    /// On a router: the bouncer's package is there and isn't switched on.
+    pub installed_off: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -767,9 +772,23 @@ pub fn save_in(d: &std::path::Path, r: &Report) -> anyhow::Result<PathBuf> {
     let path = d.join(format!("{}.toml", stamp(r.at)));
     paths::write_atomic(&path, toml::to_string(r)?.as_bytes())?;
     for old in reports_in(d).into_iter().skip(KEEP) {
+        let _ = std::fs::remove_file(old.with_extension("review.md"));
         let _ = std::fs::remove_file(old);
     }
     Ok(path)
+}
+
+/// Claude's review of a report, kept beside it (`<stamp>.review.md`).
+pub fn save_review(r: &Report, text: &str) -> anyhow::Result<()> {
+    let path = dir().join(format!("{}.review.md", stamp(r.at)));
+    paths::write_atomic(&path, text.as_bytes())?;
+    Ok(())
+}
+
+pub fn review_of(r: &Report) -> Option<String> {
+    std::fs::read_to_string(dir().join(format!("{}.review.md", stamp(r.at))))
+        .ok()
+        .filter(|t| !t.trim().is_empty())
 }
 
 pub fn save(r: &Report) -> anyhow::Result<PathBuf> {
