@@ -147,7 +147,8 @@ pub fn fenced_block(answer: &str, fence: &str) -> Option<(String, String)> {
     Some((rest.join("\n").trim().to_string(), block))
 }
 
-/// How soon a recommendation should be acted on.
+/// How soon a recommendation should be acted on: its priority, nothing else. Whether
+/// something recurs is a task's `every`, shown beside its title ("· every 30d").
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -155,16 +156,21 @@ pub fn fenced_block(answer: &str, fence: &str) -> Option<(String, String)> {
 pub enum Level {
     Now,
     Soon,
+    /// Normal priority: no hurry. Files say `routine` (as they always did; `normal` is
+    /// read too), the screen says "normal": "routine" on a one-time task read as
+    /// "recurring", which it never meant.
+    #[serde(alias = "normal")]
     Routine,
     Tidy,
 }
 
 impl Level {
+    /// The word shown (and told to Claude): now, soon, normal, tidy.
     pub fn word(self) -> &'static str {
         match self {
             Level::Now => "now",
             Level::Soon => "soon",
-            Level::Routine => "routine",
+            Level::Routine => "normal",
             Level::Tidy => "tidy",
         }
     }
@@ -174,6 +180,38 @@ impl Level {
 mod tests {
     use super::*;
     use crate::paths::{config_dir, data_dir};
+
+    /// A level's word is its priority. Files keep saying `routine` (and are written so);
+    /// the screen, and what Claude is told, say `normal`, which is read too.
+    #[test]
+    fn a_level_is_shown_as_a_priority_and_stored_as_it_always_was() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct T {
+            level: Level,
+        }
+        let words: Vec<&str> = [Level::Now, Level::Soon, Level::Routine, Level::Tidy]
+            .map(Level::word)
+            .to_vec();
+        assert_eq!(words, ["now", "soon", "normal", "tidy"]);
+        for (text, level) in [
+            ("level = \"routine\"", Level::Routine),
+            ("level = \"normal\"", Level::Routine),
+            ("level = \"now\"", Level::Now),
+            ("level = \"tidy\"", Level::Tidy),
+        ] {
+            let t: T = toml::from_str(text).unwrap();
+            assert_eq!(t.level, level, "{text}");
+        }
+        assert_eq!(
+            toml::to_string(&T {
+                level: Level::Routine
+            })
+            .unwrap()
+            .trim(),
+            "level = \"routine\""
+        );
+        assert!(toml::from_str::<T>("level = \"whenever\"").is_err());
+    }
 
     #[test]
     fn a_scope_has_one_directory_for_its_records_and_its_data() {

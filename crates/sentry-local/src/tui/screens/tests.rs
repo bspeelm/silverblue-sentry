@@ -450,7 +450,7 @@ fn jobs_and_cleanup_screens() {
     let mut a = App::for_test(Config::default(), d, ScreenId::Maint);
     let s = render_to_string(&mut a, 158, 41);
     // Due by their cadence: tasks. The failed update check folds into its task's row.
-    for want in ["routine  Clean up", "soon     Check for updates"] {
+    for want in ["normal   Clean up", "soon     Check for updates"] {
         assert!(s.contains(want), "{want}: {s}");
     }
     assert!(!s.contains("update-check failed  "), "one row: {s}");
@@ -2036,7 +2036,7 @@ fn ticked_rows_are_done_one_after_another() {
     let mut a = two_ticked();
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("· 2 ticked ·") && s.contains("Enter  do the ticked") && s.contains("✓ routine"),
+        s.contains("· 2 ticked ·") && s.contains("Enter  do the ticked") && s.contains("✓ normal"),
         "{s}"
     );
     // Space again unticks; a ticks every row that can be, a again none; Esc none.
@@ -2306,9 +2306,9 @@ fn auto_does_a_series_with_one_password_and_no_other_key() {
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("· 3 ticked ·"), "{s}");
     for row in [
-        "✓ routine  Tidy up",
-        "✓ routine  Update the firmware",
-        "✓ routine  Check the UPS",
+        "✓ normal   Tidy up",
+        "✓ normal   Update the firmware",
+        "✓ normal   Check the UPS",
     ] {
         assert!(s.contains(row), "{row}: {s}");
     }
@@ -2548,26 +2548,23 @@ fn auto_takes_a_workflows_default_values() {
     let _ = std::fs::remove_file(file);
 }
 
-/// The title cell of the row Maintenance's cursor is on.
+/// The title of the row Maintenance's cursor is on (without how often it recurs).
 fn maint_row(a: &mut App) -> String {
     let s = render_to_string(a, 158, 41);
     let at = a.maint_cursor_for_test();
     let rows: Vec<&str> = s
         .lines()
         .filter(|l| {
-            ["│ now ", "│ soon ", "│ routine "]
+            ["│ now ", "│ soon ", "│ normal "]
                 .iter()
                 .any(|p| l.starts_with(p))
         })
         .collect();
     rows.get(at)
         .map(|l| {
-            l.chars()
-                .skip(10)
-                .take(30)
-                .collect::<String>()
-                .trim()
-                .to_string()
+            let cell = l.chars().skip(10).take(30).collect::<String>();
+            let title = cell.split(" · every").next().unwrap_or_default();
+            title.trim().to_string()
         })
         .unwrap_or_else(|| panic!("no row {at}: {s}"))
 }

@@ -360,3 +360,8 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A server: `timers`, `services`, `disks`, `smart`, and one container (it joins `containers.ignore`). A network: `expect.services`, `expect.forwards`. A maintenance item keeps its own way (`untracked` in items.toml). Lists that say what is allowed rather than what must be there (listeners, zones, the baseline's patterns) aren't covered: taking an entry out would add findings.
 - A session reaches it as a plan step, `unwatch = "<kind>:<name>"` with `why`: shown and approved like any step, carried out by sentry (nothing on the host changes), tagged `unwatch:<key>` in the log. It may name only what the brief lists for its own target.
 - Marking a finding expected stays what it was: one finding id hidden, the thing still watched. A finding's brief tells Claude the difference: retired on purpose → stop watching it; should exist → fix it.
+
+## A47. A level is a priority (2026-11)
+- Shown: now / soon / normal / tidy. `routine` read as "recurring" on a one-time task; it never meant that. Files keep `level = "routine"` (written so, as before); `normal` is read too.
+- Whether a task recurs is said beside its name, and only then: "· every 30d". A task without it is done once.
+- A review is told that a level is priority only, that most one-time checks are `normal`, and that recurrence is `every`.

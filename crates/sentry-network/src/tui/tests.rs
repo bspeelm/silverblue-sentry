@@ -2059,7 +2059,7 @@ fn the_items_and_what_they_ask_for() {
     key(&mut a, KeyCode::Char('o'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        line(&s, "│ routine").contains("7 package(s) could be upgraded"),
+        line(&s, "│ normal").contains("7 package(s) could be upgraded"),
         "{s}"
     );
     key(&mut a, KeyCode::Char('o'));

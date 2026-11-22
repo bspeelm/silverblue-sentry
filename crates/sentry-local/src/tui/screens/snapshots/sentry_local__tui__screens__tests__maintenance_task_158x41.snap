@@ -1,14 +1,14 @@
 ---
-source: crates/sentry/src/tui/screens/tests.rs
+source: crates/sentry-local/src/tui/screens/tests.rs
 expression: body(&s)
 ---
  1 Dashboard   2 Processes   3 Network 12   4 Containers   5 Flatpaks   6 Maintenance 2   7 Cleanup   0 Upgrade ↑
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Recommended · 2 · no audit yet ────────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
-│          What                            Why                                       │ │ soon  Check the UPS battery                                         │
+│          What                            Why                                       │ │ soon  Check the UPS battery · every 90d                             │
 │ soon     Updates waiting: OS 44.20261023 The kernel changes: quick-update runs the │ │                                                                     │
-│ soon     Check the UPS battery           It is three years old. (every 90d; not do │ │ It is three years old. (every 90d; not done yet)                    │
+│ soon     Check the UPS battery · every 9 It is three years old. (not done yet)     │ │ It is three years old. (not done yet)                               │
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │ A task: Enter does it                                               │
 ┌ Deployments · rpm-ostree ──────────────────────────────────────────────────────────┐ │                                                                     │

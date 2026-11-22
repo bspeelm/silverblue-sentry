@@ -15,7 +15,7 @@ expression: body(&s)
 │ soon     A reboot has been pending for 8 Running 6.1.0-9-amd64, newest installed 6 │ │ ● reboot required for 8d · running 6.1.0-9-amd64 · newest installed │
 │ soon     report.service failed           It either crashed or a one-off job exited │ │ 6.1.0-25-amd64                                                      │
 │ soon     web: held, but newer releases f Held because: 1.5 migrates the database o │ │   asked for by linux-image-6.1.0-25-amd64                           │
-│ routine  Retire legacy                   Replaced by app.service.                  │ │ package lists refreshed 4h ago · unattended upgrade ran 8h ago      │
+│ normal   Retire legacy                   Replaced by app.service.                  │ │ package lists refreshed 4h ago · unattended upgrade ran 8h ago      │
 │                                                                                    │ │ held back (phased or would remove packages): libfoo1 libfoo-dev     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │ foo-tools                                                           │
 ┌ Items · 4 · upstream not looked up yet ────────────────────────────────────────────┐ │ would remove: oldpkg                                                │

@@ -102,7 +102,7 @@ pub fn cadence_tasks(cfg: &crate::config::Server, workflows: &[String]) -> Vec<T
         .map(|(wf, every)| Task {
             id: format!("cadence-{wf}"),
             title: format!("Run {wf}"),
-            why: "Routine (maintenance.cadence in server_config.yaml).".into(),
+            why: "On a cadence (maintenance.cadence in server_config.yaml).".into(),
             level: sentry_core::maint::Level::Routine,
             every: Some(*every),
             act: format!("run {wf}"),
