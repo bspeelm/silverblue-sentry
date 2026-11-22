@@ -62,6 +62,10 @@ pub struct Apply {
     pub reaudits: bool,
     /// How the host is talked about where it isn't a server (a router's words).
     pub how: Option<&'static str>,
+    /// What sentry watches on this target because its config lists it, and a plan's
+    /// `unwatch` step may name: (the key, `timer:<unit>`; what it is, in words). The one
+    /// the finding is about comes first.
+    pub unwatch: Vec<(String, String)>,
     /// Auto mode never approves this session's plan and allows nothing it asks for (a
     /// command there, a file here): the host's login is root, with no sudo line between a
     /// read and a change, so each is the user's own Enter.
@@ -291,10 +295,26 @@ pub fn apply_question(a: &Apply) -> String {
         ""
     };
     let what = match (&a.finding, &a.step) {
+        (Some(_), _) if !a.unwatch.is_empty() => {
+            " First decide which it is. If the thing should exist and is broken, fix it (use \
+             sentry's known fix when it fits). If it was removed or retired on purpose \
+             (look: its unit gone or disabled, something else doing its job, my notes) and \
+             sentry only reports it because its config still says to watch it, don't repair \
+             it and don't have me mark the finding expected: send a plan with one step that \
+             stops sentry watching it, `unwatch = \"<kind>:<name>\"` with `why = \"what was \
+             retired and what does its job now\"`. That changes nothing on the host: sentry \
+             notes it in its own watch.toml (I can take it back in Records) and no longer \
+             looks for the thing. Marking a finding expected is something else: it hides \
+             that one finding and leaves the thing watched; say so and send no plan only \
+             when the finding is fine as it is and the thing should stay watched. After the \
+             plan, sentry audits again and tells you whether the finding is gone; it isn't \
+             done while the audit still reports it."
+        }
         (Some(_), _) => {
             " If the finding is fine as it is, say so and send no plan: I'll mark it \
              expected. Use sentry's known fix when it fits. After the plan, sentry audits again \
-             and tells you whether the finding is gone."
+             and tells you whether the finding is gone; it isn't done while the audit still \
+             reports it."
         }
         (_, Some(_)) => {
             " Fix what made the step fail, so it can run again: sentry retries the \
@@ -329,6 +349,21 @@ pub fn apply_question(a: &Apply) -> String {
          turn there, saying in one line what you asked for and why. A single command that \
          changes something and needs root you may ask for the same way. For every other change"
     };
+    let unwatch = if a.unwatch.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = a
+            .unwatch
+            .iter()
+            .take(40)
+            .map(|(k, what)| format!("`{k}` ({what})"))
+            .collect();
+        format!(
+            " Or `unwatch` (with `why`): sentry stops watching one of the things its config \
+             lists here, nothing else; those are {}.",
+            names.join(", ")
+        )
+    };
     format!(
         "Do this for me. If nothing needs changing, say so and send no plan. Run every check \
          yourself first (read files with the Read tool); never ask me to run or paste anything. \
@@ -349,7 +384,7 @@ pub fn apply_question(a: &Apply) -> String {
          ```\n\
          Each step has exactly one of: `edit` (with `old` and `new`), `run` (a command that \
          changes something; sudo where needed), `check` (a command that must exit 0, or the \
-         plan stops) or `workflow` (one of sentry's workflows, with `vars` for its values). \
+         plan stops) or `workflow` (one of sentry's workflows, with `vars` for its values).{unwatch} \
          {files} Order the steps as they must happen and end with \
          the checks that show it worked. sentry shows me the plan; once I approve it, sentry \
          backs up every file it edits, asks me for my sudo password if a step needs it, and \
@@ -382,6 +417,14 @@ pub fn apply_fix(why: &str) -> String {
          Investigate first if you need to."
     )
 }
+
+/// What a finding's session is told while the audit still reports it after its plan.
+pub const STILL_REPORTED: &str = "It isn't done while sentry's audit reports it: the audit, \
+    not your own check, is what takes it off my list. If something is left to fix, send a \
+    plan for it (verdict `more`). If the thing was removed or retired on purpose and sentry \
+    only reports it because it is still told to watch it, send a plan whose step stops \
+    sentry watching it (`unwatch`), where the brief names it. If it can't be fixed from \
+    here, say so with verdict `failed`.";
 
 /// Commands the user allowed ran (`report`: each one's result): carry on, or say it's done.
 pub fn apply_ran(report: &str) -> String {

@@ -31,8 +31,9 @@ impl Slot {
                 key: k.clone(),
                 file: "baseline.toml",
             }));
-            later.extend(own);
         }
+        // (What the target holds in memory: none of it is read from disk in tests.)
+        later.extend(own);
         let home = std::env::var("HOME").unwrap_or_default();
         let root = sentry_core::maint::root(name);
         let dir = root.display().to_string();
@@ -90,7 +91,7 @@ impl Slot {
     }
 
     pub(crate) fn records_key(&mut self, w: &mut Win, k: KeyEvent, now: Instant) {
-        use sentry_core::tui::records::{Fx, LaterKind};
+        use sentry_core::tui::records::Fx;
         w.dirty = true;
         let Some(r) = self.rec_view.as_mut() else {
             return;
@@ -159,7 +160,20 @@ impl Slot {
                     ..Default::default()
                 });
             }
-            Fx::Undo(row) => {
+            Fx::Undo(row) => self.records_undo(w, row, now),
+        }
+    }
+
+    /// Records › Later, `u`: the row is taken back, and is on Maintenance again.
+    pub(crate) fn records_undo(
+        &mut self,
+        w: &mut Win,
+        row: sentry_core::tui::records::LaterRow,
+        now: Instant,
+    ) {
+        use sentry_core::tui::records::LaterKind;
+        {
+            {
                 let name = self.scope.clone();
                 match row.kind {
                     LaterKind::Snoozed(_) => {
@@ -169,11 +183,10 @@ impl Slot {
                             return w.toast(&format!("later.toml: {e}"));
                         }
                         self.shared.later.remove(&row.key);
-                        self.refresh(w, Why::Lists);
                     }
                     // What only the target can take back: something it ignores, or marked
                     // expected (its findings are its own).
-                    LaterKind::Expected | LaterKind::Ignored => {
+                    LaterKind::Expected | LaterKind::Ignored | LaterKind::Unwatched { .. } => {
                         let r = self.target.undo(&row, &mut self.shared, &cx!(self, w));
                         match r {
                             Ok(e) => self.apply(w, e, now),
@@ -193,6 +206,7 @@ impl Slot {
                         self.refresh(w, Why::Baseline);
                     }
                 }
+                self.rows_changed(w);
                 w.toast(&format!("{}: back on Maintenance", row.key));
                 let item = None;
                 self.open_records(w, sentry_core::tui::records::Section::Later, item);
@@ -305,13 +319,12 @@ impl Slot {
             path.as_deref(),
             None,
         );
-        if !w.offline {
-            if let Err(e) = log::write(&entry) {
-                w.toast(&format!("couldn't write the maintenance log: {e}"));
-            }
-            self.shared.log = log::list(&self.scope);
-            self.refresh(w, Why::Lists);
+        if !w.offline
+            && let Err(e) = log::write(&entry)
+        {
+            w.toast(&format!("couldn't write the maintenance log: {e}"));
         }
+        self.rows_changed(w);
         self.last_change_at = Some(jiff::Timestamp::now());
         if self.auto_skips_note() {
             self.settled(w);
@@ -371,5 +384,6 @@ impl Slot {
             return w.toast(&format!("couldn't save the plan: {e}"));
         }
         self.shared.plans.insert(key.to_string(), doc);
+        self.rows_changed(w);
     }
 }

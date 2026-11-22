@@ -29,10 +29,8 @@ impl Slot {
             if self.run.is_some() && self.ways.resume_opens_run {
                 self.screen = ScreenId::Upgrade;
             }
-            self.shared.plans = sentry_core::maint::plan::list(&self.scope);
-            self.shared.review = sentry_core::maint::review::latest(&self.scope);
-            self.shared.tasks = sentry_core::maint::tasks::load(&self.scope);
-            self.shared.log = sentry_core::maint::log::list(&self.scope);
+            // (After the target moved old files of its own into them.)
+            self.read_records();
             self.last_change_at = self
                 .shared
                 .log
@@ -67,6 +65,8 @@ impl Slot {
             w.dirty = true;
             return;
         }
+        // What changed on disk meanwhile (an editor, another program) shows now.
+        self.look(w);
         let e = self.target.enter(from, now, &self.shared, &cx!(self, w));
         self.apply(w, e, now);
         self.tick(w, now);
@@ -239,6 +239,8 @@ impl Slot {
                         w.toast("Claude answered · A opens the chat");
                     }
                     self.chat_edits(w);
+                    // A file of the records Claude was allowed to edit shows at once.
+                    self.look(w);
                     let e = self
                         .target
                         .offer_reads(ReadsFor::Chat, false, &cx!(self, w));
@@ -496,6 +498,10 @@ impl Slot {
         let Some(a) = w.keys.resolve(&k) else {
             return;
         };
+        // `r` reads again: the records and the target's own files too, if they changed.
+        if a == Action::Refresh {
+            self.look(w);
+        }
         match a {
             // C-c on a running step stops the step, as in sentry.
             Action::Interrupt
@@ -646,12 +652,12 @@ impl Slot {
                     &title,
                     Some(text),
                 );
-                if !w.offline {
-                    if let Err(e) = sentry_core::maint::log::write_replacing(&old, &new) {
-                        return w.toast(&format!("couldn't write the note: {e}"));
-                    }
-                    self.shared.log = sentry_core::maint::log::list(&self.scope);
+                if !w.offline
+                    && let Err(e) = sentry_core::maint::log::write_replacing(&old, &new)
+                {
+                    return w.toast(&format!("couldn't write the note: {e}"));
                 }
+                self.rows_changed(w);
                 w.toast(self.ways.noted);
             }
             Prompt::Own(o) => {
@@ -683,9 +689,8 @@ impl Slot {
                     if let Err(e) = tasks::set_every(&self.scope, &t, every) {
                         return w.toast(&format!("tasks.toml: {e}"));
                     }
-                    self.shared.tasks = tasks::load(&self.scope);
                 }
-                self.settle(w, Settle::Lists);
+                self.rows_changed(w);
                 w.toast(&match every {
                     Some(d) => format!("{} every {d} (tasks.toml)", t.title),
                     None => format!("{} is off (tasks.toml)", t.title),
@@ -796,6 +801,7 @@ impl Slot {
         match (name, arg) {
             (Some("q" | "q!" | "quit" | "qa"), _) => w.quit = true,
             (Some("refresh" | "r"), _) => {
+                self.look(w);
                 let e = self
                     .target
                     .handle(Action::Refresh, &self.shared, &cx!(self, w));
@@ -846,10 +852,11 @@ impl Slot {
             self.wf_auto(w);
             return;
         }
+        // An editor had the terminal: whatever it changed is read again.
         if std::mem::take(&mut self.suspend_edit) {
             self.refresh(w, Why::Edited);
             self.load_wf_entries();
-            self.shared.tasks = sentry_core::maint::tasks::load(&self.scope);
+            self.rows_changed(w);
             return;
         }
         if let Some(own) = self.suspend_own.take() {

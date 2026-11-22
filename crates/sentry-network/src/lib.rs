@@ -33,6 +33,7 @@ pub mod remote;
 pub mod secfacts;
 pub mod security;
 pub mod tui;
+pub mod watch;
 pub mod workflow;
 
 #[cfg(test)]

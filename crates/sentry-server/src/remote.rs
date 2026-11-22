@@ -12,6 +12,10 @@ pub use sentry_app::remote::{Error as SrvError, Privilege, SudoMode, password_re
 pub struct Remote {
     base: sentry_app::remote::Remote,
     pub cfg: Arc<Server>,
+    /// The config as it lists things, before what's no longer watched was taken out.
+    listed: Arc<Server>,
+    /// What sentry stopped watching here (`watch.toml`), applied over `listed`.
+    pub watch: Arc<sentry_core::maint::watch::Watch>,
     /// Answer a refused `sudo -n` from the last inventory (the TUI and the audit; never
     /// workflow conditions, which must see the server as it is now).
     pub inventory: bool,
@@ -27,9 +31,12 @@ impl std::ops::Deref for Remote {
 }
 
 impl Remote {
-    /// A server, with the maintenance items sentry-server tracks for it added to its config.
+    /// A server, with the maintenance items sentry-server tracks for it added to its
+    /// config, and what it no longer watches taken out.
     pub fn new(name: &str, cfg: &Server) -> Self {
         let tracked = super::maint::tracked::load(name);
+        let listed = super::maint::tracked::merged(cfg, &tracked);
+        let watch = sentry_core::maint::watch::load(name);
         Self {
             base: sentry_app::remote::Remote::new(
                 name,
@@ -37,9 +44,23 @@ impl Remote {
                 name,
                 Privilege::sudo(&cfg.sudo),
             ),
-            cfg: Arc::new(super::maint::tracked::merged(cfg, &tracked)),
+            cfg: Arc::new(super::watch::applied(&listed, &watch)),
+            listed: Arc::new(listed),
+            watch: Arc::new(watch),
             inventory: false,
         }
+    }
+
+    /// The same server, no longer watching (or watching again) what `watch` says.
+    pub fn with_watch(mut self, watch: sentry_core::maint::watch::Watch) -> Self {
+        self.cfg = Arc::new(super::watch::applied(&self.listed, &watch));
+        self.watch = Arc::new(watch);
+        self
+    }
+
+    /// The config's lists as written (what could be watched again).
+    pub fn listed(&self) -> &Server {
+        &self.listed
     }
 
     /// Fall back to the last inventory when sudo asks for a password.

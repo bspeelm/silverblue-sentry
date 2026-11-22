@@ -13,6 +13,7 @@ pub mod recorder;
 pub mod remote;
 pub mod secfacts;
 pub mod tui;
+pub mod watch;
 pub mod workflow;
 
 #[cfg(test)]

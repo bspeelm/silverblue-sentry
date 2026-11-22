@@ -422,6 +422,7 @@ fn ask_finding(v: &View, f: &sentry_core::finding::Finding) -> Ask {
             finding: Some(f.id.clone()),
             // The audit says whether it's gone: run again after the plan.
             reaudits: true,
+            unwatch: crate::watch::offered(v.cfg, &f.id),
             ..apply(format!("finding:{}", f.id))
         },
     )

@@ -3,8 +3,10 @@
 #   nopasswd  live_actions, live_workflow, live_sudo_stop, live_auto_series   (sudo -n works)
 #             live_two_targets (the one window: the container beside this machine, which
 #             runs two `echo`s of its own on the host)
+#             live_reaudit (a service the config expects is down; a session starts it,
+#             and the row leaves with the audit that follows)
 #   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop,
-#             live_auto_series
+#             live_auto_series, live_reaudit
 #             (sudo asks; the tests type the password into the TUI's own prompt)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
@@ -42,8 +44,8 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets" ;;
-    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets live_reaudit" ;;
+    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series live_reaudit" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
@@ -115,12 +117,52 @@ services:
 EOF
 }
 
+# A stand-in for systemd, which the container hasn't: one service, `app.service`, whose
+# state is a file. It answers what the units collector asks, and root can start and stop
+# it. Only there while live_reaudit runs (the other tests see a host without systemd).
+fake_systemd() {
+  local c=$1
+  # (Anyone may write the state: the test breaks the service that way. Starting it through
+  # the stand-in still takes root.)
+  "${P[@]}" exec "$c" sh -c 'mkdir -p /var/lib/fake-systemd && echo inactive >/var/lib/fake-systemd/app.service && chmod 666 /var/lib/fake-systemd/app.service'
+  put "$c" /usr/local/bin/systemctl 755 <<'EOF'
+#!/bin/sh
+f=/var/lib/fake-systemd/app.service
+state=$(cat "$f" 2>/dev/null || echo inactive)
+[ "$state" = active ] && sub=running || sub=dead
+case "$1" in
+  list-units)
+    printf '[{"unit":"app.service","load":"loaded","active":"%s","sub":"%s","description":"Example app"}]\n' "$state" "$sub" ;;
+  list-timers) echo '[]' ;;
+  show)
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+    shift
+    for u in "$@"; do
+      if [ "$u" = app.service ]; then
+        printf 'Id=app.service\nLoadState=loaded\nActiveState=%s\nSubState=%s\nResult=success\nExecMainStatus=0\n\n' "$state" "$sub"
+      else
+        printf 'Id=%s\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n\n' "$u"
+      fi
+    done ;;
+  start | stop)
+    [ "$(id -u)" = 0 ] || { echo "Failed to $1 $2: Access denied" >&2; exit 4; }
+    [ "$2" = app.service ] || { echo "Failed to $1 $2: Unit $2 not found." >&2; exit 5; }
+    if [ "$1" = start ]; then echo active >"$f"; else echo inactive >"$f"; fi ;;
+  is-active) echo "$state"; [ "$state" = active ] ;;
+  *) echo "fake systemctl: \`$*\` isn't one of the things it knows" >&2; exit 1 ;;
+esac
+EOF
+}
+
 # One test's scratch XDG dirs, made afresh: the server's config, and the workflow
 # live_password_step starts (beside the seeded ones). Only the password variant has the fake
 # docker and its `sudo:` reads: its fixtures have an unhealthy container, which
 # apt-maintenance's last step would wait three minutes for.
 scratch() {
-  local dir=$1 mode=$2 t=$3 x="$1/xdg/$3" reads=""
+  local dir=$1 mode=$2 t=$3 x="$1/xdg/$3" reads="" watched=""
+  # live_reaudit: the config expects a service (the fake systemd's one, which is down).
+  [[ $t != live_reaudit ]] || watched="
+    services: [app.service]"
   [[ $mode != password ]] || reads="
     sudo: [docker ps, docker inspect, docker compose ls]
     compose:
@@ -131,7 +173,7 @@ scratch() {
   cat >"$x/config/sentry/server_config.yaml" <<EOF
 servers:
   $SERVER:
-    ssh: $SERVER$reads
+    ssh: $SERVER$reads$watched
     actions:
       - id: hello
         title: Say hello
@@ -308,6 +350,8 @@ run_tests() {
   cargo build -q -p sentry
   for t in "$@"; do
     scratch "$dir" "$mode" "$t"
+    "${P[@]}" exec "$c" rm -f /usr/local/bin/systemctl
+    [[ $t != live_reaudit ]] || fake_systemd "$c"
     echo "=== $t ($mode)"
     local cmd=(env "SENTRY_SSH_CONFIG=$dir/ssh_config" "SENTRY_SERVER_SCRATCH=$SERVER"
       "XDG_CONFIG_HOME=$dir/xdg/$t/config" "XDG_DATA_HOME=$dir/xdg/$t/data"

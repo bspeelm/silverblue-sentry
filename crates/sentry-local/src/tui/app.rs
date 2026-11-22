@@ -320,6 +320,17 @@ impl App {
         }
     }
 
+    /// The audit a finding's session asked for found the finding (`still`) or not.
+    pub fn audited_for_test(&mut self, finding: &str, still: bool) {
+        self.0
+            .slot_mut()
+            .target
+            .as_any_mut()
+            .downcast_mut::<LocalTarget>()
+            .expect("this machine")
+            .audited_for_test(finding, still);
+    }
+
     /// The maintenance log as loaded.
     pub fn log_for_test(&self) -> &[crate::maint::log::LogEntry] {
         &self.slot().shared.log

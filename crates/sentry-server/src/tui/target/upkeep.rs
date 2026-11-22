@@ -163,6 +163,15 @@ impl Upkeep for ServerTarget {
                     }),
             );
         }
+        // What the config lists and sentry no longer watches (`u` watches it again).
+        later.extend(self.remote.watch.unwatched.iter().map(|u| LaterRow {
+            kind: LaterKind::Unwatched {
+                since: u.since.to_string(),
+                why: u.why.clone(),
+            },
+            key: u.key(),
+            file: "watch.toml",
+        }));
         let audited = self
             .store
             .report
@@ -173,10 +182,64 @@ impl Upkeep for ServerTarget {
         (later, audited)
     }
 
+    fn row_at(&self, sh: &Shared, cx: &Cx) -> Option<String> {
+        use super::super::screens::maint::{Sel, pick};
+        match pick(&self.view(sh, cx))? {
+            Sel::Rec(r) => Some(r.key),
+            Sel::Item(s, _) => Some(format!("item:{}", s.id)),
+        }
+    }
+
+    /// The thing was retired on purpose: the config's own expectation goes (the file is
+    /// applied over the YAML, which isn't rewritten), and with it every finding about it.
+    fn unwatch(
+        &mut self,
+        what: &str,
+        why: &str,
+        sh: &mut Shared,
+        cx: &Cx,
+    ) -> Result<String, String> {
+        let name = self.remote.name.clone();
+        let Some((kind, thing)) = sentry_core::maint::watch::split(what) else {
+            return Err(format!("{what} isn't `<kind>:<name>`"));
+        };
+        if !crate::watch::known(self.remote.listed(), what) {
+            return Err(format!("server_config.yaml lists no {kind} {thing}"));
+        }
+        let mut w = (*self.remote.watch).clone();
+        if !w.add(kind, thing, jiff::Zoned::now().date(), why) {
+            return Ok(format!("{what} already wasn't watched"));
+        }
+        if !cx.offline {
+            sentry_core::maint::watch::save(&name, &w).map_err(|e| format!("watch.toml: {e}"))?;
+        }
+        self.set_watch(w, sh);
+        Ok(format!(
+            "sentry no longer watches {what} (servers/{name}/watch.toml; Records › Later takes it back)"
+        ))
+    }
+
     fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String> {
-        let name = &self.remote.name;
+        let name = &self.remote.name.clone();
         match row.kind {
             LaterKind::Expected => Ok(vec![Own::expected(row.key.clone(), false)]),
+            // Watched again: the next audit says how it stands.
+            LaterKind::Unwatched { .. } => {
+                let mut w = (*self.remote.watch).clone();
+                if !w.remove(&row.key) {
+                    return Err(format!("{} isn't in watch.toml any more", row.key));
+                }
+                if !cx.offline {
+                    sentry_core::maint::watch::save(name, &w)
+                        .map_err(|e| format!("watch.toml: {e}"))?;
+                }
+                self.set_watch(w, _sh);
+                self.fetch(Kind::Audit, cx);
+                Ok(vec![Effect::Toast(format!(
+                    "{}: watched again · auditing",
+                    row.key
+                ))])
+            }
             // A YAML item a review untracked: tracked again.
             LaterKind::Ignored if row.key.starts_with("item:") => {
                 let id = row.key.trim_start_matches("item:");

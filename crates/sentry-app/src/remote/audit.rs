@@ -61,6 +61,18 @@ pub fn reports_dir(scope: &str) -> PathBuf {
     sentry_core::maint::data_root(scope).join("reports")
 }
 
+/// Set `expected` on findings as things stand now: what the config's patterns or the
+/// baseline file cover is expected, the rest isn't. A stored report says what was expected
+/// when it was written; whoever shows one marks it again with this first.
+pub fn mark_expected(findings: &mut [Finding], config: &[String], base: &BaselineFile) {
+    for f in findings {
+        f.expected = config
+            .iter()
+            .chain(&base.findings)
+            .any(|g| sentry_core::baseline::glob(g, &f.id));
+    }
+}
+
 /// Mark a finding expected (or not) in a baseline; whether anything changed.
 pub fn set_expected_in(b: &mut BaselineFile, id: &str, expected: bool) -> bool {
     if expected {

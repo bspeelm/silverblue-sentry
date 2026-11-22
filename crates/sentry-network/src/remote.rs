@@ -15,6 +15,10 @@ pub fn scope(name: &str) -> String {
 pub struct Router {
     base: sentry_app::remote::Remote,
     pub cfg: Arc<Network>,
+    /// The config as it lists things, before what's no longer watched was taken out.
+    listed: Arc<Network>,
+    /// What sentry stopped watching here (`watch.toml`), applied over `listed`.
+    pub watch: Arc<sentry_core::maint::watch::Watch>,
 }
 
 /// Name, host, scope, commands: the shared remote's.
@@ -32,7 +36,9 @@ impl Router {
         // the config's `devices` everywhere a client is shown, judged or hidden.
         let mut cfg = cfg.clone();
         crate::security::names::Names::load(&scope(name)).merge(&mut cfg.devices);
-        let cfg = &cfg;
+        let watch = sentry_core::maint::watch::load(&scope(name));
+        let listed = cfg;
+        let cfg = &crate::watch::applied(&listed, &watch);
         Self {
             base: sentry_app::remote::Remote::new(
                 name,
@@ -43,7 +49,21 @@ impl Router {
             // OpenWrt's ssh server; an OpenSSH one streams the same way with this on.
             .dropbear(),
             cfg: Arc::new(cfg.clone()),
+            listed: Arc::new(listed),
+            watch: Arc::new(watch),
         }
+    }
+
+    /// The same router, no longer watching (or watching again) what `watch` says.
+    pub fn with_watch(mut self, watch: sentry_core::maint::watch::Watch) -> Self {
+        self.cfg = Arc::new(crate::watch::applied(&self.listed, &watch));
+        self.watch = Arc::new(watch);
+        self
+    }
+
+    /// The config's lists as written (what could be watched again).
+    pub fn listed(&self) -> &Network {
+        &self.listed
     }
 }
 

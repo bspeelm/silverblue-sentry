@@ -343,19 +343,13 @@ impl Slot {
                 self.shared.log.insert(0, entry);
             } else if let Err(e) = log::write(&entry) {
                 w.toast(&format!("couldn't write the maintenance log: {e}"));
-            } else {
-                self.shared.log = log::list(&name);
             }
         }
         self.shared.review = Some(rd);
-        // What changed on the target's side: it takes that in; else its lists are read again.
+        // What changed on the target's side: it takes that in; then the rows follow.
         let fx = own.done();
-        if !fx.is_empty() {
-            self.apply(w, fx, w.at);
-        } else if !w.offline {
-            self.refresh(w, Why::Lists);
-        }
-        self.settle(w, Settle::Lists);
+        self.apply(w, fx, w.at);
+        self.rows_changed(w);
         w.toast(&format!(
             "review: {}",
             sentry_core::tui::reviewview::outcome(done, skipped, failed)
@@ -401,6 +395,7 @@ impl Slot {
         let (id, title) = (task.id.clone(), task.title.clone());
         self.shared.tasks.retain(|t| t.id != id);
         self.shared.tasks.push(task);
+        self.rows_changed(w);
         w.toast(&format!("added to Maintenance (6): {title}"));
     }
 
@@ -417,10 +412,10 @@ impl Slot {
             if let Err(e) = sentry_core::maint::log::write(&entry) {
                 return w.toast(&format!("couldn't write the maintenance log: {e}"));
             }
-            self.shared.log = sentry_core::maint::log::list(&self.scope);
         } else {
             self.shared.log.insert(0, entry.clone());
         }
+        self.rows_changed(w);
         self.last_change_at = Some(jiff::Timestamp::now());
         // Auto asks for no note (Records adds one any time).
         if self.auto_skips_note() {

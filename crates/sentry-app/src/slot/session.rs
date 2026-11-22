@@ -32,6 +32,8 @@ impl Slot {
                         w.toast("Claude answered · A opens it");
                     }
                     self.apply_fx(w, fx);
+                    // A file of the records Claude was allowed to edit shows at once.
+                    self.look(w);
                 }
             }
             return true;
@@ -156,6 +158,19 @@ impl Slot {
                 // What checking a fix again means is the target's (a server leaves it to
                 // Claude's own read-only check).
                 Fx::Reaudit => self.refresh(w, Why::Reaudit),
+                // sentry's own file: written by the target, and the rows follow at once.
+                Fx::Unwatch { what, why } => {
+                    let done = self
+                        .target
+                        .unwatch(&what, &why, &mut self.shared, &cx!(self, w));
+                    if done.is_ok() {
+                        self.rows_changed(w);
+                    }
+                    if let Some(sess) = self.apply.as_mut() {
+                        let fx = sess.unwatched(done);
+                        self.apply_fx(w, fx);
+                    }
+                }
                 Fx::RetryStep if self.ways.auto_polled => {
                     self.wf_cmd(w, WfCmd::Retry);
                     self.enter(w, ScreenId::Upgrade, w.at);
@@ -300,6 +315,7 @@ impl Slot {
                             self.plan_view = None;
                             w.toast(&format!("the plan for {item} is done (plans/done/)"));
                         }
+                        self.rows_changed(w);
                     }
                 }
                 Fx::PlanSave { key, body } => self.plan_keep(w, &key, &body, PlanStatus::Ready),
@@ -348,10 +364,10 @@ impl Slot {
                     let e = self.kept_entry(e);
                     if w.offline {
                         self.shared.log.insert(0, e);
-                    } else if sentry_core::maint::log::write(&e).is_ok() {
-                        self.shared.log = sentry_core::maint::log::list(&self.scope);
+                    } else {
+                        let _ = sentry_core::maint::log::write(&e);
                     }
-                    self.refresh(w, Why::Lists);
+                    self.rows_changed(w);
                     w.toast(&format!(
                         "{key}: it can wait · look again {until} (Records › Later)"
                     ));
@@ -847,10 +863,10 @@ impl Slot {
             if let Err(err) = sentry_core::maint::log::write(&e) {
                 return w.toast(&format!("couldn't write the maintenance log: {err}"));
             }
-            self.shared.log = sentry_core::maint::log::list(&self.scope);
         } else {
             self.shared.log.insert(0, e);
         }
         self.last_change_at = Some(jiff::Timestamp::now());
+        self.rows_changed(w);
     }
 }

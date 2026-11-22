@@ -186,6 +186,14 @@ pub struct ServerTarget {
     pub(super) inventory_at: Option<jiff::Timestamp>,
     /// After the log note: offer to read the server again (the run changed what was read).
     offer_reread: bool,
+    /// The audit asked for is the one after a finding's fix (`Why::Reaudit`): when it's
+    /// in, the session hears whether the finding is still reported.
+    reaudit: bool,
+    /// What needs root is being read again first, for that audit.
+    reaudit_reads: bool,
+    /// Tests: every fetch asked for, in order (nothing is fetched offline).
+    #[cfg(any(test, feature = "testing"))]
+    pub asked: Vec<Kind>,
 }
 
 impl ServerTarget {
@@ -237,10 +245,16 @@ impl ServerTarget {
             wf_reboot_id: None,
             inventory_at: None,
             offer_reread: false,
+            reaudit: false,
+            reaudit_reads: false,
+            #[cfg(any(test, feature = "testing"))]
+            asked: Vec::new(),
         }
     }
 
     fn fetch(&mut self, k: Kind, cx: &Cx) {
+        #[cfg(any(test, feature = "testing"))]
+        self.asked.push(k);
         if cx.offline {
             return;
         }
@@ -373,20 +387,24 @@ impl ServerTarget {
             .unwrap_or_default()
     }
 
-    /// Set `expected` on the stored findings an id (or pattern) covers.
-    fn mark_findings(&mut self, id: &str, on: bool) {
-        let reports = [
-            self.store.report.value.as_mut().and_then(|r| r.as_mut()),
-            self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
-        ];
-        for r in reports.into_iter().flatten() {
-            for f in r
-                .findings
-                .iter_mut()
-                .filter(|f| sentry_core::baseline::glob(id, &f.id))
-            {
-                f.expected = on;
-            }
+    /// What's expected of the stored findings, by the config and the baseline as they
+    /// are now. A report on disk says what was expected when it was written: read again
+    /// (every time Maintenance or the Dashboard is entered) it would bring back a row
+    /// marked expected since, so every report that arrives, and every change to the
+    /// records, ends here.
+    fn remark(&mut self, sh: &Shared) {
+        let cfg = &self.remote.cfg;
+        let (cur, prev) = match self.store.shown.as_mut() {
+            Some(s) => (s.cur.as_mut(), s.prev.as_mut()),
+            None => (None, None),
+        };
+        let latest = self.store.report.value.as_mut().and_then(|r| r.as_mut());
+        for r in [latest, cur, prev].into_iter().flatten() {
+            // What isn't watched any more can't be reported by a new audit: it leaves
+            // with the watching, not at the next audit.
+            r.findings
+                .retain(|f| crate::watch::still_watched(cfg, &f.id));
+            sentry_app::remote::audit::mark_expected(&mut r.findings, &cfg.findings, &sh.baseline);
         }
     }
 
@@ -410,7 +428,7 @@ impl ServerTarget {
                 toast("expected by a pattern or server_config.yaml: change it there")
             }
             Ok(_) => {
-                self.mark_findings(id, on);
+                self.remark(sh);
                 self.clamp(sh, cx);
                 toast(if on {
                     "marked expected"
@@ -452,8 +470,8 @@ impl ServerTarget {
             return toast(format!("couldn't save: {e}"));
         }
         sh.baseline = b;
+        self.remark(sh);
         if on {
-            self.mark_findings(id, true);
             self.clamp(sh, cx);
             return toast(format!("{what}: expected (baseline.toml)"));
         }
@@ -471,10 +489,16 @@ impl ServerTarget {
         if still {
             toast("still expected by server_config.yaml".into())
         } else {
-            self.mark_findings(id, false);
             self.clamp(sh, cx);
             toast(format!("{what}: no longer expected"))
         }
+    }
+
+    /// What's no longer watched changed (`watch.toml`, as it is in `w`): the config in use
+    /// follows, and what's shown of the last audit with it.
+    pub(super) fn set_watch(&mut self, w: sentry_core::maint::watch::Watch, sh: &Shared) {
+        self.remote = self.remote.clone().with_watch(w);
+        self.remark(sh);
     }
 
     /// After `e`: read server_config.yaml again; on an error, keep what was loaded.
@@ -534,6 +558,10 @@ impl ServerTarget {
 
     fn after_inventory(&mut self, out: Result<String, String>, cx: &Cx) -> Vec<Effect> {
         let toast = |s: String| vec![Effect::Toast(s)];
+        // The audit that waited for this read runs whatever came of it.
+        if std::mem::take(&mut self.reaudit_reads) {
+            self.fetch(Kind::Audit, cx);
+        }
         let inv = match out {
             Ok(text) => crate::inventory::parse(&text),
             Err(e) => return toast(format!("the read didn't finish: {e}")),
@@ -773,7 +801,7 @@ impl Target for ServerTarget {
         due
     }
 
-    fn on_data(&mut self, data: Box<dyn Any + Send>, _sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
+    fn on_data(&mut self, data: Box<dyn Any + Send>, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         let Ok(data) = data.downcast::<Data>() else {
             return Vec::new();
         };
@@ -792,9 +820,29 @@ impl Target for ServerTarget {
             fx.push(Effect::Toast(format!("audit failed: {e}")));
         }
         let ok = res.is_ok();
+        let failed = res.as_ref().as_ref().err().map(|e| e.to_string());
         self.store.apply(k, *res);
+        if matches!(k, Kind::Audit | Kind::Report | Kind::ReportAt(_)) {
+            self.remark(sh);
+        }
         if k == Kind::Audit {
             fx.push(Effect::AuditEnded(ok));
+            // The audit after a finding's fix: is it still reported, and with what?
+            if let Some(id) = cx.finding.filter(|_| std::mem::take(&mut self.reaudit)) {
+                let still = match failed {
+                    Some(e) => Some(format!("the audit couldn't run: {e}")),
+                    None => self
+                        .store
+                        .report
+                        .value
+                        .as_ref()
+                        .and_then(|r| r.as_deref())
+                        .and_then(|r| r.findings.iter().find(|f| f.id == id && !f.expected))
+                        .map(sentry_core::finding::Finding::standing),
+                };
+                fx.push(Effect::Reaudited(still));
+            }
+            self.reaudit = false;
         }
         // What a review at start is told about: the host and the items.
         if self.store.host.value.is_some() && self.store.maint.value.is_some() {
@@ -825,9 +873,14 @@ impl Target for ServerTarget {
         })
     }
 
-    fn refresh(&mut self, why: Why, cx: &Cx) -> Vec<Effect> {
+    fn refresh(&mut self, why: Why, sh: &Shared, cx: &Cx) -> Vec<Effect> {
         match why {
-            Why::Lists => self.fetch(Kind::Maint, cx),
+            // The records changed: what's expected follows them, and the items' standing
+            // (what the log says was done) is read again.
+            Why::Lists => {
+                self.remark(sh);
+                self.fetch(Kind::Maint, cx);
+            }
             Why::Step => {
                 for k in [Kind::Units, Kind::Docker] {
                     self.fetch(k, cx);
@@ -851,10 +904,24 @@ impl Target for ServerTarget {
                 self.offer_reread = self.store.sudo.value == Some(SudoMode::Password)
                     && self.inventory_at.is_some();
             }
-            // Findings on a server are verified by Claude's own read-only check.
-            Why::Reaudit => {}
-            // Nothing of the server's follows the log or the baseline file.
-            Why::Logged | Why::Baseline => {}
+            // A finding's fix ran: the audit says whether it's still reported. What the
+            // audit reads as root comes from the last inventory where sudo asks: with the
+            // password held that is read again first, so the audit sees the server as the
+            // fix left it.
+            Why::Reaudit => {
+                self.reaudit = true;
+                if cx.root
+                    && self.store.sudo.value == Some(SudoMode::Password)
+                    && !crate::inventory::script(&self.remote).is_empty()
+                {
+                    self.reaudit_reads = true;
+                    return vec![Own::Inventory.into()];
+                }
+                self.fetch(Kind::Audit, cx);
+            }
+            Why::Baseline => self.remark(sh),
+            // Nothing of the server's follows the log.
+            Why::Logged => {}
             Why::Audit => {
                 self.fetch(Kind::Audit, cx);
                 return vec![Effect::Toast("auditing… (a few seconds)".into())];
@@ -872,6 +939,14 @@ impl Target for ServerTarget {
             }
         }
         Vec::new()
+    }
+
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        vec![
+            crate::config::path(),
+            crate::maint::tracked::path(&self.remote.name),
+            sentry_core::maint::watch::path(&self.remote.name),
+        ]
     }
 
     fn on_own(&mut self, fx: &effect::Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
@@ -904,6 +979,12 @@ impl Target for ServerTarget {
                 let id = item.id.clone();
                 match tracked::track(&name, (**item).clone()) {
                     Ok(()) => {
+                        // It isn't "found" any more: its row leaves now, not when the
+                        // server has been read again.
+                        self.store
+                            .maint_found
+                            .candidates
+                            .retain(|c| c.item.id != id);
                         let mut fx = self.reload_config(cx);
                         fx.push(Effect::Toast(format!(
                             "tracking {id} (servers/{name}/items.toml)"
@@ -922,6 +1003,8 @@ impl Target for ServerTarget {
             },
             Own::Untrack(id) => match tracked::untrack(&name, id) {
                 Ok(true) => {
+                    // (Its "gone" row with it.)
+                    self.store.maint_found.gone.retain(|g| &g.id != id);
                     let mut fx = self.reload_config(cx);
                     fx.push(Effect::Toast(format!("{id}: no longer tracked")));
                     fx

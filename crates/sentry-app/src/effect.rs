@@ -127,8 +127,10 @@ pub enum Effect {
     Wake(String),
     /// From a target: a line of its own in the open chat.
     ChatNote(String),
-    /// From a target: what the apply session fixed was audited again (true: it's gone).
-    Reaudited(bool),
+    /// From a target: what the apply session fixed was audited again. None: the audit no
+    /// longer reports it; else how it stands now (`Finding::standing`), or why the audit
+    /// couldn't say.
+    Reaudited(Option<String>),
     /// From a target: its audit ended (a series may be waiting for it).
     AuditEnded(bool),
     /// From a target: what a review at start is told about has been read.

@@ -188,6 +188,43 @@ fn data(a: &mut App, k: Kind, p: Payload) {
     a.on_event(data_ev(a, k, Box::new(Ok(p))), Instant::now());
 }
 
+/// The audit a finding's session asked for comes back: the report as it was, with the
+/// finding the session is about (`still`) or without it.
+fn audited(a: &mut App, still: bool) {
+    let id = a
+        .apply_session()
+        .and_then(|s| s.chat.ask.finding().map(str::to_string))
+        .expect("a finding's session");
+    // Where sudo asks and the password is held, what needs root is read again first.
+    if a.root_reads_for_test() > 0 {
+        a.root_read_for_test(Ok(String::new()));
+    }
+    assert!(
+        srv(a).asked.contains(&Kind::Audit),
+        "the audit was asked for"
+    );
+    let mut r = srv(a)
+        .store
+        .report
+        .value
+        .clone()
+        .flatten()
+        .expect("a report");
+    if !still {
+        r.findings.retain(|f| f.id != id);
+    }
+    data(
+        a,
+        Kind::Audit,
+        Payload::Reports(Box::new(audit::Shown {
+            names: vec!["2026-10-26-120000".into()],
+            idx: 0,
+            cur: Some(r),
+            prev: None,
+        })),
+    );
+}
+
 fn app() -> App {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut a = super::app(Remote::new("myserver", &cfg()), tx);
@@ -273,15 +310,13 @@ fn app() -> App {
         "fail2ban".into(),
         "needs sudo: add `fail2ban-client status` to sudo: in server_config.yaml".into(),
     )];
-    let findings = audit::derive(
-        &snap,
-        &cfg(),
-        None,
-        &sentry_core::baseline::BaselineFile {
-            findings: vec!["srv:docker-sock:*".into()],
-            ..Default::default()
-        },
-    );
+    // (What's expected is the baseline's as it is now, whatever a stored report says.)
+    let base = sentry_core::baseline::BaselineFile {
+        findings: vec!["srv:docker-sock:*".into()],
+        ..Default::default()
+    };
+    let findings = audit::derive(&snap, &cfg(), None, &base);
+    a.slot_mut().shared.baseline = base;
     data(
         &mut a,
         Kind::Report,
@@ -1141,10 +1176,18 @@ fn fixing_a_finding_on_the_server_is_an_apply_session() {
     // sudo -n works here: no password asked; the step runs on the server.
     a.apply_exit_for_test(0);
     a.apply_exit_for_test(0);
-    // No audit to run here (the server's findings): Claude verifies straight away.
+    // The audit runs again before anything says done: its report is what the list shows.
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
+    assert!(render_to_string(&mut a, 158, 41).contains("sentry is auditing again"));
+    audited(&mut a, false);
     assert_eq!(
         a.apply_session().unwrap().phase,
         Phase::Thinking(Turn::Verify)
+    );
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry's audit no longer reports the finding"),
+        "{sent}"
     );
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
     assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
@@ -1187,6 +1230,7 @@ fn one_password_serves_a_session_a_workflow_step_and_the_reads() {
     assert!(a.apply_session().unwrap().secret.is_empty());
     assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
     a.apply_exit_for_test(0);
+    audited(&mut a, false);
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
     // Not in what's drawn, what Claude was sent, or the log entry.
     let s = render_to_string(&mut a, 158, 41);
@@ -1211,6 +1255,7 @@ fn one_password_serves_a_session_a_workflow_step_and_the_reads() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.apply_session().unwrap().phase, Phase::Applying);
     a.apply_exit_for_test(0);
+    audited(&mut a, false);
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"up\"\n```");
     key(&mut a, KeyCode::Esc);
     // A workflow's sudo step: its confirm is still asked, the password isn't.
@@ -4195,7 +4240,7 @@ fn b_marks_every_family_of_the_port_and_the_finding() {
         b.listeners,
         ["0.0.0.0:443/docker-proxy", "[::]:443/docker-proxy"]
     );
-    assert_eq!(b.findings, ["srv:listener:tcp:443"]);
+    assert_eq!(b.findings, ["srv:docker-sock:*", "srv:listener:tcp:443"]);
     // A baseline entry is an address, a port and a process, not a protocol: docker-proxy's
     // udp 443 is covered with it, as in sentry.
     assert!(s.contains("3 Network 1"), "only 8080 is still new: {s}");
@@ -4237,7 +4282,7 @@ fn b_again_unmarks() {
     assert!(s.contains("tcp 8080: no longer expected"), "{s}");
     assert!(
         a.slot().shared.baseline.listeners.is_empty()
-            && a.slot().shared.baseline.findings.is_empty()
+            && a.slot().shared.baseline.findings == ["srv:docker-sock:*"]
     );
     assert!(s.contains("3 Network 5"), "{s}");
     // What server_config.yaml expects stays expected: it isn't rewritten.
@@ -4672,6 +4717,8 @@ fn series_row(a: &mut App, verdict: &str) {
     // sudo -n works here; then the step.
     a.apply_exit_for_test(0);
     a.apply_exit_for_test(0);
+    // The audit after the plan: gone when Claude will say done.
+    audited(a, !verdict.contains("\"done\""));
     a.apply_answer_for_test(verdict);
 }
 
@@ -4838,6 +4885,8 @@ fn world_moves(a: &mut App) -> bool {
         Phase::Thinking(Turn::Verify) => a.apply_answer_for_test(SERIES_DONE),
         Phase::Thinking(_) => a.apply_answer_for_test(SERIES_PLAN),
         Phase::Applying if sess.job.is_some() => a.apply_exit_for_test(0),
+        // A finding's plan ran: the audit comes back without it.
+        Phase::Applying if sess.auditing() => audited(a, false),
         _ => return false,
     }
     true
@@ -5198,6 +5247,7 @@ fn auto_stops_a_series_at_a_row_that_is_not_done() {
     // The first: its plan is approved by auto, its step runs, and Claude says it failed.
     a.apply_answer_for_test(SERIES_PLAN);
     a.apply_exit_for_test(0);
+    audited(&mut a, true);
     a.apply_answer_for_test("```sentry-verdict\nstatus = \"failed\"\nsummary = \"no image\"\n```");
     // The series stops there: the session stays to look at, both rows stay ticked.
     let s = screen(&mut a);
@@ -5372,4 +5422,361 @@ fn crowdsec_findings_are_recommendations_and_the_hub_can_wait() {
     key(&mut a, KeyCode::Char('o'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("CrowdSec hub:"), "{s}");
+}
+
+// ------------------------------------------------------------- a resolved row leaves at once
+
+/// Every way a row is resolved, on a server: the row leaves the list with no restart (or
+/// stays, or returns, as the way says). The ways that need the process's own files are in
+/// `crates/sentry/tests/rows_on_disk.rs`.
+#[test]
+fn every_way_a_row_is_resolved_updates_the_list_at_once() {
+    use sentry_app::resolve::{NEEDS_ALONE, Way, check};
+    let seen = check(&super::testing::Rig, false);
+    for (way, got) in &seen {
+        assert!(
+            got.is_ok() || *got == Err(NEEDS_ALONE),
+            "a server has every way: {way:?} {got:?}"
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        Way::ALL.iter().filter(|w| !w.alone()).count(),
+        "every way that needs no file of the process's own was tried"
+    );
+}
+
+/// What happened on a real server, start to end: the config watches a timer that was
+/// retired on purpose, so the audit keeps reporting it stale. A session that changes
+/// nothing can't settle done (the audit still reports it, and Claude is told how it
+/// stands); the plan that stops sentry watching the timer takes the row off at once, is
+/// listed in Records, and `u` there brings the watching (and the row) back.
+#[test]
+fn a_retired_timer_is_resolved_by_no_longer_watching_it() {
+    use sentry_app::resolve::{Rig as _, listed, select};
+    use sentry_core::apply::session::{End, Phase, Turn};
+    let rig = super::testing::Rig;
+    let (finding, row) = rig.finding();
+    let mut a = rig.app("retired-timer");
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    select(&mut a, &row);
+    assert!(screen(&mut a).contains("report.timer: last ran 12 days ago"));
+    key(&mut a, KeyCode::Char('A'));
+    // The brief says what a plan may stop watching, the finding's own timer first.
+    let brief = a.consent_text().unwrap();
+    assert!(
+        brief.contains("`unwatch`") && brief.contains("`timer:report.timer`"),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("removed or retired on purpose")
+            && brief.contains("leaves the thing watched"),
+        "{brief}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // The first try, as before: confirm it's gone on purpose, change nothing.
+    a.apply_answer_for_test(
+        "It was retired.\n```sentry-apply\nsummary = \"Change nothing: confirm the timer is gone\"\n\
+         [[step]]\ntitle = \"Its replacement runs\"\ncheck = \"systemctl is-active report-v2.timer\"\n```",
+    );
+    key(&mut a, KeyCode::Enter);
+    a.apply_exit_for_test(0);
+    assert!(screen(&mut a).contains("sentry is auditing again"));
+    // The audit, run again by itself, still has it: Claude hears so, with the evidence.
+    rig.audited(&mut a, true);
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry's audit still reports the finding:")
+            && sent.contains("report.timer: last ran 12 days ago")
+            && sent.contains("evidence: LastTriggerUSec=")
+            && sent.contains("It isn't done while sentry's audit reports it"),
+        "{sent}"
+    );
+    // Claude says done all the same: it isn't. The session carries on, nothing is logged
+    // as done, and the row is still there.
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"retired on purpose\"\n```",
+    );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Thinking(Turn::Fix));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Claude says done, but the audit still reports it"),
+        "{s}"
+    );
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.starts_with("You answered done, but sentry's audit still reports the finding:"),
+        "{sent}"
+    );
+    assert!(a.slot().shared.log.is_empty(), "nothing is logged done");
+    assert!(listed(&mut a, &row));
+    // A timer sentry isn't told to watch can't be named.
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"stop watching\"\n[[step]]\ntitle = \"Stop watching\"\n\
+         unwatch = \"timer:other.timer\"\nwhy = \"retired\"\n```",
+    );
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry watches no timer:other.timer here; what it can stop watching: timer:report.timer"),
+        "{sent}"
+    );
+    // The plan that fits: one step, nothing on the server changes.
+    a.apply_answer_for_test(
+        "It was replaced.\n```sentry-apply\nsummary = \"Stop watching the retired timer\"\n\
+         [[step]]\ntitle = \"Stop watching report.timer\"\nunwatch = \"timer:report.timer\"\n\
+         why = \"retired; report-v2.timer does its job\"\n```",
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains("stop watching timer:report.timer")
+            && s.contains("because: retired; report-v2.timer does its job")
+            && s.contains("Enter  apply the plan"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    // Written (in memory here: tests write nothing), applied over the config, and the row
+    // is gone before the audit comes back.
+    let w = srv(&a).remote.watch.clone();
+    assert_eq!(w.unwatched.len(), 1);
+    assert_eq!(
+        (w.unwatched[0].key().as_str(), w.unwatched[0].why.as_str()),
+        (
+            "timer:report.timer",
+            "retired; report-v2.timer does its job"
+        )
+    );
+    assert!(srv(&a).remote.cfg.timers.is_empty());
+    assert_eq!(
+        srv(&a).remote.listed().timers.len(),
+        1,
+        "the YAML's own stays"
+    );
+    assert!(!listed(&mut a, &row));
+    // The audit agrees (it doesn't look for the timer any more), and now it is done.
+    rig.audited(&mut a, true);
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry's audit no longer reports the finding"),
+        "{sent}"
+    );
+    a.apply_answer_for_test(
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"no longer watched\"\n```",
+    );
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+    let log = &a.slot().shared.log;
+    let done: Vec<_> = log
+        .iter()
+        .filter(|e| e.head.tags.contains(&format!("finding:{finding}")))
+        .collect();
+    // One entry for the session, written only now that the audit agrees: what ran before
+    // (which changed nothing) and what resolved it.
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].head.result, "done");
+    assert!(
+        done[0]
+            .head
+            .tags
+            .contains(&"unwatch:timer:report.timer".to_string()),
+        "{:?}",
+        done[0].head.tags
+    );
+    assert!(
+        done[0]
+            .body
+            .contains("Change nothing: confirm the timer is gone")
+            && done[0]
+                .body
+                .contains("sentry no longer watches timer:report.timer"),
+        "{}",
+        done[0].body
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(a.apply_session().is_none());
+    // Records › Later lists it, with since when and why; `u` watches it again.
+    for c in ":later".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("not watched")
+            && s.contains("timer:report.timer")
+            && s.contains("retired; report-v2.timer")
+            && s.contains("watch.toml"),
+        "{s}"
+    );
+    let audits = |a: &App| srv(a).asked.iter().filter(|k| **k == Kind::Audit).count();
+    let before = audits(&a);
+    key(&mut a, KeyCode::Char('u'));
+    assert!(srv(&a).remote.watch.unwatched.is_empty());
+    assert_eq!(srv(&a).remote.cfg.timers.len(), 1);
+    assert_eq!(audits(&a), before + 1, "audited at once");
+    assert!(screen(&mut a).contains("timer:report.timer: back on Maintenance"));
+    // The audit that follows reports it as before.
+    key(&mut a, KeyCode::Esc);
+    rig.audited(&mut a, true);
+    assert!(listed(&mut a, &row));
+}
+
+/// Against a disposable sshd (never the real server), with a stand-in systemd whose one
+/// service is down: the config expects it, so the audit reports it; a session (Claude's
+/// answers scripted, everything else real: ssh, sudo, the audit, the report on disk) starts
+/// it, sentry audits again by itself, and the row leaves the list without a restart. Then
+/// the other way round: stopped behind sentry's back, a session that changes nothing is
+/// never done, and the row stays.
+/// `scripts/live-container.sh test nopasswd|password live_reaudit`
+#[test]
+#[ignore]
+fn live_reaudit() {
+    use sentry_core::apply::session::{End, Phase, Turn};
+    sentry_core::paths::use_real_dirs();
+    let Ok(name) = std::env::var("SENTRY_SERVER_SCRATCH") else {
+        return;
+    };
+    const ID: &str = "srv:service-down:app.service";
+    const ROW: &str = "finding:srv:service-down:app.service";
+    const DONE: &str = "```sentry-verdict\nstatus = \"done\"\nsummary = \"app.service runs\"\n```";
+    let pw = std::env::var_os("SENTRY_SERVER_SCRATCH_PASSWORD").map(|_| live_password());
+    let (file, _) = crate::config::load().unwrap();
+    let (n, s) = crate::config::pick(&file, Some(&name)).unwrap();
+    let r = Remote::new(n, s);
+    assert_eq!(r.cfg.services, ["app.service"]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = super::app(r.clone(), tx);
+    a.win.scripted_turns = true;
+    a.start(Instant::now());
+    a.slot_mut().auto_review.after_run = false;
+    a.slot_mut().auto_review.at_start = false;
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    let wait = |a: &mut App, what: &str, ok: &dyn Fn(&mut App) -> bool| {
+        let until = Instant::now() + std::time::Duration::from_secs(40);
+        while !ok(a) {
+            assert!(
+                Instant::now() < until,
+                "waited 40 s for {what}:\n{}",
+                render_to_string(a, 158, 41)
+            );
+            pump_for(a, &rx, 1);
+        }
+    };
+    let on_disk = |name: &str| {
+        audit::latest(name)
+            .is_some_and(|rep: audit::Report| rep.findings.iter().any(|f| f.id == ID))
+    };
+    pump_for(&mut a, &rx, 3);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    // The first audit: the service is down, and the row says so.
+    a.apply(vec![Own::fetch(Kind::Audit)], Instant::now());
+    wait(&mut a, "the first audit", &|a| {
+        a.rows_for_test().iter().any(|k| k == ROW)
+    });
+    assert!(on_disk(&name));
+    println!("✓ the audit reports app.service down");
+
+    // The session's plan, approved once; `sudo` is checked (or asked for) and the step runs.
+    let fix = |a: &mut App, step: &str| {
+        a.apply(vec![Own::maint_find(ROW.into())], Instant::now());
+        key(a, KeyCode::Char('A'));
+        assert!(
+            a.apply_session().is_some(),
+            "{}",
+            render_to_string(a, 158, 41)
+        );
+        key(a, KeyCode::Enter);
+        a.apply_answer_for_test(&format!(
+            "It's down.\n```sentry-apply\nsummary = \"about app.service\"\n[[step]]\ntitle = \"The step\"\n{step}\n```"
+        ));
+        key(a, KeyCode::Enter);
+    };
+    fix(&mut a, "run = \"sudo systemctl start app.service\"");
+    if let Some(pw) = &pw {
+        wait(&mut a, "the password prompt", &|a| {
+            a.holds_password_for_test()
+                || matches!(
+                    a.apply_session().map(|s| s.phase),
+                    Some(Phase::Password {
+                        checking: false,
+                        ..
+                    })
+                )
+        });
+        if !a.holds_password_for_test() {
+            type_line(&mut a, pw);
+        }
+    }
+    // No key from here: the step, the audit (after what needs root was read again, where
+    // sudo asks), and Claude told what the audit found.
+    wait(&mut a, "the audit after the fix", &|a| {
+        a.apply_session().map(|s| s.phase) == Some(Phase::Thinking(Turn::Verify))
+    });
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry's audit no longer reports the finding"),
+        "{sent}"
+    );
+    assert_eq!(
+        r.sh("systemctl is-active app.service")
+            .output()
+            .unwrap()
+            .trim(),
+        "active"
+    );
+    assert!(
+        !a.rows_for_test().iter().any(|k| k == ROW),
+        "the row left: {}",
+        screen(&mut a)
+    );
+    assert!(!on_disk(&name), "the new report is on disk");
+    a.apply_answer_for_test(DONE);
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+    key(&mut a, KeyCode::Enter);
+    let log = sentry_core::maint::log::list(&name);
+    assert!(
+        log.iter()
+            .any(|e| e.head.result == "done" && e.head.tags.contains(&format!("finding:{ID}"))),
+        "logged done"
+    );
+    println!("✓ the session started it, sentry audited again, and the row left without a restart");
+
+    // It breaks behind sentry's back (the stand-in's state is a file anyone may write):
+    // the next audit reports it, and the row is back.
+    r.sh("echo inactive >/var/lib/fake-systemd/app.service")
+        .output()
+        .unwrap();
+    a.apply(vec![Own::fetch(Kind::Audit)], Instant::now());
+    wait(&mut a, "the audit to report it again", &|a| {
+        a.rows_for_test().iter().any(|k| k == ROW)
+    });
+    // A session that changes nothing: the audit still reports it, Claude is told so (twice
+    // at most), and it never settles done or logs done.
+    fix(&mut a, "check = \"true\"");
+    wait(
+        &mut a,
+        "the audit after a plan that changed nothing",
+        &|a| a.apply_session().map(|s| s.phase) == Some(Phase::Thinking(Turn::Verify)),
+    );
+    let sent = a.slot().last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("sentry's audit still reports the finding:") && sent.contains("app.service"),
+        "{sent}"
+    );
+    for _ in 0..=sentry_core::apply::session::FIX_ROUNDS {
+        a.apply_answer_for_test(DONE);
+    }
+    assert_eq!(
+        a.apply_session().unwrap().phase,
+        Phase::Settled(End::Unverified)
+    );
+    assert!(a.rows_for_test().iter().any(|k| k == ROW), "the row stays");
+    // (Its entry is the newest; one of the same minute takes the earlier one's file.)
+    let log = sentry_core::maint::log::list(&name);
+    assert_eq!(log[0].head.result, "failed", "{}", log[0].body);
+    assert!(
+        log[0]
+            .body
+            .contains("Not resolved: sentry's audit still reports the finding."),
+        "{}",
+        log[0].body
+    );
+    println!("✓ a session that changed nothing is not done: the audit still reports it");
 }

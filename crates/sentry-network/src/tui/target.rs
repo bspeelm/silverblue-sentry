@@ -218,7 +218,6 @@ impl NetworkTarget {
                     server_changes: false,
                     // What a run did is read from the log (a cadence is done when its
                     // workflow last ended well): it follows every entry written.
-                    log_kept: true,
                     // A secret typed among a run's values shows as dots.
                     typed: |p, text| match p {
                         effect::Prompt::WfVar(_) => crate::guard::typed(text),
@@ -313,21 +312,45 @@ impl NetworkTarget {
         self.with_screens(sh, cx, |s, v| s.clamp(id, v));
     }
 
-    /// Set `expected` on the stored findings an id (or pattern) covers.
-    fn mark_findings(&mut self, id: &str, on: bool) {
-        let reports = [
-            self.store.report.value.as_mut().and_then(|r| r.as_mut()),
-            self.store.shown.as_mut().and_then(|s| s.cur.as_mut()),
-        ];
-        for r in reports.into_iter().flatten() {
-            for f in r
-                .findings
-                .iter_mut()
-                .filter(|f| sentry_core::baseline::glob(id, &f.id))
-            {
-                f.expected = on;
-            }
+    /// What's expected of the stored findings, by the baseline as it is now (a report on
+    /// disk says what was expected when it was written, and is read again on every entry).
+    fn remark(&mut self, sh: &Shared) {
+        let (cur, prev) = match self.store.shown.as_mut() {
+            Some(s) => (s.cur.as_mut(), s.prev.as_mut()),
+            None => (None, None),
+        };
+        let latest = self.store.report.value.as_mut().and_then(|r| r.as_mut());
+        let cfg = &self.router.cfg;
+        for r in [latest, cur, prev].into_iter().flatten() {
+            // What isn't watched any more can't be reported by a new audit: it leaves
+            // with the watching, not at the next audit.
+            r.findings.retain(|f| !crate::watch::dropped(cfg, &f.id));
+            sentry_app::remote::audit::mark_expected(&mut r.findings, &[], &sh.baseline);
         }
+    }
+
+    /// network_config.yaml changed on disk: read again; on an error, what was loaded stays.
+    fn reload_config(&mut self) -> Vec<Effect> {
+        let name = self.router.name.clone();
+        let said = match crate::config::load().and_then(|(f, w)| {
+            let n = f
+                .networks
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| format!("{name} is no longer in network_config.yaml"))?;
+            Ok((n, w))
+        }) {
+            Ok((n, warnings)) => {
+                let problems = crate::config::lint(&name, &n);
+                self.router = Router::new(&name, &n);
+                match warnings.iter().chain(&problems).next() {
+                    Some(p) => format!("reloaded · {p}"),
+                    None => "network_config.yaml reloaded".into(),
+                }
+            }
+            Err(e) => format!("not reloaded: {e}"),
+        };
+        vec![Effect::Toast(said)]
     }
 
     /// `b` on a finding or a client (or `B`, a pattern): into the baseline file, or out of
@@ -348,7 +371,7 @@ impl NetworkTarget {
             // Still expected by something else: a pattern.
             Ok(false) if !on => toast("expected by a pattern: Records › Later takes it back"),
             Ok(_) => {
-                self.mark_findings(id, on);
+                self.remark(sh);
                 self.clamp(sh, cx);
                 toast(if on {
                     "marked expected (baseline.toml)"
@@ -392,7 +415,7 @@ impl NetworkTarget {
         let still =
             !on && sh.baseline.listeners == b.listeners && sh.baseline.findings == b.findings;
         sh.baseline = b;
-        self.mark_findings(id, on);
+        self.remark(sh);
         self.clamp(sh, cx);
         toast(if on {
             format!("{what}: expected (baseline.toml)")
@@ -570,6 +593,9 @@ impl Target for NetworkTarget {
             _ => {}
         }
         self.store.apply(k, *res);
+        if matches!(k, Kind::Audit | Kind::Report | Kind::ReportAt(_)) {
+            self.remark(sh);
+        }
         match k {
             // One list of clients from the read, once the layout is known.
             Kind::Clients => self.store.raw_pending = ok,
@@ -577,14 +603,14 @@ impl Target for NetworkTarget {
                 fx.push(Effect::AuditEnded(ok));
                 // The audit after a finding's plan: is the finding gone?
                 if let Some(id) = cx.finding.filter(|_| std::mem::take(&mut self.reaudit)) {
-                    let still = self
-                        .store
-                        .report
-                        .value
-                        .as_ref()
-                        .and_then(|r| r.as_deref())
-                        .is_some_and(|r| r.findings.iter().any(|f| f.id == id && !f.expected));
-                    fx.push(Effect::Reaudited(ok && !still));
+                    let still = match self.store.report.value.as_ref() {
+                        _ if !ok => Some("the audit couldn't run".to_string()),
+                        r => r
+                            .and_then(|r| r.as_deref())
+                            .and_then(|r| r.findings.iter().find(|f| f.id == id && !f.expected))
+                            .map(sentry_core::finding::Finding::standing),
+                    };
+                    fx.push(Effect::Reaudited(still));
                 }
             }
             // The refresh was asked for: say how it went.
@@ -655,7 +681,7 @@ impl Target for NetworkTarget {
         fx
     }
 
-    fn refresh(&mut self, why: Why, cx: &Cx) -> Vec<Effect> {
+    fn refresh(&mut self, why: Why, sh: &Shared, cx: &Cx) -> Vec<Effect> {
         match why {
             Why::Audit => {
                 self.fetch(Kind::Audit, cx);
@@ -665,9 +691,6 @@ impl Target for NetworkTarget {
             Why::Reaudit => {
                 self.reaudit = true;
                 self.fetch(Kind::Audit, cx);
-                if cx.offline {
-                    self.reaudit = false;
-                }
                 Vec::new()
             }
             // A run ended: what it may have made (a backup) is read again.
@@ -680,9 +703,23 @@ impl Target for NetworkTarget {
                 }
                 Vec::new()
             }
-            // The lists are made from the app's records as they're drawn.
+            // The lists are made from the app's records as they're drawn; what's expected
+            // of the stored report follows the baseline.
+            Why::Lists | Why::Baseline => {
+                self.remark(sh);
+                self.clamp(sh, cx);
+                Vec::new()
+            }
+            Why::Edited => self.reload_config(),
             _ => Vec::new(),
         }
+    }
+
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        vec![
+            crate::config::path(),
+            sentry_core::maint::watch::path(&self.router.scope),
+        ]
     }
 
     fn on_own(&mut self, fx: &effect::Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
@@ -937,12 +974,81 @@ impl Upkeep for NetworkTarget {
     }
 
     fn records(&self, sh: &Shared, cx: &Cx) -> (Vec<LaterRow>, Option<jiff::Timestamp>) {
-        (Vec::new(), maint::audit_age(&self.view(sh, cx)).0)
+        // What the config lists and sentry no longer watches (`u` watches it again).
+        let later = self
+            .router
+            .watch
+            .unwatched
+            .iter()
+            .map(|u| LaterRow {
+                kind: LaterKind::Unwatched {
+                    since: u.since.to_string(),
+                    why: u.why.clone(),
+                },
+                key: u.key(),
+                file: "watch.toml",
+            })
+            .collect();
+        (later, maint::audit_age(&self.view(sh, cx)).0)
     }
 
-    fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, _cx: &Cx) -> Result<Vec<Effect>, String> {
+    /// The thing was retired on purpose: the config's own expectation goes (the file is
+    /// applied over the YAML, which isn't rewritten), and with it every finding about it.
+    fn unwatch(
+        &mut self,
+        what: &str,
+        why: &str,
+        sh: &mut Shared,
+        cx: &Cx,
+    ) -> Result<String, String> {
+        let Some((kind, thing)) = sentry_core::maint::watch::split(what) else {
+            return Err(format!("{what} isn't `<kind>:<name>`"));
+        };
+        if !crate::watch::known(self.router.listed(), what) {
+            return Err(format!("network_config.yaml expects no {kind} {thing}"));
+        }
+        let mut w = (*self.router.watch).clone();
+        if !w.add(kind, thing, jiff::Zoned::now().date(), why) {
+            return Ok(format!("{what} already wasn't watched"));
+        }
+        if !cx.offline {
+            sentry_core::maint::watch::save(&self.router.scope, &w)
+                .map_err(|e| format!("watch.toml: {e}"))?;
+        }
+        self.router = self.router.clone().with_watch(w);
+        self.remark(sh);
+        Ok(format!(
+            "sentry no longer watches {what} (watch.toml; Records › Later takes it back)"
+        ))
+    }
+
+    fn row_at(&self, sh: &Shared, cx: &Cx) -> Option<String> {
+        match maint::sel(&self.view(sh, cx))? {
+            maint::Sel::Rec(r) => Some(r.key),
+            maint::Sel::Item(i) => Some(format!("item:{}", i.id)),
+        }
+    }
+
+    fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String> {
         match row.kind {
             LaterKind::Expected => Ok(vec![Effect::own(Own::Expected(row.key.clone(), false))]),
+            // Watched again: the next audit says how it stands.
+            LaterKind::Unwatched { .. } => {
+                let mut w = (*self.router.watch).clone();
+                if !w.remove(&row.key) {
+                    return Err(format!("{} isn't in watch.toml any more", row.key));
+                }
+                if !cx.offline {
+                    sentry_core::maint::watch::save(&self.router.scope, &w)
+                        .map_err(|e| format!("watch.toml: {e}"))?;
+                }
+                self.router = self.router.clone().with_watch(w);
+                self.fetch(Kind::Audit, cx);
+                Ok(vec![Effect::Toast(format!(
+                    "{}: watched again · auditing",
+                    row.key
+                ))])
+            }
             _ => Ok(Vec::new()),
         }
     }

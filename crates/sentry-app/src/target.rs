@@ -149,9 +149,6 @@ pub struct Ways {
     /// Opening the session's run looks for another run in progress first, and goes to the
     /// run's screen only when it runs.
     pub run_checks: bool,
-    /// The log in memory follows every entry written, a run's note too (and tests, which
-    /// write nothing, still see their runs in it).
-    pub log_kept: bool,
     /// The pane: lines kept, whether it says how long the command took, what a command that
     /// couldn't start shows (before the error) and its exit code, what C-c says (none: a
     /// line in the pane), what a key says while it runs, and whether scrolling stops at
@@ -205,7 +202,6 @@ impl Default for Ways {
             exit_kills_run: true,
             exit_kills_session: false,
             run_checks: true,
-            log_kept: false,
             pane_lines: 5000,
             pane_took: false,
             pane_failed: ("✗ ", -1),
@@ -314,7 +310,8 @@ pub struct Cx<'a> {
 /// Why a target should read something again.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Why {
-    /// Its maintenance lists (a snooze, a log entry, a task changed).
+    /// Its records changed (a snooze, a log entry, a task, the baseline, a plan): what it
+    /// derives from them is made again, and what its rows need of the host is read.
     Lists,
     /// An apply session's step ran.
     Step,
@@ -410,7 +407,17 @@ pub trait Target: Upkeep + Asks + Host {
     fn on_stream(&mut self, _id: u64, _m: &StreamMsg, _cx: &Cx) -> Option<Vec<Effect>> {
         None
     }
-    fn refresh(&mut self, why: Why, cx: &Cx) -> Vec<Effect>;
+    /// Read again, or work out again, what `why` names. `Why::Lists` is the one every
+    /// change to the records ends in (`Slot::rows_changed`): whatever the target keeps that
+    /// is derived from them (what's expected of a stored report's findings) is made again
+    /// from `sh` as it is now.
+    fn refresh(&mut self, why: Why, sh: &Shared, cx: &Cx) -> Vec<Effect>;
+    /// Files of its own that decide what its rows are (its config, an overlay): the app
+    /// looks at their times with the records' (`Slot::look`), and a change is
+    /// `Why::Edited`, then `Why::Lists`.
+    fn files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// One of its own effects came back.
     fn on_own(&mut self, fx: &Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect>;
     /// A prompt of its own was answered (None: dismissed).
@@ -484,6 +491,8 @@ pub trait Upkeep {
     /// Everything on Maintenance a review's changes may name.
     fn with_known(&self, sh: &Shared, cx: &Cx, f: &mut dyn FnMut(&Known));
     fn changes(&self, sh: &Shared, cx: &Cx) -> Box<dyn Changes>;
+    /// The key of the Maintenance row the cursor is on.
+    fn row_at(&self, sh: &Shared, cx: &Cx) -> Option<String>;
     /// What the row with this key needs now (None: it left the list).
     fn series_step(&self, key: &str, sh: &Shared, cx: &Cx) -> Option<SeriesStep>;
     /// Enter on a task.
@@ -495,6 +504,20 @@ pub trait Upkeep {
     fn records(&self, sh: &Shared, cx: &Cx) -> (Vec<LaterRow>, Option<jiff::Timestamp>);
     /// Take back one of those rows, or something marked expected.
     fn undo(&mut self, row: &LaterRow, sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String>;
+    /// Stop watching something the config lists (`what`: `timer:<unit>`, one of
+    /// `Apply::unwatch`), because it was retired on purpose: written to the target's
+    /// `watch.toml`, applied over its config at once. Ok: what was written, in a line.
+    fn unwatch(
+        &mut self,
+        what: &str,
+        _why: &str,
+        _sh: &mut Shared,
+        _cx: &Cx,
+    ) -> Result<String, String> {
+        Err(format!(
+            "nothing here is watched by a list sentry can shorten ({what})"
+        ))
+    }
     /// A run or a series is over and nothing more is asked about it: anything to offer?
     fn settled(&mut self, _cx: &Cx) -> Vec<Effect> {
         Vec::new()

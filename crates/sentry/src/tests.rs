@@ -264,9 +264,6 @@ fn a_prompt_stays_with_its_target_while_another_is_in_view() {
 use sentry_app::effect::Effect;
 use sentry_core::workflows::runner::Next;
 
-/// This machine's runs share one place: the tests that start one take turns.
-static LOCAL_RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 const LOCAL: usize = 0;
 const SRV: usize = 1;
 
@@ -287,8 +284,8 @@ fn two_with(server: &str, sudo_asks: bool) -> App {
 /// A workflow of this machine's, in its (scratch) workflows directory. Whoever holds the
 /// guard has this machine's runs to itself.
 fn local_wf(name: &str, steps: &str) -> std::sync::MutexGuard<'static, ()> {
-    let turn = LOCAL_RUNS.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = std::fs::remove_dir_all(sentry_core::workflows::state::root());
+    // (This machine's runs share one place: whoever starts one takes its turn.)
+    let turn = sentry_local::tui::testing::runs_turn();
     let dir = sentry_local::workflows::dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2776,4 +2773,55 @@ fn live_system_security() {
         }
     }
     sentry_core::tui::Ui::shutdown(&mut a);
+}
+
+// ------------------------------------------------------------- a resolved row leaves at once
+
+/// Every way a Maintenance row is resolved, on this machine, a server and a network side
+/// by side: each gives what the way must (`Way::expect`: the row leaves at once, stays, or
+/// returns), and where two kinds of target both have a way they behave the same. The ways
+/// about files changed on disk have a process to themselves (`tests/rows_on_disk.rs`).
+#[test]
+fn a_resolved_row_leaves_at_once_on_every_target() {
+    use sentry_app::resolve::{Outcome, Rig, Way, check};
+    let rigs: [&dyn Rig; 3] = [
+        &sentry_local::tui::testing::Rig,
+        &sentry_server::tui::testing::Rig,
+        &sentry_network::tui::testing::Rig,
+    ];
+    let seen: Vec<Vec<(Way, Outcome)>> = rigs.iter().map(|r| check(*r, false)).collect();
+    let mut table = Vec::new();
+    for (i, (way, _)) in seen[0].iter().enumerate() {
+        let row: Vec<&Outcome> = seen.iter().map(|s| &s[i].1).collect();
+        table.push(format!(
+            "{way:?}: {}",
+            rigs.iter()
+                .zip(&row)
+                .map(|(r, o)| format!("{} {o:?}", r.kind()))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ));
+        // The same on every target that has it, and what the way says.
+        let had: Vec<(bool, bool)> = row
+            .iter()
+            .filter_map(|o| o.as_ref().ok().copied())
+            .collect();
+        assert!(!had.is_empty(), "no target has {way:?}: {row:?}");
+        assert!(
+            had.iter().all(|o| *o == way.expect()),
+            "{way:?} differs between targets: {}",
+            table.last().unwrap()
+        );
+        // A server and a network are both hosts with a config that says what must be
+        // there: whatever one has, the other has.
+        assert_eq!(row[1].is_ok(), row[2].is_ok(), "{}", table.last().unwrap());
+    }
+    // What this machine hasn't: nothing in its config to stop watching.
+    let missing: Vec<Way> = seen[0]
+        .iter()
+        .filter(|(_, o)| o.is_err())
+        .map(|(w, _)| *w)
+        .collect();
+    assert_eq!(missing, [Way::Unwatch, Way::UnwatchBack], "{table:#?}");
+    println!("{}", table.join("\n"));
 }

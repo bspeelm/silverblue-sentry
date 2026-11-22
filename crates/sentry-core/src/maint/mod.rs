@@ -13,6 +13,7 @@ pub mod review;
 pub mod series;
 pub mod tasks;
 pub mod version;
+pub mod watch;
 
 use std::path::PathBuf;
 

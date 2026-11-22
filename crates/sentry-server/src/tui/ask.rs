@@ -224,6 +224,9 @@ pub fn ask_finding(v: &View, r: &Remote, f: &sentry_core::finding::Finding) -> A
             key: format!("finding:{}", f.id),
             finding: Some(f.id.clone()),
             remote: true,
+            // The audit says whether it's gone, here as on this machine.
+            reaudits: true,
+            unwatch: crate::watch::offered(&r.cfg, &f.id),
             ..Default::default()
         },
     )

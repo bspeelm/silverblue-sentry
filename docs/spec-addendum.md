@@ -344,3 +344,19 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - A session keeps the web until it has read from a router (a call through its gateway, a step or a request there) or was opened on something a router said. From the next turn on it has none, for the rest of the session, and says so once: "the web is off for this session: it has read from the router". What a router prints is partly other people's text; with the web beside it, a line planted there could ask for something to be sent out.
 - A session started on a network never has the web. Sessions on a server or this machine research as before, a router in the window or not.
 - A review can run nothing and write nothing: it keeps the web, the security audit's review included.
+
+## A44. A resolved row leaves at once (2026-11)
+- Everything that can change the Maintenance rows ends in one path, `Slot::rows_changed`: the records are read again (`tasks.toml`, `later.toml`, `baseline.toml`, `plans/`, `log/`, `reviews/`), the target makes again what it derives from them (`Target::refresh(Why::Lists, …)`), the cursors follow, and Records, if open, lists what there is now. A task done or removed, a row put off or marked expected, a review's changes, a run or a session ending, a log entry: all of them.
+- What a stored audit report says was expected is what was expected when it was written. Whoever shows one marks it again from the baseline as it is now; a row marked expected no longer comes back when its screen is entered.
+- What changed on disk without sentry is found by `Slot::look`, which compares the files' times (a handful of `stat`s): on `r`, on entering a screen, when the target gets the window back, after a turn of Claude's and after an editor. The target's own files count (`Target::files`: its config YAML, `items.toml`, `watch.toml`). Nothing watches in the background.
+- The ways are listed once (`sentry_app::resolve::Way`) and driven the same on every kind of target through its `Rig`; a new way or a new target can't leave one out.
+
+## A45. Done is the audit's to say (2026-11)
+- After a finding's plan, sentry audits again by itself on every target, a server too (it used to leave that to Claude's own check), and the list is made from the new report. Where sudo asks and the password is held, what needs root is read again first.
+- While the audit still reports the finding, the session can't settle done: Claude is told how it stands (the audit's message and evidence) and carries on, twice at most; after that it is the user's, not done, and what it logs says "Not resolved". A finding is never logged done while it is still reported.
+
+## A46. Stop watching what was retired on purpose (2026-11)
+- `watch.toml` beside a target's records (`maint::watch`): `[[unwatched]]` with `kind`, `name`, `since`, `why`. Applied over the config wherever it is read (`Remote::new`, `Router::new`); the YAML is never rewritten. Records › Later lists the entries; `u` watches the thing again and audits.
+- A server: `timers`, `services`, `disks`, `smart`, and one container (it joins `containers.ignore`). A network: `expect.services`, `expect.forwards`. A maintenance item keeps its own way (`untracked` in items.toml). Lists that say what is allowed rather than what must be there (listeners, zones, the baseline's patterns) aren't covered: taking an entry out would add findings.
+- A session reaches it as a plan step, `unwatch = "<kind>:<name>"` with `why`: shown and approved like any step, carried out by sentry (nothing on the host changes), tagged `unwatch:<key>` in the log. It may name only what the brief lists for its own target.
+- Marking a finding expected stays what it was: one finding id hidden, the thing still watched. A finding's brief tells Claude the difference: retired on purpose → stop watching it; should exist → fix it.

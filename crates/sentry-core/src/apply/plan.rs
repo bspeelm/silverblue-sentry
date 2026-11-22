@@ -79,6 +79,10 @@ pub enum Kind {
     /// A value only the user has (a password from their head or a manager): asked for in
     /// the session's own input line when the plan reaches it, kept as `name`.
     Ask { name: String, prompt: String },
+    /// Stop sentry watching something its config lists and that was retired on purpose
+    /// (`what`: `timer:<unit>`, as the brief names it). Nothing on the host changes: sentry
+    /// writes its own `watch.toml`, and Records can take it back.
+    Unwatch { what: String, why: String },
 }
 
 impl Kind {
@@ -89,6 +93,7 @@ impl Kind {
             Kind::Check(_) => "check",
             Kind::Workflow { .. } => "workflow",
             Kind::Ask { .. } => "ask",
+            Kind::Unwatch { .. } => "stop watching",
         }
     }
 
@@ -99,6 +104,7 @@ impl Kind {
             Kind::Run(c) | Kind::Check(c) => c,
             Kind::Workflow { name, .. } => name,
             Kind::Ask { name, .. } => name,
+            Kind::Unwatch { what, .. } => what,
         }
     }
 }
@@ -205,6 +211,8 @@ struct RawStep {
     vars: Option<std::collections::BTreeMap<String, toml::Value>>,
     ask: Option<String>,
     prompt: Option<String>,
+    unwatch: Option<String>,
+    why: Option<String>,
     on: Option<String>,
     capture: Option<String>,
     #[serde(default)]
@@ -234,13 +242,14 @@ fn parse(block: &str) -> Result<Plan, String> {
             s.check.is_some(),
             s.workflow.is_some(),
             s.ask.is_some(),
+            s.unwatch.is_some(),
         ]
         .iter()
         .filter(|x| **x)
         .count();
         if kinds != 1 {
             return Err(format!(
-                "step {n} needs exactly one of edit, run, check, workflow or ask"
+                "step {n} needs exactly one of edit, run, check, workflow, ask or unwatch"
             ));
         }
         if let Some(c) = &s.capture {
@@ -265,6 +274,25 @@ fn parse(block: &str) -> Result<Plan, String> {
             Kind::Run(c)
         } else if let Some(c) = s.check {
             Kind::Check(c)
+        } else if let Some(what) = s.unwatch {
+            let what = what.trim().to_string();
+            if crate::maint::watch::split(&what).is_none() {
+                return Err(format!(
+                    "step {n}: unwatch = \"{what}\" isn't `<kind>:<name>` as the brief names it"
+                ));
+            }
+            match s
+                .why
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty())
+            {
+                Some(why) => Kind::Unwatch { what, why },
+                None => {
+                    return Err(format!(
+                        "step {n} (unwatch) needs a `why`: what was retired, and what replaced it"
+                    ));
+                }
+            }
         } else if let Some(name) = s.ask {
             if !value_name(&name) {
                 return Err(format!(
@@ -353,6 +381,10 @@ pub fn to_block(p: &Plan) -> String {
                 Kind::Ask { name, prompt } => {
                     st.insert("ask".into(), name.clone().into());
                     st.insert("prompt".into(), prompt.clone().into());
+                }
+                Kind::Unwatch { what, why } => {
+                    st.insert("unwatch".into(), what.clone().into());
+                    st.insert("why".into(), why.clone().into());
                 }
             }
             if let Some(on) = &s.on {
@@ -501,6 +533,8 @@ pub enum Action {
     StartWorkflow(usize, String, std::collections::BTreeMap<String, String>),
     /// Ask the user for the step's value.
     Ask(usize),
+    /// sentry stops watching what the step names (its own file; nothing runs).
+    Unwatch(usize),
     Finished,
 }
 
@@ -543,6 +577,7 @@ impl Run {
                 Action::StartWorkflow(i, name.clone(), vars.clone())
             }
             Kind::Ask { .. } => Action::Ask(i),
+            Kind::Unwatch { .. } => Action::Unwatch(i),
         }
     }
 
@@ -625,6 +660,54 @@ rollback = \"sentry restores the backup\"\n\n[[step]]\ntitle = \"Line 5\"\nedit 
 old = \"\"\"old line\"\"\"\nnew = \"\"\"new line\nwith a fence:\n```\nok\n```\"\"\"\n\n\
 [[step]]\ntitle = \"Check\"\ncheck = \"grep -q new /tmp/x.md\"\n\n[[step]]\nworkflow = \"quick-update\"\n```\n\
 Approve it and sentry does it.";
+
+    #[test]
+    fn an_unwatch_step_names_a_kind_and_a_name_and_says_why() {
+        let block = |step: &str| {
+            format!("```sentry-apply\nsummary = \"s\"\n[[step]]\ntitle = \"Stop\"\n{step}```")
+        };
+        let (_, p) = take(&block(
+            "unwatch = \" timer:report.timer \"\nwhy = \"retired; v2 runs\"\n",
+        ));
+        let p = p.unwrap().unwrap();
+        assert_eq!(
+            p.steps[0].kind,
+            Kind::Unwatch {
+                what: "timer:report.timer".into(),
+                why: "retired; v2 runs".into()
+            }
+        );
+        assert_eq!(
+            (p.steps[0].kind.word(), p.steps[0].kind.target()),
+            ("stop watching", "timer:report.timer")
+        );
+        // It reads back as written (a plan kept in plans/).
+        let (_, back) = take(&to_block(&p));
+        assert_eq!(back.unwrap().unwrap(), p);
+        for (step, why) in [
+            (
+                "unwatch = \"report.timer\"\nwhy = \"x\"\n",
+                "isn't `<kind>:<name>`",
+            ),
+            ("unwatch = \"timer:report.timer\"\n", "needs a `why`"),
+            (
+                "unwatch = \"timer:a\"\nwhy = \"x\"\nrun = \"true\"\n",
+                "exactly one of",
+            ),
+        ] {
+            let (_, p) = take(&block(step));
+            let e = p.unwrap().unwrap_err();
+            assert!(e.contains(why), "{e}");
+        }
+        // Nothing runs: the app writes sentry's own file.
+        let mut r = Run::new(p);
+        assert_eq!(r.start(), Action::Unwatch(0));
+        assert_eq!(r.step_done(true, "written".into()), Action::Finished);
+        assert!(
+            r.report()
+                .contains("(stop watching timer:report.timer): written")
+        );
+    }
 
     #[test]
     fn a_plan_written_back_reads_the_same() {

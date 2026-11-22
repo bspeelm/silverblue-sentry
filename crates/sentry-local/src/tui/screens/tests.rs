@@ -954,6 +954,16 @@ fn fixing_a_finding_is_an_apply_session() {
     // The plan ran: sentry audits again before Claude verifies.
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("sentry is auditing again"), "{s}");
+    // (The new report no longer has it.)
+    let finding = a
+        .apply_session()
+        .unwrap()
+        .chat
+        .ask
+        .finding()
+        .unwrap()
+        .to_string();
+    a.audited_for_test(&finding, false);
     a.apply_step_exit_for_test(0);
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("Claude is checking the result"), "{s}");
@@ -2133,10 +2143,7 @@ fn a_row_that_fails_waits_and_esc_stops_the_series() {
 /// progress and others leave quick-update started): they take turns, each beginning with
 /// no run left there.
 fn runs_turn() -> std::sync::MutexGuard<'static, ()> {
-    static RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let turn = RUNS.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = std::fs::remove_dir_all(crate::workflows::state::root());
-    turn
+    crate::tui::testing::runs_turn()
 }
 
 #[test]
@@ -2633,4 +2640,30 @@ fn the_cursor_keeps_its_row_through_a_run() {
     // that returns later.
     key(&mut a, KeyCode::Char('k'));
     assert!(maint_row(&mut a).starts_with("Updates waiting"));
+}
+
+// ------------------------------------------------------------- a resolved row leaves at once
+
+/// Every way a row is resolved, on this machine: the row leaves the list with no restart
+/// (or stays, or returns, as the way says). The ways that need the process's own files are
+/// in `crates/sentry/tests/rows_on_disk.rs`.
+#[test]
+fn every_way_a_row_is_resolved_updates_the_list_at_once() {
+    use sentry_app::resolve::{NEEDS_ALONE, Way, check};
+    let seen = check(&crate::tui::testing::Rig, false);
+    for (way, got) in &seen {
+        let ours = !matches!(
+            way,
+            // Nothing in this machine's config says what must be there, and only a
+            // server tracks what discovery finds.
+            Way::Unwatch | Way::UnwatchBack | Way::Track | Way::Untrack | Way::Ignore
+        );
+        assert_eq!(got.is_ok(), ours, "this machine: {way:?} {got:?}");
+        assert_ne!(*got, Err(NEEDS_ALONE), "{way:?} was to be tried here");
+    }
+    assert_eq!(
+        seen.len(),
+        Way::ALL.iter().filter(|w| !w.alone()).count(),
+        "every way that needs no file of the process's own was tried"
+    );
 }

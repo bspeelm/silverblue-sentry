@@ -66,6 +66,9 @@ pub enum LaterKind {
     Listener,
     /// Something discovery found, ignored (sentry-server's `items.toml`).
     Ignored,
+    /// Something the config lists that sentry no longer watches (`watch.toml`): since
+    /// when, and why.
+    Unwatched { since: String, why: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +136,30 @@ impl Records {
             log,
             cur,
             doc: None,
+        }
+    }
+
+    /// What there is now, in place of what was read when it opened: the section, each
+    /// section's row and an open log entry stay where they were.
+    pub fn set_data(&mut self, mut data: Data) {
+        let entries = std::mem::take(&mut data.log);
+        // An entry open stays open if it's still there.
+        let open = self
+            .log
+            .open
+            .and_then(|_| self.log.entries.get(self.log.cur))
+            .map(|e| e.file_name());
+        self.log.entries = entries;
+        match open.and_then(|p| self.log.entries.iter().position(|e| e.file_name() == p)) {
+            Some(i) => self.log.cur = i,
+            None => {
+                self.log.open = None;
+                self.log.cur = self.log.cur.min(self.log.entries.len().saturating_sub(1));
+            }
+        }
+        self.data = data;
+        if self.doc.is_some() && self.section == Section::Plans && self.data.plans.is_empty() {
+            self.doc = None;
         }
     }
 
@@ -487,7 +514,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, r: &Records) {
             );
         }
         Section::Later if r.data.later.is_empty() => {
-            empty(f, "Nothing put off or marked expected.")
+            empty(f, "Nothing put off, marked expected or no longer watched.")
         }
         Section::Later => {
             let rows = r
@@ -500,10 +527,20 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, r: &Records) {
                         LaterKind::Expected => ("expected", String::new()),
                         LaterKind::Listener => ("expected listener", String::new()),
                         LaterKind::Ignored => ("ignored", String::new()),
+                        LaterKind::Unwatched { since, .. } => {
+                            ("not watched", format!("since {since}"))
+                        }
+                    };
+                    // Why it isn't watched goes with its name.
+                    let name = match &x.kind {
+                        LaterKind::Unwatched { why, .. } if !why.is_empty() => {
+                            format!("{} · {why}", x.key)
+                        }
+                        _ => x.key.clone(),
                     };
                     Row::new(vec![
                         Cell::from(what).style(t.fg()),
-                        Cell::from(x.key.clone()).style(t.fg()),
+                        Cell::from(name).style(t.fg()),
                         Cell::from(when).style(t.dim()),
                         Cell::from(x.file).style(t.dim()),
                     ])

@@ -168,6 +168,12 @@ pub enum Fx {
     },
     /// Audit again (a finding's session): then `reaudited`.
     Reaudit,
+    /// Stop watching what the plan's step names (`timer:<unit>`), and why: the target
+    /// writes it to its own `watch.toml`; then `unwatched`.
+    Unwatch {
+        what: String,
+        why: String,
+    },
     /// Retry the failed workflow step this session fixed (and show its run).
     RetryStep,
     /// The written plan this session carried out is done (it moves to plans/done/).
@@ -242,6 +248,10 @@ pub struct Session {
     pub brief_open: bool,
     /// The run's report, while the audit runs before the verify turn.
     audit_for: Option<String>,
+    /// The finding as sentry's audit last reported it after a plan of this session ran
+    /// (`Finding::standing`). None: no audit yet, or it no longer reports it. While it is
+    /// set the session can't settle done: the audit is what says a finding is gone.
+    still: Option<String>,
     /// The current run is what Claude asked for and the user allowed: its result goes back
     /// to Claude to carry on (not to verify). What else was allowed with it, in words.
     asked: Option<String>,
@@ -304,6 +314,7 @@ impl Session {
             logged: 0,
             brief_open: false,
             audit_for: None,
+            still: None,
             asked: None,
             timed_out: false,
             series: None,
@@ -669,6 +680,11 @@ impl Session {
             && self.run().is_some_and(|r| r.state == RunState::Proposed)
     }
 
+    /// The plan ran and the audit that says whether the finding is gone is under way.
+    pub fn auditing(&self) -> bool {
+        self.audit_for.is_some()
+    }
+
     /// Something runs (a turn, a step, a check): Esc hides instead of closing.
     pub fn busy(&self) -> bool {
         self.audit_for.is_some()
@@ -739,6 +755,17 @@ impl Session {
         self.fixes += 1;
         self.chat.push(Kind::Info, line);
         Some(self.turn(Turn::Fix, crate::claude::apply_fix(&prompt), None))
+    }
+
+    /// Something Claude has to hear before the session can end (the audit still reports
+    /// the finding): its answer is a plan or a verdict, while the rounds last.
+    fn told(&mut self, line: String, prompt: String) -> Option<Vec<Fx>> {
+        if self.fixes >= FIX_ROUNDS {
+            return None;
+        }
+        self.fixes += 1;
+        self.chat.push(Kind::Info, line);
+        Some(self.turn(Turn::Fix, prompt, None))
     }
 
     /// The verdict is missing or wrong: asked again, as a verify turn (its answer is a
@@ -1537,6 +1564,15 @@ impl Session {
                     }
                     return vec![self.at(on, Fx::StartWorkflow(wf, given))];
                 }
+                // sentry's own file: the app writes it and says how it went (`unwatched`).
+                Action::Unwatch(i) => {
+                    let StepKind::Unwatch { what, why } = r.plan.steps[i].kind.clone() else {
+                        a = r.step_done(false, "not an unwatch step".into());
+                        continue;
+                    };
+                    self.output.clear();
+                    return vec![Fx::Unwatch { what, why }];
+                }
                 // The value is typed here, in the session's own line; then it goes on.
                 Action::Ask(_) => {
                     self.secret.clear();
@@ -1712,20 +1748,49 @@ impl Session {
         }
     }
 
-    /// The audit ran again (`gone`: the finding isn't reported any more): after the plan, the
-    /// verify turn says so; after the session ended, it's done if the finding is gone.
-    pub fn reaudited(&mut self, gone: bool) -> Vec<Fx> {
+    /// The `unwatch` step the plan is at was carried out (Ok: what was written; Err: why
+    /// not): the plan goes on, or stops there.
+    pub fn unwatched(&mut self, done: Result<String, String>) -> Vec<Fx> {
+        let Some(r) = self.runs.last_mut() else {
+            return Vec::new();
+        };
+        let at_one = r
+            .plan
+            .steps
+            .get(r.current())
+            .is_some_and(|s| matches!(s.kind, StepKind::Unwatch { .. }));
+        if r.state != RunState::Running || !at_one {
+            return Vec::new();
+        }
+        let (ok, note) = match done {
+            Ok(note) => (true, note),
+            Err(why) => (false, why),
+        };
+        let a = r.step_done(ok, note);
+        self.drive(a)
+    }
+
+    /// The audit ran again (`still`: how the finding stands if it's still reported, or
+    /// why the audit couldn't say; None: it's gone). After the plan, the verify turn is
+    /// told; after the session ended, it's done if the finding is gone.
+    pub fn reaudited(&mut self, still: Option<String>) -> Vec<Fx> {
+        let gone = still.is_none();
         let line = if gone {
             "sentry's audit no longer reports the finding"
         } else {
             "sentry's audit still reports the finding"
         };
+        self.still = still;
         if let Some(report) = self.audit_for.take() {
             self.chat.push(
                 if gone { Kind::Good } else { Kind::Err },
                 format!("{line} · Claude is verifying the result"),
             );
-            let prompt = crate::claude::apply_verify(&format!("{report}\n\nAfter it, {line}."));
+            let said = match &self.still {
+                Some(how) => format!("{line}:\n{how}\n\n{}", crate::claude::STILL_REPORTED),
+                None => format!("{line}."),
+            };
+            let prompt = crate::claude::apply_verify(&format!("{report}\n\nAfter it, {said}"));
             return self.turn(Turn::Verify, prompt, None);
         }
         if matches!(self.phase, Phase::Settled(_)) {
@@ -1953,6 +2018,35 @@ impl Session {
             {
                 problems.push((i, why));
             }
+            // What sentry stops watching is one of the things its config lists for the
+            // session's own target.
+            if let StepKind::Unwatch { what, .. } = &st.kind {
+                let known = self
+                    .chat
+                    .ask
+                    .applying()
+                    .map(|a| a.unwatch.as_slice())
+                    .unwrap_or_default();
+                if st.on.is_some() {
+                    problems.push((
+                        i,
+                        "an unwatch step is for this session's own target: leave `on` out".into(),
+                    ));
+                } else if !known.iter().any(|(k, _)| k == what) {
+                    let names: Vec<&str> = known.iter().take(20).map(|(k, _)| k.as_str()).collect();
+                    problems.push((
+                        i,
+                        if names.is_empty() {
+                            format!("sentry watches no {what} here: nothing on this target can be un-watched")
+                        } else {
+                            format!(
+                                "sentry watches no {what} here; what it can stop watching: {}",
+                                names.join(", ")
+                            )
+                        },
+                    ));
+                }
+            }
             // And the files on this machine no plan may edit (a target's own config,
             // its workflows: what sentry runs on that host), by every target's rule.
             if let StepKind::Edit { file, .. } = &st.kind
@@ -2102,6 +2196,29 @@ impl Session {
             }
         };
         match v.status {
+            // Done is the audit's to say for a finding: while it still reports it, Claude
+            // is told how it stands and carries on, for as long as the fix rounds last.
+            Status::Done if self.still.is_some() => {
+                let how = self.still.clone().unwrap_or_default();
+                let prompt = format!(
+                    "You answered done, but sentry's audit still reports the finding:\n{how}\n\n{}",
+                    crate::claude::STILL_REPORTED
+                );
+                match self.told(
+                    "Claude says done, but the audit still reports it · sentry told Claude so"
+                        .into(),
+                    prompt,
+                ) {
+                    Some(fx) => fx,
+                    None => {
+                        self.chat.push(
+                            Kind::Err,
+                            "✗ Not done · the audit still reports the finding; it's yours now",
+                        );
+                        self.settle_with(End::Unverified, Some(&v.summary))
+                    }
+                }
+            }
             Status::Done => {
                 self.chat
                     .push(Kind::Good, format!("✓ Done · {}", v.summary));
@@ -2268,8 +2385,10 @@ impl Session {
         if started.is_empty() {
             return Vec::new();
         }
+        // (What ran for a finding the audit still reports didn't resolve it.)
         let ok = started.last().is_some_and(|r| r.state == RunState::Done)
-            && !matches!(self.phase, Phase::Settled(End::Failed | End::Stopped));
+            && !matches!(self.phase, Phase::Settled(End::Failed | End::Stopped))
+            && self.still.is_none();
         let mut body = Vec::new();
         let mut tags: Vec<String> = self
             .chat
@@ -2295,10 +2414,20 @@ impl Session {
                         tags.push(t);
                     }
                 }
+                if let StepKind::Unwatch { what, .. } = &s.kind
+                    && res.ok
+                {
+                    tags.push(format!("unwatch:{what}"));
+                }
             }
         }
         if let Some(v) = verdict {
             body.push(format!("Claude: {v}"));
+        }
+        if let Some(how) = &self.still {
+            body.push(format!(
+                "Not resolved: sentry's audit still reports the finding.\n{how}"
+            ));
         }
         // What nobody pressed a key for.
         if !self.auto_log.is_empty() {
@@ -2393,7 +2522,7 @@ fn needs_sudo(s: &plan::Step) -> bool {
     match &s.kind {
         StepKind::Run(c) | StepKind::Check(c) => sudo::uses_sudo(c),
         StepKind::Edit { file, .. } => sudo::edit_target(file) == Ok(Owner::Root),
-        StepKind::Workflow { .. } | StepKind::Ask { .. } => false,
+        StepKind::Workflow { .. } | StepKind::Ask { .. } | StepKind::Unwatch { .. } => false,
     }
 }
 
@@ -2893,7 +3022,7 @@ mod tests {
         // The last step: the audit first, then Claude, told what it found.
         assert_eq!(s.step_ended(0), [Fx::Reaudit]);
         assert!(s.busy());
-        let fx = s.reaudited(true);
+        let fx = s.reaudited(None);
         let Fx::Turn { prompt, .. } = &fx[0] else {
             panic!("{fx:?}")
         };
@@ -2909,9 +3038,119 @@ mod tests {
         // Not done: Enter audits again; gone, it's done.
         assert_eq!(s.enter_word(), Some("audit again"));
         assert_eq!(key(&mut s, KeyCode::Enter), [Fx::Reaudit]);
-        s.reaudited(true);
+        s.reaudited(None);
         assert_eq!(s.phase, Phase::Settled(End::Done));
         assert_eq!(s.enter_word(), Some("close"));
+    }
+
+    /// Done is the audit's to say: a session about a finding the audit still reports is
+    /// told how it stands and carries on while the fix rounds last, never settles done,
+    /// and what it logs says the finding isn't resolved.
+    #[test]
+    fn a_finding_the_audit_still_reports_is_never_done() {
+        const DONE: &str =
+            "```sentry-verdict\nstatus = \"done\"\nsummary = \"gone on purpose\"\n```";
+        // A server's finding, as its target asks about it.
+        let ask = || {
+            Ask::apply(
+                "report.timer: last ran 12 days ago",
+                "ctx",
+                Apply {
+                    key: "finding:srv:timer-stale:report.timer".into(),
+                    finding: Some("srv:timer-stale:report.timer".into()),
+                    remote: true,
+                    reaudits: true,
+                    unwatch: vec![("timer:report.timer".into(), "a timer".into())],
+                    ..Default::default()
+                },
+            )
+        };
+        let mut s = Session::new(ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        // The brief names what a plan may stop watching.
+        assert!(
+            matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("`timer:report.timer`") && prompt.contains("`unwatch`")),
+            "{fx:?}"
+        );
+        answer(&mut s, &fx, &plan(CHECKS));
+        key(&mut s, KeyCode::Enter);
+        s.step_ended(0);
+        assert_eq!(s.step_ended(0), [Fx::Reaudit]);
+        let standing = "report.timer: last ran 12 days ago\nevidence: LastTriggerUSec=…";
+        let fx = s.reaudited(Some(standing.into()));
+        let Fx::Turn { prompt, .. } = &fx[0] else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            prompt.contains("sentry's audit still reports the finding:\nreport.timer: last ran")
+                && prompt.contains(crate::claude::STILL_REPORTED),
+            "{prompt}"
+        );
+        // It says done: told so, twice at most; then it's the user's, and not done.
+        let fx = answer(&mut s, &fx, DONE);
+        assert_eq!(s.phase, Phase::Thinking(Turn::Fix));
+        assert!(
+            matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.starts_with("You answered done, but sentry's audit still reports the finding:")),
+            "{fx:?}"
+        );
+        assert!(!fx.iter().any(|f| matches!(f, Fx::Log { .. })));
+        let fx = answer(&mut s, &fx, DONE);
+        assert_eq!(s.phase, Phase::Thinking(Turn::Fix));
+        let fx = answer(&mut s, &fx, DONE);
+        assert_eq!(s.phase, Phase::Settled(End::Unverified));
+        let Some(Fx::Log { ok, body, .. }) = fx.iter().find(|f| matches!(f, Fx::Log { .. })) else {
+            panic!("{fx:?}")
+        };
+        assert!(
+            !ok && body.contains("Not resolved: sentry's audit still reports the finding."),
+            "{body}"
+        );
+        assert_eq!(s.enter_word(), Some("audit again"));
+
+        // The plan that fits: sentry stops watching it. The app writes its own file and
+        // says how it went; then the audit, which no longer has it, and done is done.
+        let mut s = Session::new(ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        // One sentry isn't told to watch is sent back.
+        let fx = answer(
+            &mut s,
+            &fx,
+            &plan(
+                "[[step]]\ntitle = \"Stop\"\nunwatch = \"timer:other.timer\"\nwhy = \"retired\"\n",
+            ),
+        );
+        assert!(
+            matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("sentry watches no timer:other.timer here")),
+            "{fx:?}"
+        );
+        answer(
+            &mut s,
+            &fx,
+            &plan(
+                "[[step]]\ntitle = \"Stop\"\nunwatch = \"timer:report.timer\"\nwhy = \"retired; v2 runs\"\n",
+            ),
+        );
+        assert_eq!(s.enter_word(), Some("apply the plan"));
+        assert_eq!(
+            key(&mut s, KeyCode::Enter),
+            [Fx::Unwatch {
+                what: "timer:report.timer".into(),
+                why: "retired; v2 runs".into()
+            }]
+        );
+        assert_eq!(
+            s.unwatched(Ok("sentry no longer watches timer:report.timer".into())),
+            [Fx::Reaudit]
+        );
+        // (Said twice, it's heard once.)
+        assert!(s.unwatched(Ok("again".into())).is_empty());
+        let fx = s.reaudited(None);
+        let fx = answer(&mut s, &fx, DONE);
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert!(
+            matches!(fx.iter().find(|f| matches!(f, Fx::Log { .. })), Some(Fx::Log { ok: true, tags, .. }) if tags.contains(&"unwatch:timer:report.timer".to_string())),
+            "{fx:?}"
+        );
     }
 
     #[test]
