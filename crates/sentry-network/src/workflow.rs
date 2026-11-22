@@ -179,6 +179,18 @@ pub fn resume(r: &Router) -> Option<Session> {
 
 /// Start a run. `vars`: the workflow's `[vars]`, asked for before it starts.
 pub fn begin(entry: &Entry, r: &Router, vars: BTreeMap<String, String>) -> anyhow::Result<Session> {
+    begin_hiding(entry, r, vars, &[])
+}
+
+/// `begin`, with the secrets the window's sessions hold (`given`: a key captured on
+/// another target, a value the user was asked for): a value of the run that holds one is
+/// kept out of what is written down too, whatever option it is set in.
+pub fn begin_hiding(
+    entry: &Entry,
+    r: &Router,
+    vars: BTreeMap<String, String>,
+    given: &[String],
+) -> anyhow::Result<Session> {
     let e = env(r, entry.wf.as_ref().ok());
     // A secret among its values (a guarded change's new passphrase) is never written
     // down: the run's state, its log and its card get the tag, the steps the value.
@@ -186,9 +198,11 @@ pub fn begin(entry: &Entry, r: &Router, vars: BTreeMap<String, String>) -> anyho
     let mut held = BTreeMap::new();
     let mut shown = vars.clone();
     for (k, v) in &vars {
-        if let Some(t) = crate::guard::kept(v, salt.as_ref()) {
+        let kept = crate::guard::kept(v, salt.as_ref());
+        let swept = crate::guard::swept(kept.as_deref().unwrap_or(v), given, salt.as_ref());
+        if kept.is_some() || swept != *v {
             held.insert(k.clone(), v.clone());
-            shown.insert(k.clone(), t);
+            shown.insert(k.clone(), swept);
         }
     }
     Session::begin(entry, r, shown, PROG, e).map(|s| s.on(WORDS).holding(held))

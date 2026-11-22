@@ -361,6 +361,9 @@ pub enum ProfileFor {
     Chat,
     Session,
     Review,
+    /// A session started on another target: how it reaches this one (its gateway and
+    /// reads, its denials). What it changes here are plan steps, run by this target.
+    Peer,
 }
 
 /// What the row a series is at needs.
@@ -575,6 +578,16 @@ pub trait Asks {
     fn chat_continue(&mut self, _session: &str) -> Option<Vec<Effect>> {
         None
     }
+    /// The rules this target keeps for any session's steps and requests, whichever
+    /// target the session started on.
+    fn peer(&self) -> sentry_core::apply::session::Peer;
+    /// What it is, for a session's "the system" section, and how other hosts may know
+    /// it (matched by the app, never shown).
+    fn describe(&self, sh: &Shared, cx: &Cx) -> crate::system::SystemLine;
+    /// Secret values a session holds (captured on any target, or asked for), told to
+    /// every target a session touches: a target that sweeps what it writes down by
+    /// itself (a router's run log and state) takes them in.
+    fn given(&mut self, _secrets: &[String]) {}
     /// What a command sentry ran for Claude printed, as Claude may see it (a router's
     /// output with what is private scrubbed). None: as it is.
     fn hides(&self, _text: &str) -> Option<String> {

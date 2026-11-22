@@ -38,10 +38,10 @@ impl Slot {
         }
         if sess.job.is_some_and(|(jid, _)| jid == id) {
             match m {
-                StreamMsg::Line { text, .. } => {
+                StreamMsg::Line { text, stderr } => {
                     // What goes back to Claude is what the target lets it see.
                     let seen = self.target.hides(text);
-                    sess.step_line(seen.unwrap_or_else(|| text.clone()));
+                    sess.step_said(seen.unwrap_or_else(|| text.clone()), text, *stderr);
                     self.saw_line(w, text);
                 }
                 StreamMsg::Exit { code, .. } => {
@@ -78,8 +78,18 @@ impl Slot {
     /// files (the session does those), Claude's turns with the gateway.
     pub(crate) fn apply_fx(&mut self, w: &mut Win, fx: Vec<sentry_core::apply::session::Fx>) {
         use sentry_core::apply::session::Fx;
+        // What the session holds in secret is in the window's sweep before anything of
+        // it could be written, and told to every target (one that sweeps by itself).
+        if let Some(sess) = self.apply.as_ref() {
+            let secrets = sess.secrets();
+            if !secrets.is_empty() {
+                self.sweep.add(secrets);
+                self.target.given(&self.sweep.values());
+            }
+        }
         for f in fx {
             match f {
+                Fx::On(to, inner) => self.apply_fx_on(w, to, *inner),
                 Fx::Turn { prompt, shown } => {
                     let Some(sess) = self.apply.as_ref() else {
                         return;
@@ -122,6 +132,7 @@ impl Slot {
                     };
                     let id = self.mail.next();
                     let r = if w.offline {
+                        self.last_step_cmd = Some(c.quoted_argv());
                         Ok(0)
                     } else {
                         self.mail.stream(id, &c).map_err(|e| e.to_string())
@@ -514,13 +525,13 @@ impl Slot {
                         None => h.item.clone(),
                     },
                     rollback: String::new(),
-                    steps: vec![Step {
-                        title: format!("Run {}", h.workflow),
-                        kind: Kind::Workflow {
+                    steps: vec![Step::new(
+                        format!("Run {}", h.workflow),
+                        Kind::Workflow {
                             name: h.workflow.clone(),
                             vars: h.vars.clone(),
                         },
-                    }],
+                    )],
                 });
                 Session::seeded(ask.clone(), &format!("{}\n\n{block}", d.body), &infos)
             })
@@ -529,7 +540,43 @@ impl Slot {
         sess.chat.privacy = self.target.ident().session_privacy.clone();
         sess.secret_ok = self.secret_ok;
         sess.auto = self.auto;
+        self.in_window(w, &mut sess);
         sess
+    }
+
+    /// A session just opened here: it is told the window's targets (its steps may be `on`
+    /// any of them), and the others wake, without the window changing hands.
+    pub(crate) fn in_window(&self, w: &mut Win, sess: &mut sentry_core::apply::session::Session) {
+        let me = self.mail.id().clone();
+        let mut home = self.target.peer();
+        let mut peers = Vec::new();
+        for s in &w.system {
+            if s.peer.id == me {
+                home = s.peer.clone();
+            } else {
+                peers.push(s.peer.clone());
+                w.outbox
+                    .push_back((s.peer.id.clone(), crate::system::Parcel::Wake));
+            }
+        }
+        sess.in_system(home, peers);
+    }
+
+    /// A session's profile: this target's own, and how it reaches the others
+    /// (`system::merged`: every target's denials kept).
+    pub(crate) fn session_profile(
+        &self,
+        w: &Win,
+        grants: &[sentry_core::claude::Grant],
+    ) -> sentry_core::claude::Profile {
+        crate::system::merged(
+            self.target.profile(ProfileFor::Session, grants),
+            &w.system,
+            self.mail.id(),
+            grants
+                .iter()
+                .any(|g| g.access == sentry_core::claude::Access::Write),
+        )
     }
 
     /// A follow-up in the open chat, as typed (or what sentry offered to send).
@@ -547,8 +594,9 @@ impl Slot {
         resume: Option<&str>,
         grants: &[sentry_core::claude::Grant],
     ) -> Result<(u64, u32), String> {
-        // The target's profile for a session, plus what the user granted in it.
-        let profile = self.target.profile(ProfileFor::Session, grants);
+        // The target's profile for a session, plus what the user granted in it, plus how
+        // it reaches every other target the window has.
+        let profile = self.session_profile(w, grants);
         let id = self.mail.next();
         if w.offline || w.scripted_turns {
             self.last_prompt = Some(prompt.to_string());
@@ -652,6 +700,7 @@ impl Slot {
                     sess.chat.privacy = self.target.ident().session_privacy.clone();
                     sess.secret_ok = self.secret_ok;
                     sess.auto = self.auto;
+                    self.in_window(w, &mut sess);
                     self.apply = Some(sess);
                     self.auto_step(w);
                 }
@@ -774,6 +823,11 @@ impl Slot {
         mut e: sentry_core::maint::log::LogEntry,
     ) -> sentry_core::maint::log::LogEntry {
         for t in [&mut e.body, &mut e.head.summary] {
+            // The window's sweep first: a secret any session holds, whichever target it
+            // came from and whichever this entry is for.
+            if let Some(k) = self.sweep.clean(t) {
+                *t = k;
+            }
             if let Some(k) = self.target.kept(t) {
                 *t = k;
             }

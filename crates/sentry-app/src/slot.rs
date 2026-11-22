@@ -14,6 +14,7 @@ pub mod auto;
 mod core;
 mod draw;
 mod effects;
+pub mod guest;
 mod records;
 mod review;
 mod root;
@@ -221,6 +222,21 @@ pub struct Slot {
     /// The run's reboot, asked for while another target was at work: how, the boot id it
     /// had, and who it waits for. It goes when they settle (`reboot_when_settled`).
     reboot_held: Option<(crate::run::How, String, String)>,
+    /// A step of a session that started on another target, running here (`slot/guest.rs`).
+    pub(crate) guest: Option<guest::Guest>,
+    /// One that waits for this slot to be free.
+    pub(crate) guest_wait: Option<guest::GuestWait>,
+    /// The check of a password typed in a session elsewhere for this target: the stream,
+    /// whose session, what was typed.
+    pub(crate) guest_aux: Option<(u64, String, sentry_core::apply::sudo::Secret)>,
+    /// The workflow a session elsewhere started here: whose, and its name.
+    pub(crate) guest_wf: Option<(String, String)>,
+    /// Tests (nothing runs): the last guest step's command as it would have run.
+    pub last_guest_cmd: Option<String>,
+    /// Tests (nothing runs): the last command of this slot's own session, likewise.
+    pub last_step_cmd: Option<String>,
+    /// The window's one sweep of the secrets its sessions hold.
+    pub(crate) sweep: crate::system::Sweep,
 }
 
 /// What a slot is doing, for its entry in the target strip.
@@ -292,6 +308,13 @@ impl Slot {
             asleep: false,
             flagged: None,
             reboot_held: None,
+            guest: None,
+            guest_wait: None,
+            guest_aux: None,
+            guest_wf: None,
+            last_guest_cmd: None,
+            last_step_cmd: None,
+            sweep: Default::default(),
         }
     }
 
@@ -410,6 +433,9 @@ impl Slot {
             || self.pane.as_ref().is_some_and(|p| p.done.is_none())
             || self.unlock.is_some()
             || self.reboot_held.is_some()
+            || self.guest.is_some()
+            || self.guest_wait.is_some()
+            || self.guest_aux.is_some()
             || !self.reads.is_empty();
         if working {
             Needs::Working
@@ -503,6 +529,10 @@ impl Slot {
                 let _ = kill(pid);
             }
             if let Some(pid) = self.run.as_ref().and_then(|s| s.live()).and_then(|l| l.pid) {
+                let _ = kill(pid);
+            }
+            // A step run here for a session elsewhere ends with the window too.
+            if let Some(pid) = self.guest.as_ref().map(|g| g.pid).filter(|p| *p != 0) {
                 let _ = kill(pid);
             }
         }

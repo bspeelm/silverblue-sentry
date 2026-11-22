@@ -147,6 +147,44 @@ pub fn secrets_in(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The secret values a command line sets in plain, each with the tag that stands for it.
+pub fn secret_tags(text: &str, salt: Option<&Salt>) -> Vec<(String, String)> {
+    let mut found = secrets_in(text);
+    // Any shell line (`&&`, a pipe), not only the guard's `;`-separated staging lines:
+    // each `section.option=value` whose option is a secret, the value to its closing
+    // quote or the end of the word.
+    let mut rest = text;
+    while let Some(i) = rest.find('=') {
+        let from = rest[..i]
+            .rfind(|c: char| c.is_whitespace() || "'\"`;&|(".contains(c))
+            .map_or(0, |j| j + 1);
+        let name = &rest[from..i];
+        let value = &rest[i + 1..];
+        rest = value;
+        if name.split('.').count() != 3 || !crate::redact::secret_option(name) {
+            continue;
+        }
+        let v = match value.chars().next() {
+            Some(q @ ('\'' | '"')) => value[1..].split(q).next().unwrap_or(""),
+            _ => value
+                .split(|c: char| c.is_whitespace() || ";&|)".contains(c))
+                .next()
+                .unwrap_or(""),
+        };
+        if !v.is_empty() && !crate::redact::is_tag(v) && !found.iter().any(|f| f == v) {
+            found.push(v.to_string());
+        }
+    }
+    found
+        .into_iter()
+        .filter(|v| v.chars().count() >= 4 && !v.contains("{{"))
+        .map(|v| {
+            let t = tag_of(salt, &v);
+            (v, t)
+        })
+        .collect()
+}
+
 /// `text` with each of `secrets` replaced by its tag, wherever it stands (what a command
 /// printed, a note, a plan's words). A value under four characters is left: it would be
 /// found in everything.

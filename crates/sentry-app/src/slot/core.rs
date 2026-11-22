@@ -95,6 +95,7 @@ impl Slot {
             self.wf_auto(w);
         }
         self.reboot_when_settled(w);
+        self.guest_tick(w, now);
         // A command run for Claude that doesn't end is stopped (its exit goes back to it).
         if let Some(pid) = self.apply.as_mut().and_then(|s| s.overdue()) {
             let _ = kill(pid);
@@ -207,7 +208,7 @@ impl Slot {
             w.dirty = true;
             return;
         }
-        if self.apply_stream(w, id, &m) {
+        if self.apply_stream(w, id, &m) || self.guest_stream(w, id, &m) {
             w.dirty = true;
             return;
         }

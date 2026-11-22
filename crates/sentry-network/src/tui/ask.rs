@@ -117,6 +117,60 @@ fn apply(key: String) -> Apply {
     }
 }
 
+/// What the network is, for a session's "the system" section, and what its router knows
+/// of other hosts: each by its addresses and names (matched by the app, never shown),
+/// said only in the scrubbed, named form. Nothing while what must be hidden isn't known.
+pub fn describe(s: &super::data::Store, r: &Router) -> sentry_app::system::SystemLine {
+    use crate::clients::Link;
+    let mut line = sentry_app::system::SystemLine {
+        kind: "a home network, through its OpenWrt router".into(),
+        what: format!(
+            "the network `{}`; its router is reached from this machine over ssh as root. \
+             Hosts on it reach each other only as its zones and firewall allow.",
+            r.name
+        ),
+        ..Default::default()
+    };
+    let Ok(scrub) = scrub_of(s, r) else {
+        return line;
+    };
+    for c in s.clients.iter().flatten() {
+        let Some(label) = c.name.as_deref().or(c.hostname.as_deref()) else {
+            continue;
+        };
+        let place = match &c.link {
+            Link::Dmz { net, .. } => format!(
+                "on a routed port of its own, in the network `{net}` (kept apart from the LAN by the firewall)"
+            ),
+            Link::Wired { .. } => "a wired host on the LAN".to_string(),
+            Link::Wifi { .. } => "a Wi-Fi host".to_string(),
+            Link::Unknown => "a host holding a lease".to_string(),
+        };
+        let says = scrubbed(
+            &scrub,
+            &format!("the host the router calls {label}: {place}"),
+        );
+        for key in c.addrs.iter().chain(c.hostname.iter()).chain(c.name.iter()) {
+            line.knows.push((key.clone(), says.clone()));
+        }
+    }
+    if let Some(uci) = s.uci.value.as_ref() {
+        for f in uci.forwards().iter().filter(|f| f.enabled) {
+            let says = scrubbed(
+                &scrub,
+                &format!(
+                    "the destination of the port forward `{}` ({} from zone {})",
+                    f.name,
+                    f.protos.join("/"),
+                    f.src
+                ),
+            );
+            line.knows.push((f.dest_ip.clone(), says));
+        }
+    }
+    line
+}
+
 /// What every prompt is told about the router and its rules.
 pub fn system(r: &Router) -> String {
     let name = &r.name;

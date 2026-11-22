@@ -22,7 +22,7 @@ fn stage(p: Phase) -> usize {
         Phase::Brief => 0,
         Phase::Thinking(Turn::Investigate | Turn::Fix) => 1,
         Phase::Review => 2,
-        Phase::SudoCheck | Phase::Password { .. } | Phase::Applying => 3,
+        Phase::SudoCheck | Phase::Password { .. } | Phase::Applying | Phase::Value => 3,
         Phase::Thinking(Turn::Verify) => 4,
         Phase::Settled(_) => 5,
     }
@@ -56,6 +56,7 @@ pub fn state(s: &Session) -> State {
             State::Working("checking sudo".into())
         }
         Phase::Password { .. } => State::You("unlock".into()),
+        Phase::Value => State::You("gives it".into()),
         Phase::Applying if s.waiting_workflow().is_some() => you(),
         Phase::Applying => State::Running,
         Phase::Settled(End::Done | End::Waited) if s.enter_word() == Some("close") => State::Done,
@@ -238,11 +239,31 @@ fn input_line(s: &Session, t: &Theme, width: usize) -> Line<'static> {
         Phase::Review if s.run().is_none() => typed("Enter asks for a plan · or type what to do"),
         Phase::Review => typed("tell Claude what to do"),
         Phase::Settled(_) => typed("type to ask Claude more"),
+        Phase::Value => {
+            let (name, prompt, secret) = s.asking().unwrap_or(("value", "", true));
+            let mut v = vec![Span::styled(
+                format!("{prompt} ({{{{{name}}}}}) › "),
+                t.s(t.yellow),
+            )];
+            v.push(Span::styled(
+                if secret {
+                    "●".repeat(s.secret.len())
+                } else {
+                    s.value_typed()
+                },
+                t.fg(),
+            ));
+            v.push(Span::styled("▏", t.s(t.cyan)));
+            Line::from(v)
+        }
         Phase::Password { tries, checking } => {
             let steps: Vec<String> = s.sudo_steps().iter().map(|n| n.to_string()).collect();
             password_line(
                 t,
-                &format!("for step {}", steps.join(", ")),
+                &match s.sudo_title() {
+                    Some(who) => format!("on {who}, for step {}", steps.join(", ")),
+                    None => format!("for step {}", steps.join(", ")),
+                },
                 s.secret.len(),
                 tries,
                 checking,
@@ -297,6 +318,10 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
         } => {
             k.push(("Enter", "unlock"));
             k.push(("Esc", "back"));
+        }
+        Phase::Value => {
+            k.push(("Enter", "give it"));
+            k.push(("Esc", "not now"));
         }
         _ => {
             k.push(("C-c", "stop"));
@@ -353,7 +378,9 @@ fn plan_lines(s: &Session, idx: usize, t: &Theme, w: usize, wf: &[String]) -> Ve
             format!(
                 "Enter applies these {} steps · edited files are backed up first{} · then Claude checks the result",
                 r.plan.steps.len(),
-                if sudo.is_empty() {
+                if s.sudo_away() {
+                    " · sudo asks for its password once on each host, here".into()
+                } else if sudo.is_empty() {
                     String::new()
                 } else {
                     " · sudo asks for your password once".into()
@@ -412,7 +439,8 @@ fn step_lines(
         &stepview::Row {
             mark,
             title: st.title.clone(),
-            tag: String::new(),
+            // Whose step it is, once a plan has steps on more than one target.
+            tag: s.step_place(st).unwrap_or_default(),
             took: s.took.get(&(idx, i)).copied(),
         },
         w.saturating_sub(6).max(10),
@@ -463,6 +491,8 @@ fn step_lines(
             } else {
                 t.cyan
             };
+            // A secret the line sets shows as its tag.
+            let c = &s.clean(c);
             for (j, x) in c.lines().enumerate() {
                 let w0 = if j == 0 { st.kind.word() } else { "     " };
                 push(&mut l, &format!("{w0} $ {x}"), t.s(col));
@@ -480,6 +510,35 @@ fn step_lines(
                 t.s(t.cyan),
             )
         }
+        K::Ask { .. } => {}
+    }
+    if let K::Ask { name, prompt } = &st.kind {
+        push(
+            &mut l,
+            &format!(
+                "ask you: {prompt} → {{{{{name}}}}}{}",
+                if st.secret {
+                    "  (hidden as you type, never written down)"
+                } else {
+                    ""
+                }
+            ),
+            t.s(t.cyan),
+        );
+    }
+    if let Some(name) = &st.capture {
+        push(
+            &mut l,
+            &format!(
+                "its last line is kept as {{{{{name}}}}}{}",
+                if st.secret {
+                    "  (hidden, never written down)"
+                } else {
+                    ""
+                }
+            ),
+            t.dim(),
+        );
     }
     for (_, why) in s.problems.iter().filter(|(k, _)| *k == i) {
         push(&mut l, &format!("✗ {why}"), t.s(t.red));

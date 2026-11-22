@@ -718,13 +718,34 @@ pub struct Grant {
     /// `Run`: the whole command as Claude wrote it, when `path` is only a part of it. What
     /// sentry runs (or shows) is this: a part cut out of a pipeline means something else.
     pub whole: Option<String>,
-    /// `Run`: a server's gateway refused it (`sentry-server run`): it's a line for the
-    /// server. Otherwise Claude Code refused a command on this machine, which never goes
-    /// over ssh.
-    pub remote: bool,
+    /// `Run`: the target whose gateway refused it (`sentry-server run <name>` → `srv:<name>`,
+    /// `sentry-network run <name>` → `net:<name>`): it's a line for that host. None: Claude
+    /// Code refused a command on this machine, which never goes over ssh.
+    pub on: Option<String>,
+}
+
+/// The target a gateway call is for, by how the command names it.
+pub fn gateway_target(input: &str) -> Option<String> {
+    let w: Vec<&str> = input.split_whitespace().take(4).collect();
+    let (kind, rest) = match w.as_slice() {
+        [p, rest @ ..] if p.ends_with("sentry-server") => ("srv", rest),
+        [p, rest @ ..] if p.ends_with("sentry-network") => ("net", rest),
+        [p, "server", rest @ ..] if p.ends_with("sentry") => ("srv", rest),
+        [p, "network", rest @ ..] if p.ends_with("sentry") => ("net", rest),
+        _ => return None,
+    };
+    match rest {
+        ["run" | "exec", name, ..] if *name != "--" => Some(format!("{kind}:{name}")),
+        _ => None,
+    }
 }
 
 impl Grant {
+    /// A gateway refused it: it's a line for a host over ssh.
+    pub fn remote(&self) -> bool {
+        self.on.is_some()
+    }
+
     /// A `Run`'s command as it's run and shown: all of it.
     pub fn line(&self) -> &str {
         self.whole.as_deref().unwrap_or(&self.path)
@@ -1028,7 +1049,8 @@ pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
                 access: Access::Run,
                 path: line.to_string(),
                 whole: None,
-                remote: true,
+                // (A gateway that doesn't say whose it is: a host all the same.)
+                on: Some(gateway_target(input).unwrap_or_else(|| "srv:".into())),
             });
         }
         // Claude Code names the part of a compound command it wants approved. That part is
@@ -1045,7 +1067,7 @@ pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
             whole: part
                 .filter(|_| !input.is_empty())
                 .map(|_| input.to_string()),
-            remote: false,
+            on: None,
         });
     }
     let access = match name {
@@ -1176,6 +1198,7 @@ fn rule(tool: &str, path: &str) -> String {
 
 /// What a chat may do: its system prompt, tools and permissions. The local machine's is
 /// [`Profile::local`]; sentry-server builds one per server.
+#[derive(Clone, Debug, Default)]
 pub struct Profile {
     pub system: String,
     pub tools: Vec<String>,
@@ -1627,7 +1650,7 @@ mod tests {
             (g.access, g.path.as_str()),
             (Access::Run, "sudo smartctl -a /dev/sda")
         );
-        assert!(g.remote && g.whole.is_none(), "a line for the server");
+        assert!(g.remote() && g.whole.is_none(), "a line for the server");
         assert!(refused("this needs root and requires approval: sudo x"));
         assert!(!refused("sentry-server run: not run: it names `shadow`"));
     }
@@ -1719,7 +1742,7 @@ mod tests {
             g.line(),
             "rpm-ostree status; ostree admin status 2>&1 | head"
         );
-        assert!(!g.remote);
+        assert!(!g.remote());
         let tail = requested(
             "Bash",
             "journalctl -b | head -20; echo ---; git -C /x status --short 2>&1",

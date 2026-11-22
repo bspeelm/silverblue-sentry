@@ -146,6 +146,24 @@ impl Upkeep for LocalTarget {
 }
 
 impl Asks for LocalTarget {
+    fn peer(&self) -> sentry_core::apply::session::Peer {
+        sentry_core::apply::session::Peer {
+            id: self.ident.id.clone(),
+            title: self.ident.title.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn describe(&self, _sh: &Shared, _cx: &Cx) -> sentry_app::system::SystemLine {
+        sentry_app::system::SystemLine {
+            kind: "this machine".into(),
+            what: "the laptop sentry runs on (Fedora Silverblue: rpm-ostree, Flatpak, \
+                   toolbox). It reaches every other target over ssh."
+                .into(),
+            ..Default::default()
+        }
+    }
+
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String> {
         self.screens.ask(cx.screen, &self.view(sh, cx))
     }
@@ -252,6 +270,24 @@ impl Asks for LocalTarget {
             ProfileFor::Review => return plans::review_profile(&self.cfg),
             // A session researches what a plan was written for: release notes on the web.
             ProfileFor::Session => plans::with_web(Profile::acting()),
+            // A session that started on another target: nothing here runs by itself.
+            ProfileFor::Peer => {
+                return Profile {
+                    system: "Commands on this machine are not this session's to run freely: \
+                             call the read-only command you need with Bash; it is refused at \
+                             first, I am shown the exact line, and Enter allows it (end your \
+                             turn there, saying in one line what you asked for). What changes \
+                             this machine is a plan step with `on = \"local\"`: a `run` step \
+                             (with sudo in it where it needs root), or an `edit` step for a \
+                             file here. Upgrades, rebases, rollbacks and reboots are this \
+                             machine's workflows (`workflow = \"…\"` with `on = \"local\"`)."
+                        .into(),
+                    tools: ["Bash", "Read"].map(String::from).to_vec(),
+                    allowed: Vec::new(),
+                    denied: Profile::local().denied,
+                    dirs: Vec::new(),
+                };
+            }
             ProfileFor::Chat => Profile::local(),
         };
         base.with_notes(&self.cfg.maintenance.notes)

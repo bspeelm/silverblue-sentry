@@ -41,6 +41,23 @@ pub enum Asked<'a> {
     Password,
     /// A guarded change's "keep?" (a router's): Wi-Fi changes are the user's to keep.
     Keep { wifi: bool },
+    /// A plan's `ask` step: a value only the user has.
+    Value,
+}
+
+/// How strict one target is about auto: on a host whose login is root (a router) nothing
+/// a session asks is auto's to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Strict {
+    pub asks_each: bool,
+}
+
+/// The rule for a session that has to do with several targets: auto answers only what it
+/// would answer on every one of them, each by its own strictness. So a plan with a step
+/// on a router is never auto's, whichever target the session started on and wherever
+/// auto was switched on.
+pub fn answers_on(auto: bool, asked: &Asked, targets: &[Strict]) -> bool {
+    targets.iter().all(|t| !t.asks_each) && answers(auto, asked)
 }
 
 /// Whether auto answers it (yes, go on) without a key. With auto off, never.
@@ -67,7 +84,7 @@ pub fn answers(auto: bool, asked: &Asked) -> bool {
         }
         Asked::SeriesNext { done } => *done,
         Asked::Keep { wifi } => !wifi,
-        Asked::MarkDone | Asked::Box | Asked::Password => false,
+        Asked::MarkDone | Asked::Box | Asked::Password | Asked::Value => false,
     }
 }
 
@@ -183,6 +200,33 @@ pub fn stages_only(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_on_several_targets_is_as_strict_as_the_strictest() {
+        let (plain, root) = (Strict { asks_each: false }, Strict { asks_each: true });
+        let plan = Asked::Plan(&["systemctl --user restart foo"]);
+        let reboot = Asked::Plan(&["sudo systemctl reboot"]);
+        for (targets, asked, want) in [
+            // This machine and a server: where both would, auto does.
+            (vec![plain, plain], &plan, true),
+            (vec![plain, plain], &Asked::Start, true),
+            // What auto never answers stays so on any of them.
+            (vec![plain, plain], &reboot, false),
+            (vec![plain], &Asked::Value, false),
+            // Anything with a router: never, wherever auto was switched on.
+            (vec![plain, root], &plan, false),
+            (vec![root], &plan, false),
+            (vec![plain, plain, root], &Asked::Start, false),
+            (vec![], &plan, true),
+        ] {
+            assert_eq!(
+                answers_on(true, asked, &targets),
+                want,
+                "{targets:?} {asked:?}"
+            );
+            assert!(!answers_on(false, asked, &targets));
+        }
+    }
 
     fn step(text: &str) -> Step {
         toml::from_str(&format!("id = \"s\"\ntitle = \"t\"\n{text}")).unwrap()

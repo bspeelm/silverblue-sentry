@@ -276,6 +276,34 @@ pub fn again(t: &Task, last: Option<Timestamp>) -> Option<&Again> {
 /// What a task waits for (`after`) has happened: the workflow ran well since it was added,
 /// or the wait is over. A task with no `added` time doesn't wait.
 pub fn waited(t: &Task, log: &[LogEntry], now: Timestamp) -> bool {
+    waited_in(t, log, now, &|scope| crate::maint::log::list(scope))
+}
+
+/// `after = "task:<target id>/<task id>"`: the scope of that target's records (`""` this
+/// machine, a server's name, `net:<name>`) and the task's id.
+pub fn after_task(after: &str) -> Option<(String, &str)> {
+    let (target, id) = after.strip_prefix("task:")?.rsplit_once('/')?;
+    let scope = match target {
+        "" | "local" => "",
+        t if t.starts_with("net:") && t.len() > 4 => t,
+        t => t.strip_prefix("srv:").filter(|n| !n.is_empty())?,
+    };
+    (!id.is_empty()).then(|| (scope.to_string(), id))
+}
+
+/// `waited`, with another target's log read through `other` (by its scope): a task that
+/// is `after = "task:<target id>/<task id>"` isn't due until that task is logged done
+/// (an entry tagged `task:<id>`) under that target's scope, whenever that was.
+pub fn waited_in(
+    t: &Task,
+    log: &[LogEntry],
+    now: Timestamp,
+    other: &dyn Fn(&str) -> Vec<LogEntry>,
+) -> bool {
+    if let Some((scope, id)) = t.after.as_deref().and_then(after_task) {
+        let tag = format!("task:{id}");
+        return other(&scope).iter().any(|e| e.head.tags.contains(&tag));
+    }
     let (Some(after), Some(added)) = (&t.after, t.added) else {
         return true;
     };
@@ -794,5 +822,53 @@ mod tests {
                 .unwrap();
         tag_run(&mut failed, &tasks);
         assert!(failed.head.tags.is_empty());
+    }
+
+    #[test]
+    fn a_task_can_wait_for_a_task_of_another_target() {
+        assert_eq!(
+            after_task("task:srv:myserver/open-api"),
+            Some(("myserver".into(), "open-api"))
+        );
+        assert_eq!(
+            after_task("task:net:home/bouncer"),
+            Some(("net:home".into(), "bouncer"))
+        );
+        assert_eq!(after_task("task:local/x"), Some((String::new(), "x")));
+        assert_eq!(after_task("task:/x"), Some((String::new(), "x")));
+        for bad in [
+            "task:srv:/x",
+            "task:myserver/x",
+            "task:srv:myserver/",
+            "quick-update",
+            "7d",
+            "task:x",
+        ] {
+            assert_eq!(after_task(bad), None, "{bad}");
+        }
+        let now = ts("2026-11-21T12:00:00Z");
+        let mut t: Task = toml::from_str("id = \"bouncer\"\ntitle = \"Install the bouncer\"\nlevel = \"routine\"\ndo = \"by-hand\"").unwrap();
+        t.after = Some("task:srv:myserver/open-api".into());
+        let done = |id: &str| {
+            let mut e = LogEntry::task("myserver", id, id, None);
+            e.head.tags = vec![format!("task:{id}")];
+            e
+        };
+        for (scope_has, want) in [
+            // Nothing logged there yet: it waits.
+            (vec![], false),
+            // Another task done there: still waits.
+            (vec![done("other")], false),
+            // That task logged done under that target's scope: due.
+            (vec![done("other"), done("open-api")], true),
+        ] {
+            let other = |scope: &str| {
+                assert_eq!(scope, "myserver");
+                scope_has.clone()
+            };
+            assert_eq!(waited_in(&t, &[], now, &other), want);
+        }
+        // This target's own log doesn't count for it.
+        assert!(!waited_in(&t, &[done("open-api")], now, &|_| Vec::new()));
     }
 }

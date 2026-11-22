@@ -362,6 +362,9 @@ impl Slot {
         doc.take_session(body);
         doc.head.status = status;
         self.target.plan_kept(&mut doc, body);
+        if let Some(k) = self.sweep.clean(&doc.body) {
+            doc.body = k;
+        }
         if !w.offline
             && let Err(e) = plan::save(&doc)
         {

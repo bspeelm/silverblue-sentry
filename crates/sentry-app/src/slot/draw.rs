@@ -22,6 +22,13 @@ impl Slot {
                     .as_ref()
                     .filter(|a| a.chat.hidden && banner.is_none())
                     .map(|a| (sentry_core::tui::applyview::banner(a), "A shows it"))
+            })
+            // A step of a session that started on another target runs (or waits) here.
+            .or_else(|| {
+                self.guest
+                    .as_ref()
+                    .filter(|_| banner.is_none())
+                    .map(|g| (format!("{} · a step of it runs here", g.what), ""))
             });
         // Auto mode says so in the row, with whatever else is there (or by itself).
         let series = match series {

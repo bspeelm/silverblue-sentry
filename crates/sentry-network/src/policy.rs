@@ -3222,3 +3222,36 @@ mod tests {
         assert_eq!(c[0].reads[0].text, "/tmp/y");
     }
 }
+
+#[cfg(test)]
+mod bouncer {
+    use super::{Class, verdict};
+
+    /// What installing a bouncer takes, by class: setting its key in `crowdsec` (not one
+    /// of the guarded configs) and adding the package are changes an approved plan's step
+    /// may make; the firewall's part is the guard's; an upgrade a workflow's.
+    #[test]
+    fn a_key_set_in_a_config_that_isnt_guarded_is_a_change_for_a_plan() {
+        for (line, class) in [
+            (
+                "uci set crowdsec.@bouncer[0].api_key='{{key}}' && uci commit crowdsec",
+                Class::Change,
+            ),
+            (
+                "uci set crowdsec.bouncer.api_key='abc' && uci commit crowdsec",
+                Class::Change,
+            ),
+            ("apk add crowdsec-firewall-bouncer", Class::Change),
+            (
+                "/etc/init.d/crowdsec-firewall-bouncer restart",
+                Class::Change,
+            ),
+            ("uci show crowdsec | grep -q api_key=", Class::Read),
+            ("uci commit firewall", Class::Guarded),
+            ("apk upgrade", Class::WorkflowOnly),
+            ("cat /etc/shadow", Class::Never),
+        ] {
+            assert_eq!(verdict(line).class, class, "{line}");
+        }
+    }
+}

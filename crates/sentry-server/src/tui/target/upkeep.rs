@@ -198,6 +198,60 @@ impl Upkeep for ServerTarget {
 }
 
 impl Asks for ServerTarget {
+    fn peer(&self) -> sentry_core::apply::session::Peer {
+        let name = &self.remote.name;
+        sentry_core::apply::session::Peer {
+            id: self.ident.id.clone(),
+            title: self.ident.title.clone(),
+            remote: true,
+            calls: [
+                "sentry-server exec",
+                "sentry-server run",
+                "sentry server exec",
+                "sentry server run",
+            ]
+            .iter()
+            .map(|c| format!("{c} {name}"))
+            .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// What the server is, and the names it may be known by elsewhere (its ssh alias and
+    /// what that resolves to): matched by the app against what a network knows, never
+    /// shown.
+    fn describe(&self, _sh: &Shared, cx: &Cx) -> sentry_app::system::SystemLine {
+        let r = &self.remote;
+        let (os, _) = self.store.host.value.clone().unwrap_or_default();
+        let mut addrs = vec![r.name.clone(), r.host.to_string()];
+        if let Some((_, h)) = r.host.split_once('@') {
+            addrs.push(h.to_string());
+        }
+        if !cx.offline {
+            addrs.extend(
+                self.resolved
+                    .get_or_init(|| super::super::ask::ssh_names(r.host))
+                    .iter()
+                    .cloned(),
+            );
+        }
+        sentry_app::system::SystemLine {
+            kind: "a server over ssh".into(),
+            what: format!(
+                "the user's server `{}`{}, reached from this machine over ssh as a login \
+                 user; root there is sudo (with a password, which sentry asks for here).",
+                r.name,
+                if os.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({os})")
+                }
+            ),
+            addrs,
+            knows: Vec::new(),
+        }
+    }
+
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String> {
         let v = self.view(sh, cx);
         if cx.screen == ScreenId::Upgrade
@@ -319,6 +373,13 @@ impl Asks for ServerTarget {
                     .with_grants(grants),
             ),
             ProfileFor::Review => planview::review_profile(r, &os, &kernel, sudo),
+            // A session that started on another target reaches the server as its own
+            // session does: the same two gateways, the same rules.
+            ProfileFor::Peer => super::super::ask::with_web(
+                super::super::ask::session_profile(r, &os, &kernel, sudo)
+                    .with_notes(&r.cfg.maintenance.notes)
+                    .with_log(&sentry_core::maint::log::dir(&r.name)),
+            ),
         }
     }
 

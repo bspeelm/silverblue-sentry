@@ -875,6 +875,48 @@ impl Upkeep for NetworkTarget {
 
 /// Claude: asked through the read gateway, told only what has been scrubbed.
 impl Asks for NetworkTarget {
+    /// The router's rules, for any session's steps on it: its policy classes, auto never,
+    /// its output scrubbed, a secret option's value a tag.
+    fn peer(&self) -> sentry_core::apply::session::Peer {
+        let name = &self.router.name;
+        let scope = self.router.scope.clone();
+        sentry_core::apply::session::Peer {
+            id: self.ident.id.clone(),
+            title: self.ident.title.clone(),
+            remote: true,
+            refuses: sentry_core::claude::Refuses(Some(super::ask::refuses)),
+            asks_each: true,
+            hides: true,
+            calls: [
+                "sentry-network exec",
+                "sentry-network run",
+                "sentry network exec",
+                "sentry network run",
+            ]
+            .iter()
+            .map(|c| format!("{c} {name}"))
+            .collect(),
+            masks: sentry_core::apply::session::Masks(Some(std::sync::Arc::new(move |line| {
+                let salt = crate::redact::Salt::load(&scope).ok();
+                crate::guard::secret_tags(line, salt.as_ref())
+            }))),
+        }
+    }
+
+    fn describe(&self, _sh: &Shared, _cx: &Cx) -> sentry_app::system::SystemLine {
+        super::ask::describe(&self.store, &self.router)
+    }
+
+    /// A secret a session holds (captured on any target, or asked for) is swept from
+    /// what this target writes down, as a run's own secrets are.
+    fn given(&mut self, secrets: &[String]) {
+        for v in secrets {
+            if !self.given.contains(v) {
+                self.given.push(v.clone());
+            }
+        }
+    }
+
     /// A secret one of this window's runs was given never reaches the log, whoever's
     /// words would have said it (a step's note, Claude's verdict, the user's own note).
     fn kept(&self, text: &str) -> Option<String> {
@@ -1000,6 +1042,9 @@ impl Asks for NetworkTarget {
         match f {
             ProfileFor::Chat => super::ask::profile(r).with_grants(grants),
             ProfileFor::Session => super::ask::session_profile(r).with_grants(grants),
+            // From a session that started elsewhere the router is reached as from its
+            // own: the same gateways, classes and scrubbing, the same denials.
+            ProfileFor::Peer => super::ask::session_profile(r),
             ProfileFor::Review => super::ask::review_profile(r),
         }
     }
@@ -1069,7 +1114,7 @@ impl Host for NetworkTarget {
                 self.given.push(v);
             }
         }
-        match workflow::begin(entry, &self.router, vars) {
+        match workflow::begin_hiding(entry, &self.router, vars, &self.given) {
             Ok(s) => Ok(Box::new(s)),
             Err(e) => Err(e.to_string()),
         }

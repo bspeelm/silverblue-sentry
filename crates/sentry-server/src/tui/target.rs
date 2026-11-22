@@ -163,6 +163,8 @@ impl Own {
 pub struct ServerTarget {
     ident: Ident,
     pub remote: Remote,
+    /// What ssh resolves its alias to (looked up once, for `describe`).
+    pub(crate) resolved: std::cell::OnceCell<Vec<String>>,
     mail: Mail,
     pub store: Store,
     pub screens: Screens,
@@ -195,6 +197,7 @@ impl ServerTarget {
     pub fn new(remote: Remote, mail: Mail) -> Self {
         let name = remote.name.clone();
         Self {
+            resolved: Default::default(),
             ident: Ident {
                 id: Self::id_of(&name),
                 title: name.clone(),

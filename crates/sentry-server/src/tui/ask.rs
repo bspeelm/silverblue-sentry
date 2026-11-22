@@ -11,6 +11,27 @@ use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
 /// The web for release notes and advisories (plans, reviews, apply sessions).
+/// What ssh makes of a host alias (`ssh -G`: its `hostname`), for telling which host of a
+/// network this server is. Run here, once; nothing connects.
+pub fn ssh_names(host: &str) -> Vec<String> {
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let mut c = sentry_core::exec::Cmd::local("ssh");
+    if let Some(f) = std::env::var("SENTRY_SSH_CONFIG")
+        .ok()
+        .filter(|f| !f.is_empty())
+    {
+        c = c.args(["-F", f.as_str()]);
+    }
+    let Ok(out) = c.args(["-G", host]).output() else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|l| l.strip_prefix("hostname "))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect()
+}
+
 pub fn with_web(mut p: Profile) -> Profile {
     p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
     p.allowed

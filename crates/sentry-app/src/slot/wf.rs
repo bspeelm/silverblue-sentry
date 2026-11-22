@@ -145,6 +145,7 @@ impl Slot {
         sentry_core::maint::tasks::tag_run(&mut entry, &self.all_tasks());
         let entry = self.kept_entry(entry);
         self.apply_run_ended(w, &entry);
+        self.guest_run_ended(w, &entry);
         if !w.offline {
             if let Err(e) = log::write(&entry) {
                 w.toast(&format!("couldn't write the maintenance log: {e}"));

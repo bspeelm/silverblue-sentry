@@ -84,6 +84,12 @@ pub struct Win {
     pub(crate) target_cmd: Option<String>,
     /// The quit box was just opened: with several targets it lists what each has going.
     pub(crate) quit_asked: bool,
+    /// Every target the window has, as a session needs to know them (`App::survey`):
+    /// what each is, the rules it keeps, how a session elsewhere reaches it.
+    pub system: Vec<crate::system::Sys>,
+    /// What one slot's flow hands the app for another slot (a session's step `on`
+    /// another target, and what comes back): delivered when the flow returns.
+    pub(crate) outbox: std::collections::VecDeque<(TargetId, crate::system::Parcel)>,
 }
 
 impl Win {
@@ -113,6 +119,10 @@ pub struct App {
     tx: Sender<Event>,
     /// Stream ids, unique in the window.
     seq: Arc<AtomicU64>,
+    /// The secrets the window's sessions hold: one sweep for what every slot writes.
+    sweep: crate::system::Sweep,
+    /// When the targets were last surveyed.
+    surveyed: Option<Instant>,
     /// `[keys]`: each target's keymap is the defaults for its screens with these on top.
     key_overrides: std::collections::BTreeMap<String, String>,
     /// The slot whose command has the terminal.
@@ -146,9 +156,13 @@ impl App {
                 others_working: Vec::new(),
                 target_cmd: None,
                 quit_asked: false,
+                system: Vec::new(),
+                outbox: Default::default(),
             },
             tx,
             seq: Arc::new(AtomicU64::new(0)),
+            sweep: Default::default(),
+            surveyed: None,
             // The same `[keys]` for every target (another target's screens in it are skipped).
             key_overrides: sentry_core::config::Config::load().0.keys,
             handed: None,
@@ -164,6 +178,8 @@ impl App {
         let target = make(mail.clone());
         let (keys, warnings) = Keymap::new(target.ident().screens, &self.key_overrides);
         let mut slot = Slot::new(target, mail);
+        slot.sweep = self.sweep.clone();
+        self.surveyed = None;
         if self.slots.is_empty() {
             self.win.keys = keys;
             self.win.keys_warning = warnings.into_iter().next();
@@ -208,6 +224,42 @@ impl App {
     /// input line; its toasts named when it isn't the one in view), and afterwards, for a
     /// slot out of view, its strip entry flagged if it now waits for the user.
     pub fn with<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {
+        // With several targets, a session may be about to open: what it is told of the
+        // others is kept fresh (cheap, and at most every few seconds).
+        if self.slots.len() > 1
+            && self
+                .surveyed
+                .is_none_or(|at| self.win.at.duration_since(at) >= SURVEY_EVERY)
+        {
+            self.survey();
+        }
+        let r = self.with_one(i, f);
+        // What that flow handed over for other slots, and whatever those hand on.
+        let mut rounds = 0;
+        while let Some((to, p)) = self.win.outbox.pop_front() {
+            rounds += 1;
+            if rounds > 10_000 {
+                self.win.outbox.clear();
+                break;
+            }
+            if let Some(j) = self.place(&to) {
+                self.with_one(j, |s, w| s.parcel(w, p));
+            }
+        }
+        r
+    }
+
+    /// Ask every target what it is and how a session elsewhere reaches it (`Win::system`).
+    pub fn survey(&mut self) {
+        self.surveyed = Some(self.win.at);
+        let mut all = Vec::with_capacity(self.slots.len());
+        for i in 0..self.slots.len() {
+            all.push(self.with_one(i, |s, w| s.surveyed(w)));
+        }
+        self.win.system = all;
+    }
+
+    fn with_one<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {
         let focus = self.focus;
         if self.slots.len() > 1 {
             self.win.others_working = (0..self.slots.len())
@@ -524,6 +576,9 @@ impl sentry_core::tui::Ui for App {
     }
 }
 
+/// How often the targets are surveyed while several are open.
+const SURVEY_EVERY: Duration = Duration::from_secs(5);
+
 pub(crate) fn kill(pid: u32) -> std::io::Result<()> {
     let pid = rustix::process::Pid::from_raw(pid as i32)
         .ok_or_else(|| std::io::Error::other("bad pid"))?;
@@ -604,6 +659,65 @@ impl App {
             ),
             Instant::now(),
         );
+    }
+    /// The step a session elsewhere runs on the target at `i` printed a line (nothing ran).
+    pub fn guest_line_at(&mut self, i: usize, text: &str) {
+        let s = &self.slots[i];
+        let id = s
+            .guest
+            .as_ref()
+            .map(|g| g.id)
+            .expect("no guest step running");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Line {
+                    stderr: false,
+                    text: text.to_string(),
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// That step (or the check of a password typed for this target elsewhere) ended.
+    pub fn guest_exit_at(&mut self, i: usize, code: i32) {
+        let s = &self.slots[i];
+        let id = s
+            .guest
+            .as_ref()
+            .map(|g| g.id)
+            .or(s.guest_aux.as_ref().map(|a| a.0))
+            .expect("nothing running here for a session elsewhere");
+        let tid = s.mail.id().clone();
+        self.on_event(
+            Event::Stream(
+                tid,
+                id,
+                StreamMsg::Exit {
+                    code,
+                    elapsed: std::time::Duration::ZERO,
+                },
+            ),
+            Instant::now(),
+        );
+    }
+    /// What a session elsewhere has running or waiting on the target at `i`.
+    pub fn guest_at(&self, i: usize) -> (bool, bool) {
+        (
+            self.slots[i].guest.is_some(),
+            self.slots[i].guest_wait.is_some(),
+        )
+    }
+    /// The profile a session of the slot at `i` would send its turn with.
+    pub fn session_profile_at(&mut self, i: usize) -> sentry_core::claude::Profile {
+        self.survey();
+        self.slots[i].session_profile(&self.win, &[])
+    }
+    /// Whether the slot at `i` holds its sudo password.
+    pub fn holds_password_at(&self, i: usize) -> bool {
+        self.slots[i].secret_ok
     }
     /// The apply session of the slot at `i`.
     pub fn apply_session_at(&self, i: usize) -> Option<&sentry_core::apply::session::Session> {

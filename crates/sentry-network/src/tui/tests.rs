@@ -3084,7 +3084,7 @@ fn every_profile_denies_what_is_private() {
         access,
         path: path.display().to_string(),
         whole: None,
-        remote: false,
+        on: None,
     };
     let asked = [
         grant(Access::Write, &salt),
@@ -3352,7 +3352,7 @@ fn auto_never_approves_a_plan_or_a_command_on_a_router() {
         .chat
         .requests
         .iter()
-        .map(|g| (g.path.as_str(), g.remote))
+        .map(|g| (g.path.as_str(), g.remote()))
         .collect();
     assert_eq!(asked, [("apk add tcpdump", true)]);
     assert!(s.can_grant() && s.runs.is_empty());

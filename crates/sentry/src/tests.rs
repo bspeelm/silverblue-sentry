@@ -1113,3 +1113,635 @@ fn a_by_hand_task_is_a_session_with_claude_on_every_target() {
         key(&mut a, KeyCode::Char('n'));
     }
 }
+
+// ── One session, every target ───────────────────────────────────────────────────────────
+
+const NET: usize = 2;
+const KEY: &str = "S3cretBouncerKey+abc/123=";
+const PASSWORD: &str = "hunter2-Sudo!";
+
+/// This machine, a server whose sudo asks for its password, and a network: each test its
+/// own names (runs are kept by name).
+fn three_with(server: &str, network: &str) -> App {
+    let mut a = two_with(server, true);
+    a.add(
+        &sentry_network::tui::id_of(network),
+        sentry_network::tui::target(sentry_network::remote::Router::new(
+            network,
+            &Default::default(),
+        )),
+    );
+    for ev in [
+        sentry_network::tui::testing::ifaces_ev(network, &fixture("network/ifaces.txt")),
+        sentry_network::tui::testing::uci_ev(network, &fixture("network/uci.txt")),
+        sentry_network::tui::testing::clients_ev(network, &fixture("network/clients.txt")),
+    ] {
+        a.on_event(ev, Instant::now());
+    }
+    a
+}
+
+/// Enter on the by-hand task of the slot at `i` (F-key `f`): a session with Claude.
+fn task_session(a: &mut App, i: usize, f: u8) {
+    a.slots[i].shared.tasks = vec![task("bouncer", "Install the bouncer")];
+    key(a, KeyCode::F(f));
+    key(a, KeyCode::Char('6'));
+    typed(a, "/Install the bouncer");
+    key(a, KeyCode::Enter);
+    key(a, KeyCode::Enter);
+    assert!(a.apply_session_at(i).is_some(), "{:?}", a.toast_for_test());
+}
+
+/// Every file under sentry's (scratch) directories that holds `needle`.
+fn files_with(needle: &str) -> Vec<std::path::PathBuf> {
+    fn walk(d: &std::path::Path, needle: &str, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, needle, out);
+            } else if std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle))
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for d in [
+        sentry_core::paths::config_dir(),
+        sentry_core::paths::data_dir(),
+        sentry_core::paths::cache_dir(),
+    ] {
+        walk(&d, needle, &mut out);
+    }
+    out
+}
+
+fn tall(a: &mut App) -> String {
+    render_to_string(a, 158, 120)
+}
+
+fn bouncer_plan() -> String {
+    "The server's API listens on loopback only; I open it, make the key there and use it here.\n\
+     ```sentry-apply\nsummary = \"bouncer on the router\"\n\n\
+     [[step]]\ntitle = \"Listen on the DMZ\"\non = \"srv:crowd\"\n\
+     run = \"sudo sed -i s/127.0.0.1:8080/0.0.0.0:8080/ /etc/crowdsec/config.yaml && sudo systemctl restart crowdsec\"\n\n\
+     [[step]]\ntitle = \"A key for the router\"\non = \"srv:crowd\"\n\
+     run = \"sudo cscli bouncers add router -o raw\"\ncapture = \"key\"\nsecret = true\n\n\
+     [[step]]\ntitle = \"Install\"\nrun = \"apk add crowdsec-firewall-bouncer\"\n\n\
+     [[step]]\ntitle = \"Its key\"\n\
+     run = \"uci set crowdsec.@bouncer[0].api_key='{{key}}' && uci commit crowdsec\"\n\n\
+     [[step]]\ntitle = \"Let it through\"\nworkflow = \"guarded-change\"\n\
+     vars = { configs = \"firewall\", lines = \"uci set firewall.bouncer=rule; uci set firewall.bouncer.target='ACCEPT'\", services = \"firewall\" }\n\
+     ```"
+        .to_string()
+}
+
+/// The incident this was built for: the router's bouncer needs the server's CrowdSec API,
+/// which listens on loopback only. One session, started on the router, does both sides.
+#[test]
+fn the_crowdsec_case_one_session_across_the_router_and_the_server() {
+    use sentry_core::apply::session::{End, Phase, Turn};
+    let _ = std::fs::remove_dir_all(sentry_network::workflow::root(&sentry_network::tui::id_of(
+        "crowdnet",
+    )));
+    let mut a = three_with("crowd", "crowdnet");
+    a.start(Instant::now());
+    // (The network's workflows as they're seeded, in the scratch config dir.)
+    a.set_wf_entries_at(
+        NET,
+        sentry_network::workflow::list_for(&sentry_network::tui::id_of("crowdnet")),
+    );
+    // Enter on the router's task is such a session; the other targets wake for it,
+    // without the window changing hands.
+    assert!(!a.started_at(SRV));
+    task_session(&mut a, NET, 3);
+    assert!(a.started_at(SRV) && a.focus == NET);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.apply_session_at(NET).unwrap().phase,
+        Phase::Thinking(Turn::Investigate)
+    );
+
+    // What its Claude may do: read on every target through that target's own gateway,
+    // with every target's denials kept (the router's session has no web: nobody's has
+    // while its gateway is in reach).
+    let p = a.session_profile_at(NET);
+    for rule in [
+        "Bash(sentry-network exec crowdnet:*)",
+        "Bash(sentry-network run crowdnet:*)",
+        "Bash(sentry-server exec crowd:*)",
+        "Bash(sentry-server run crowd:*)",
+    ] {
+        assert!(
+            p.allowed.iter().any(|r| r == rule),
+            "{rule}: {:?}",
+            p.allowed
+        );
+    }
+    assert!(p.denied.iter().any(|d| d == "WebFetch"), "{:?}", p.denied);
+    assert!(
+        p.denied.iter().any(|d| d.contains("network_config")),
+        "{:?}",
+        p.denied
+    );
+    assert!(
+        !p.allowed.iter().any(|r| r == "Bash"),
+        "nothing on this machine runs by itself"
+    );
+    for said in [
+        "## The system",
+        "`net:crowdnet` (a home network, through its OpenWrt router",
+        "This session started here.",
+        "`srv:crowd` (a server over ssh",
+        "`local` (this machine",
+        "fix it THERE",
+        "### `srv:crowd`: how you reach it",
+        "sentry-server run crowd -- ",
+        "NEVER tell me to enter, paste, set, type or run something myself",
+        "`ask = \"name\"`",
+    ] {
+        assert!(p.system.contains(said), "{said}: {}", p.system);
+    }
+
+    a.apply_answer_at(NET, &bouncer_plan());
+    let s = a.apply_session_at(NET).unwrap();
+    assert!(s.can_approve(), "{:?}", s.problems);
+    // The plan view says whose each step is.
+    let view = tall(&mut a);
+    assert!(
+        view.contains("A key for the router") && view.contains("crowd"),
+        "{view}"
+    );
+    assert!(
+        view.contains("its last line is kept as {{key}} (hidden, never written down)"),
+        "{view}"
+    );
+
+    // ONE approval. The server's password is asked here, in this session's line, naming
+    // the server; typed once.
+    key(&mut a, KeyCode::Enter);
+    let s = a.apply_session_at(NET).unwrap();
+    assert!(matches!(s.phase, Phase::Password { .. }), "{:?}", s.phase);
+    assert!(
+        tall(&mut a).contains("sudo password (on crowd, for step 1, 2)"),
+        "{}",
+        tall(&mut a)
+    );
+    assert!(
+        a.unlock_at(SRV).is_none(),
+        "nothing waits for the server to be in view"
+    );
+    typed(&mut a, PASSWORD);
+    key(&mut a, KeyCode::Enter);
+    a.guest_exit_at(SRV, 0);
+    assert!(a.holds_password_at(SRV) && !a.holds_password_at(NET));
+    // The first step runs on the server, as the server runs its own: its strip entry
+    // says it works, and the session stays where it started.
+    assert_eq!(a.guest_at(SRV), (true, false));
+    assert_eq!(a.needs(SRV), Needs::Working);
+    assert_eq!(a.focus, NET);
+    let cmd = a.slots[SRV].last_guest_cmd.clone().unwrap();
+    assert!(
+        cmd.contains("sed -i") && cmd.contains("@@sentry-ready"),
+        "{cmd}"
+    );
+    assert!(
+        !cmd.contains(PASSWORD),
+        "the password is no argument: {cmd}"
+    );
+    a.guest_exit_at(SRV, 0);
+    // The second: the password again, without a prompt. What it prints is the key.
+    assert!(matches!(
+        a.apply_session_at(NET).unwrap().phase,
+        Phase::Applying
+    ));
+    a.guest_line_at(SRV, KEY);
+    assert!(!tall(&mut a).contains(KEY));
+    a.guest_exit_at(SRV, 0);
+    assert_eq!(a.guest_at(SRV), (false, false));
+    // The router's own steps: a package, then the key, which is in the command that runs
+    // and nowhere on screen.
+    assert!(
+        a.slots[NET]
+            .last_step_cmd
+            .as_deref()
+            .unwrap()
+            .contains("apk add")
+    );
+    a.apply_exit_at(NET, 0);
+    let ran = a.slots[NET].last_step_cmd.clone().unwrap();
+    assert!(
+        ran.contains(&format!("api_key='\\''{KEY}'\\''")) || ran.contains(KEY),
+        "{ran}"
+    );
+    let view = tall(&mut a);
+    assert!(
+        !view.contains(KEY) && view.contains("api_key='{{key}}'"),
+        "{view}"
+    );
+    a.apply_exit_at(NET, 0);
+    // The firewall's part is the router's guard, as in any router session: its run.
+    // (Its values are shown to take or change, as in any router session: Enter each.)
+    for _ in 0..4 {
+        if a.slots[NET].run.is_none() {
+            key(&mut a, KeyCode::Enter);
+        }
+    }
+    let (_, live, done) = run_at(&a, NET);
+    assert!(live && !done, "the guard's preview runs");
+    a.run_step_exit_at(NET, 0);
+    assert!(
+        matches!(run_at(&a, NET).0, Next::Confirm(1)),
+        "{:?}",
+        run_at(&a, NET).0
+    );
+    a.apply_at(NET, vec![Effect::Wf(sentry_app::effect::WfCmd::Go)]);
+    a.run_step_exit_at(NET, 0);
+    assert!(run_at(&a, NET).2, "{:?}", run_at(&a, NET));
+    // All five done: Claude verifies, from a report that never held the key.
+    let s = a.apply_session_at(NET).unwrap();
+    assert_eq!(
+        s.phase,
+        Phase::Thinking(Turn::Verify),
+        "{:?}",
+        s.chat.entries.last()
+    );
+    let sent = a.slots[NET].last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("all 5 steps") && sent.contains("on srv:crowd"),
+        "{sent}"
+    );
+    assert!(!sent.contains(KEY) && !sent.contains(PASSWORD), "{sent}");
+    a.apply_answer_at(NET, DONE);
+    assert_eq!(
+        a.apply_session_at(NET).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+
+    // Each target's log says what happened to it; the entries share the run's id.
+    let run = format!("run:{}", a.apply_session_at(NET).unwrap().run_id);
+    let entry = |a: &App, i: usize| {
+        a.slots[i]
+            .shared
+            .log
+            .iter()
+            .find(|e| e.head.tags.contains(&run))
+            .unwrap_or_else(|| panic!("slot {i}: no entry tagged {run}"))
+            .clone()
+    };
+    let (net, srv) = (entry(&a, NET), entry(&a, SRV));
+    assert!(
+        net.head.tags.contains(&"with:srv:crowd".to_string()),
+        "{:?}",
+        net.head.tags
+    );
+    assert!(
+        net.head.tags.contains(&"task:bouncer".to_string()),
+        "{:?}",
+        net.head.tags
+    );
+    assert!(
+        srv.head.tags.contains(&"with:net:crowdnet".to_string()),
+        "{:?}",
+        srv.head.tags
+    );
+    assert!(
+        srv.body.contains("A key for the router") && !srv.body.contains("apk add"),
+        "{}",
+        srv.body
+    );
+    assert!(
+        !a.slots[LOCAL]
+            .shared
+            .log
+            .iter()
+            .any(|e| e.head.tags.contains(&run))
+    );
+    // The key and the password: in no entry, no plan, no prompt, no transcript, and (the
+    // records written out as they would be) in no file sentry keeps.
+    for slot in &a.slots {
+        for e in &slot.shared.log {
+            assert!(
+                !e.body.contains(KEY) && !e.head.summary.contains(KEY),
+                "{}",
+                e.body
+            );
+            sentry_core::maint::log::write(e).unwrap();
+        }
+        for d in slot.shared.plans.values() {
+            assert!(!d.body.contains(KEY), "{}", d.body);
+            assert!(
+                d.body.contains("{{key}}") && d.body.contains("on = \"srv:crowd\""),
+                "{}",
+                d.body
+            );
+            sentry_core::maint::plan::save(d).unwrap();
+        }
+    }
+    for (_, t) in &a.apply_session_at(NET).unwrap().chat.entries {
+        assert!(!t.contains(KEY), "{t}");
+    }
+    assert_eq!(files_with(KEY), Vec::<std::path::PathBuf>::new());
+    assert_eq!(files_with(PASSWORD), Vec::<std::path::PathBuf>::new());
+}
+
+fn ask_about(what: &str) -> Effect {
+    Effect::AskConsent(Box::new(sentry_core::claude::Ask::apply(
+        what,
+        "ctx",
+        sentry_core::claude::Apply {
+            key: format!("task:{what}"),
+            ..Default::default()
+        },
+    )))
+}
+
+fn plan_of(steps: &str) -> String {
+    format!("On it.\n```sentry-apply\nsummary = \"do it\"\n{steps}```")
+}
+
+/// One thing at a time on a target: a step for one that is busy with a run of its own
+/// waits, and says so; if that lasts, Claude hears that the step never started.
+#[test]
+fn a_step_for_a_busy_target_waits_and_says_so() {
+    use sentry_core::apply::session::{Phase, Turn};
+    for outlast in [false, true] {
+        let name = if outlast { "busylong" } else { "busy" };
+        let mut a = two_with(name, false);
+        server_wf(&mut a, name, "harmless", &step("one", "auto", "true"));
+        begin(&mut a, SRV, "harmless");
+        assert!(run_at(&a, SRV).1, "its own run is at work");
+        a.apply_at(LOCAL, vec![ask_about("reach")]);
+        key(&mut a, KeyCode::Enter);
+        a.apply_answer_at(
+            LOCAL,
+            &plan_of(&format!(
+                "[[step]]\ntitle = \"There\"\non = \"srv:{name}\"\nrun = \"true\"\n"
+            )),
+        );
+        key(&mut a, KeyCode::Enter);
+        assert_eq!(a.guest_at(SRV), (false, true));
+        let said = a.apply_session_at(LOCAL).unwrap().output.join("\n");
+        assert_eq!(
+            said,
+            format!("waiting for {name} to finish its workflow harmless")
+        );
+        assert_eq!(a.needs(SRV), Needs::Working);
+        if outlast {
+            a.tick(Instant::now() + sentry_app::slot::guest::GUEST_WAIT);
+            assert_eq!(a.guest_at(SRV), (false, false));
+            let s = a.apply_session_at(LOCAL).unwrap();
+            assert_eq!(s.phase, Phase::Thinking(Turn::Fix));
+            let sent = a.slots[LOCAL].last_prompt.clone().unwrap();
+            assert!(
+                sent.contains("did not fail: it was never started")
+                    && sent.contains("was still busy with its workflow harmless"),
+                "{sent}"
+            );
+            continue;
+        }
+        // Its run ends: the step runs by itself, and the session goes on.
+        a.run_step_exit_at(SRV, 0);
+        a.tick(Instant::now());
+        assert_eq!(a.guest_at(SRV), (true, false));
+        // On the server's own screen the banner row says whose step runs there.
+        key(&mut a, KeyCode::F(2));
+        key(&mut a, KeyCode::Char('1'));
+        let s = screen(&mut a);
+        assert!(s.contains("· reach · a step of it runs here"), "{s}");
+        a.guest_exit_at(SRV, 0);
+        assert_eq!(
+            a.apply_session_at(LOCAL).unwrap().phase,
+            Phase::Thinking(Turn::Verify)
+        );
+    }
+}
+
+/// What a router keeps private stays so in a session that started on the server, and a
+/// secret made on the server stays out of what the router's side writes.
+#[test]
+fn scrubbing_and_secrets_hold_across_targets() {
+    use sentry_core::apply::session::{End, Phase};
+    const PRIVATE: [&str; 2] = ["02:00:5e:00:53:20", "my-phone"];
+    let mut a = three_with("scrubsrv", "scrubnet");
+    task_session(&mut a, SRV, 2);
+    key(&mut a, KeyCode::Enter);
+    let p = a.session_profile_at(SRV);
+    let first = a.slots[SRV].last_prompt.clone().unwrap();
+    for c in PRIVATE {
+        assert!(!p.system.contains(c) && !first.contains(c), "{c}");
+    }
+    assert!(
+        p.allowed
+            .iter()
+            .any(|r| r == "Bash(sentry-network run scrubnet:*)")
+    );
+    // The server's session keeps its own way with the server, and loses the web: the
+    // router's denial holds whoever's session reaches it.
+    assert!(p.denied.iter().any(|d| d == "WebFetch"), "{:?}", p.denied);
+    a.apply_answer_at(
+        SRV,
+        &plan_of(
+            "[[step]]\ntitle = \"Token\"\nrun = \"mktoken\"\ncapture = \"key\"\nsecret = true\n\n\
+             [[step]]\ntitle = \"Who\"\non = \"net:scrubnet\"\nrun = \"cat /tmp/dhcp.leases\"\ncapture = \"lease\"\n\n\
+             [[step]]\ntitle = \"Tell\"\non = \"net:scrubnet\"\nrun = \"logger -t bouncer '{{key}}'\"\n\n\
+             [[step]]\ntitle = \"Use\"\nrun = \"note '{{lease}}'\"\n",
+        ),
+    );
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(s.can_approve(), "{:?}", s.problems);
+    key(&mut a, KeyCode::Enter);
+    // (No sudo in it: nothing is asked.) The server's own step prints the key.
+    a.on_event(
+        Event::Stream(
+            sentry_server::tui::id_of("scrubsrv"),
+            a.apply_session_at(SRV).unwrap().job.unwrap().0,
+            sentry_core::exec::StreamMsg::Line {
+                stderr: false,
+                text: KEY.into(),
+            },
+        ),
+        Instant::now(),
+    );
+    a.apply_exit_at(SRV, 0);
+    // The router's lease line: what it printed reaches the session only scrubbed, and
+    // what is captured there is hidden whether or not the step said so.
+    let lease = format!("1793052000 {} 192.0.2.20 {} *", PRIVATE[0], PRIVATE[1]);
+    a.guest_line_at(NET, &lease);
+    assert!(
+        !a.apply_session_at(SRV)
+            .unwrap()
+            .output
+            .join("\n")
+            .contains(PRIVATE[0])
+    );
+    a.guest_exit_at(NET, 0);
+    // The key goes to the router in the command only; what the router echoes is swept.
+    assert!(
+        a.slots[NET]
+            .last_guest_cmd
+            .as_deref()
+            .unwrap()
+            .contains(KEY)
+    );
+    a.guest_line_at(NET, &format!("logged {KEY} for {}", PRIVATE[1]));
+    let out = a.apply_session_at(SRV).unwrap().output.join("\n");
+    assert!(!out.contains(KEY) && !out.contains(PRIVATE[1]), "{out}");
+    a.guest_exit_at(NET, 0);
+    // The server uses what the router knows: in the command, and in nothing Claude sees.
+    assert!(
+        a.slots[SRV]
+            .last_step_cmd
+            .as_deref()
+            .unwrap()
+            .contains(PRIVATE[0])
+    );
+    a.apply_exit_at(SRV, 0);
+    let sent = a.slots[SRV].last_prompt.clone().unwrap();
+    for c in PRIVATE.iter().chain([&KEY]) {
+        assert!(!sent.contains(c), "{c}: {sent}");
+    }
+    assert!(sent.contains("kept as {{lease}} (hidden)"), "{sent}");
+    a.apply_answer_at(SRV, DONE);
+    assert_eq!(
+        a.apply_session_at(SRV).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    for i in [SRV, NET] {
+        let e = a.slots[i].shared.log.first().expect("logged");
+        assert!(
+            e.head.tags.iter().any(|t| t.starts_with("run:")),
+            "slot {i}: {:?}",
+            e.head.tags
+        );
+        for c in PRIVATE.iter().chain([&KEY]) {
+            assert!(!e.body.contains(c), "slot {i}: {c} in {}", e.body);
+        }
+    }
+    let view = tall(&mut a);
+    for c in PRIVATE.iter().chain([&KEY]) {
+        assert!(!view.contains(c), "{c}");
+    }
+}
+
+/// What a session's Claude is told on every kind of target, alone or with others: it never
+/// sends the user to do something, and how a value gets where it is needed.
+#[test]
+fn every_sessions_claude_is_told_never_to_hand_the_work_back() {
+    let alone =
+        |id: &str,
+         make: Box<dyn FnOnce(sentry_app::target::Mail) -> Box<dyn sentry_app::Target>>| {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut a = App::new(tx, id, make);
+            a.win.offline = true;
+            a.session_profile_at(0).system
+        };
+    let mut three = three_with("toldsrv", "toldnet");
+    let mut texts = vec![
+        alone(
+            sentry_local::tui::ID,
+            Box::new(sentry_local::tui::testing::target(Default::default())),
+        ),
+        alone(
+            &sentry_server::tui::id_of("toldone"),
+            Box::new(sentry_server::tui::target(Remote::new(
+                "toldone",
+                &Default::default(),
+            ))),
+        ),
+        alone(
+            &sentry_network::tui::id_of("toldnet1"),
+            Box::new(sentry_network::tui::target(
+                sentry_network::remote::Router::new("toldnet1", &Default::default()),
+            )),
+        ),
+    ];
+    for t in &texts {
+        assert!(
+            !t.contains("## The system"),
+            "alone, there is no system to describe: {t}"
+        );
+    }
+    for i in [LOCAL, SRV, NET] {
+        let t = three.session_profile_at(i).system;
+        assert!(
+            t.contains("## The system") && t.contains("This session started here."),
+            "{t}"
+        );
+        texts.push(t);
+    }
+    for t in &texts {
+        for said in [
+            "NEVER tell me to enter, paste, set, type or run something myself",
+            "\"in your own session\"",
+            "`capture = \"name\"`",
+            "`ask = \"name\"`",
+            "That is the ONLY way to get a value from me.",
+            "uci set …api_key='{{key}}'",
+            "Don't write a check that waits for me to have done something.",
+        ] {
+            assert!(t.contains(said), "{said}: {t}");
+        }
+    }
+}
+
+/// A secret a plan's own line sets on the router in a config that isn't guarded
+/// (`crowdsec`, a bouncer's key written out by Claude) is a tag wherever the line is shown
+/// or kept, as a guarded change's secrets are; the router gets the value.
+#[test]
+fn a_secret_a_plain_router_step_sets_is_a_tag_everywhere_but_on_the_router() {
+    use sentry_core::apply::session::{End, Phase};
+    const LITERAL: &str = "Literal-Bouncer-Key-77";
+    let mut a = three_with("tagsrv", "tagnet");
+    task_session(&mut a, NET, 3);
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_at(
+        NET,
+        &plan_of(&format!(
+            "[[step]]\ntitle = \"Its key\"\nrun = \"uci set crowdsec.bouncer.api_key='{LITERAL}' && uci commit crowdsec\"\n"
+        )),
+    );
+    let tag = sentry_network::redact::Salt::load(&sentry_network::tui::id_of("tagnet"))
+        .unwrap()
+        .tag(LITERAL);
+    let view = tall(&mut a);
+    assert!(
+        !view.contains(LITERAL) && view.contains(&format!("api_key='{tag}'")),
+        "{view}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let ran = a.slots[NET].last_step_cmd.clone().unwrap();
+    assert!(ran.contains(LITERAL), "{ran}");
+    a.on_event(
+        Event::Stream(
+            sentry_network::tui::id_of("tagnet"),
+            a.apply_session_at(NET).unwrap().job.unwrap().0,
+            sentry_core::exec::StreamMsg::Line {
+                stderr: false,
+                text: format!("crowdsec.bouncer.api_key='{LITERAL}'"),
+            },
+        ),
+        Instant::now(),
+    );
+    assert!(!tall(&mut a).contains(LITERAL));
+    a.apply_exit_at(NET, 0);
+    let sent = a.slots[NET].last_prompt.clone().unwrap();
+    assert!(!sent.contains(LITERAL) && sent.contains(&tag), "{sent}");
+    a.apply_answer_at(NET, DONE);
+    assert_eq!(
+        a.apply_session_at(NET).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    let e = a.slots[NET].shared.log.first().expect("logged");
+    assert!(
+        !e.body.contains(LITERAL) && e.body.contains(&tag),
+        "{}",
+        e.body
+    );
+    for d in a.slots[NET].shared.plans.values() {
+        assert!(!d.body.contains(LITERAL), "{}", d.body);
+    }
+    for (_, t) in &a.apply_session_at(NET).unwrap().chat.entries {
+        assert!(!t.contains(LITERAL), "{t}");
+    }
+}

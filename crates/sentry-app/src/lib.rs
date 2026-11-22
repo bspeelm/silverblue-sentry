@@ -10,6 +10,7 @@ pub mod remote;
 pub mod run;
 pub mod shared;
 pub mod slot;
+pub mod system;
 pub mod target;
 
 pub use app::{App, Event, Win};
