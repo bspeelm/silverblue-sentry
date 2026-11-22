@@ -5,7 +5,8 @@ expression: text
 Family filter: on for kid's tablet and games console
 
 First, once: sentry takes over from the DNS proxy (https-dns-proxy) the job of sending every device's lookups through the router. Nothing changes for the household: lookups are still forced through the router as before, and encrypted lookups (port 853) still refused; sentry does it so the devices you picked can be sent to CleanBrowsing Family first.
-The DNS proxy and then the firewall are reloaded: a few seconds, with lookups forced by the old rules until the new ones are in. The proxy's reload saves whatever its neighbours left pending in the DHCP settings and restarts the router's own resolver, as it does every time it reloads: a second or two without answers.
+The DNS proxy, the firewall and the router's resolver are reloaded: a few seconds, with lookups forced by the old rules until the new ones are in, and a second or two without answers while the resolver restarts. If the DHCP settings have changes waiting that change nothing, they are saved along; if they have a real one, nothing starts.
+After a router restart nothing changes: sentry's rules are in the router's saved settings, and the DNS proxy stays out of the way.
 The name lookups of kid's tablet and games console go to CleanBrowsing Family instead of the router: adult and other unwanted sites don't open there by name.
 How: for each device, one firewall rule sends whatever it asks on the DNS port (53) to CleanBrowsing Family (185.228.168.168), matched by the device's MAC. Its lookups over IPv6 are refused, so it asks again over IPv4 at once (sent to a service outside, some devices' IPv6 lookups would get no answer and keep them waiting).
 Every other device is left as it is.
@@ -18,6 +19,7 @@ The rules are named sentry-filter-<tag>: Enter under Filtered by you takes a dev
 Proven first, and again before the change is kept:
   the router still looks up an ordinary name (openwrt.org) through its own resolver
   CleanBrowsing Family answers the router, and refuses its own test name (pornhub.com)
+  the router still refuses the names that keep Firefox's own encrypted lookups and iCloud Private Relay off, as before
 
 Proven once the change is made, before it is kept:
   the firewall as loaded has each filtered device's rule before the catch-all, no other program's in front, and port 853 still refused

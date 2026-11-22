@@ -661,6 +661,25 @@ pub fn raw(s: &State) -> Vec<Row> {
                 Act::FilterRepair,
                 Subject::None,
             ));
+        } else if !on.is_empty()
+            && !super::family::dns_found(u).is_empty()
+            && super::family::canaries(u)
+                .iter()
+                .any(|n| !super::family::refused_by_config(u, n))
+        {
+            out.push(own(
+                "sec:filter:canaries",
+                Rank::Now,
+                "A browser's own encrypted lookups are no longer switched off on this network"
+                    .into(),
+                "The router stopped refusing the names that tell Firefox to keep its own \
+                 encrypted lookups (DNS over HTTPS) off and switch iCloud Private Relay off, \
+                 so those can switch on by themselves and skip both the router's blocklist \
+                 and the family filter. Enter puts sentry's entries for them back (its plan \
+                 first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
         } else if !on.is_empty() && unforced(u) {
             out.push(own(
                 "sec:filter:unforced",

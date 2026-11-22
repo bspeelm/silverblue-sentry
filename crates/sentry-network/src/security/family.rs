@@ -488,6 +488,113 @@ pub fn blocked(text: &str) -> bool {
 // firewall: until fw4's reload (one nft transaction) the old rules are still loaded, so no
 // device's lookups are unforced in between.
 
+// The canary names (same script). They are added ONLY under `force_dns`; the
+// `canary_domains_*` options only choose which (both default on):
+//
+//     258  config_get_bool canary_domains_icloud  'config' 'canary_domains_icloud' '1'
+//     259  config_get_bool canary_domains_mozilla 'config' 'canary_domains_mozilla' '1'
+//     283  [ "$canary_domains_icloud" = '1' ]  && canaryDomains="${canaryDomains:+${canaryDomains} }${canaryDomainsiCloud}"
+//     284  [ "$canary_domains_mozilla" = '1' ] && canaryDomains="${canaryDomains:+${canaryDomains} }${canaryDomainsMozilla}"
+//     (dnsmasq_doh_server, add:)
+//     497  if [ -n "$force_dns" ]; then
+//     498      for i in $canaryDomains; do
+//     499          uci_add_list_if_new 'dhcp' "$cfg" 'server' "/${i}/"
+//     (remove, on stop, whatever force_dns is:)
+//     514  for i in $canaryDomains; do
+//     515      uci_remove_list 'dhcp' "$cfg" 'server' "/${i}/"
+//
+// So with `force_dns` off, the next stop and start of the proxy leaves them out. The
+// takeover keeps them with lines of sentry's own the proxy never touches: dnsmasq's
+// `address='/<name>/'` (no address: the name gets no answer, NXDOMAIN, as `server=/name/`
+// gives it), on every dnsmasq section the proxy would have changed, staged in the same
+// guarded change; the hand-back removes the ones sentry added. Read on a real router
+// (2026-11-22): its resolver and CleanBrowsing Family both answer NXDOMAIN for all three.
+
+/// The names a resolver refuses to switch a browser's own encrypted lookups (Firefox)
+/// and iCloud Private Relay off, with the proxy option that chooses each.
+pub const CANARIES: [(&str, &str); 3] = [
+    ("use-application-dns.net", "canary_domains_mozilla"),
+    ("mask.icloud.com", "canary_domains_icloud"),
+    ("mask-h2.icloud.com", "canary_domains_icloud"),
+];
+
+/// The canary names the proxy is set to refuse.
+pub fn canaries(uci: &Uci) -> Vec<&'static str> {
+    let main = uci.config(PROXY).iter().find(|s| s.kind == "main");
+    CANARIES
+        .iter()
+        .filter(|(_, opt)| main.is_none_or(|s| s.flag(opt, true)))
+        .map(|(n, _)| *n)
+        .collect()
+}
+
+/// The dnsmasq sections of `dhcp`.
+fn dnsmasqs(uci: &Uci) -> Vec<&Section> {
+    uci.config("dhcp")
+        .iter()
+        .filter(|s| s.kind == "dnsmasq")
+        .collect()
+}
+
+/// Whether dnsmasq's config refuses a name (a `server` or `address` entry `/<name>/`) in
+/// every dnsmasq section.
+pub fn refused_by_config(uci: &Uci, name: &str) -> bool {
+    let want = format!("/{name}/");
+    let d = dnsmasqs(uci);
+    !d.is_empty()
+        && d.iter().all(|s| {
+            s.opts
+                .get("server")
+                .into_iter()
+                .chain(s.opts.get("address"))
+                .flatten()
+                .any(|v| v == &want)
+        })
+}
+
+/// The lines that keep the canary names refused without the proxy: `address` entries of
+/// sentry's where a section has none of its own for the name. With them, what was added
+/// (`<section>|<name>`, for the hand-back).
+pub fn canary_lines(uci: &Uci) -> (Vec<String>, Vec<String>) {
+    let mut lines = Vec::new();
+    let mut added = Vec::new();
+    for s in dnsmasqs(uci) {
+        let has = |n: &str| {
+            s.opts
+                .get("address")
+                .into_iter()
+                .flatten()
+                .any(|v| v == &format!("/{n}/"))
+        };
+        for n in canaries(uci) {
+            if !has(n) && plain(&s.name.replace(['@', '[', ']'], "")) {
+                lines.push(format!("uci add_list dhcp.{}.address='/{n}/'", s.name));
+                added.push(format!("{}|{n}", s.name));
+            }
+        }
+    }
+    (lines, added)
+}
+
+/// The lines that take sentry's canary entries away again (those it noted adding).
+pub fn canary_undo(uci: &Uci, noted: &[String]) -> Vec<String> {
+    noted
+        .iter()
+        .filter_map(|x| x.split_once('|'))
+        .filter(|(sec, n)| {
+            uci.config("dhcp").iter().any(|s| {
+                &s.name == sec
+                    && s.opts
+                        .get("address")
+                        .into_iter()
+                        .flatten()
+                        .any(|v| v == &format!("/{n}/"))
+            })
+        })
+        .map(|(sec, n)| format!("uci del_list dhcp.{sec}.address='/{n}/'"))
+        .collect()
+}
+
 /// A section of the DNS takeover's starts with this.
 pub const DNS_SECTION: &str = "sentry_dns_";
 /// Its `name`.

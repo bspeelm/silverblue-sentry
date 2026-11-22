@@ -248,6 +248,10 @@ pub struct Blocks {
     /// filter change was kept.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub filter: BTreeMap<String, Filtered>,
+    /// The canary entries sentry added to dnsmasq for the family filter's takeover
+    /// (`<section>|<name>`), so the hand-back takes exactly those away.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub canaries: Vec<String>,
 }
 
 impl Blocks {

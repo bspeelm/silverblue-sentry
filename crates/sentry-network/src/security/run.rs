@@ -36,6 +36,34 @@ fn services(asked: &'static str) -> String {
     asked.to_string()
 }
 
+/// What the family service answers for the canary names, from the router (reads): whether
+/// a filtered device is covered whatever the router's resolver does with them.
+fn canaries_at_family(r: &Router) -> String {
+    let svc = family::service();
+    let mut not = Vec::new();
+    for (n, _) in family::CANARIES {
+        match lookup(r, n, svc.v4[0]) {
+            Ok(out) if family::blocked(&out) => {}
+            _ => not.push(n),
+        }
+    }
+    match not.as_slice() {
+        [] => format!(
+            "{} itself refuses the names that keep Firefox's own encrypted lookups and iCloud \
+             Private Relay off: on the filtered devices they stay off whatever happens to the \
+             router's own entries.",
+            svc.name
+        ),
+        n => format!(
+            "{} doesn't refuse {}: on the filtered devices, Firefox's own encrypted lookups or \
+             iCloud Private Relay can switch on if the router's own entries go, and then their \
+             lookups skip the filter.",
+            svc.name,
+            n.join(", ")
+        ),
+    }
+}
+
 /// What the DNS proxy hands the firewall now (procd's service data; a read).
 fn forced(r: &Router) -> Option<Vec<family::Forced>> {
     r.output(&r.sh(&format!(
@@ -143,6 +171,30 @@ pub fn prove(r: &Router, p: Proof) -> Result<String, String> {
                 svc.name, svc.ordinary, svc.blocked_test
             ))
         }
+        // How the router's resolver answers the canary names: what the check compares.
+        Proof::Canaries => {
+            let uci = crate::collect::uci::collect(r)
+                .map_err(|e| format!("the config couldn't be read: {e}"))?;
+            let mut said = Vec::new();
+            for (n, _) in family::CANARIES {
+                #[cfg(test)]
+                let refused = if NO_FIREWALL_RELOAD.load(std::sync::atomic::Ordering::Relaxed) {
+                    // (The disposable router's dnsmasq doesn't run: what its config would
+                    // make it answer.)
+                    family::refused_by_config(&uci, n)
+                } else {
+                    family::blocked(&lookup(r, n, "127.0.0.1")?)
+                };
+                #[cfg(not(test))]
+                let refused = family::blocked(&lookup(r, n, "127.0.0.1")?);
+                said.push(format!(
+                    "{n} {}",
+                    if refused { "refused" } else { "answered" }
+                ));
+            }
+            let _ = uci;
+            Ok(said.join(", "))
+        }
         // Who comes first, read back from the firewall as it is loaded now.
         Proof::Precedence => {
             let uci = crate::collect::uci::collect(r)
@@ -228,7 +280,7 @@ fn prove_access(r: &Router, p: Proof) -> Result<String, String> {
                 )),
             }
         }
-        Proof::OwnResolver | Proof::Family | Proof::Precedence => prove(r, p),
+        Proof::OwnResolver | Proof::Family | Proof::Precedence | Proof::Canaries => prove(r, p),
     }
 }
 
@@ -328,7 +380,17 @@ fn planned(r: &Router, d: &Do) -> Result<(Planned, Got), String> {
 fn change(p: &Planned) -> Result<Option<Change>, String> {
     p.guard
         .as_ref()
-        .map(|g| Change::parse_action(g.configs, &g.lines.join("; "), &services(g.services), false))
+        .map(|g| {
+            let mut c =
+                Change::parse_action(g.configs, &g.lines.join("; "), &services(g.services), false)?;
+            // The family filter's takeover touches dhcp, which the DNS proxy's reload
+            // commits anyway: another package's staged lines there are let through only
+            // when they change nothing (`guard::Change::tolerate`).
+            if c.configs.iter().any(|x| x == "dhcp") {
+                c.tolerate = vec!["dhcp".into()];
+            }
+            Ok(c)
+        })
         .transpose()
 }
 
@@ -341,6 +403,10 @@ pub fn show(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> Result<(), Strin
     for proof in &p.proofs {
         say(String::new());
         say(format!("proven now: {}", prove(r, *proof)?));
+    }
+    if p.proofs.contains(&Proof::Canaries) {
+        say(String::new());
+        say(canaries_at_family(r));
     }
     if let Some(c) = change(&p)? {
         say(String::new());
@@ -362,9 +428,16 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
         }
     };
     say(p.title.clone());
+    // (The canary names: what they are now is what they must stay.)
+    let mut canaries_before = None;
     for proof in &p.proofs {
         match prove(r, *proof) {
-            Ok(seen) => say(format!("proven: {seen}")),
+            Ok(seen) => {
+                if *proof == Proof::Canaries {
+                    canaries_before = Some(seen.clone());
+                }
+                say(format!("proven: {seen}"))
+            }
             Err(why) => {
                 say(format!("STOPPED, nothing was changed: {why}"));
                 return 3;
@@ -386,10 +459,17 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
             // Held before the change is kept: every proof, once more, on the router as
             // it is now.
             let check = || {
-                p.proofs
-                    .iter()
-                    .chain(&p.after)
-                    .try_for_each(|x| prove(r, *x).map(|_| ()))
+                p.proofs.iter().chain(&p.after).try_for_each(|x| {
+                    let seen = prove(r, *x)?;
+                    match (&canaries_before, *x) {
+                        (Some(b), Proof::Canaries) if *b != seen => Err(format!(
+                            "the router answers the names that keep Firefox's own encrypted \
+                             lookups and iCloud Private Relay off differently now ({seen}; \
+                             before: {b})"
+                        )),
+                        _ => Ok(()),
+                    }
+                })
             };
             let also = Also {
                 check: (!p.proofs.is_empty() || !p.after.is_empty())
@@ -444,7 +524,7 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
             }
         }
     }
-    settle(r, d);
+    settle(r, d, &p);
     if p.proofs.contains(&Proof::Family) {
         let svc = family::service();
         say(format!(
@@ -457,7 +537,7 @@ pub fn apply(r: &Router, d: &Do, say: &mut dyn FnMut(String)) -> u8 {
 }
 
 /// What this machine remembers, after an action that undid something: the note goes.
-fn settle(r: &Router, d: &Do) {
+fn settle(r: &Router, d: &Do, p: &Planned) {
     let mut b = Blocks::load(&r.scope);
     let before = b.clone();
     match d {
@@ -481,6 +561,9 @@ fn settle(r: &Router, d: &Do) {
             }
         }
         _ => {}
+    }
+    if let Some(c) = &p.canaries {
+        b.canaries = c.clone();
     }
     if b != before {
         let _ = b.save(&r.scope);

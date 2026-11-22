@@ -411,3 +411,5 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - The last device off asks once whether to hand the forcing back to the proxy (recommended: nothing of sentry's is left) or keep sentry's.
 - A filter that stopped working (the proxy's forcing in front again, or nobody's lookups forced) is an act-now row whose Enter puts it right.
 - Another program or table that forces lookups is still refused, by name.
+- The names that keep Firefox's own encrypted lookups and iCloud Private Relay off stay refused after the takeover, by entries of sentry's in dnsmasq's settings (the proxy adds its own only while it forces lookups); the hand-back takes sentry's away and the proxy's are back at once. If the router stops refusing them while filters exist, that is an act-now row.
+- The takeover touches the DHCP settings. What another package left waiting there goes through only if it changes nothing; a real pending change stops it before anything is armed, naming the option. A revert restores those settings too.

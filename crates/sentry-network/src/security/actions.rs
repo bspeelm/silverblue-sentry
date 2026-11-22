@@ -165,6 +165,8 @@ pub enum Proof {
     /// Read back from the firewall as loaded: every filtered device's rule before the
     /// catch-all, no other program's DNS redirect in front, the 853 refusal there.
     Precedence,
+    /// The router's resolver answers the canary names as it did before the change.
+    Canaries,
 }
 
 impl Proof {
@@ -179,6 +181,9 @@ impl Proof {
             }
             Proof::Family => {
                 "CleanBrowsing Family answers the router, and refuses its own test name (pornhub.com)"
+            }
+            Proof::Canaries => {
+                "the router still refuses the names that keep Firefox's own encrypted lookups and iCloud Private Relay off, as before"
             }
             Proof::Precedence => {
                 "the firewall as loaded has each filtered device's rule before the catch-all, no other program's in front, and port 853 still refused"
@@ -208,6 +213,8 @@ pub struct Planned {
     pub proofs: Vec<Proof>,
     /// Proven only once the change is made, before it is kept.
     pub after: Vec<Proof>,
+    /// The family filter: sentry's canary entries once this is kept (None: unchanged).
+    pub canaries: Option<Vec<String>>,
     pub guard: Option<Guarded>,
     /// Commands run on the router as written, after the guard's part.
     pub runs: Vec<String>,
@@ -717,11 +724,32 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
         l.remove(0);
         d.lines.extend(l);
     }
-    // The last device off: the forcing goes back to the DNS proxy, unless asked to stay.
+    // The canary names stay refused without the proxy: sentry's own dnsmasq entries,
+    // wherever sentry forces the lookups (`family`'s notes on why).
+    let forcing = !want.is_empty() && (takeover || taken || remake);
+    let mut canaries = None;
+    if forcing {
+        let (l, added) = family::canary_lines(f.uci);
+        d.lines.extend(l);
+        let mut noted = f.blocks.canaries.clone();
+        noted.extend(added);
+        noted.sort();
+        noted.dedup();
+        canaries = Some(noted);
+    }
+    // The last device off: the forcing goes back to the DNS proxy, unless asked to stay;
+    // with it, sentry's canary entries (the proxy adds its own again as it starts).
     let handback = want.is_empty() && taken && !keep_forcing;
     if handback {
         d.lines.extend(family::handback_lines(f.uci));
+        d.lines
+            .extend(family::canary_undo(f.uci, &f.blocks.canaries));
+        canaries = Some(Vec::new());
     }
+    let dns = d
+        .lines
+        .iter()
+        .any(|l| l.starts_with("uci add_list dhcp.") || l.starts_with("uci del_list dhcp."));
     if d.is_empty() {
         return Err(match tags.len() {
             0 => "the family filter isn't on any device: nothing to change".into(),
@@ -739,6 +767,9 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
             "Family filter: put back in front of the router's forced lookups".into()
         }
         ([], []) if remake => "Family filter: lookups forced through the router again".into(),
+        ([], []) if forcing && dns => {
+            "Family filter: browsers' own encrypted lookups switched off again".into()
+        }
         ([], []) => "Family filter: the router's forced lookups handed back".into(),
         ([], r) => format!("Family filter: off for {}", and(r)),
         (a, []) => format!("Family filter: on for {}", and(a)),
@@ -755,11 +786,25 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
             svc.name
         ));
         says.push(
-            "The DNS proxy and then the firewall are reloaded: a few seconds, with lookups \
-             forced by the old rules until the new ones are in. The proxy's reload saves \
-             whatever its neighbours left pending in the DHCP settings and restarts the \
-             router's own resolver, as it does every time it reloads: a second or two \
-             without answers."
+            "The DNS proxy, the firewall and the router's resolver are reloaded: a few \
+             seconds, with lookups forced by the old rules until the new ones are in, and a \
+             second or two without answers while the resolver restarts. If the DHCP \
+             settings have changes waiting that change nothing, they are saved along; if \
+             they have a real one, nothing starts."
+                .into(),
+        );
+        says.push(
+            "After a router restart nothing changes: sentry's rules are in the router's saved \
+             settings, and the DNS proxy stays out of the way."
+                .into(),
+        );
+    }
+    if forcing && dns {
+        says.push(
+            "The names that tell Firefox to keep its own encrypted lookups off and switch \
+             iCloud Private Relay off stay refused by the router, now by entries of sentry's \
+             in its DNS settings (the DNS proxy adds them only while it forces lookups \
+             itself)."
                 .into(),
         );
     }
@@ -844,14 +889,19 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
         family::PREFIX
     ));
     let proxy = takeover || handback;
+    let mut proofs = if added.is_empty() && !takeover {
+        vec![Proof::OwnResolver]
+    } else {
+        vec![Proof::OwnResolver, Proof::Family]
+    };
+    if forcing || handback {
+        proofs.push(Proof::Canaries);
+    }
     Ok(Planned {
         title,
         says,
-        proofs: if added.is_empty() && !takeover {
-            vec![Proof::OwnResolver]
-        } else {
-            vec![Proof::OwnResolver, Proof::Family]
-        },
+        proofs,
+        canaries,
         // Once the change is made: who comes first, as the firewall has it loaded.
         after: if !want.is_empty() && (takeover || taken || remake) {
             vec![Proof::Precedence]
@@ -859,16 +909,18 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
             Vec::new()
         },
         guard: Some(Guarded {
-            configs: if proxy {
-                "firewall,https-dns-proxy"
-            } else {
-                "firewall"
+            configs: match (proxy, dns) {
+                (true, true) => "firewall,https-dns-proxy,dhcp",
+                (true, false) => "firewall,https-dns-proxy",
+                (false, true) => "firewall,dhcp",
+                (false, false) => "firewall",
             },
             lines: d.lines,
-            services: if proxy {
-                "https-dns-proxy,firewall"
-            } else {
-                "firewall"
+            services: match (proxy, dns) {
+                (true, true) => "https-dns-proxy,firewall,dnsmasq",
+                (true, false) => "https-dns-proxy,firewall",
+                (false, true) => "firewall,dnsmasq",
+                (false, false) => "firewall",
             },
             closing: Vec::new(),
         }),
@@ -1329,6 +1381,77 @@ mod tests {
             "network/service-https-dns-proxy.json",
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn the_takeover_keeps_the_canary_names_refused_and_the_hand_back_takes_its_own_away() {
+        // The router as the proxy has it: its canary `server` entries in dnsmasq.
+        let dhcp = "@@dhcp\ndhcp.@dnsmasq[0]=dnsmasq\n\
+                    dhcp.@dnsmasq[0].server='/mask.icloud.com/' '/mask-h2.icloud.com/' '/use-application-dns.net/' '127.0.0.1#5053'\n";
+        let u = uci(&format!(
+            "@@firewall\nfirewall.@defaults[0]=defaults\n{dhcp}{PROXY_ON}"
+        ));
+        for (n, _) in family::CANARIES {
+            assert!(family::refused_by_config(&u, n), "{n}");
+        }
+        let b = kids();
+        let c = crate::collect::counters::parse(&crate::collect::fixture("network/counters.txt"))
+            .unwrap();
+        let fd = forced();
+        let f = Facts {
+            counters: Some(&c),
+            forced: Some(&fd),
+            ..facts(&u, &b, &[])
+        };
+        let p = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap();
+        let g = p.guard.as_ref().unwrap();
+        assert_eq!(g.configs, "firewall,https-dns-proxy,dhcp");
+        assert_eq!(g.services, "https-dns-proxy,firewall,dnsmasq");
+        let c2 = Change::parse_action(g.configs, &g.lines.join("; "), g.services, false).unwrap();
+        assert_eq!(c2.services, ["https-dns-proxy", "firewall", "dnsmasq"]);
+        for n in [
+            "use-application-dns.net",
+            "mask.icloud.com",
+            "mask-h2.icloud.com",
+        ] {
+            let want = format!("uci add_list dhcp.@dnsmasq[0].address='/{n}/'");
+            assert!(g.lines.contains(&want), "{want}: {:#?}", g.lines);
+        }
+        assert!(p.proofs.contains(&Proof::Canaries));
+        assert_eq!(p.canaries.as_ref().map(Vec::len), Some(3));
+        let text = p.text().join("\n");
+        assert!(
+            text.contains("After a router restart nothing changes")
+                && text.contains("stay refused by the router"),
+            "{text}"
+        );
+        // Without the proxy's entries (stopped and started with force_dns off), sentry's
+        // keep them refused.
+        let after = uci(
+            "@@firewall\nfirewall.@defaults[0]=defaults\n@@dhcp\ndhcp.@dnsmasq[0]=dnsmasq\n\
+             dhcp.@dnsmasq[0].address='/use-application-dns.net/' '/mask.icloud.com/' '/mask-h2.icloud.com/'\n",
+        );
+        for (n, _) in family::CANARIES {
+            assert!(family::refused_by_config(&after, n), "{n}");
+        }
+        // The hand-back takes away exactly what sentry noted adding.
+        let mut noted = b.clone();
+        noted.canaries = p.canaries.clone().unwrap();
+        noted
+            .canaries
+            .retain(|x| !x.ends_with("mask-h2.icloud.com"));
+        assert_eq!(
+            family::canary_undo(&after, &noted.canaries),
+            [
+                "uci del_list dhcp.@dnsmasq[0].address='/mask.icloud.com/'",
+                "uci del_list dhcp.@dnsmasq[0].address='/use-application-dns.net/'"
+            ]
+        );
+        // The proxy set to leave iCloud's alone: only Firefox's is kept.
+        let u = uci(&format!(
+            "@@firewall\nfirewall.@defaults[0]=defaults\n{dhcp}{PROXY_ON}https-dns-proxy.config.canary_domains_icloud='0'\n"
+        ));
+        assert_eq!(family::canaries(&u), ["use-application-dns.net"]);
     }
 
     #[test]

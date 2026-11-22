@@ -2458,46 +2458,37 @@ fn live_security_filter() {
     secrun::LOOKUPS.lock().unwrap().clear();
 }
 
-/// A stand-in for the DNS proxy package on the disposable router: its config with
-/// `force_dns '1'`, and a procd service that hands the firewall what the real one hands
-/// it with that on (the redirect of 53 and the refusal of 853 for lan, as read from a real
-/// router's procd data) and nothing with it off. Not the package: no DoH, no dnsmasq
-/// lines.
-const STAND_IN: &str = r#"#!/bin/sh /etc/rc.common
-START=20
-USE_PROCD=1
-start_service() {
-	local f
-	config_load https-dns-proxy
-	config_get_bool f config force_dns 1
-	procd_open_instance instance1
-	procd_set_param command /bin/sleep 86400
-	procd_open_data
-	if [ "$f" = 1 ]; then
-		json_add_array firewall
-		json_add_object ''
-		json_add_string type redirect
-		json_add_string target DNAT
-		json_add_string src lan
-		json_add_string proto 'tcp udp'
-		json_add_string src_dport 53
-		json_add_string dest_port 53
-		json_add_string family any
-		json_add_boolean reflection 0
-		json_close_object
-		json_add_object ''
-		json_add_string type rule
-		json_add_string src lan
-		json_add_string dest '*'
-		json_add_string proto 'tcp udp'
-		json_add_string dest_port 853
-		json_add_string target REJECT
-		json_close_object
-		json_close_array
-	fi
-	procd_close_data
-	procd_close_instance
-}
+/// The real DNS proxy package on the disposable router (`apk add https-dns-proxy`, from
+/// the release's own feed: the container reaches it), with its config as it ships
+/// (`force_dns '1'`, both canary options on) and one upstream, and a dnsmasq started by
+/// hand on port 53 (the router's own can't run in the container) so the proxy sees 53
+/// listening and hands the firewall its redirect, as on a real router. That dnsmasq
+/// reads no config: what the canary names are answered with is read from the settings
+/// dnsmasq is given (`run`'s `Proof::Canaries` under test, `family::refused_by_config`).
+const PROXY_SETUP: &str = r#"set -e
+apk add -q https-dns-proxy >/dev/null 2>&1 || true
+[ -x /etc/init.d/https-dns-proxy ] || apk fix -q https-dns-proxy >/dev/null 2>&1
+[ -x /etc/init.d/https-dns-proxy ]
+cat > /etc/config/https-dns-proxy <<'EOF'
+config main 'config'
+	option canary_domains_icloud '1'
+	option canary_domains_mozilla '1'
+	option dnsmasq_config_update '*'
+	option force_dns '1'
+	option force_dns_port '53 853'
+	option force_dns_src_interface 'lan'
+	option user 'nobody'
+	option group 'nogroup'
+	option listen_addr '127.0.0.1'
+
+config https-dns-proxy
+	option bootstrap_dns '1.1.1.1,1.0.0.1'
+	option resolver_url 'https://cloudflare-dns.com/dns-query'
+	option listen_port '5053'
+EOF
+grep -q ":0035 " /proc/net/udp || dnsmasq -p 53 --no-resolv --conf-file=/dev/null -x /tmp/sentry-dm.pid
+/etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+sleep 2
 "#;
 
 fn proxy_rules(r: &Router) -> usize {
@@ -2507,35 +2498,49 @@ fn proxy_rules(r: &Router) -> usize {
         .len()
 }
 
-/// The family filter's first use on a router whose DNS proxy forces every lookup: the
-/// takeover and the filter as one guarded change, a proof failing once it is made (both
-/// configs back byte for byte, the proxy forcing again), then kept, the forcing put back
-/// in front after the proxy took it again, and the last device off handing it back with
-/// nothing of sentry's left. What this does NOT show: the container has no nft, so the
-/// read-back of who comes first is made from the config and procd's data the way fw4.uc
-/// orders them (`family::simulated`), and the forced-DNS detection from procd's data
-/// (`run::read` under test); that the real package's reload keeps its dnsmasq lines; that
-/// a device's lookups really go where the rules say.
+/// dnsmasq's settings as they are now refuse every canary name.
+fn canaries_refused(r: &Router) -> bool {
+    let u = crate::collect::uci::collect(r).unwrap();
+    crate::security::family::CANARIES
+        .iter()
+        .all(|(n, _)| crate::security::family::refused_by_config(&u, n))
+}
+
+/// The proxy's own canary entries (`server=/name/`) are in dnsmasq's settings.
+fn proxys_canaries(r: &Router) -> usize {
+    let o = on(r, "uci -q get dhcp.@dnsmasq[0].server; true");
+    crate::security::family::CANARIES
+        .iter()
+        .filter(|(n, _)| o.stdout.contains(&format!("/{n}/")))
+        .count()
+}
+
+/// The family filter's first use on a router whose real DNS proxy forces every lookup:
+/// the takeover and the filter as one guarded change; a proof failing once it is made
+/// (firewall, the proxy's config and dhcp back byte for byte, the proxy forcing again);
+/// kept; the proxy stopped and started (it drops its own canary entries) with the canary
+/// names still refused by sentry's; the proxy forcing again by itself, put right; the
+/// last device off handing it back, the proxy's canary entries there at once and nothing
+/// of sentry's left. What this does NOT show: the container has no nft, so who comes
+/// first is read from the config and procd's data in fw4.uc's order
+/// (`family::simulated`), and the forced-DNS detection is made from procd's data; its
+/// dnsmasq isn't the router's, so the canary names' answers are what dnsmasq's settings
+/// say, not a lookup; a device's own lookups.
 #[test]
 #[ignore]
 fn live_security_takeover() {
     use crate::security::family;
     let Some(r) = router() else { return };
     no_firewall_reload();
-    let o = on(
-        &r,
-        &format!(
-            "printf \"config main 'config'\\n\\toption force_dns '1'\\n\\toption force_dns_port '53 853'\\n\" >/etc/config/https-dns-proxy \
-             && cat >/etc/init.d/https-dns-proxy <<'EOF'\n{STAND_IN}EOF\n\
-             chmod 755 /etc/init.d/https-dns-proxy && /etc/init.d/https-dns-proxy start && sleep 1"
-        ),
-    );
-    assert_eq!(o.code, 0, "{}", o.stderr);
+    let o = on(&r, PROXY_SETUP);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     assert_eq!(
         proxy_rules(&r),
         2,
-        "the stand-in hands the firewall its two rules"
+        "the proxy hands the firewall its two rules"
     );
+    assert_eq!(proxys_canaries(&r), 3, "and dnsmasq its three canary names");
+    assert!(canaries_refused(&r));
     const A: &str = "02:00:5e:00:53:61";
     const B: &str = "02:00:5e:00:53:62";
     let (ta, tb) = (
@@ -2556,9 +2561,10 @@ fn live_security_takeover() {
     }
     b.save(&r.scope).unwrap();
     let both = Do::filter([ta.clone(), tb.clone()]).word();
-    let before = sums(&r, &["firewall", "https-dns-proxy"]);
+    let configs = ["firewall", "https-dns-proxy", "dhcp"];
+    let before = sums(&r, &configs);
 
-    // The plan: the takeover in it, reads only.
+    // The plan: the takeover and the canary entries in it, reads only.
     *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
     let mut shown = Vec::new();
     secrun::show(&r, &Do::parse(&both).unwrap(), &mut |l| shown.push(l)).unwrap();
@@ -2567,21 +2573,19 @@ fn live_security_takeover() {
     assert!(
         text.contains("First, once: sentry takes over from the DNS proxy")
             && text.contains("uci set https-dns-proxy.config.force_dns=0")
+            && text.contains("address=/use-application-dns.net/")
+            && text.contains("After a router restart nothing changes")
             && text.contains("Nothing has changed."),
         "{text}"
     );
-    assert_eq!(sums(&r, &["firewall", "https-dns-proxy"]), before);
+    assert_eq!(sums(&r, &configs), before);
 
-    // A proof failing once the change is made: everything back, the proxy's setting too.
+    // A proof failing once the change is made: everything back, byte for byte.
     *secrun::LOOKUPS.lock().unwrap() = vec![true, true, false, false, false, false, false, false];
     let (code, said) = act(&r, &both);
     assert_ne!(code, 0, "{said:#?}");
     assert!(said.iter().any(|l| l.starts_with("REVERTED")), "{said:#?}");
-    assert_eq!(
-        sums(&r, &["firewall", "https-dns-proxy"]),
-        before,
-        "not byte for byte"
-    );
+    assert_eq!(sums(&r, &configs), before, "not byte for byte");
     assert_eq!(
         on(&r, "uci get https-dns-proxy.config.force_dns")
             .stdout
@@ -2591,12 +2595,42 @@ fn live_security_takeover() {
     assert_eq!(proxy_rules(&r), 2, "the proxy forces lookups again");
     nothing_left(&r, r.cfg.guard.window);
 
-    // Kept: the proxy's setting off, sentry's catch-all after both devices.
+    // Someone's real change waiting in dhcp: stopped before anything is armed, by
+    // option and never by value.
+    let o = on(&r, "uci set dhcp.@dnsmasq[0].domain='elsewhere.test'");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("have a change waiting that isn't saved")
+                && l.contains(".domain")
+                && !l.contains("elsewhere.test")),
+        "{said:#?}"
+    );
+    on(&r, "uci revert dhcp");
+    assert_eq!(sums(&r, &configs), before);
+    nothing_left(&r, r.cfg.guard.window);
+    // A waiting line that changes nothing (a package's delete and set of the same value,
+    // as adblock-fast keeps): let through, saved along.
+    let o = on(
+        &r,
+        "v=$(uci get dhcp.@dnsmasq[0].leasefile) && uci delete dhcp.@dnsmasq[0].leasefile && uci set dhcp.@dnsmasq[0].leasefile=\"$v\" && uci changes dhcp | grep -c leasefile",
+    );
+    assert_eq!(o.stdout.trim(), "2", "{}", o.stderr);
+
+    // Kept: the proxy's setting off, sentry's catch-all after both devices, the canary
+    // names refused by sentry's own entries too.
     *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
     let (code, said) = act(&r, &both);
     assert_eq!(code, 0, "{said:#?}");
     assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
-    // The proof the guard held before keeping it, once more by hand.
+    assert!(
+        said.iter()
+            .any(|l| l.contains("use-application-dns.net refused")),
+        "{said:#?}"
+    );
     let seen = secrun::prove(&r, crate::security::actions::Proof::Precedence).unwrap();
     assert!(
         seen.contains("every filtered device comes before the catch-all"),
@@ -2626,25 +2660,53 @@ fn live_security_takeover() {
     assert!(
         at(&format!("firewall.sentry_filter_{tb}=redirect")) < at("firewall.sentry_dns_0=redirect")
     );
-    for want in [
-        "firewall.sentry_dns_0.src_dport='53'",
-        "firewall.sentry_dns_0.dest_port='53'",
-        "firewall.sentry_dns_0.family='any'",
-        "firewall.sentry_dns_1=rule",
-        "firewall.sentry_dns_1.dest_port='853'",
-        "firewall.sentry_dns_1.target='REJECT'",
-    ] {
-        at(want);
+    at("firewall.sentry_dns_1.dest_port='853'");
+    let addr = on(&r, "uci -q get dhcp.@dnsmasq[0].address; true").stdout;
+    for (n, _) in family::CANARIES {
+        assert!(addr.contains(&format!("/{n}/")), "{n}: {addr}");
     }
+    assert_eq!(Blocks::load(&r.scope).canaries.len(), 3);
     nothing_left(&r, r.cfg.guard.window);
-    let uci = crate::collect::uci::collect(&r).unwrap();
-    assert_eq!(family::dns_found(&uci).len(), 2);
 
-    // The proxy forcing again by itself (an update, the web UI): the same action puts the
-    // filter back in front.
+    // The proxy stopped and started (a restart, an upgrade): it takes its own canary
+    // entries away and, forcing nothing, doesn't add them again; its backup of dnsmasq's
+    // servers may hand them back (it did here: they were in `doh_backup_server`), which
+    // nothing promises. Without them at all, sentry's keep the names refused.
     let o = on(
         &r,
-        "uci set https-dns-proxy.config.force_dns='1' && uci commit https-dns-proxy && /etc/init.d/https-dns-proxy reload && sleep 1",
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; /etc/init.d/https-dns-proxy start >/dev/null 2>&1; sleep 2",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    println!(
+        "the proxy's own canary entries after a stop and start: {}",
+        proxys_canaries(&r)
+    );
+    assert!(canaries_refused(&r), "refused across a stop and start");
+    assert_eq!(proxy_rules(&r), 0);
+    let o = on(
+        &r,
+        "for n in use-application-dns.net mask.icloud.com mask-h2.icloud.com; do uci -q del_list dhcp.@dnsmasq[0].server=/$n/; uci -q del_list dhcp.@dnsmasq[0].doh_backup_server=/$n/; done; uci commit dhcp",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(proxys_canaries(&r), 0);
+    assert!(canaries_refused(&r), "sentry's keep them refused");
+    let o = on(
+        &r,
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; /etc/init.d/https-dns-proxy start >/dev/null 2>&1; sleep 2",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(
+        proxys_canaries(&r),
+        0,
+        "forcing nothing, the proxy adds none"
+    );
+    assert!(canaries_refused(&r), "sentry's still keep them refused");
+
+    // The proxy forcing again by itself (an update, the web page): the same action puts
+    // the filter back in front.
+    let o = on(
+        &r,
+        "uci set https-dns-proxy.config.force_dns='1' && uci commit https-dns-proxy && /etc/init.d/https-dns-proxy reload >/dev/null 2>&1; sleep 2",
     );
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert_eq!(proxy_rules(&r), 2);
@@ -2659,7 +2721,8 @@ fn live_security_takeover() {
     let uci = crate::collect::uci::collect(&r).unwrap();
     assert_eq!(family::dns_found(&uci).len(), 2, "made again, not doubled");
 
-    // The last device off: handed back, nothing of sentry's left.
+    // The last device off: handed back, the proxy restarted so its canary entries are
+    // there at once, sentry's taken away, nothing of sentry's left.
     let (code, said) = act(&r, &Do::filter([ta.clone()]).word());
     assert_eq!(code, 0, "{said:#?}");
     let (code, said) = act(&r, "filter:none");
@@ -2669,6 +2732,7 @@ fn live_security_takeover() {
             .any(|l| l.contains("https-dns-proxy.config.force_dns=1")),
         "{said:#?}"
     );
+    sleep(2);
     assert_eq!(
         on(&r, "uci get https-dns-proxy.config.force_dns")
             .stdout
@@ -2677,16 +2741,39 @@ fn live_security_takeover() {
     );
     assert_eq!(proxy_rules(&r), 2);
     assert_eq!(
-        on(&r, &format!("uci show firewall | grep -c -e sentry_dns_ -e sentry_filter_{ta} -e sentry_filter_{tb}; true"))
+        proxys_canaries(&r),
+        3,
+        "the proxy's own canary entries are back at once"
+    );
+    assert!(canaries_refused(&r));
+    assert_eq!(
+        on(&r, "uci -q get dhcp.@dnsmasq[0].address; true")
             .stdout
             .trim(),
+        "",
+        "sentry's canary entries are gone"
+    );
+    assert_eq!(
+        on(
+            &r,
+            &format!(
+                "uci show firewall | grep -c -e sentry_dns_ -e sentry_filter_{ta} -e sentry_filter_{tb}; true"
+            )
+        )
+        .stdout
+        .trim(),
         "0",
         "nothing of sentry's left"
     );
+    assert!(Blocks::load(&r.scope).canaries.is_empty());
     nothing_left(&r, r.cfg.guard.window);
     secrun::LOOKUPS.lock().unwrap().clear();
     on(
         &r,
-        "/etc/init.d/https-dns-proxy stop; rm -f /etc/init.d/https-dns-proxy /etc/config/https-dns-proxy",
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; [ -s /tmp/sentry-dm.pid ] && kill $(cat /tmp/sentry-dm.pid); rm -f /tmp/sentry-dm.pid; true",
     );
+}
+
+fn sleep(secs: u64) {
+    std::thread::sleep(Duration::from_secs(secs));
 }

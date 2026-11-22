@@ -1902,6 +1902,46 @@ fn a_family_filter_that_stopped_working_is_said_and_put_right() {
         s.contains("✗ off  Family filter") || s.contains("The family filter: see"),
         "{s}"
     );
+    // sentry forcing them, and the canary names no longer refused by dnsmasq's settings.
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    let forced =
+        crate::security::family::parse_forced(&fixture("network/service-https-dns-proxy.json"))
+            .unwrap();
+    let mut fw = String::new();
+    for l in crate::security::family::takeover_lines("config", &forced)
+        .unwrap()
+        .iter()
+        .skip(1)
+    {
+        fw.push_str(l.strip_prefix("uci set ").unwrap());
+        fw.push('\n');
+    }
+    u.configs
+        .get_mut("firewall")
+        .unwrap()
+        .extend(crate::collect::uci::show(&fw));
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(
+            &s,
+            "A browser's own encrypted lookups are no longer switched off"
+        )
+        .contains("act now"),
+        "{s}"
+    );
+    on_row(&mut a, "A browser's own encrypted lookups are no longer");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(started(&a).1, format!("filter:{tp}"));
+    runs_cleared();
 }
 
 /// The fixture's config with sentry's family filter on these devices.
