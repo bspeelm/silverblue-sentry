@@ -296,7 +296,19 @@ fn no_guarded_change_crosses_a_flash() {
         assert!(e.contains("one at a time"), "{e}");
         drop(held);
     }
-    let t = no_guard(&scope).expect("free again");
+    // (A child another test forks at that moment holds the lock's descriptor until its
+    // exec closes it: free again within a moment.)
+    let free = || {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match no_guard(&scope) {
+                Ok(t) => return t,
+                Err(e) if std::time::Instant::now() > until => panic!("free again: {e}"),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+    };
+    let t = free();
     assert!(
         crate::guard::turn(&scope).is_err(),
         "while the flash holds it, no guard starts"
