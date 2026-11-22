@@ -242,9 +242,20 @@ pub fn links(all: &[Sys]) -> Vec<String> {
     out
 }
 
+const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
+
+/// What a session is told once it has no web.
+pub const NO_WEB: &str = "\n\nThis session has no web access (WebFetch and WebSearch are off): \
+it has read from the router, and what a router prints is partly other people's text. What you \
+need from upstream's notes is in the review or the plan you were given, or ask me for it.";
+
 /// A session's profile: its own target's, plus how it reaches every other target, with
 /// every target's denials kept (what one denies stays denied whoever's session it is).
-pub fn merged(mut p: Profile, all: &[Sys], home: &str, write_granted: bool) -> Profile {
+/// The web is the one thing that goes by what the session has read, not by who is in the
+/// window: it is the home target's to give (a router's session never has it), another
+/// target's denial of it doesn't take it away, and `web` false (the session has read from
+/// a router: `Session::web_goes`) does, for good.
+pub fn merged(mut p: Profile, all: &[Sys], home: &str, write_granted: bool, web: bool) -> Profile {
     p.system.push_str(HANDS);
     p.system.push_str(&text(all, home));
     for s in all.iter().filter(|s| s.peer.id != home) {
@@ -260,10 +271,23 @@ pub fn merged(mut p: Profile, all: &[Sys], home: &str, write_granted: bool) -> P
             (&mut p.dirs, &s.reach.dirs),
         ] {
             for x in theirs {
-                if !mine.contains(x) {
+                if !mine.contains(x) && !WEB.contains(&x.as_str()) {
                     mine.push(x.clone());
                 }
             }
+        }
+    }
+    if !web {
+        let had = p.allowed.iter().any(|a| WEB.contains(&a.as_str()));
+        p.tools.retain(|t| !WEB.contains(&t.as_str()));
+        p.allowed.retain(|t| !WEB.contains(&t.as_str()));
+        for d in WEB {
+            if !p.denied.iter().any(|x| x == d) {
+                p.denied.push(d.into());
+            }
+        }
+        if had {
+            p.system.push_str(NO_WEB);
         }
     }
     // (A file I granted for writing lifts the bare denial, as in a session alone; the
@@ -360,7 +384,7 @@ mod tests {
             denied: vec!["Edit".into()],
             dirs: Vec::new(),
         };
-        let p = merged(own.clone(), &all, "srv:myserver", false);
+        let p = merged(own.clone(), &all, "srv:myserver", false, true);
         assert!(
             p.system.starts_with("mine")
                 && p.system
@@ -371,8 +395,20 @@ mod tests {
             p.allowed,
             ["WebFetch", "Bash(gw :*)", "Bash(gw net:home:*)"]
         );
-        assert_eq!(p.denied, ["Edit", "WebFetch", "Read(//etc/secret)"]);
-        let p = merged(own, &all, "srv:myserver", true);
-        assert_eq!(p.denied, ["WebFetch", "Read(//etc/secret)"]);
+        // The web is the session's own until it has read from a router: another
+        // target's denial of it is not merged in.
+        assert_eq!(p.denied, ["Edit", "Read(//etc/secret)"]);
+        assert!(p.tools.iter().any(|t| t == "WebFetch") && !p.system.contains("no web access"));
+        let p = merged(own.clone(), &all, "srv:myserver", true, true);
+        assert_eq!(p.denied, ["Read(//etc/secret)"]);
+        // Once it has: gone from the tools and the allow rules, denied, and said.
+        let p = merged(own, &all, "srv:myserver", false, false);
+        assert!(!p.tools.iter().any(|t| t == "WebFetch"));
+        assert_eq!(p.allowed, ["Bash(gw :*)", "Bash(gw net:home:*)"]);
+        assert_eq!(
+            p.denied,
+            ["Edit", "Read(//etc/secret)", "WebFetch", "WebSearch"]
+        );
+        assert!(p.system.ends_with(NO_WEB));
     }
 }

@@ -230,6 +230,10 @@ pub struct Session {
     /// (`take_typed`) and holds it for its target, and `secret_ok` says it does.
     pub secret: Secret,
     pub secret_ok: bool,
+    /// The web is off for the rest of this session: it has read from a target whose text
+    /// is partly other people's (a router), or was briefed with what one said. Once set it
+    /// stays (`web_goes`).
+    pub web_off: bool,
     /// The plan needs no password (sudo didn't ask).
     sudo_free: bool,
     /// Runs already in the log.
@@ -295,6 +299,7 @@ impl Session {
             stopping: false,
             secret: Secret::default(),
             secret_ok: false,
+            web_off: false,
             sudo_free: false,
             logged: 0,
             brief_open: false,
@@ -464,6 +469,25 @@ impl Session {
             }
         }
         out
+    }
+
+    /// What the session's line says, once, when the web goes.
+    pub const WEB_OFF: &'static str =
+        "the web is off for this session: it has read from the router";
+
+    /// Before a turn: whether this session has read from a target that hides (a router:
+    /// what it prints holds other people's text, a device's name, a log line). From then
+    /// on its turns have no web, so nothing planted there can ask for something to be
+    /// sent out; said once in the transcript. Returns whether the web is off.
+    pub fn web_goes(&mut self) -> bool {
+        if !self.web_off && self.touched().iter().any(|p| p.hides) {
+            self.web_off = true;
+            // (Where it started there, it never had the web: nothing to say.)
+            if !self.home.as_ref().is_some_and(|h| h.hides) {
+                self.chat.push(Kind::Info, Self::WEB_OFF);
+            }
+        }
+        self.web_off
     }
 
     /// The other target a request is for: the one whose gateway refused it, or this

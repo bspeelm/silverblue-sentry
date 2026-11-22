@@ -96,6 +96,10 @@ impl Slot {
                     };
                     let resume = sess.chat.session.clone();
                     let grants = sess.chat.grants.clone();
+                    // From the turn after it read from a router, no web (said once).
+                    if let Some(sess) = self.apply.as_mut() {
+                        sess.web_goes();
+                    }
                     let r = self.spawn_turn(w, &prompt, resume.as_deref(), &grants);
                     let Some(sess) = self.apply.as_mut() else {
                         return;
@@ -576,6 +580,8 @@ impl Slot {
             grants
                 .iter()
                 .any(|g| g.access == sentry_core::claude::Access::Write),
+            // Built per turn: the web is there until the session has read from a router.
+            !self.apply.as_ref().is_some_and(|s| s.web_off),
         )
     }
 

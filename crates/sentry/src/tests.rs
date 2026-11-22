@@ -1445,6 +1445,87 @@ fn the_crowdsec_case_one_session_across_the_router_and_the_server() {
     assert_eq!(files_with(PASSWORD), Vec::<std::path::PathBuf>::new());
 }
 
+fn has_web(p: &sentry_core::claude::Profile) -> bool {
+    let web = |v: &[String]| v.iter().any(|x| x == "WebFetch");
+    web(&p.tools) && web(&p.allowed) && !web(&p.denied)
+}
+
+/// The web is a session's until it has read from the router, whoever else is in the
+/// window: a server's session researches as before; from the turn after a read through
+/// the router's gateway it has none, for good, and its window says so once; a session
+/// that starts on the network never has it; a review (which can run and write nothing)
+/// always does.
+#[test]
+fn the_web_goes_once_a_session_has_read_from_the_router() {
+    use sentry_app::target::ProfileFor;
+    use sentry_core::apply::session::Session;
+    use sentry_core::tui::chat::Kind;
+    let said = |a: &App, i: usize| {
+        a.apply_session_at(i)
+            .unwrap()
+            .chat
+            .entries
+            .iter()
+            .filter(|(_, t)| t == Session::WEB_OFF)
+            .count()
+    };
+
+    // Started on the server, a router in the window, nothing read from it: the web.
+    let mut a = three_with("websrv", "webnet");
+    task_session(&mut a, SRV, 2);
+    key(&mut a, KeyCode::Enter);
+    assert!(has_web(&a.session_profile_at(SRV)));
+    // It reads on the server only: still the web on the next turn.
+    a.apply_session()
+        .unwrap()
+        .chat
+        .push(Kind::Tool, "sentry-server exec websrv -- uptime");
+    a.apply_answer_at(SRV, "It is up. Anything else?");
+    typed(&mut a, "go on");
+    key(&mut a, KeyCode::Enter);
+    assert!(has_web(&a.session_profile_at(SRV)));
+    assert_eq!(said(&a, SRV), 0);
+    // It reads through the router's gateway: the turn after that has none.
+    a.apply_session().unwrap().chat.push(
+        Kind::Tool,
+        "sentry-network exec webnet -- uci show firewall",
+    );
+    a.apply_answer_at(SRV, "The router forwards to it.");
+    typed(&mut a, "and then");
+    key(&mut a, KeyCode::Enter);
+    let p = a.session_profile_at(SRV);
+    assert!(!has_web(&p) && p.denied.iter().any(|d| d == "WebSearch"));
+    assert!(p.system.contains("no web access"), "{}", p.system);
+    assert_eq!(said(&a, SRV), 1);
+    // For the rest of the session, and said only once.
+    a.apply_answer_at(SRV, "Yes.");
+    typed(&mut a, "more");
+    key(&mut a, KeyCode::Enter);
+    assert!(!has_web(&a.session_profile_at(SRV)));
+    assert_eq!(said(&a, SRV), 1);
+
+    // Started on the network: none from the start, and nothing to say about it.
+    let mut b = three_with("websrv2", "webnet2");
+    b.set_wf_entries_at(
+        NET,
+        sentry_network::workflow::list_for(&sentry_network::tui::id_of("webnet2")),
+    );
+    task_session(&mut b, NET, 3);
+    key(&mut b, KeyCode::Enter);
+    assert!(!has_web(&b.session_profile_at(NET)));
+    assert_eq!(said(&b, NET), 0);
+
+    // A review keeps the web on every target, a router among them or not.
+    for i in [LOCAL, SRV, NET] {
+        let p = b.slots[i].target.profile(ProfileFor::Review, &[]);
+        assert!(has_web(&p), "slot {i}: {:?}", p.denied);
+        assert!(
+            !p.tools.iter().any(|t| t == "Edit" || t == "Write"),
+            "slot {i}: a review writes nothing"
+        );
+    }
+}
+
 fn ask_about(what: &str) -> Effect {
     Effect::AskConsent(Box::new(sentry_core::claude::Ask::apply(
         what,
@@ -1536,9 +1617,9 @@ fn scrubbing_and_secrets_hold_across_targets() {
             .iter()
             .any(|r| r == "Bash(sentry-network run scrubnet:*)")
     );
-    // The server's session keeps its own way with the server, and loses the web: the
-    // router's denial holds whoever's session reaches it.
-    assert!(p.denied.iter().any(|d| d == "WebFetch"), "{:?}", p.denied);
+    // The server's session keeps its own way with the server, the web included: it has
+    // read nothing from the router yet.
+    assert!(p.allowed.iter().any(|d| d == "WebFetch"), "{:?}", p.allowed);
     a.apply_answer_at(
         SRV,
         &plan_of(
@@ -1602,6 +1683,13 @@ fn scrubbing_and_secrets_hold_across_targets() {
         assert!(!sent.contains(c), "{c}: {sent}");
     }
     assert!(sent.contains("kept as {{lease}} (hidden)"), "{sent}");
+    // That turn, the one after the router's output came back, was sent without the web.
+    let p = a.session_profile_at(SRV);
+    assert!(
+        p.denied.iter().any(|d| d == "WebFetch") && !p.allowed.iter().any(|d| d == "WebFetch"),
+        "{:?}",
+        p.denied
+    );
     a.apply_answer_at(SRV, DONE);
     assert_eq!(
         a.apply_session_at(SRV).unwrap().phase,
