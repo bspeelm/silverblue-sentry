@@ -96,6 +96,40 @@ impl Client {
     }
 }
 
+/// Another of sentry's own targets (a server, this machine), as the window names it and
+/// as other hosts may know it: its addresses, names and MACs.
+#[derive(Debug, Clone, Copy)]
+pub struct Target<'a> {
+    pub title: &'a str,
+    pub known_as: &'a [String],
+}
+
+/// A device that is one of sentry's own targets is that target, by its name: never a
+/// device nobody has named. Matched by an address, the MAC, or the name it gives itself
+/// (letter case aside). A name the config gives it stays. Returns the MACs recognised.
+pub fn as_targets(clients: &mut [Client], targets: &[Target]) -> Vec<String> {
+    let mut found = Vec::new();
+    for c in clients {
+        let is = |t: &&Target| {
+            c.addrs
+                .iter()
+                .chain(c.mac.iter())
+                .chain(c.hostname.iter())
+                .any(|mine| t.known_as.iter().any(|k| k.eq_ignore_ascii_case(mine)))
+        };
+        let Some(t) = targets.iter().find(is) else {
+            continue;
+        };
+        if c.name.is_none() {
+            c.name = Some(t.title.to_string());
+        }
+        c.known = true;
+        c.flagged = false;
+        found.extend(c.mac.clone());
+    }
+    found
+}
+
 /// What of the router's layout the list needs: which devices are bridges, which lead
 /// outside, which radios there are, and what each routed device's interface is called.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -484,6 +518,88 @@ pub(crate) mod tests {
         c.iter()
             .find(|x| x.key == key)
             .unwrap_or_else(|| panic!("no {key}"))
+    }
+
+    /// A device that is one of sentry's own targets is that target, however it is found.
+    #[test]
+    fn a_target_among_the_devices_is_shown_as_itself() {
+        let device = |mac: &str, addr: &str, hostname: Option<&str>| Client {
+            key: mac.into(),
+            mac: Some(mac.into()),
+            name: None,
+            hostname: hostname.map(str::to_string),
+            link: Link::Wired {
+                port: "lan1".into(),
+            },
+            addrs: vec![addr.into()],
+            lease_end: None,
+            state: State::Online,
+            private: false,
+            known: false,
+            leave_alone: false,
+            rates: None,
+            connected_s: None,
+            first_seen: None,
+            last_seen: None,
+            flagged: true,
+        };
+        let server = [
+            "myserver".to_string(),
+            "admin@203.0.113.93".into(),
+            "203.0.113.93".into(),
+        ];
+        let laptop = ["02:00:5E:00:53:0A".to_string()];
+        let targets = [
+            Target {
+                title: "myserver",
+                known_as: &server,
+            },
+            Target {
+                title: "this machine",
+                known_as: &laptop,
+            },
+        ];
+        let mut list = vec![
+            // By its address; by the name it gives itself; by its MAC, letter case aside.
+            device("00:00:5e:00:53:01", "203.0.113.93", None),
+            device("00:00:5e:00:53:02", "192.0.2.50", Some("MyServer")),
+            device("02:00:5e:00:53:0a", "192.0.2.51", Some("laptop")),
+            // Not a target: as it was.
+            device("00:00:5e:00:53:04", "192.0.2.52", Some("tv")),
+            // A name the config gave it stays; it is still vouched for.
+            Client {
+                name: Some("the box in the hall".into()),
+                ..device("00:00:5e:00:53:05", "203.0.113.93", None)
+            },
+        ];
+        assert!(list.iter().all(Client::unknown));
+        let found = as_targets(&mut list, &targets);
+        let said: Vec<(&str, bool, bool)> = list
+            .iter()
+            .map(|c| (c.label(), c.unknown(), c.flagged))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("myserver", false, false),
+                ("myserver", false, false),
+                ("this machine", false, false),
+                ("tv", true, true),
+                ("the box in the hall", false, false),
+            ]
+        );
+        assert_eq!(
+            found,
+            [
+                "00:00:5e:00:53:01",
+                "00:00:5e:00:53:02",
+                "02:00:5e:00:53:0a",
+                "00:00:5e:00:53:05"
+            ]
+        );
+        // No other target in the window: nothing changes.
+        let mut alone = vec![device("00:00:5e:00:53:01", "203.0.113.93", None)];
+        assert!(as_targets(&mut alone, &[]).is_empty() && alone[0].unknown());
     }
 
     #[test]

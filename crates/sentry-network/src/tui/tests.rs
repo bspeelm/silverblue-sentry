@@ -724,6 +724,7 @@ fn live_network_screens() {
         wf: None,
         auto: false,
         system: &[],
+        group: None,
     });
     assert!(rows.len() >= 2, "{} rows", rows.len());
     assert!(
@@ -2701,6 +2702,7 @@ fn view_at<'a>(
         wf: wf(a),
         auto: false,
         system: &[],
+        group: None,
     }
 }
 
@@ -4395,12 +4397,13 @@ fn security_with_a_flow_from_the_dmz_into_the_lan() {
     let top = render_to_string(&mut a, 158, 41);
     assert!(
         top.contains(
-            "│ act now  Something on the server's side (dmz) is talking to a device on your home"
+            "│  1. act now  A device on the server's side is reaching your home side right now"
         ),
         "{top}"
     );
+    // The cover points at that row instead of saying it twice.
     assert!(
-        top.contains("✗ off  The server's side (dmz) is meant to be kept from"),
+        top.contains("✗ off  What is kept apart from what: see 1 above"),
         "{top}"
     );
     let s = numbers(&mut a, 158, 41);

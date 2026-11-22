@@ -3,29 +3,29 @@ source: crates/sentry-network/src/tui/tests/threats.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients 2   3 Network 9   4 Security 9 /nobody has named is plugged   6 Maintenance   0 Upgrade
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 7 /lan2 has no name yet   6 Maintenance   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Needs attention · 2 · o shows 2 good to know ──────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
-│          What                                                                      │ │ look                                                                │
-│ look     A device nobody has named is plugged into lan2: 00:00:5e:00:53:11         │ │ A device nobody has named is plugged into lan2: 00:00:5e:00:53:11   │
-│ look     A device nobody has named is plugged into lan2: 02:00:5e:00:53:22         │ │                                                                     │
-└────────────────────────────────────────────────────────────────────────────────────┘ │ Whatever is on your network can talk to your other devices. If it   │
-┌ How you're covered ────────────────────────────────────────────────────────────────┐ │ is yours, name it; if you don't know it, block it or pause it and   │
-│ ! weak 2 doors are open from the internet, to 2 devices: web, phone; 1 of them you │ │ see what stops working.                                             │
-│        haven't listed                                                              │ │                                                                     │
-│ ! weak 10 devices on the network, 2┌ What to do about 00:00:5e:00:53:11 · pick one (1–6, n cancels) ──────────────────┐3:11                                │
-│        for by the Wi-Fi password)  │                                                                                  │                                    │
-│ ✓ ok   The server's side (dmz) can'│ It gives no name · 00:00:5e:00:53:11                                             │                                    │
-│        and nothing crosses right no│ address 192.0.2.11                                                               │, pause it, or put it off; blocking │
-│ ✓ ok   Bad sites are filtered, 1042│                                                                                  │                                    │
-│        update by itself            │ 1  It's mine: give it a name                                                     │                                    │
-│ ✓ ok   2 Wi-Fi networks, password-p│ 2  Block it from the internet (it stays on your network)                         │                                    │
-│ ! weak ssh takes a password, and th│ 3  Block it from everything, the router included                                 │                                    │
-│ ? ?    The security audit of every │ 4  Pause its internet for an hour                                                │                                    │
-└────────────────────────────────────│ 5  Pause its internet until tomorrow morning                                     │                                    │
-                                     │ 6  Look again in a week                                                          │                                    │
-                                     │                                                                                  │                                    │
+│              Nothing urgent. When you have time                                    │ │ note                                                                │
+│  1. note     A device plugged into lan2 has no name yet: 00:00:5e:00:53:11         │ │ A device plugged into lan2 has no name yet: 00:00:5e:00:53:11       │
+│              Enter: name it if it's yours, or block or pause it                    │ │                                                                     │
+│  2. note     A device plugged into lan2 has no name yet: 02:00:5e:00:53:22         │ │ It has been here a while, so it is probably yours. Giving it a name │
+│              Enter: name it if it's yours, or block or pause it                    │ │ means a new device stands out the day it appears; if you don't know │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ it, block it or pause it and see what stops working.                │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ ! weak 2 doors are open from the in┌ What to do about 00:00:5e:00:53:11 · pick one (1–6, n cancels) ──────────────────┐3:11                                │
+│        haven't listed              │                                                                                  │                                    │
+│ ! weak Who is on the network: see 1│ It gives no name · 00:00:5e:00:53:11                                             │                                    │
+│ ✓ ok   The server's side (dmz) can'│ address 192.0.2.11                                                               │, pause it, or put it off; blocking │
+│        and nothing crosses right no│                                                                                  │                                    │
+│ ✓ ok   Bad sites are filtered, 1042│ 1  It's mine: give it a name                                                     │                                    │
+│        update by itself            │ 2  Block it from the internet (it stays on your network)                         │                                    │
+│ ✓ ok   2 Wi-Fi networks, password-p│ 3  Block it from everything, the router included                                 │                                    │
+│ ! weak Remote login (ssh) takes a p│ 4  Pause its internet for an hour                                                │                                    │
+│        without encryption          │ 5  Pause its internet until tomorrow morning                                     │                                    │
+│ ? ?    The security audit of every │ 6  Look again in a week                                                          │                                    │
+└────────────────────────────────────│                                                                                  │                                    │
                                      │ Blocking and pausing are firewall rules by MAC, made through the guard:          │                                    │
                                      │ you see the plan first, and the router undoes the change by itself if            │                                    │
                                      │ it stops answering. A pause has no timer on the router: when it ends,            │                                    │

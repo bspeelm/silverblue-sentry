@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 7   3 Network   4 Security 8   6 Maintenance 2   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ 7 devices with no name yet · Esc back ─────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│   Each is its own decision: the list stays open as you go                          │ │ note                                                                │
+│   A device plugged into lan3 has no name yet: thing-0                              │ │ A device plugged into lan3 has no name yet: thing-0                 │
+│   Enter: name it if it's yours, or block or pause it                               │ │                                                                     │
+│   A device on the Wi-Fi has no name yet: thing-1                                   │ │ It has been here a while, so it is probably yours. Giving it a name │
+│   Enter: name it if it's yours, or block or pause it                               │ │ means a new device stands out the day it appears; if you don't know │
+│   A device plugged into lan3 has no name yet: thing-2                              │ │ it, block it or pause it and see what stops working.                │
+│   Enter: name it if it's yours, or block or pause it                               │ │                                                                     │
+│   A device on the Wi-Fi has no name yet: thing-3                                   │ │ It calls itself thing-0 · 00:00:5e:00:54:00                         │
+│   Enter: name it if it's yours, or block or pause it                               │ │ address 192.0.2.200                                                 │
+│   A device plugged into lan3 has no name yet: thing-4                              │ │ first seen 30 days ago                                              │
+│   Enter: name it if it's yours, or block or pause it                               │ │                                                                     │
+│   A device on the Wi-Fi has no name yet: thing-5                                   │ │ Enter: decide. Name it, block it, pause it, or put it off; blocking │
+│   Enter: name it if it's yours, or block or pause it                               │ │ shows its plan first.                                               │
+│   A device plugged into lan3 has no name yet: thing-6                              │ │                                                                     │
+│   Enter: name it if it's yours, or block or pause it                               │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │                                                                     │
+│ ! weak 17 devices on the network, 7 not named (1 with a private address, vouched   │ │                                                                     │
+│        for by the Wi-Fi password)                                                  │ │                                                                     │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
+│        and nothing crosses right now                                               │ │                                                                     │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
+│        update by itself                                                            │ │                                                                     │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
+│ ! weak Remote login (ssh) takes a password, and the admin page can be opened       │ └─────────────────────────────────────────────────────────────────────┘
+│        without encryption                                                          │ ┌ Egress · 5 devices · 9 live flows · new connections out 180/min, all┐
+│ ✗ off  CrowdSec's blocker is installed on the router but not switched on: what     │ │ device                    zone flows top ports           ↑        ↓ │
+│        CrowdSec would block isn't enforced at the edge yet                         │ │ nas                       lan      4 443×3 993       29.0K     411K │
+│ ✓ ok   The security audit of every target: audited 3 days ago · S shows it         │ │ desk                      lan      2 22 u443         45.9K     606K │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ ~02:00:5e:00:53:21        lan      1 5223             8.8K    11.7K │
+                                                                                       │ ~phone                    lan      1 u443             2.4K     7.4K │
+                                                                                       │ web                       dmz      1 443              2.1K     8.6K │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  decide   x  expected   z  later   Esc  back   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

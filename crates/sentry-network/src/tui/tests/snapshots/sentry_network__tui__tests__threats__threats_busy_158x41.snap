@@ -3,43 +3,43 @@ source: crates/sentry-network/src/tui/tests/threats.rs
 expression: s
 ---
  sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
- 1 Dashboard   2 Clients 2   3 Network 9   4 Security 9   6 Maintenance 8   0 Upgrade
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 7   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Needs attention · 10 · o shows 2 good to know ─────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
-│          What                                                                      │ │ act now                                                             │
-│ act now  A door from the internet is open that you haven't listed: game, udp port  │ │ A door from the internet is open that you haven't listed: game, udp │
-│          8000-8010 to 192.0.2.20                                                   │ │ port 8000-8010 to 192.0.2.20                                        │
-│ act now  Udp port 1900 on the router is open to the internet (the kernel)          │ │                                                                     │
-│ look     The router lets people log in over ssh with a password                    │ │ A port forward lets anyone on the internet reach that device on     │
-│ look     Someone tried to log in to the router 3 times and was refused, in the     │ │ that port. If you set it up, say it is expected; if not, close it.  │
-│          last 2 h 50 min                                                           │ │                                                                     │
-│ look     The router's admin page can be opened without encryption (plain HTTP)     │ │ firewall.@redirect[0] · wan → 192.0.2.20:8000-8010                  │
-│ look     A device nobody has named is plugged into lan2: 00:00:5e:00:53:11         │ │                                                                     │
-│ look     A device nobody has named is plugged into lan2: 02:00:5e:00:53:22         │ │ Enter: close it, remove it, or say it is meant to be open.          │
-│ look     192.0.2.77 is talking to the internet in a way ordinary devices rarely do │ │                                                                     │
-│          (port 23)                                                                 │ │                                                                     │
-│ look     Someone logged in to the router once from a device nobody has named, in   │ │                                                                     │
-│          the last 2 h 50 min                                                       │ │                                                                     │
-│ note     Someone tried a wrong Wi-Fi password twice in the last 2 h 50 min         │ │                                                                     │
+│              Start here                                                            │ │ act now                                                             │
+│  1. act now  An unlisted door from the internet is open: game (udp port 8000-8010) │ │ An unlisted door from the internet is open: game (udp port          │
+│              Enter: close it, remove it, or say it's meant to be open              │ │ 8000-8010)                                                          │
+│  2. act now  Udp port 1900 on the router is open to the internet (the kernel)      │ │                                                                     │
+│              Enter: fix it with Claude (it shows a plan, you approve)              │ │ A port forward lets anyone on the internet reach that device on     │
+│  3. look     The router refused a login 3 times in the last 2 h 50 min             │ │ that port. If you set it up, say it is expected; if not, close it.  │
+│              Enter: logins by key only (sentry checks its key works first)         │ │                                                                     │
+│              Then                                                                  │ │ firewall.@redirect[0] · wan → 192.0.2.20:8000-8010                  │
+│  4. look     192.0.2.77 is using a port ordinary devices rarely use (port 23)      │ │                                                                     │
+│              Enter: see the numbers behind it (nothing to change)                  │ │ Enter: close it, remove it, or say it is meant to be open.          │
+│  5. look     An unnamed device logged in to the router once in the last 2 h 50 min │ │                                                                     │
+│              Enter: see the numbers behind it (nothing to change)                  │ │                                                                     │
+│  6. look     The router's remote login (ssh) still accepts a password              │ │                                                                     │
+│              Enter: logins by key only (sentry checks its key works first)         │ │                                                                     │
+│  7. look     The router's admin page can be opened without encryption              │ │                                                                     │
+│              Enter: make the admin page use encryption (HTTPS)                     │ │                                                                     │
+│  8. note     A device plugged into lan2 has no name yet: 00:00:5e:00:53:11         │ │                                                                     │
+│              Enter: name it if it's yours, or block or pause it                    │ │                                                                     │
+│  9. note     A device plugged into lan2 has no name yet: 02:00:5e:00:53:22         │ │                                                                     │
+│              Enter: name it if it's yours, or block or pause it                    │ │                                                                     │
+│ 10. note     Someone tried a wrong Wi-Fi password twice in the last 2 h 50 min     │ │                                                                     │
+│              Enter: set a new Wi-Fi password                                       │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
 ┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
-│ ! weak 2 doors are open from the internet, to 2 devices: web, phone; 1 of them you │ │                                                                     │
-│        haven't listed                                                              │ │                                                                     │
-│ ! weak 10 devices on the network, 2 not named (1 with a private address, vouched   │ │                                                                     │
-│        for by the Wi-Fi password)                                                  │ │                                                                     │
-│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
-│        and nothing crosses right now                                               │ │                                                                     │
-│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
-│        update by itself                                                            │ │                                                                     │
-│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ └─────────────────────────────────────────────────────────────────────┘
-│ ! weak ssh takes a password, and the admin page can be opened without encryption   │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
-│ ? ?    The security audit of every target has never run · S runs it                │ │ rejected   21/min                             █ 31.2k since 1d ago  │
-└────────────────────────────────────────────────────────────────────────────────────┘ │ forward       port       to                     new/min  total live │
-                                                                                       │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
-                                                                                       │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
-                                                                                       │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
-                                                                                       │            3 refused · 1 left before logging in · in the last 2h 50 │
-                                                                                       └─────────────────────────────────────────────────────────────────────┘
+│ ! weak What the internet can reach: see 1 above                                    │ │                                                                     │
+│ ! weak Who is on the network: see 8 and 9 above                                    │ └─────────────────────────────────────────────────────────────────────┘
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
+│        and nothing crosses right now                                               │ │ rejected   21/min                             █ 31.2k since 1d ago  │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │ forward       port       to                     new/min  total live │
+│        update by itself                                                            │ │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
+│ ! weak Logging in to the router: see 6 and 7 above                                 │ │ ssh logins 2 from here · 1 from named devices · 1 from elsewhere    │
+│ ? ?    The security audit of every target has never run · S runs it                │ │            3 refused · 1 left before logging in · in the last 2h 50 │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Enter  close it   x  expected   z  later   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

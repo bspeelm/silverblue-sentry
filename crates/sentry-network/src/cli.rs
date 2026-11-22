@@ -1126,24 +1126,33 @@ pub fn security_text(
     said: &super::security::gather::Said,
     not_read: &[(String, String)],
 ) -> Vec<String> {
+    use super::security::attention;
     let mut l = vec![format!("{name} · security"), String::new()];
-    if said.rows.iter().all(|x| x.can_wait) {
-        l.push("Nothing needs you.".into());
-    } else {
-        l.push("Needs attention".into());
-    }
-    for x in &said.rows {
-        l.push(format!("  {:<8} {}", x.rank.word(), x.title));
-        l.push(format!("           {}", x.why));
-        l.extend(x.seen.iter().map(|s| format!("           · {s}")));
-        l.push(format!(
-            "           Enter on Security (4): {}",
-            x.act.enter()
-        ));
+    // The page's order and its numbers: the first three that ask something, then the rest.
+    let start = attention::start_here(&said.rows);
+    l.push(
+        match (said.rows.iter().all(|x| x.can_wait), start) {
+            (true, _) => "Nothing needs you.",
+            (_, 0) => "Nothing urgent. When you have time",
+            _ => "Start here",
+        }
+        .into(),
+    );
+    let claude = sentry_core::claude::available();
+    let pad = " ".repeat(15);
+    for (i, x) in said.rows.iter().enumerate() {
+        if start > 0 && i == start {
+            l.push("Then".into());
+        }
+        l.push(format!("  {:>2}. {:<8} {}", i + 1, x.rank.word(), x.title));
+        l.push(format!("{pad}Security (4) · {}", x.step(claude)));
+        l.push(format!("{pad}{}", x.why));
+        l.extend(x.seen.iter().map(|s| format!("{pad}· {s}")));
     }
     l.push(String::new());
     l.push("How you're covered".into());
-    for c in &said.posture {
+    let rows: Vec<&super::security::Row> = said.rows.iter().collect();
+    for c in attention::pointed(&said.posture, &rows) {
         l.push(format!("  {:<5} {}", c.state.word(), c.text));
     }
     for (what, why) in not_read {

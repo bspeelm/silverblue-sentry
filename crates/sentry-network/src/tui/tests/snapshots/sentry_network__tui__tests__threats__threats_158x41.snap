@@ -7,17 +7,19 @@ expression: s
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Needs attention · 4 · o shows 2 good to know ──────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
-│          What                                                                      │ │ look                                                                │
-│ look     Someone tried to log in to the router 3 times and was refused, in the     │ │ Someone tried to log in to the router 3 times and was refused, in   │
-│          last 2 h 50 min                                                           │ │ the last 2 h 50 min                                                 │
-│ look     192.0.2.77 is talking to the internet in a way ordinary devices rarely do │ │                                                                     │
-│          (port 23)                                                                 │ │ A refused login is the lock holding, and passwords are already off: │
-│ look     Someone logged in to the router once from a device nobody has named, in   │ │ there is nothing to guess. Worth knowing which device it was.       │
-│          the last 2 h 50 min                                                       │ │                                                                     │
-│ note     Someone tried a wrong Wi-Fi password twice in the last 2 h 50 min         │ │ 192.0.2.77                                                          │
+│              Start here                                                            │ │ look                                                                │
+│  1. look     The router refused a login 3 times in the last 2 h 50 min             │ │ The router refused a login 3 times in the last 2 h 50 min           │
+│              Enter: see the numbers behind it (nothing to change)                  │ │                                                                     │
+│  2. look     192.0.2.77 is using a port ordinary devices rarely use (port 23)      │ │ A refused login is the lock holding, and passwords are already off: │
+│              Enter: see the numbers behind it (nothing to change)                  │ │ there is nothing to guess. Worth knowing which device it was.       │
+│  3. look     An unnamed device logged in to the router once in the last 2 h 50 min │ │                                                                     │
+│              Enter: see the numbers behind it (nothing to change)                  │ │ 192.0.2.77                                                          │
+│              Then                                                                  │ │                                                                     │
+│  4. note     Someone tried a wrong Wi-Fi password twice in the last 2 h 50 min     │ │ Enter: the numbers behind it. Nothing here needs changing on the    │
+│              Enter: set a new Wi-Fi password                                       │ │ router.                                                             │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ How you're covered ────────────────────────────────────────────────────────────────┐ │ Enter: the numbers behind it. Nothing here needs changing on the    │
-│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │ router.                                                             │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │                                                                     │
 │ ✓ ok   10 devices on the network, none unaccounted for (1 with a private address,  │ │                                                                     │
 │        vouched for by the Wi-Fi password)                                          │ │                                                                     │
 │ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
@@ -28,8 +30,6 @@ expression: s
 │ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
 │ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
                                                                                        └─────────────────────────────────────────────────────────────────────┘

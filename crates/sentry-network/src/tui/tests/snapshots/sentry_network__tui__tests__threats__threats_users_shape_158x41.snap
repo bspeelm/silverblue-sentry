@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 7   3 Network   4 Security 8   6 Maintenance 2   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Needs attention · 10 · o shows 2 good to know ─────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│              Start here                                                            │ │ act now                                                             │
+│  1. act now  The router's firmware has security fixes waiting                      │ │ The router's firmware has security fixes waiting                    │
+│              Enter: update the router's software (Maintenance does it)             │ │                                                                     │
+│  2. look     12 of the router's packages can be updated                            │ │ What it takes: Fix it.                                              │
+│              Enter: update the router's packages (Maintenance does it)             │ │                                                                     │
+│  3. look     The router's remote login (ssh) still accepts a password              │ │ seen by the audit                                                   │
+│              Enter: logins by key only (sentry checks its key works first)         │ │                                                                     │
+│              Then                                                                  │ │ From the security audit. Enter: Maintenance (6), where it is done.  │
+│  4. look     The router's admin page can be opened without encryption              │ │                                                                     │
+│              Enter: make the admin page use encryption (HTTPS)                     │ │                                                                     │
+│  5. look     CrowdSec's blocker is installed on the router but not switched on…    │ │                                                                     │
+│              Enter: fix it with Claude (one plan for both, you approve)            │ │                                                                     │
+│  6. look     Every device at home shares one network                               │ │                                                                     │
+│              Enter: fix it with Claude (it shows a plan, you approve)              │ │                                                                     │
+│  7. look     The router forgets its log when it restarts                           │ │                                                                     │
+│              Enter: fix it with Claude (it shows a plan, you approve)              │ │                                                                     │
+│  8. look     There is no backup of the router's configuration                      │ │                                                                     │
+│              Enter: make a backup of the router's settings (on Maintenance)        │ │                                                                     │
+│  9. note     7 devices have no name yet: 4 plugged in, 3 on Wi-Fi                  │ │                                                                     │
+│              Enter: go through them (name, block or pause each)                    │ │                                                                     │
+│ 10. note     3 doors from the internet: tell sentry whether each asks for a login  │ │                                                                     │
+│              Enter: answer them one after another                                  │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
+│ ! weak Who is on the network: see 9 above                                          │ │                                                                     │
+│ ! weak Logging in to the router: see 3 and 4 above                                 │ │                                                                     │
+│ ✗ off  Blocking attackers at the router: see 5 above                               │ │                                                                     │
+│ ✓ ok   5 other parts are fine (a taller window lists them)                         │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       │                                                                     │
+                                                                                       └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  Maintenance   x  expected   z  later   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

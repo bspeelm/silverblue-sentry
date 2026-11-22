@@ -24,10 +24,10 @@ use ratatui::widgets::{Cell, Paragraph, Row as TRow};
 use super::security::{self as panels, Security};
 use super::{Hints, View};
 use crate::security::actions::Do;
-use crate::security::attention::{DevRef, lasting};
+use crate::security::attention::{self, DevRef, Kind, lasting};
 use crate::security::blocks::{self, Dev, Door, Note, Reach, Shut};
 use crate::security::gather::{self, More};
-use crate::security::{Act, Cover, Picture, Rank, Row, State, Subject, attention, posture};
+use crate::security::{Act, Cover, Picture, Rank, Row, State, Subject, posture};
 use crate::tui::target::{Effect, Modal, NetworkTarget, Own};
 use sentry_app::effect::{self, OwnPrompt, Prompt, WfCmd};
 use sentry_app::shared::Shared;
@@ -75,7 +75,8 @@ impl Want {
 /// Everything the view is made of, from what was read so far.
 pub struct Built {
     pub picture: Picture,
-    /// Every row not marked expected and not put off, most urgent first.
+    /// Every row not marked expected and not put off, in the list's order, several of
+    /// one kind as one (`attention::arrange`).
     pub rows: Vec<Row>,
     pub posture: Vec<crate::security::Line>,
     pub shut: Vec<Shut>,
@@ -119,9 +120,13 @@ pub fn built(v: &View) -> Built {
         now: v.now.as_second(),
     };
     let day = today(v);
-    let mut rows = attention(&state);
+    let later = |r: &Row| v.sh.later.get(&r.key).is_none_or(|d| *d <= day);
+    let mut rows = attention::raw(&state);
     audit_rows(v, &state, &mut rows);
-    rows.retain(|r| v.sh.later.get(&r.key).is_none_or(|d| *d <= day));
+    // Put off one by one, then as the one row several of a kind make.
+    rows.retain(later);
+    let mut rows = attention::arrange(rows, v.group.as_deref());
+    rows.retain(later);
     let mut posture = posture(&state);
     // The audit of the whole system: when it last ran, and the key that shows it.
     posture.push(crate::security::Line {
@@ -205,6 +210,15 @@ fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
     )
 }
 
+/// What Enter does on a row Maintenance carries out, in the row's own words.
+fn maint_step(what: &str) -> &'static str {
+    match what {
+        "firmware" => "Enter: update the router's software (Maintenance does it)",
+        "packages" => "Enter: update the router's packages (Maintenance does it)",
+        _ => "Enter: make a backup of the router's settings (on Maintenance)",
+    }
+}
+
 /// The security audit's items this page lists (`Shared::sec`), joined with its own rows by
 /// subject: where the page already has the row (it has the action), that row takes the
 /// audit's why and its urgency and the item gets none; where the page's row was marked
@@ -218,6 +232,7 @@ fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
         let what = i.id.split(':').nth(1).unwrap_or("");
         let rank = match i.state {
             St::DoFirst => Rank::Now,
+            St::Ask => Rank::Note,
             _ => Rank::Look,
         };
         if let Some(prefix) = audit_subject(i).filter(|_| own || what == "watch") {
@@ -281,23 +296,55 @@ fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
             },
             subject: Subject::None,
             can_wait: false,
+            class: attention::Class::of_audit(&i.id, i.group),
+            next: maint.then(|| maint_step(what).to_string()),
         });
     }
-    rows.sort_by_key(|r| r.rank);
+}
+
+fn listed_of<'a>(rows: &'a [Row], v: &View) -> Vec<&'a Row> {
+    rows.iter()
+        .filter(|r| v.everything || !r.can_wait)
+        .filter(|r| {
+            // (Several as one: found by what any of them says.)
+            let among = r
+                .members()
+                .iter()
+                .map(|m| m.title.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            v.matches(&[&r.title, &r.why, r.rank.word(), &among])
+        })
+        .collect()
 }
 
 impl Built {
-    /// The rows listed: what needs you (everything with `o`), filtered. With it, how many
-    /// wait unseen.
-    pub fn listed(&self, v: &View) -> (Vec<&Row>, usize) {
-        let waiting = self.rows.iter().filter(|r| r.can_wait).count();
-        let rows = self
-            .rows
+    /// The list being gone through (`View::group`): the one row several of a kind make.
+    pub fn open(&self, v: &View) -> Option<&Row> {
+        let key = v.group.as_deref()?;
+        self.rows
             .iter()
-            .filter(|r| v.everything || !r.can_wait)
-            .filter(|r| v.matches(&[&r.title, &r.why, r.rank.word()]))
-            .collect();
-        (rows, if v.everything { 0 } else { waiting })
+            .find(|r| r.key == key && !r.members().is_empty())
+    }
+
+    /// The page's own list, whatever is open over it: what its numbers count.
+    pub fn main(&self, v: &View) -> Vec<&Row> {
+        listed_of(&self.rows, v)
+    }
+
+    /// The rows listed: what needs you (everything with `o`), filtered; of a list being
+    /// gone through, its rows. With it, how many wait unseen.
+    pub fn listed(&self, v: &View) -> (Vec<&Row>, usize) {
+        if let Some(g) = self.open(v) {
+            // (A filter that found the row and fits none of its rows hides none.)
+            let rows = match listed_of(g.members(), v) {
+                none if none.is_empty() => g.members().iter().collect(),
+                some => some,
+            };
+            return (rows, 0);
+        }
+        let waiting = self.rows.iter().filter(|r| r.can_wait).count();
+        (self.main(v), if v.everything { 0 } else { waiting })
     }
 
     /// The rows that ask something of you now (the strip's count, the Dashboard's row).
@@ -371,8 +418,9 @@ pub fn verbs(v: &View, b: &Built) -> Option<Verbs> {
     Some(match sel(v, b)? {
         Sel::Row(r) => Verbs {
             enter: enter_word(&r.act),
-            // A pause that ended isn't something to expect: it is lifted or put off.
-            dismiss: (!matches!(r.act, Act::Unblock { .. })).then_some(Dismiss::Expected),
+            // A pause that ended isn't something to expect: it is lifted or put off. Nor
+            // are several rows as one: each of them is.
+            dismiss: expectable(&r.act).then_some(Dismiss::Expected),
             ..Default::default()
         },
         Sel::Shut(Shut::Device { .. }) => Verbs {
@@ -384,6 +432,11 @@ pub fn verbs(v: &View, b: &Built) -> Option<Verbs> {
             ..Default::default()
         },
     })
+}
+
+/// Whether a row can be marked expected.
+fn expectable(a: &Act) -> bool {
+    !matches!(a, Act::Unblock { .. } | Act::Group { .. })
 }
 
 /// The key bar: the row's keys (`A` is named by the frame), then the screen's.
@@ -398,6 +451,9 @@ pub fn hints(v: &View) -> Hints {
         (Some(vb), Some(Sel::Shut(_))) => vec![("Enter", vb.enter)],
         _ => Vec::new(),
     };
+    if b.open(v).is_some() {
+        h.push(("Esc", "back"));
+    }
     if v.everything || b.listed(v).1 > 0 {
         h.push(("o", maintlist::everything_word(v.everything)));
     }
@@ -415,7 +471,15 @@ pub fn help() -> Hints {
     vec![
         (
             "Enter",
-            "what the row says: shown first, never a bare switch",
+            "what the row's second line says: shown first, never a bare switch",
+        ),
+        (
+            "order",
+            "happening now, known holes, weak logins, protection off, layout, recovery, housekeeping",
+        ),
+        (
+            "N devices",
+            "several of one kind are one row: Enter lists them, Esc comes back",
         ),
         (
             "x / b",
@@ -683,6 +747,12 @@ fn wifi_choice(v: &View, row: &Row) -> Vec<Effect> {
 fn enter(v: &View, row: &Row, sec: &mut Security) -> Vec<Effect> {
     let t = v.t;
     match &row.act {
+        Act::Group { .. } => {
+            sec.group = Some(row.key.clone());
+            sec.cur.sel = 0;
+            sec.sel = None;
+            Vec::new()
+        }
         Act::Device(dev) => device_choice(v, row, dev),
         Act::Unblock { tag } => start(Do::Unblock { tag: tag.clone() }),
         Act::Forward { section, name } => {
@@ -814,6 +884,15 @@ pub fn handle(sec: &mut Security, a: Key, v: &View) -> Vec<Effect> {
     let b = built(v);
     let picked = sel(v, &b);
     match a {
+        // A list being gone through: back to the page, on the row that opened it.
+        Key::Esc if v.group.is_some() => {
+            let key = sec.group.take();
+            if let Some(i) = b.main(v).iter().position(|r| Some(&r.key) == key.as_ref()) {
+                sec.cur.sel = i;
+            }
+            sec.sel = key;
+            Vec::new()
+        }
         Key::Refresh | Key::Check => panels::read_again(),
         Key::Char('o') => vec![Effect::Everything],
         Key::Char('v') => vec![Effect::LogOpen(None)],
@@ -834,7 +913,7 @@ pub fn handle(sec: &mut Security, a: Key, v: &View) -> Vec<Effect> {
                     None => Vec::new(),
                 };
             };
-            let can = !matches!(r.act, Act::Unblock { .. });
+            let can = expectable(&r.act);
             match c {
                 'x' | 'b' if !can => vec![Effect::Toast(maintlist::NOTHING_TO_DISMISS.into())],
                 'x' => vec![Effect::Confirm(Modal {
@@ -1049,6 +1128,19 @@ fn enter_says(a: &Act) -> &'static str {
         }
         Act::Audit { .. } => "From the security audit. Enter: its report.",
         Act::Maint => "From the security audit. Enter: Maintenance (6), where it is done.",
+        Act::Group {
+            kind: Kind::Devices,
+            ..
+        } => {
+            "Enter: the list of them. Each is its own decision there (name it, block it, pause it, put it off); the list stays open as you go, Esc comes back."
+        }
+        Act::Group {
+            kind: Kind::Doors | Kind::Asks,
+            ..
+        } => {
+            "Enter: the list of them. Answer each with yes, no, or you don't know; the list stays open as you go, Esc comes back."
+        }
+        Act::Group { .. } => "Enter: the list of them, each with its own numbers. Esc comes back.",
         Act::Finding(_) | Act::Server { .. } | Act::Evidence => {
             "Enter: the numbers behind it. Nothing here needs changing on the router."
         }
@@ -1179,20 +1271,32 @@ fn two_lines(s: &str, w: usize) -> Vec<String> {
     l
 }
 
-fn posture_lines(v: &View, b: &Built, w: usize) -> Vec<Line<'static>> {
+/// `compact` (a small window): what is fine is one count, the rest a line each, so the
+/// list above keeps its room.
+fn posture_lines(
+    v: &View,
+    posture: &[crate::security::Line],
+    w: usize,
+    compact: bool,
+) -> Vec<Line<'static>> {
     let t = v.t;
     let mut out = Vec::new();
-    for p in &b.posture {
+    let fine = posture.iter().filter(|p| p.state == Cover::Ok).count();
+    for p in posture {
+        if compact && p.state == Cover::Ok && fine > 1 {
+            continue;
+        }
         let (mark, c) = cover_mark(t, p.state);
         let st = if p.state == Cover::Unknown {
             t.dim()
         } else {
             t.fg()
         };
-        for (i, text) in two_lines(&p.text, w.saturating_sub(7))
-            .into_iter()
-            .enumerate()
-        {
+        let text = match compact {
+            true => vec![trunc(&p.text, w.saturating_sub(7).max(8))],
+            false => two_lines(&p.text, w.saturating_sub(7)),
+        };
+        for (i, text) in text.into_iter().enumerate() {
             out.push(if i == 0 {
                 Line::from(vec![
                     Span::styled(format!("{mark} "), t.s(c)),
@@ -1203,6 +1307,16 @@ fn posture_lines(v: &View, b: &Built, w: usize) -> Vec<Line<'static>> {
                 Line::from(vec![Span::raw("       "), Span::styled(text, st)])
             });
         }
+    }
+    if compact && fine > 1 {
+        out.push(Line::from(vec![
+            Span::styled("✓ ", t.s(t.green)),
+            Span::styled("ok   ", t.s(t.green)),
+            Span::styled(
+                format!("{fine} other parts are fine (a taller window lists them)"),
+                t.fg(),
+            ),
+        ]));
     }
     out
 }
@@ -1283,6 +1397,10 @@ fn evidence_height(v: &View, b: &Built, s: &Subject, w: usize) -> u16 {
 pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
     let b = built(v);
+    // A list that was gone through to its end is closed.
+    if v.group.is_some() && b.open(v).is_none() {
+        sec.group = None;
+    }
     let (rows, waiting) = b.listed(v);
     let picked = sel(v, &b);
     let subject = match &picked {
@@ -1301,22 +1419,36 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     // The left column: the list, how the network is covered, what is shut. A sentence
     // that doesn't fit its line takes a second.
     let text_w = left.width.saturating_sub(4) as usize;
-    let cover = posture_lines(v, &b, text_w);
-    let cover_h = if cover.is_empty() {
-        0
-    } else {
-        cover.len() as u16 + 2
-    };
     let shut_h = if b.shut.is_empty() {
         0
     } else {
         b.shut.len() as u16 + 3
     };
-    let titles: Vec<Vec<String>> = rows
-        .iter()
-        .map(|x| two_lines(&x.title, text_w.saturating_sub(9)))
-        .collect();
-    let want = titles.iter().map(Vec::len).sum::<usize>().max(1) as u16 + 3;
+    // A row is two lines: what it is, and under it what Enter does.
+    let open = b.open(v);
+    let start = match open {
+        Some(_) => 0,
+        None => attention::start_here(rows.iter().copied()),
+    };
+    let then = open.is_none() && start > 0 && rows.len() > start;
+    let want = (rows.len() * 2).max(1) as u16 + then as u16 + 3;
+    // The cover in full where the list still fits above it; else what is fine as a count.
+    // (Over a list being gone through the page's numbers aren't in view: said in full.)
+    let pointed = match open {
+        Some(_) => b.posture.clone(),
+        None => attention::pointed(&b.posture, &b.main(v)),
+    };
+    let full = posture_lines(v, &pointed, text_w, false);
+    let fits = left.height >= 30 && want + full.len() as u16 + 2 + shut_h <= left.height;
+    let cover = match fits {
+        true => full,
+        false => posture_lines(v, &pointed, text_w, true),
+    };
+    let cover_h = if cover.is_empty() {
+        0
+    } else {
+        cover.len() as u16 + 2
+    };
     let room = left.height.saturating_sub(cover_h + shut_h);
     // Narrow: the detail has the last lines, where there is room for it.
     let detail_h = if wide || left.height < 20 { 0 } else { 7 };
@@ -1346,7 +1478,18 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
         }
         said.join(" · ")
     };
-    let bl = panel(t, "Needs attention", note);
+    let heading = match open.map(|g| &g.act) {
+        Some(Act::Group { kind, .. }) => kind.heading(rows.len()),
+        _ => "Needs attention".to_string(),
+    };
+    let bl = panel(
+        t,
+        &heading,
+        match open {
+            Some(_) => "Esc back".to_string(),
+            None => note,
+        },
+    );
     let r = inner(&bl, list_a);
     f.render_widget(bl, list_a);
     sec.cur.page = r.height.saturating_sub(1) as usize;
@@ -1368,26 +1511,57 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
         };
         widgets::placeholder(f, r, t, &[(said.as_str(), st)]);
     } else {
-        let table: Vec<TRow> = rows
-            .iter()
-            .zip(&titles)
-            .map(|(x, title)| {
-                TRow::new(vec![
+        // (A list being gone through has no numbers or levels: its rows are equals.)
+        let margin: [u16; 2] = if open.is_some() { [0, 0] } else { [3, 8] };
+        let tw = text_w
+            .saturating_sub(margin.iter().map(|m| *m as usize + 1).sum())
+            .max(8);
+        let mut table: Vec<TRow> = Vec::new();
+        for (i, x) in rows.iter().enumerate() {
+            if then && i == start {
+                table.push(TRow::new(vec![
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from("Then").style(t.dim()),
+                ]));
+            }
+            let (n, rank) = match open {
+                Some(_) => (String::new(), Cell::from("")),
+                None => (
+                    format!("{:>2}.", i + 1),
                     Cell::from(x.rank.word()).style(t.s(rank_color(t, x.rank))),
-                    Cell::from(title.join("\n")).style(t.fg()),
+                ),
+            };
+            table.push(
+                TRow::new(vec![
+                    Cell::from(n).style(if i < start { t.fg() } else { t.dim() }),
+                    rank,
+                    Cell::from(ratatui::text::Text::from(vec![
+                        Line::styled(attention::one_line(&x.title, tw), t.fg()),
+                        Line::styled(trunc(&x.step(claude()), tw), t.dim()),
+                    ])),
                 ])
-                .height(title.len().max(1) as u16)
-            })
-            .collect();
+                .height(2),
+            );
+        }
+        let head = match (open, start) {
+            (Some(_), _) => "Each is its own decision: the list stays open as you go",
+            (None, 0) => "Nothing urgent. When you have time",
+            (None, _) => "Start here",
+        };
         widgets::table(
             f,
             r,
             t,
             TableSpec {
-                header: vec!["", "What"],
-                widths: vec![Constraint::Length(8), Constraint::Fill(1)],
+                header: vec!["", "", head],
+                widths: vec![
+                    Constraint::Length(margin[0]),
+                    Constraint::Length(margin[1]),
+                    Constraint::Fill(1),
+                ],
                 rows: table,
-                selected: (v.cur < rows.len()).then_some(v.cur),
+                selected: (v.cur < rows.len()).then_some(v.cur + (then && v.cur >= start) as usize),
             },
         );
     }

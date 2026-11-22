@@ -1732,12 +1732,24 @@ fn the_security_audit_is_the_windows_and_each_target_lists_its_rows() {
     a.survey();
     let s = tall(&mut a);
     assert!(
-        s.contains("but nothing on auditsrv") && s.contains("audited today · S shows it"),
+        s.contains("The router lets the internet in on tcp port 9443")
+            && s.contains("audited today · S shows it"),
         "{s}"
     );
-    assert_eq!(s.matches("not switched on").count(), 2, "{s}");
+    // Said once, as a row; the cover points at it, and keeps what the server counted.
+    assert_eq!(s.matches("not switched on").count(), 1, "{s}");
+    let edge = s
+        .lines()
+        .find(|l| l.contains("CrowdSec's blocker is installed on the router"))
+        .and_then(|l| l.trim_start_matches(['│', ' ']).split('.').next())
+        .unwrap()
+        .to_string();
     assert!(
-        s.contains("auditsrv blocked 7 attacker(s) today (mostly ssh brute force)"),
+        s.contains(&format!(
+            "✗ off  Blocking attackers at the router: see {edge} above"
+        )) && s.contains(&format!(
+            "auditsrv blocked 7 attacker(s) today (mostly ssh brute force): see {edge} above"
+        )),
         "{s}"
     );
     let net: Vec<String> = a.slots[NET]
@@ -2038,9 +2050,8 @@ fn the_edge_row_is_one_session_across_the_server_and_the_router() {
     a.survey();
     let s = tall(&mut a);
     assert!(
-        s.contains("edgesrv blocked 12 attacker(s) today (mostly http probing); the router")
-            && s.contains("doesn't enforce its bans")
-            && s.contains("server's blocklist isn't enforced at the edge yet"),
+        s.contains("edgesrv blocked 12 attacker(s) today (mostly http probing): see ")
+            && s.contains("CrowdSec's blocker is installed on the router but not switched on"),
         "{s}"
     );
     typed(&mut a, "/blocker");

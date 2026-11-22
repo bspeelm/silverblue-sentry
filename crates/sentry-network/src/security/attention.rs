@@ -38,6 +38,157 @@ impl Rank {
     }
 }
 
+/// Where a row stands in the list, and why: the order a non-expert would agree with once
+/// it is said out loud. The list goes by how much a row asks first ([`Rank`]: an `act
+/// now` is never under a `look`), then, among rows that ask as much, by its class in the
+/// order below, then as it was found. No scores.
+///
+/// | | class | what is in it |
+/// |-|-|-|
+/// | 1 | `Live` | happening now and shouldn't be: a live connection across sides kept apart, a connection from the internet with no listed door, refused logins or repeated wrong Wi-Fi passwords, a login from a device with no name, a device on a port ordinary devices rarely use, a device that joined within the last day and has no name |
+/// | 2 | `Hole` | a known hole with a fix: firmware, packages or an app with security fixes waiting or unsupported, a door or a firewall rule that lets the internet in unlisted |
+/// | 3 | `Login` | weak logins and admin pages without encryption (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
+/// | 4 | `Guard` | protection that is installed and not working: CrowdSec's blocker off, a blocklist that is stale or doesn't run, a service that should run |
+/// | 5 | `Structure` | how the network is laid out: everything on one network |
+/// | 6 | `Recovery` | what you'd need afterwards: no backup, a log lost on restart |
+/// | 7 | `Housekeeping` | naming long-standing devices, answering sentry's questions, and everything that is only a note |
+///
+/// Two rules keep the levels honest ([`arrange`]): whatever is only a `note` is
+/// housekeeping wherever it came from, and housekeeping is never more than a `note`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Class {
+    Live,
+    Hole,
+    Login,
+    Guard,
+    Structure,
+    Recovery,
+    Housekeeping,
+}
+
+impl Class {
+    /// The class of a row of the page's own, by its key (first prefix that fits).
+    pub fn of(key: &str) -> Class {
+        const TABLE: &[(&str, Class)] = &[
+            ("finding:net:flow:", Class::Live),
+            ("sec:inbound", Class::Live),
+            ("finding:net:ssh:failed", Class::Live),
+            ("sec:ssh:unknown", Class::Live),
+            ("sec:wifi:psk", Class::Live),
+            ("sec:odd:", Class::Live),
+            ("finding:net:forward:", Class::Hole),
+            ("finding:net:zone:", Class::Hole),
+            ("finding:net:listener:", Class::Hole),
+            ("finding:net:ssh:password", Class::Login),
+            ("finding:net:luci:http", Class::Login),
+            ("finding:net:cert:", Class::Login),
+            ("finding:net:crowdsec:", Class::Guard),
+            ("finding:net:service:", Class::Guard),
+            ("sec:blocklist", Class::Guard),
+            // (A device that joined within the day is `Live`: its builder says so.)
+            ("finding:net:client:", Class::Housekeeping),
+        ];
+        TABLE
+            .iter()
+            .find(|(p, _)| key.starts_with(p))
+            .map_or(Class::Housekeeping, |(_, c)| *c)
+    }
+
+    /// The class of one of the security audit's items: by what it is about (the second
+    /// part of its id, `sec:<what>:…`), else by the audit's own section.
+    pub fn of_audit(id: &str, group: sentry_core::secaudit::Group) -> Class {
+        use sentry_core::secaudit::Group as G;
+        match id.split(':').nth(1).unwrap_or("") {
+            "crossing" => Class::Live,
+            "firmware" | "packages" | "os" | "apps-behind" | "app" | "reboot" | "wan-input"
+            | "wan-mgmt" | "door" | "outside" | "ctr" | "ctrs" | "listen-wide" | "firewall" => {
+                Class::Hole
+            }
+            "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps" => {
+                Class::Login
+            }
+            "watch" | "dns-filter" | "auto-updates" => Class::Guard,
+            "flat" | "apart" => Class::Structure,
+            "backup" | "logs" | "restore" => Class::Recovery,
+            "unknown-devices" => Class::Housekeeping,
+            _ => match group {
+                G::GettingIn | G::KnownHoles => Class::Hole,
+                G::Logins => Class::Login,
+                G::MovingAround => Class::Structure,
+                G::Recovering => Class::Recovery,
+            },
+        }
+    }
+}
+
+/// How a device is on the network, as far as a sentence needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    Wired,
+    Wifi,
+    /// On a routed port of its own (the server's side).
+    Routed,
+    Other,
+}
+
+/// What several rows of one kind are, as one row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Long-standing devices nobody has named.
+    Devices,
+    /// The audit's questions about doors from the internet.
+    Doors,
+    /// The audit's other questions.
+    Asks,
+    /// Devices on ports ordinary devices rarely use.
+    Odd,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 4] = [Kind::Devices, Kind::Doors, Kind::Asks, Kind::Odd];
+
+    /// The group's row key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Devices => "group:devices",
+            Kind::Doors => "group:doors",
+            Kind::Asks => "group:asks",
+            Kind::Odd => "group:odd",
+        }
+    }
+
+    /// The kind a row is one of (None: it is always a row of its own).
+    pub fn of(r: &Row) -> Option<Kind> {
+        match &r.act {
+            Act::Audit { id, asks: true } if id.starts_with("sec:door:") => Some(Kind::Doors),
+            Act::Audit { asks: true, .. } => Some(Kind::Asks),
+            Act::Device(_)
+                if r.key.starts_with("finding:net:client:") && r.class == Class::Housekeeping =>
+            {
+                Some(Kind::Devices)
+            }
+            _ if r.key.starts_with("sec:odd:") => Some(Kind::Odd),
+            _ => None,
+        }
+    }
+
+    /// The list's heading when it is open.
+    pub fn heading(self, n: usize) -> String {
+        match self {
+            Kind::Devices => format!("{} with no name yet", plural(n, "device", "devices")),
+            Kind::Doors => format!("{} from the internet", plural(n, "door", "doors")),
+            Kind::Asks => format!("{} only you can answer", plural(n, "question", "questions")),
+            Kind::Odd => format!("{} on unusual ports", plural(n, "device", "devices")),
+        }
+    }
+}
+
+/// From how many rows of one kind they are listed as one.
+pub const GROUP_AT: usize = 3;
+
+/// A device first seen less than this long ago is news; older ones are housekeeping.
+pub const NEW_FOR: i64 = 86_400;
+
 /// The panel that holds a row's evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
@@ -61,6 +212,7 @@ pub struct DevRef {
     /// The access point it is on, on Wi-Fi.
     pub wifi: Option<String>,
     pub named: bool,
+    pub via: Via,
 }
 
 /// What Enter does on a row.
@@ -102,6 +254,11 @@ pub enum Act {
     },
     /// The audit says it, Maintenance does it (firmware, packages, the backup).
     Maint,
+    /// Several rows of one kind as one: Enter lists them, each still its own decision.
+    Group {
+        kind: Kind,
+        rows: Vec<Row>,
+    },
 }
 
 impl Act {
@@ -122,6 +279,44 @@ impl Act {
             Act::Audit { asks: true, .. } => "answer",
             Act::Audit { .. } => "fix",
             Act::Maint => "Maintenance",
+            Act::Group { .. } => "list them",
+        }
+    }
+
+    /// What Enter does, in plain words: the row's second line. `claude`: Claude Code is
+    /// there (without it a session's row shows what was seen instead).
+    pub fn step(&self, claude: bool) -> &'static str {
+        match self {
+            Act::Device(_) => "Enter: name it if it's yours, or block or pause it",
+            Act::Unblock { .. } => "Enter: lift the block",
+            Act::Forward { .. } => "Enter: close it, remove it, or say it's meant to be open",
+            Act::SshKeys => "Enter: logins by key only (sentry checks its key works first)",
+            Act::AdminHttps => "Enter: make the admin page use encryption (HTTPS)",
+            Act::Blocklist { stale: true, .. } => "Enter: fetch the list again",
+            Act::Blocklist { .. } => "Enter: make the list update by itself",
+            Act::WifiKey => "Enter: set a new Wi-Fi password",
+            Act::Finding(_) if claude => "Enter: fix it with Claude (it shows a plan, you approve)",
+            Act::Server { .. } if claude => {
+                "Enter: fix it with Claude (one plan for both, you approve)"
+            }
+            Act::Finding(_) | Act::Server { .. } | Act::Evidence => {
+                "Enter: see the numbers behind it (nothing to change)"
+            }
+            Act::Audit { asks: true, .. } => "Enter: answer yes, no, or don't know",
+            Act::Audit { .. } if claude => {
+                "Enter: fix it with Claude (it shows a plan, you approve)"
+            }
+            Act::Audit { .. } => "Enter: read it in the security audit's report",
+            Act::Maint => "Enter: go to Maintenance, where it is done",
+            Act::Group {
+                kind: Kind::Devices,
+                ..
+            } => "Enter: go through them (name, block or pause each)",
+            Act::Group {
+                kind: Kind::Doors | Kind::Asks,
+                ..
+            } => "Enter: answer them one after another",
+            Act::Group { .. } => "Enter: look at each",
         }
     }
 }
@@ -142,6 +337,33 @@ pub struct Row {
     pub subject: Subject,
     /// Nothing asks for it now: listed with `o`.
     pub can_wait: bool,
+    /// Where it stands in the list.
+    pub class: Class,
+    /// What Enter does, where the row knows better than its [`Act`] (None: `Act::step`).
+    pub next: Option<String>,
+}
+
+impl Row {
+    /// The row's second line: what Enter does, in plain words.
+    pub fn step(&self, claude: bool) -> String {
+        match &self.next {
+            Some(n) => n.clone(),
+            None => self.act.step(claude).to_string(),
+        }
+    }
+
+    /// The rows it stands for (a group), else none.
+    pub fn members(&self) -> &[Row] {
+        match &self.act {
+            Act::Group { rows, .. } => rows,
+            _ => &[],
+        }
+    }
+
+    /// Whether it is, or holds, a row whose key starts with `prefix`.
+    pub fn about(&self, prefix: &str) -> bool {
+        self.key.starts_with(prefix) || self.members().iter().any(|m| m.key.starts_with(prefix))
+    }
 }
 
 /// What the server's own guard (CrowdSec) reports about the doors this router forwards to
@@ -285,6 +507,12 @@ impl<'a> State<'a> {
                 _ => None,
             },
             named: c.name.is_some(),
+            via: match &c.link {
+                Link::Wired { .. } => Via::Wired,
+                Link::Wifi { .. } => Via::Wifi,
+                Link::Dmz { .. } => Via::Routed,
+                Link::Unknown => Via::Other,
+            },
         })
     }
 }
@@ -322,9 +550,24 @@ pub fn edge_off(server: bool) -> String {
 /// These only when they are high: the outside reaches something.
 const OTHER_HIGH: &[&str] = &["net:zone:", "net:listener:"];
 
-/// What needs you, most urgent first. Rows marked expected aren't here; rows put off are
-/// the caller's to drop (it has the later list).
+/// What needs you, in the list's order ([`Class`]), several of one kind as one row
+/// ([`arrange`]). Rows marked expected aren't here; rows put off are the caller's to drop
+/// (it has the later list).
 pub fn attention(s: &State) -> Vec<Row> {
+    arrange(raw(s), None)
+}
+
+/// A zone in a row's first line, where there is no room for its config name.
+fn side_short(zone: &str) -> String {
+    match zone {
+        "lan" => "your home side".into(),
+        "dmz" => "the server's side".into(),
+        z => side(z),
+    }
+}
+
+/// Every row by itself, as found: what [`arrange`] orders and groups.
+pub fn raw(s: &State) -> Vec<Row> {
     let p = s.picture;
     let nets = s.nets();
     let shut = s.read.uci.map(blocks::found).unwrap_or_default();
@@ -340,6 +583,8 @@ pub fn attention(s: &State) -> Vec<Row> {
         act,
         subject,
         can_wait: f.severity == Sev::Low,
+        class: Class::of(&format!("finding:{}", f.id)),
+        next: None,
     };
     let own = |key: &str, rank: Rank, title: String, why: &str, act: Act, subject: Subject| Row {
         key: key.to_string(),
@@ -351,6 +596,8 @@ pub fn attention(s: &State) -> Vec<Row> {
         act,
         subject,
         can_wait: false,
+        class: Class::of(key),
+        next: None,
     };
 
     // A pause that ended: the rule is still there until Enter takes it away.
@@ -363,7 +610,7 @@ pub fn attention(s: &State) -> Vec<Row> {
                 .map_or(b.mac.as_str(), |d| d.label.as_str());
             out.push(own(
                 &format!("sec:pause:{}", b.tag),
-                Rank::Look,
+                Rank::Note,
                 format!("The pause on {label} has ended: it is still blocked"),
                 "The router has no timer of sentry's, so the block stays until you lift it.",
                 Act::Unblock { tag: b.tag.clone() },
@@ -382,9 +629,9 @@ pub fn attention(s: &State) -> Vec<Row> {
             &format!("finding:{id}"),
             Rank::Now,
             format!(
-                "Something on {} is talking to a device on {}: that should never happen",
-                side(&x.from),
-                side(&x.to)
+                "A device on {} is reaching {} right now",
+                side_short(&x.from),
+                side_short(&x.to)
             ),
             "The firewall is set to keep those two sides apart, so a break-in on one can't \
              reach the other. A live connection across means a rule lets it through, or \
@@ -421,8 +668,8 @@ pub fn attention(s: &State) -> Vec<Row> {
         let (title, act) = match fw {
             Some(r) => (
                 format!(
-                    "A door from the internet is open that you haven't listed: {}, {proto} port {port} to {}",
-                    r.name, r.dest_ip
+                    "An unlisted door from the internet is open: {} ({proto} port {port})",
+                    r.name
                 ),
                 Act::Forward {
                     section: r.section,
@@ -446,7 +693,7 @@ pub fn attention(s: &State) -> Vec<Row> {
     if let Some(f) = s.open("net:ssh:password") {
         out.push(finding_row(
             f,
-            "The router lets people log in over ssh with a password".into(),
+            "The router's remote login (ssh) still accepts a password".into(),
             "A password can be guessed, a key can't. sentry logs in with a key, so passwords \
              can be turned off without locking it (or you, with your key) out."
                 .into(),
@@ -471,7 +718,7 @@ pub fn attention(s: &State) -> Vec<Row> {
         out.push(finding_row(
             f,
             format!(
-                "Someone tried to log in to the router {} and was refused, {}",
+                "The router refused a login {} {}",
                 times(tries),
                 s.in_window()
             ),
@@ -497,16 +744,25 @@ pub fn attention(s: &State) -> Vec<Row> {
     if let Some(f) = s.open("net:luci:http") {
         out.push(finding_row(
             f,
-            "The router's admin page can be opened without encryption (plain HTTP)".into(),
-            "Whoever is on the network could read the admin password as it is typed. Sending \
-             the page on to HTTPS closes that."
+            "The router's admin page can be opened without encryption".into(),
+            "Whoever is on the network could read the admin password as it is typed (the \
+             page answers on plain HTTP). Sending it on to HTTPS closes that."
                 .into(),
             Act::AdminHttps,
             Subject::None,
         ));
     }
 
-    // Devices nobody has named.
+    // Devices nobody has named. One that joined within the day is news; the rest are
+    // housekeeping.
+    let watched = s
+        .read
+        .clients
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|c| c.first_seen)
+        .min()
+        .is_some_and(|t| s.now - t >= NEW_FOR);
     for c in s.read.clients.unwrap_or(&[]).iter().filter(|c| c.unknown()) {
         let Some(mac) = &c.mac else { continue };
         let id = crate::audit::client_id(s.network, mac);
@@ -516,27 +772,34 @@ pub fn attention(s: &State) -> Vec<Row> {
         if s.dismissed(&id) || blocked(&dev.tag) {
             continue;
         }
-        let since = match (c.connected_s, c.first_seen) {
-            (Some(n), _) => Some(n),
-            (None, Some(t)) if s.now > t => Some((s.now - t) as u64),
-            _ => None,
-        };
-        let ago = since.map_or(String::new(), |n| format!(" {} ago", lasting(n)));
+        // News only where sentry has watched long enough to tell new from old.
+        let joined = c
+            .first_seen
+            .filter(|t| watched && s.now >= *t && s.now - *t < NEW_FOR)
+            .map(|t| (s.now - t) as u64);
         // (What it calls itself, or its MAC: two such rows are two devices.)
         let it = c.label();
-        let title = match &c.link {
-            Link::Wifi { .. } => {
-                format!("A device nobody has named joined the Wi-Fi{ago}: {it}")
+        let title = match (joined, &c.link) {
+            (Some(n), Link::Wifi { .. }) => format!(
+                "A device nobody has named joined the Wi-Fi {} ago: {it}",
+                lasting(n)
+            ),
+            (Some(n), Link::Wired { port }) => format!(
+                "A device nobody has named was plugged into {port} {} ago: {it}",
+                lasting(n)
+            ),
+            (Some(n), _) => format!(
+                "A device nobody has named appeared on the network {} ago: {it}",
+                lasting(n)
+            ),
+            (None, Link::Wifi { .. }) => format!("A device on the Wi-Fi has no name yet: {it}"),
+            (None, Link::Wired { port }) => {
+                format!("A device plugged into {port} has no name yet: {it}")
             }
-            Link::Wired { port } => {
-                format!("A device nobody has named is plugged into {port}: {it}")
+            (None, Link::Dmz { net, .. }) => {
+                format!("A device on {} has no name yet: {it}", side_short(net))
             }
-            Link::Dmz { net, .. } => {
-                format!("A device nobody has named is on {}: {it}", side(net))
-            }
-            Link::Unknown => {
-                format!("A device nobody has named holds an address on the network: {it}")
-            }
+            (None, Link::Unknown) => format!("A device on the network has no name yet: {it}"),
         };
         let mut seen = vec![match &c.hostname {
             Some(h) => format!("It calls itself {h} · {mac}"),
@@ -545,19 +808,39 @@ pub fn attention(s: &State) -> Vec<Row> {
         if !c.addrs.is_empty() {
             seen.push(format!("address {}", c.addrs.join(", ")));
         }
+        if let Some(t) = c.first_seen.filter(|t| s.now > *t) {
+            seen.push(format!("first seen {} ago", lasting((s.now - t) as u64)));
+        }
         out.push(Row {
             key: format!("finding:{id}"),
             id,
-            rank: Rank::Look,
+            rank: if joined.is_some() {
+                Rank::Look
+            } else {
+                Rank::Note
+            },
             title,
-            why: "Whatever is on your network can talk to your other devices. If it is yours, \
-                  name it; if you don't know it, block it or pause it and see what stops \
-                  working."
-                .into(),
+            why: if joined.is_some() {
+                "It wasn't here yesterday. Whatever is on your network can talk to your other \
+                 devices: if it is yours, name it; if you don't know it, block it or pause it \
+                 and see what stops working."
+                    .into()
+            } else {
+                "It has been here a while, so it is probably yours. Giving it a name means a \
+                 new device stands out the day it appears; if you don't know it, block it or \
+                 pause it and see what stops working."
+                    .into()
+            },
             seen,
             act: Act::Device(dev),
             subject: Subject::Egress(Some(c.key.clone())),
             can_wait: false,
+            class: if joined.is_some() {
+                Class::Live
+            } else {
+                Class::Housekeeping
+            },
+            next: None,
         });
     }
 
@@ -583,7 +866,7 @@ pub fn attention(s: &State) -> Vec<Row> {
             &key,
             Rank::Look,
             format!(
-                "{} is talking to the internet in a way ordinary devices rarely do (port {})",
+                "{} is using a port ordinary devices rarely use (port {})",
                 d.label,
                 ports.join(", ")
             ),
@@ -618,10 +901,11 @@ pub fn attention(s: &State) -> Vec<Row> {
                 "sec:inbound",
                 Rank::Look,
                 format!(
-                    "{flows} connection(s) from the internet reach devices inside directly, \
-                     with no door (port forward) set up for them"
+                    "{} from the internet {} inside without a listed door",
+                    plural(*flows, "connection", "connections"),
+                    if *flows == 1 { "reaches" } else { "reach" }
                 ),
-                "Usually IPv6, where every device has a public address: the firewall should \
+                "No door (port forward) is set up for them. Usually IPv6, where every device has a public address: the firewall should \
                  still refuse what nobody inside asked for.",
                 Act::Evidence,
                 Subject::Ingress,
@@ -630,7 +914,7 @@ pub fn attention(s: &State) -> Vec<Row> {
                 "sec:ssh:unknown",
                 Rank::Look,
                 format!(
-                    "Someone logged in to the router {} from a device nobody has named, {}",
+                    "An unnamed device logged in to the router {} {}",
                     times(*logins),
                     s.in_window()
                 ),
@@ -657,16 +941,15 @@ pub fn attention(s: &State) -> Vec<Row> {
                 let mut r = own(
                     "sec:dot",
                     Rank::Note,
-                    format!(
-                        "A device is trying to look names up behind the router's back \
-                         ({per_min:.1} tries a minute, all refused)"
-                    ),
+                    "A device tries to look up names behind the router's back (all refused)"
+                        .to_string(),
                     "Encrypted name lookups to an outside service (DNS over TLS) would skip \
                      your filtering of bad sites. The router refuses them; phones try by \
                      habit (Android's Private DNS).",
                     Act::Evidence,
                     Subject::Dns,
                 );
+                r.seen = vec![format!("{per_min:.1} tries a minute, all refused")];
                 r.can_wait = true;
                 Some(r)
             }
@@ -675,13 +958,12 @@ pub fn attention(s: &State) -> Vec<Row> {
                     "sec:wifi:mfp",
                     Rank::Note,
                     format!(
-                        "{} on the Wi-Fi {} use the protection against being knocked off \
-                         by a stranger",
-                        plural(*stations, "device", "devices"),
-                        if *stations == 1 { "doesn't" } else { "don't" }
+                        "{} could be knocked off the Wi-Fi by a stranger nearby",
+                        plural(*stations, "Wi-Fi device", "Wi-Fi devices"),
                     ),
-                    "The Wi-Fi offers it (management frame protection) and not every device \
-                     took it: usually older ones. Nothing to fix on the router.",
+                    "The Wi-Fi offers a protection against forged \"disconnect\" messages \
+                     (management frame protection) and not every device took it: usually \
+                     older ones. A nuisance, not a break-in. Nothing to fix on the router.",
                     Act::Evidence,
                     Subject::Wifi,
                 );
@@ -742,7 +1024,7 @@ pub fn attention(s: &State) -> Vec<Row> {
             Some((
                 Rank::Look,
                 format!(
-                    "The list of bad sites the router blocks is {} days old{by_itself}",
+                    "The list of bad sites is {} days old{by_itself}",
                     days.unwrap_or(0)
                 ),
                 true,
@@ -835,6 +1117,8 @@ pub fn attention(s: &State) -> Vec<Row> {
                 },
                 subject: Subject::Ingress,
                 can_wait: false,
+                class: Class::Guard,
+                next: None,
             })
         } else if let Some(f) = s.open(EDGE) {
             let mut r = finding_row(
@@ -886,13 +1170,189 @@ pub fn attention(s: &State) -> Vec<Row> {
                     },
                     subject: Subject::Ingress,
                     can_wait: false,
+                    class: Class::Guard,
+                    next: None,
                 })
         };
         out.extend(row);
     }
-
-    out.sort_by_key(|r| r.rank);
     out
+}
+
+/// The list as it is shown: each row in its class, the levels kept honest, several rows of
+/// one kind as one, and the whole in order.
+///
+/// Whatever is only a `note` is housekeeping, and housekeeping is never more than a
+/// `note`. From [`GROUP_AT`] rows of one [`Kind`] they become one row whose Enter lists
+/// them; fewer stay rows of their own. `open` (a group's key) is the list being gone
+/// through: it stays one row down to its last member, so the list doesn't fall apart
+/// under the cursor as its count drops. Ties keep the order the rows were found in.
+pub fn arrange(mut rows: Vec<Row>, open: Option<&str>) -> Vec<Row> {
+    for r in &mut rows {
+        if matches!(r.act, Act::Audit { asks: true, .. }) || r.rank == Rank::Note {
+            r.class = Class::Housekeeping;
+        }
+        if r.class == Class::Housekeeping {
+            r.rank = Rank::Note;
+        }
+    }
+    for kind in Kind::ALL {
+        let n = rows.iter().filter(|r| Kind::of(r) == Some(kind)).count();
+        if n < GROUP_AT && !(n > 0 && open == Some(kind.key())) {
+            continue;
+        }
+        let (members, rest): (Vec<Row>, Vec<Row>) =
+            rows.into_iter().partition(|r| Kind::of(r) == Some(kind));
+        rows = rest;
+        rows.push(group(kind, members));
+    }
+    // (Among notes, what nothing asks for now comes last.)
+    rows.sort_by_key(|r| (r.rank, r.class, r.can_wait));
+    rows
+}
+
+/// "4 plugged in, 1 on Wi-Fi": how a group's devices are on the network.
+fn by_link(rows: &[Row]) -> String {
+    let n = |via: Via| {
+        rows.iter()
+            .filter(|r| matches!(&r.act, Act::Device(d) if d.via == via))
+            .count()
+    };
+    [
+        (n(Via::Wired), "plugged in"),
+        (n(Via::Wifi), "on Wi-Fi"),
+        (n(Via::Routed), "on the server's side"),
+        (n(Via::Other), "elsewhere"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, how)| format!("{n} {how}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+/// Rows of one kind as one row.
+fn group(kind: Kind, rows: Vec<Row>) -> Row {
+    let n = rows.len();
+    let (title, why) = match kind {
+        Kind::Devices => (
+            format!(
+                "{} {} no name yet: {}",
+                plural(n, "device", "devices"),
+                if n == 1 { "has" } else { "have" },
+                by_link(&rows)
+            ),
+            "They have been here a while, so most are probably yours. Once each has a name, a \
+             new device stands out the day it appears. One you don't know can be blocked or \
+             paused to see what stops working.",
+        ),
+        Kind::Doors => (
+            format!(
+                "{} from the internet: tell sentry whether each asks for a login",
+                plural(n, "door", "doors")
+            ),
+            "sentry sees that a door is open, not what answers behind it. A door that asks \
+             for a login is a far smaller risk than one that lets anyone in: only you know \
+             which these are.",
+        ),
+        Kind::Asks => (
+            format!("{} only you can answer", plural(n, "question", "questions")),
+            "The security audit can't read these from any device. Your answers decide what \
+             it lists.",
+        ),
+        Kind::Odd => (
+            format!(
+                "{} {} using ports ordinary devices rarely use",
+                plural(n, "device", "devices"),
+                if n == 1 { "is" } else { "are" }
+            ),
+            "Rare for a healthy device and common for one that was taken over or is badly \
+             set up. A reason to look, not a verdict.",
+        ),
+    };
+    Row {
+        key: kind.key().into(),
+        id: kind.key().into(),
+        rank: rows.iter().map(|r| r.rank).min().unwrap_or(Rank::Note),
+        title,
+        why: why.into(),
+        seen: rows
+            .iter()
+            .map(|r| match &r.act {
+                Act::Device(d) => d.label.clone(),
+                _ => r.title.clone(),
+            })
+            .collect(),
+        subject: Subject::None,
+        can_wait: rows.iter().all(|r| r.can_wait),
+        class: rows
+            .iter()
+            .map(|r| r.class)
+            .min()
+            .unwrap_or(Class::Housekeeping),
+        next: None,
+        act: Act::Group { kind, rows },
+    }
+}
+
+/// A sentence in one line of `w`: whole where it fits; else up to the last clause that
+/// does (a colon, a comma, a bracket), so it ends on a thought and not mid-word; else cut.
+pub fn one_line(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(w.saturating_sub(1)).collect();
+    let cut = [": ", ", ", " ("]
+        .iter()
+        .filter_map(|sep| head.rfind(sep))
+        .max()
+        .filter(|at| head[..*at].chars().count() * 2 >= w);
+    match cut {
+        Some(at) => format!("{}…", &head[..at]),
+        None => format!("{}…", head.trim_end()),
+    }
+}
+
+/// How many rows are the ones to start with: the first three that ask something of you
+/// (a `note` never does).
+pub fn start_here<'a>(rows: impl IntoIterator<Item = &'a Row>) -> usize {
+    rows.into_iter()
+        .take(3)
+        .take_while(|r| r.rank != Rank::Note)
+        .count()
+}
+
+/// The cover with every weak or missing part that has a row pointing at it ("see 2
+/// above") instead of saying it twice. `rows`: the list as numbered on the page.
+pub fn pointed(posture: &[Line], rows: &[&Row]) -> Vec<Line> {
+    posture
+        .iter()
+        .map(|l| {
+            let at: Vec<String> = match l.state {
+                Cover::Weak | Cover::Off => rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| l.rows().iter().any(|p| r.about(p)))
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let see = match at.as_slice() {
+                [] => return l.clone(),
+                [one] => one.clone(),
+                [most @ .., last] => format!("{} and {last}", most.join(", ")),
+            };
+            // (What a server's guard counted is said nowhere else: it stays.)
+            let lead = match (l.what, l.text.rsplit_once("; ")) {
+                ("server", Some((said, _))) => said,
+                _ => l.label(),
+            };
+            Line {
+                text: format!("{lead}: see {see} above"),
+                ..l.clone()
+            }
+        })
+        .collect()
 }
 
 /// How a line of the posture stands.
@@ -921,6 +1381,41 @@ pub struct Line {
     pub what: &'static str,
     pub state: Cover,
     pub text: String,
+}
+
+impl Line {
+    /// What the line is about, in a few words.
+    pub fn label(&self) -> &'static str {
+        match self.what {
+            "reach" => "What the internet can reach",
+            "who" => "Who is on the network",
+            "apart" => "What is kept apart from what",
+            "filter" => "Filtering of bad sites",
+            "wifi" => "The Wi-Fi",
+            "admin" => "Logging in to the router",
+            "edge" => "Blocking attackers at the router",
+            "server" => "The server's blocklist at the router",
+            _ => "The security audit",
+        }
+    }
+
+    /// The rows that say what is weak about it (key prefixes).
+    pub fn rows(&self) -> &'static [&'static str] {
+        match self.what {
+            "reach" => &[
+                "finding:net:forward:",
+                "finding:net:zone:",
+                "audit:sec:wan-input",
+            ],
+            "who" => &["finding:net:client:"],
+            "apart" => &["finding:net:flow:", "audit:sec:flat", "audit:sec:crossing"],
+            "filter" => &["sec:blocklist"],
+            "wifi" => &["audit:sec:wifi", "audit:sec:wps"],
+            "admin" => &["finding:net:ssh:password", "finding:net:luci:http"],
+            "edge" | "server" => &["finding:net:crowdsec:"],
+            _ => &[],
+        }
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -1202,12 +1697,14 @@ pub fn posture(s: &State) -> Vec<Line> {
                 "Logging in to the router takes a key, and its admin page is encrypted"
             }
             (false, false) => "The router's admin page is encrypted",
-            (true, false) => "The router's admin page is encrypted, but ssh still takes a password",
+            (true, false) => {
+                "The router's admin page is encrypted, but its remote login (ssh) still takes a password"
+            }
             (false, true) => {
-                "Logging in over ssh takes a key, but the admin page can be opened without encryption"
+                "Remote login (ssh) takes a key, but the admin page can be opened without encryption"
             }
             (true, true) => {
-                "ssh takes a password, and the admin page can be opened without encryption"
+                "Remote login (ssh) takes a password, and the admin page can be opened without encryption"
             }
         };
         say(
@@ -1419,19 +1916,19 @@ mod tests {
             (
                 Rank::Look,
                 false,
-                "Someone tried to log in to the router 3 times and was refused, in the last 2 h 50 min",
+                "The router refused a login 3 times in the last 2 h 50 min",
                 "the numbers",
             ),
             (
                 Rank::Look,
                 false,
-                "192.0.2.77 is talking to the internet in a way ordinary devices rarely do (port 23)",
+                "192.0.2.77 is using a port ordinary devices rarely use (port 23)",
                 "the numbers",
             ),
             (
                 Rank::Look,
                 false,
-                "Someone logged in to the router once from a device nobody has named, in the last 2 h 50 min",
+                "An unnamed device logged in to the router once in the last 2 h 50 min",
                 "the numbers",
             ),
             (
@@ -1443,7 +1940,7 @@ mod tests {
             (
                 Rank::Note,
                 true,
-                "1 device on the Wi-Fi doesn't use the protection against being knocked off by a stranger",
+                "1 Wi-Fi device could be knocked off the Wi-Fi by a stranger nearby",
                 "the numbers",
             ),
             (
@@ -1485,7 +1982,7 @@ mod tests {
         assert_eq!(
             (r.title.as_str(), &r.act, r.rank),
             (
-                "The router lets people log in over ssh with a password",
+                "The router's remote login (ssh) still accepts a password",
                 &Act::SshKeys,
                 Rank::Look
             )
@@ -1504,7 +2001,7 @@ mod tests {
         let r = w.row("finding:net:luci:http");
         assert_eq!(r.act, Act::AdminHttps);
         assert!(
-            r.title.contains("without encryption (plain HTTP)"),
+            r.title.ends_with("without encryption") && r.why.contains("plain HTTP"),
             "{}",
             r.title
         );
@@ -1523,7 +2020,7 @@ mod tests {
         let r = w.row("finding:net:flow:dmz-lan");
         assert_eq!(
             r.title,
-            "Something on the server's side (dmz) is talking to a device on your home side (lan): that should never happen"
+            "A device on the server's side is reaching your home side right now"
         );
         assert_eq!(
             (r.rank, &r.act),
@@ -1544,8 +2041,10 @@ mod tests {
         let w = World::fixture().forget(&["desk"]);
         let r = w.row("finding:net:client:");
         assert!(
-            r.title
-                .starts_with("A device nobody has named is plugged into lan"),
+            r.title.starts_with("A device plugged into lan")
+                && r.title.contains("has no name yet: ")
+                && r.rank == Rank::Note
+                && !r.can_wait,
             "{}",
             r.title
         );
@@ -1612,7 +2111,7 @@ mod tests {
         w.cfg.expect.forwards.clear();
         let r = w.row("finding:net:forward:tcp:443");
         assert!(
-            r.title.starts_with("A door from the internet is open that you haven't listed: web, tcp port 443 to 203.0.113.93"),
+            r.title == "An unlisted door from the internet is open: web (tcp port 443)",
             "{}",
             r.title
         );
@@ -1633,7 +2132,7 @@ mod tests {
         let r = w.row("sec:blocklist");
         assert_eq!(
             r.title,
-            "The list of bad sites the router blocks is 54 days old and doesn't update by itself"
+            "The list of bad sites is 54 days old and doesn't update by itself"
         );
         assert_eq!(
             (r.rank, r.can_wait, &r.act),
@@ -1922,7 +2421,7 @@ mod tests {
             w.cover("admin").unwrap(),
             (
                 Cover::Weak,
-                "The router's admin page is encrypted, but ssh still takes a password".into()
+                "The router's admin page is encrypted, but its remote login (ssh) still takes a password".into()
             )
         );
         // … and a weak line is also a row above.
@@ -1958,9 +2457,10 @@ mod tests {
         };
         let text = crate::cli::security_text("home", &said, &[]).join("\n");
         for want in [
-            "home · security\n\nNeeds attention\n  look     Someone tried to log in to the router 3 times",
-            "           A refused login is the lock holding",
-            "           Enter on Security (4): new password",
+            "home · security\n\nStart here\n   1. look     The router refused a login 3 times",
+            "               A refused login is the lock holding",
+            "\nThen\n   4. note     Someone tried a wrong Wi-Fi password twice",
+            "               Security (4) · Enter: set a new Wi-Fi password",
             "\nHow you're covered\n  ok    2 doors are open from the internet",
             "  ok    Logging in to the router takes a key, and its admin page is encrypted",
             "What a tool like this can't see: what is inside the traffic",
@@ -1975,11 +2475,539 @@ mod tests {
         let text = crate::cli::security_text("home", &calm, &[("log".into(), "no logread".into())])
             .join("\n");
         assert!(
-            text.contains("Nothing needs you.\n  note ")
+            text.contains("Nothing needs you.\n   1. note ")
                 && text.contains("How you're covered")
                 && text.contains("(not read: log: no logread)"),
             "{text}"
         );
+    }
+
+    /// A row as a table needs it: its key says what it is.
+    fn a(key: &str, rank: Rank, act: Act) -> Row {
+        Row {
+            key: key.into(),
+            id: key.into(),
+            rank,
+            title: key.into(),
+            why: String::new(),
+            seen: Vec::new(),
+            act,
+            subject: Subject::None,
+            can_wait: false,
+            class: match key.strip_prefix("audit:") {
+                Some(id) => Class::of_audit(id, sentry_core::secaudit::Group::GettingIn),
+                None => Class::of(key),
+            },
+            next: None,
+        }
+    }
+
+    fn asks(id: &str) -> Row {
+        a(
+            &format!("audit:{id}"),
+            Rank::Note,
+            Act::Audit {
+                id: id.into(),
+                asks: true,
+            },
+        )
+    }
+
+    fn keys(rows: &[Row]) -> Vec<&str> {
+        rows.iter().map(|r| r.key.as_str()).collect()
+    }
+
+    /// The order, one row per class: by level first, then the seven classes, and rows
+    /// that tie stay as they were found.
+    #[test]
+    fn the_order_is_by_level_then_by_class() {
+        use Class::*;
+        // Each kind of row is in the class the table says.
+        for (key, want) in [
+            ("finding:net:flow:dmz-lan", Live),
+            ("sec:inbound", Live),
+            ("finding:net:ssh:failed", Live),
+            ("sec:ssh:unknown", Live),
+            ("sec:wifi:psk", Live),
+            ("sec:odd:ab12", Live),
+            ("finding:net:forward:tcp:443", Hole),
+            ("finding:net:zone:wan", Hole),
+            ("finding:net:listener:udp:1900", Hole),
+            ("finding:net:ssh:password", Login),
+            ("finding:net:luci:http", Login),
+            ("finding:net:cert:expiry", Login),
+            ("finding:net:crowdsec:bouncer", Guard),
+            ("finding:net:service:dnsmasq", Guard),
+            ("sec:blocklist", Guard),
+            ("finding:net:client:ab12", Housekeeping),
+            ("sec:pause:ab12", Housekeeping),
+            ("sec:offload", Housekeeping),
+        ] {
+            assert_eq!(Class::of(key), want, "{key}");
+        }
+        let g = sentry_core::secaudit::Group::Recovering;
+        for (id, want) in [
+            ("sec:crossing:net:home:dmz:lan", Live),
+            ("sec:firmware:net:home", Hole),
+            ("sec:packages:net:home", Hole),
+            ("sec:app:srv:myserver:stack", Hole),
+            ("sec:door:net:home:tcp:443", Hole),
+            ("sec:ssh-password:srv:myserver", Login),
+            ("sec:admin-http:net:home", Login),
+            ("sec:watch", Guard),
+            ("sec:dns-filter:net:home", Guard),
+            ("sec:flat:net:home", Structure),
+            ("sec:backup:net:home", Recovery),
+            ("sec:logs:net:home", Recovery),
+            ("sec:unknown-devices:net:home", Housekeeping),
+            ("sec:something-new:net:home", Recovery),
+        ] {
+            assert_eq!(Class::of_audit(id, g), want, "{id}");
+        }
+
+        // One row per class at one level, handed over backwards: out in the table's order.
+        let look = |key: &str| a(key, Rank::Look, Act::Evidence);
+        let one_each = [
+            "sec:inbound",
+            "audit:sec:firmware:net:home",
+            "finding:net:ssh:password",
+            "sec:blocklist",
+            "audit:sec:flat:net:home",
+            "audit:sec:backup:net:home",
+            "finding:net:client:ab12",
+        ];
+        let rows = arrange(one_each.iter().rev().map(|k| look(k)).collect(), None);
+        assert_eq!(keys(&rows), one_each);
+        assert_eq!(
+            rows.iter().map(|r| r.class).collect::<Vec<_>>(),
+            [Live, Hole, Login, Guard, Structure, Recovery, Housekeeping]
+        );
+        // Housekeeping is never more than a note; the rest keep their level.
+        assert_eq!(rows[6].rank, Rank::Note);
+        assert!(rows[..6].iter().all(|r| r.rank == Rank::Look));
+
+        // An act-now is never under a look, whatever their classes: a login the outside
+        // reaches comes before something live that is only worth a look.
+        let rows = arrange(
+            vec![
+                look("sec:inbound"),
+                a("finding:net:ssh:password", Rank::Now, Act::SshKeys),
+                a("audit:sec:firmware:net:home", Rank::Now, Act::Maint),
+                a("finding:net:flow:dmz-lan", Rank::Now, Act::Evidence),
+            ],
+            None,
+        );
+        assert_eq!(
+            keys(&rows),
+            [
+                "finding:net:flow:dmz-lan",
+                "audit:sec:firmware:net:home",
+                "finding:net:ssh:password",
+                "sec:inbound"
+            ]
+        );
+        // Ties keep the order they were found in.
+        let rows = arrange(
+            vec![
+                look("finding:net:forward:udp:8000"),
+                look("sec:odd:b"),
+                look("finding:net:forward:tcp:443"),
+                look("sec:odd:a"),
+            ],
+            None,
+        );
+        assert_eq!(
+            keys(&rows),
+            [
+                "sec:odd:b",
+                "sec:odd:a",
+                "finding:net:forward:udp:8000",
+                "finding:net:forward:tcp:443"
+            ]
+        );
+        // What is only a note is housekeeping wherever it came from, and a question is a
+        // note: both under everything that asks something.
+        let rows = arrange(
+            vec![
+                asks("sec:restore:net:home"),
+                a("sec:wifi:psk", Rank::Note, Act::WifiKey),
+                look("audit:sec:backup:net:home"),
+            ],
+            None,
+        );
+        assert_eq!(
+            rows.iter().map(|r| (r.class, r.rank)).collect::<Vec<_>>(),
+            [
+                (Recovery, Rank::Look),
+                (Housekeeping, Rank::Note),
+                (Housekeeping, Rank::Note)
+            ]
+        );
+        // The first three that ask something are where to start; a note never is.
+        assert_eq!(start_here(&rows), 1);
+        assert_eq!(start_here(&arrange(one_each.map(look).into(), None)), 3);
+        assert_eq!(start_here(&[asks("sec:restore:net:home")]), 0);
+        assert_eq!(start_here(&[]), 0);
+    }
+
+    impl World {
+        /// With `n` devices nobody has named, first seen a month ago (every other one on
+        /// the Wi-Fi), and nothing else unnamed.
+        fn unnamed(n: usize) -> Self {
+            let mut w = World::fixture();
+            let now = w.now;
+            let list = w.clients.as_mut().unwrap();
+            let base = list
+                .iter()
+                .find(|c| c.name.as_deref() == Some("desk"))
+                .unwrap()
+                .clone();
+            for c in list.iter_mut() {
+                c.first_seen = Some(now - 40 * 86_400);
+            }
+            for i in 0..n {
+                let mac = format!("00:00:5e:00:54:{i:02x}");
+                list.push(Client {
+                    key: mac.clone(),
+                    mac: Some(mac),
+                    name: None,
+                    known: false,
+                    hostname: Some(format!("thing-{i}")),
+                    addrs: vec![format!("192.0.2.{}", 200 + i)],
+                    link: if i % 2 == 1 {
+                        Link::Wifi {
+                            ifname: "phy0-ap0".into(),
+                            signal: None,
+                        }
+                    } else {
+                        Link::Wired {
+                            port: "lan3".into(),
+                        }
+                    },
+                    first_seen: Some(now - 30 * 86_400),
+                    connected_s: None,
+                    ..base.clone()
+                });
+            }
+            w
+        }
+
+        fn devices(&self) -> Vec<Row> {
+            self.rows()
+                .into_iter()
+                .filter(|r| r.about("finding:net:client:"))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn unnamed_devices_are_one_row_from_three_and_a_new_one_stands_alone() {
+        // None, one, two: rows of their own (or none), each a note that is still listed.
+        for n in [0, 1, 2] {
+            let rows = World::unnamed(n).devices();
+            assert_eq!(rows.len(), n, "{n}");
+            assert!(
+                rows.iter().all(|r| matches!(r.act, Act::Device(_))
+                    && r.rank == Rank::Note
+                    && !r.can_wait
+                    && r.title.contains("has no name yet: thing-")),
+                "{rows:#?}"
+            );
+        }
+        // Three: one row, which says how many and how they are on the network.
+        let rows = World::unnamed(3).devices();
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        let g = &rows[0];
+        assert_eq!(
+            (g.key.as_str(), g.title.as_str(), g.rank, g.can_wait),
+            (
+                "group:devices",
+                "3 devices have no name yet: 2 plugged in, 1 on Wi-Fi",
+                Rank::Note,
+                false
+            )
+        );
+        assert_eq!(g.members().len(), 3);
+        assert_eq!(g.seen, ["thing-0", "thing-1", "thing-2"]);
+        assert_eq!(
+            g.step(true),
+            "Enter: go through them (name, block or pause each)"
+        );
+        // Seven, as on a network nobody has described yet.
+        let w = World::unnamed(7);
+        let rows = w.devices();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].title,
+            "7 devices have no name yet: 4 plugged in, 3 on Wi-Fi"
+        );
+        // One of them joined twenty minutes ago: that is news, a row of its own above
+        // everything that is housekeeping; the other six stay one row.
+        let mut w = World::unnamed(7);
+        let now = w.now;
+        w.clients.as_mut().unwrap().last_mut().unwrap().first_seen = Some(now - 1200);
+        let rows = w.rows();
+        let new = rows
+            .iter()
+            .position(|r| r.title.contains("thing-6"))
+            .unwrap();
+        let rest = rows.iter().position(|r| r.key == "group:devices").unwrap();
+        assert_eq!(
+            (rows[new].title.as_str(), rows[new].rank, rows[new].class),
+            (
+                "A device nobody has named was plugged into lan3 20 minutes ago: thing-6",
+                Rank::Look,
+                Class::Live
+            )
+        );
+        assert!(new < rest, "{:?}", keys(&rows));
+        assert_eq!(rows[rest].members().len(), 6);
+        assert!(rows[new + 1..rest].iter().all(|r| r.rank <= Rank::Note));
+        // On the Wi-Fi it says so.
+        w.clients.as_mut().unwrap().last_mut().unwrap().link = Link::Wifi {
+            ifname: "phy0-ap0".into(),
+            signal: None,
+        };
+        assert!(w.rows().iter().any(
+            |r| r.title == "A device nobody has named joined the Wi-Fi 20 minutes ago: thing-6"
+        ));
+        // sentry itself started watching today: nothing can be called new yet.
+        for c in w.clients.as_mut().unwrap() {
+            c.first_seen = Some(now - 1200);
+        }
+        let rows = w.devices();
+        assert_eq!(rows.len(), 1, "{:?}", keys(&rows));
+        assert!(rows[0].members().len() >= 7);
+
+        // A list being gone through stays one row down to its last device, then is gone.
+        let open = |n: usize| World::unnamed(n).with(|s| arrange(raw(s), Some("group:devices")));
+        for n in [2, 1] {
+            let rows = open(n);
+            let g = rows.iter().find(|r| r.key == "group:devices").unwrap();
+            assert_eq!(g.members().len(), n);
+        }
+        assert_eq!(
+            open(1)
+                .iter()
+                .find(|r| r.key == "group:devices")
+                .unwrap()
+                .title,
+            "1 device has no name yet: 1 plugged in"
+        );
+        assert!(open(0).iter().all(|r| r.key != "group:devices"));
+    }
+
+    #[test]
+    fn questions_and_odd_ports_are_one_row_from_three() {
+        let door = |port: u16| asks(&format!("sec:door:net:home:tcp:{port}"));
+        // Two doors to answer for: two rows.
+        let rows = arrange(vec![door(80), door(443)], None);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.members().is_empty()));
+        // Three: one row; another kind of question stays its own.
+        let rows = arrange(
+            vec![
+                door(80),
+                asks("sec:restore:net:home"),
+                door(443),
+                door(8443),
+            ],
+            None,
+        );
+        assert_eq!(keys(&rows), ["audit:sec:restore:net:home", "group:doors"]);
+        let g = &rows[1];
+        assert_eq!(
+            g.title,
+            "3 doors from the internet: tell sentry whether each asks for a login"
+        );
+        assert_eq!(
+            (g.rank, g.class, g.can_wait, g.members().len()),
+            (Rank::Note, Class::Housekeeping, false, 3)
+        );
+        assert_eq!(g.step(false), "Enter: answer them one after another");
+        assert!(g.about("audit:sec:door:net:home:tcp:443"));
+        // Three devices on odd ports: one row, worth a look as each of them is.
+        let odd = |t: &str| a(&format!("sec:odd:{t}"), Rank::Look, Act::Evidence);
+        let rows = arrange(vec![odd("a"), odd("b"), odd("c")], None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].title.as_str(), rows[0].rank, rows[0].class),
+            (
+                "3 devices are using ports ordinary devices rarely use",
+                Rank::Look,
+                Class::Live
+            )
+        );
+        assert_eq!(arrange(vec![odd("a"), odd("b")], None).len(), 2);
+    }
+
+    #[test]
+    fn a_weak_part_of_the_cover_points_at_its_row() {
+        let line = |what: &'static str, state: Cover, text: &str| Line {
+            what,
+            state,
+            text: text.into(),
+        };
+        let cover = [
+            line(
+                "reach",
+                Cover::Ok,
+                "1 door is open from the internet, to web",
+            ),
+            line("who", Cover::Weak, "9 devices on the network, 3 not named"),
+            line(
+                "admin",
+                Cover::Weak,
+                "Remote login (ssh) takes a password, and …",
+            ),
+            line(
+                "filter",
+                Cover::Off,
+                "Filtering of bad sites is installed but not running",
+            ),
+            line(
+                "wifi",
+                Cover::Weak,
+                "2 Wi-Fi networks, 1 on protection that is broken",
+            ),
+        ];
+        let rows = arrange(
+            vec![
+                a("finding:net:ssh:password", Rank::Look, Act::SshKeys),
+                a("finding:net:luci:http", Rank::Look, Act::AdminHttps),
+                a("sec:blocklist", Rank::Look, Act::Evidence),
+                a("finding:net:client:a", Rank::Note, Act::Device(dev("a"))),
+                a("finding:net:client:b", Rank::Note, Act::Device(dev("b"))),
+                a("finding:net:client:c", Rank::Note, Act::Device(dev("c"))),
+            ],
+            None,
+        );
+        let listed: Vec<&Row> = rows.iter().collect();
+        let said: Vec<String> = pointed(&cover, &listed)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(
+            said,
+            [
+                // Fine: said as it is.
+                "1 door is open from the internet, to web",
+                // The three devices are one row, the fourth.
+                "Who is on the network: see 4 above",
+                "Logging in to the router: see 1 and 2 above",
+                "Filtering of bad sites: see 3 above",
+                // Weak, and no row says why: the line still does.
+                "2 Wi-Fi networks, 1 on protection that is broken",
+            ]
+        );
+    }
+
+    fn dev(tag: &str) -> DevRef {
+        DevRef {
+            mac: format!("00:00:5e:00:53:{tag}"),
+            tag: tag.into(),
+            label: tag.into(),
+            zone: "lan".into(),
+            wifi: None,
+            named: false,
+            via: Via::Wired,
+        }
+    }
+
+    /// The second line of every row: it starts with the key, says a thing to do, and
+    /// fits a narrow list's line.
+    #[test]
+    fn every_row_says_what_enter_does_in_one_short_line() {
+        let acts = [
+            Act::Device(dev("a")),
+            Act::Unblock { tag: "a".into() },
+            Act::Forward {
+                section: "s".into(),
+                name: "web".into(),
+            },
+            Act::SshKeys,
+            Act::AdminHttps,
+            Act::Blocklist {
+                stale: true,
+                scheduled: Some(false),
+            },
+            Act::Blocklist {
+                stale: false,
+                scheduled: Some(false),
+            },
+            Act::WifiKey,
+            Act::Finding("net:x".into()),
+            Act::Evidence,
+            Act::Server {
+                brief: String::new(),
+            },
+            Act::Audit {
+                id: "sec:x".into(),
+                asks: true,
+            },
+            Act::Audit {
+                id: "sec:x".into(),
+                asks: false,
+            },
+            Act::Maint,
+            Act::Group {
+                kind: Kind::Devices,
+                rows: Vec::new(),
+            },
+            Act::Group {
+                kind: Kind::Doors,
+                rows: Vec::new(),
+            },
+            Act::Group {
+                kind: Kind::Odd,
+                rows: Vec::new(),
+            },
+        ];
+        for act in &acts {
+            for claude in [true, false] {
+                let step = act.step(claude);
+                assert!(step.starts_with("Enter: "), "{step}");
+                assert!(step.chars().count() <= 63, "{} chars: {step}", step.len());
+                for jargon in ["ssh", "HTTP ", "bouncer", "uci", "DNAT"] {
+                    assert!(!step.contains(jargon), "{jargon} in {step}");
+                }
+            }
+        }
+        // Without Claude Code a session's row says what Enter still does.
+        assert_eq!(
+            Act::Finding("net:x".into()).step(false),
+            "Enter: see the numbers behind it (nothing to change)"
+        );
+        // A row that knows better says so itself.
+        let mut r = a("audit:sec:firmware:net:home", Rank::Now, Act::Maint);
+        assert_eq!(r.step(true), "Enter: go to Maintenance, where it is done");
+        r.next = Some("Enter: update the router's software (Maintenance does it)".into());
+        assert_eq!(
+            r.step(true),
+            "Enter: update the router's software (Maintenance does it)"
+        );
+    }
+
+    #[test]
+    fn a_long_sentence_ends_on_a_clause_in_the_list() {
+        let s =
+            "Every device at home shares one network, so one compromised gadget can reach the rest";
+        assert_eq!(one_line(s, 100), s);
+        assert_eq!(one_line(s, 69), "Every device at home shares one network…");
+        assert_eq!(
+            one_line(
+                "5 devices have no name yet: 3 plugged in, 1 on Wi-Fi, 1 elsewhere",
+                50
+            ),
+            "5 devices have no name yet: 3 plugged in…"
+        );
+        // No clause to end on (or only a stub of one): cut where the line ends.
+        assert_eq!(one_line("abcdefghij klmnopqrst", 12), "abcdefghij…");
+        assert_eq!(
+            one_line("So, this goes on and on and on", 20),
+            "So, this goes on an…"
+        );
+        assert!(one_line(s, 69).chars().count() <= 69);
     }
 
     #[test]
