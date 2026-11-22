@@ -741,10 +741,9 @@ fn enter(v: &View, row: &Row, sec: &mut Security) -> Vec<Effect> {
         // The audit's own: a session across whatever targets it names, or your answer.
         Act::Audit { id, asks } if *asks || claude() => vec![Effect::SecItem(id.clone())],
         Act::Audit { .. } => vec![Effect::SecShow],
-        Act::Maint => vec![
-            Effect::Goto(sentry_core::tui::ScreenId::Maint),
-            Effect::Toast("Maintenance does it: its row is in the list here".into()),
-        ],
+        // Where the item's row on Maintenance goes: the backup, the packages' workflow,
+        // the firmware's (its draft box first, or why it isn't offered yet).
+        Act::Maint(kind) => super::maint::item_enter(v, *kind),
         // What has no fixed remedy: a session with Claude plans it, you approve.
         Act::Finding(_) | Act::Server { .. } if claude() => match crate::tui::ask::scrub(v) {
             Ok(_) => vec![Effect::ApplyAsk],
@@ -1138,7 +1137,9 @@ fn enter_says(a: &Act) -> &'static str {
             "From the security audit (S shows it). Enter: a session with Claude that fixes it, on whichever devices it takes; you approve its plan first."
         }
         Act::Audit { .. } => "From the security audit. Enter: its report.",
-        Act::Maint => "From the security audit. Enter: Maintenance (6), where it is done.",
+        Act::Maint(_) => {
+            "From the security audit. Enter does it, as its row on Maintenance (6) does."
+        }
         Act::Group {
             kind: Kind::Devices,
             ..

@@ -419,13 +419,27 @@ fn the_audits_items_join_the_pages_own_rows() {
     for (row, enter) in [
         ("Every device at home shares one network", "Enter  fix"),
         ("Have you ever restored from the backup?", "Enter  answer"),
-        ("The router's firmware is behind", "Enter  Maintenance"),
+        ("The router's firmware is behind", "Enter  do it"),
     ] {
         let s = on_row(&mut a, row);
         assert!(bar(&s).contains(enter), "{row}: {}", bar(&s));
     }
+    // The firmware's Enter is its item's on Maintenance: here, with no key to encrypt a
+    // backup to, the box that says so (`the_security_pages_firmware_row_opens_the_drafts_box`).
+    let s = on_row(&mut a, "The router's firmware is behind");
+    assert!(
+        s.contains("Enter: upgrade the router's software (it shows the plan first)"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.slot().screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Security);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("this network has no workflow firmware-upgrade")
+            || s.contains("A firmware upgrade starts with an encrypted backup"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
     // Put off like any row; marked expected, gone.
     let s = on_row(&mut a, "Every device at home shares one network");
     assert!(bar(&s).contains("x  expected   z  later"), "{}", bar(&s));
@@ -1269,7 +1283,7 @@ fn the_page_says_what_to_do_first_second_and_third() {
     for (row, step) in [
         (
             " 1. act now",
-            "Enter: update the router's software (Maintenance does it)",
+            "Enter: upgrade the router's software (it shows the plan first)",
         ),
         (
             " 3. look",

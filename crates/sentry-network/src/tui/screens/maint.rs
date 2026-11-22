@@ -640,7 +640,7 @@ fn firmware_draft_box(v: &View) -> Vec<Effect> {
 /// Enter on an item (or a row about one): the backup is made, the packages' workflow
 /// starts (it asks which ones), and the firmware's starts once there is a backup key (the
 /// draft from its box, `firmware_draft_box`).
-fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
+pub(crate) fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
     let has = |wf: &str| v.sh.workflows.iter().any(|w| w == wf);
     if kind == ItemKind::Firmware && has(FIRMWARE_WF) {
         if v.cfg.backup.recipients.is_empty() {

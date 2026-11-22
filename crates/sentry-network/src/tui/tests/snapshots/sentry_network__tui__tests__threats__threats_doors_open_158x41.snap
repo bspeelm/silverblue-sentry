@@ -32,14 +32,14 @@ expression: s
 │        aren't turned away there                                                    │ │                                                                     │
 │ ✓ ok   The security audit of every target: audited 3 days ago · S shows it         │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ │                                                                     │
-│ Choose devices…                                                                    │ │                                                                     │
-└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
+┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ └─────────────────────────────────────────────────────────────────────┘
+│ Choose devices…                                                                    │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
+└────────────────────────────────────────────────────────────────────────────────────┘ │ rejected   21/min                             █ 31.2k since 1d ago  │
+                                                                                       │ forward       port       to                     new/min  total live │
+                                                                                       │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
+                                                                                       │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
+                                                                                       │ ssh logins 0 from here                                              │
+                                                                                       │            none refused · in the log                                │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Enter  answer   x  expected   z  later   Esc  back   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

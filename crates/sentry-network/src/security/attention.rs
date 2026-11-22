@@ -47,7 +47,7 @@ impl Rank {
 /// |-|-|-|
 /// | 1 | `Live` | happening now and shouldn't be: a live connection across sides kept apart, a connection from the internet with no listed door, refused logins or repeated wrong Wi-Fi passwords, a login from a device with no name, a device on a port ordinary devices rarely use, a device that joined within the last day and has no name |
 /// | 2 | `Hole` | a known hole with a fix: firmware, packages or an app with security fixes waiting or unsupported, a door or a firewall rule that lets the internet in unlisted |
-/// | 3 | `Login` | weak logins and admin pages without encryption (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
+/// | 3 | `Login` | weak logins, admin pages without encryption, a door's certificate that lapsed or anyone could make (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
 /// | 4 | `Guard` | protection that is installed and not working: CrowdSec's blocker off, a blocklist that is stale or doesn't run, a service that should run |
 /// | 5 | `Structure` | how the network is laid out: everything on one network |
 /// | 6 | `Recovery` | what you'd need afterwards: no backup, a log lost on restart |
@@ -101,13 +101,12 @@ impl Class {
         use sentry_core::secaudit::Group as G;
         match id.split(':').nth(1).unwrap_or("") {
             "crossing" => Class::Live,
-            "firmware" | "packages" | "os" | "apps-behind" | "app" | "reboot" | "wan-input"
-            | "wan-mgmt" | "door" | "outside" | "ctr" | "ctrs" | "listen-wide" | "firewall" => {
-                Class::Hole
-            }
-            "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps" => {
-                Class::Login
-            }
+            "firmware" | "packages" | "os" | "os-life" | "apps-behind" | "app" | "reboot"
+            | "wan-input" | "wan-mgmt" | "door" | "outside" | "ctr" | "ctrs" | "listen-wide"
+            | "firewall" => Class::Hole,
+            // (A certificate that lapsed or that anyone could make: posing as the server.)
+            "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps"
+            | "cert" => Class::Login,
             "watch" | "dns-filter" | "auto-updates" => Class::Guard,
             "flat" | "apart" => Class::Structure,
             "backup" | "logs" | "restore" => Class::Recovery,
@@ -253,8 +252,9 @@ pub enum Act {
         id: String,
         asks: bool,
     },
-    /// The audit says it, Maintenance does it (firmware, packages, the backup).
-    Maint,
+    /// The audit says it and the item does it (firmware, packages, the backup): Enter is
+    /// that item's own Enter on Maintenance (the draft's box, then the workflow).
+    Maint(crate::config::ItemKind),
     /// Several rows of one kind as one: Enter lists them, each still its own decision.
     Group {
         kind: Kind,
@@ -289,7 +289,7 @@ impl Act {
             Act::Server { .. } => "finish it",
             Act::Audit { asks: true, .. } => "answer",
             Act::Audit { .. } => "fix",
-            Act::Maint => "Maintenance",
+            Act::Maint(_) => "do it",
             Act::Group { .. } => "list them",
             Act::FilterDrift { .. } => "decide",
             Act::FilterRepair => "put it right",
@@ -320,7 +320,7 @@ impl Act {
                 "Enter: fix it with Claude (it shows a plan, you approve)"
             }
             Act::Audit { .. } => "Enter: read it in the security audit's report",
-            Act::Maint => "Enter: go to Maintenance, where it is done",
+            Act::Maint(k) => maint_step(*k),
             Act::Group {
                 kind: Kind::Devices,
                 ..
@@ -1356,12 +1356,25 @@ fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
     )
 }
 
+/// What Enter does on the audit's items whose fix is always of one kind, in plain words
+/// (a certificate renewed or replaced, a release upgraded, a log kept longer). Others are
+/// named from their fix's own words (`fix_step`).
+fn audit_step(what: &str) -> Option<&'static str> {
+    Some(match what {
+        "cert" => "Enter: renew or replace it with Claude (you approve the plan)",
+        "os-life" => "Enter: plan the upgrade with Claude (you approve the plan)",
+        "logs" => "Enter: keep the log longer, with Claude (you approve the plan)",
+        _ => return None,
+    })
+}
+
 /// What Enter does on a row Maintenance carries out, in the row's own words.
-fn maint_step(what: &str) -> &'static str {
-    match what {
-        "firmware" => "Enter: update the router's software (Maintenance does it)",
-        "packages" => "Enter: update the router's packages (Maintenance does it)",
-        _ => "Enter: make a backup of the router's settings (on Maintenance)",
+fn maint_step(kind: crate::config::ItemKind) -> &'static str {
+    use crate::config::ItemKind as K;
+    match kind {
+        K::Firmware => "Enter: upgrade the router's software (it shows the plan first)",
+        K::Packages => "Enter: update the router's packages (it shows the plan first)",
+        K::Backup => "Enter: make a backup of the router's settings",
     }
 }
 
@@ -1416,7 +1429,14 @@ pub fn audit_rows(items: &[sentry_core::secaudit::Item], me: &str, s: &State, ro
         {
             continue;
         }
-        let maint = matches!(what, "firmware" | "packages" | "backup") && own;
+        use crate::config::ItemKind as K;
+        let maint = match what {
+            "firmware" => Some(K::Firmware),
+            "packages" => Some(K::Packages),
+            "backup" => Some(K::Backup),
+            _ => None,
+        }
+        .filter(|_| own);
         rows.push(Row {
             id: key.clone(),
             key,
@@ -1431,21 +1451,26 @@ pub fn audit_rows(items: &[sentry_core::secaudit::Item], me: &str, s: &State, ro
                 (_, false) => format!("{} What it takes: {}", i.why, i.fix),
             },
             seen: i.evidence.clone(),
-            act: if maint {
-                Act::Maint
-            } else {
-                Act::Audit {
+            act: match maint {
+                Some(k) => Act::Maint(k),
+                None => Act::Audit {
                     id: i.id.clone(),
                     asks: i.state == St::Ask,
-                }
+                },
             },
-            subject: Subject::None,
+            subject: match what {
+                // What a door's own panel shows: the forward, its counts.
+                "cert" | "door" => Subject::Ingress,
+                _ => Subject::None,
+            },
             can_wait: false,
             class: Class::of_audit(&i.id, i.group),
             next: match maint {
-                true => Some(maint_step(what).to_string()),
-                false if i.state != St::Ask => fix_step(&i.fix),
-                false => None,
+                Some(k) => Some(maint_step(k).to_string()),
+                None if i.state != St::Ask => audit_step(what)
+                    .map(str::to_string)
+                    .or_else(|| fix_step(&i.fix)),
+                None => None,
             },
         });
     }
@@ -3092,7 +3117,9 @@ mod tests {
             ("sec:packages:net:home", Hole),
             ("sec:app:srv:myserver:stack", Hole),
             ("sec:door:net:home:tcp:443", Hole),
+            ("sec:os-life:srv:myserver", Hole),
             ("sec:ssh-password:srv:myserver", Login),
+            ("sec:cert:net:home:tcp:443", Login),
             ("sec:admin-http:net:home", Login),
             ("sec:watch", Guard),
             ("sec:dns-filter:net:home", Guard),
@@ -3132,7 +3159,11 @@ mod tests {
             vec![
                 look("sec:inbound"),
                 a("finding:net:ssh:password", Rank::Now, Act::SshKeys),
-                a("audit:sec:firmware:net:home", Rank::Now, Act::Maint),
+                a(
+                    "audit:sec:firmware:net:home",
+                    Rank::Now,
+                    Act::Maint(crate::config::ItemKind::Firmware),
+                ),
                 a("finding:net:flow:dmz-lan", Rank::Now, Act::Evidence),
             ],
             None,
@@ -3489,7 +3520,7 @@ mod tests {
                 id: "sec:x".into(),
                 asks: false,
             },
-            Act::Maint,
+            Act::Maint(crate::config::ItemKind::Firmware),
             Act::Group {
                 kind: Kind::Devices,
                 rows: Vec::new(),
@@ -3519,13 +3550,17 @@ mod tests {
             "Enter: see the numbers behind it (nothing to change)"
         );
         // A row that knows better says so itself.
-        let mut r = a("audit:sec:firmware:net:home", Rank::Now, Act::Maint);
-        assert_eq!(r.step(true), "Enter: go to Maintenance, where it is done");
-        r.next = Some("Enter: update the router's software (Maintenance does it)".into());
+        let mut r = a(
+            "audit:sec:firmware:net:home",
+            Rank::Now,
+            Act::Maint(crate::config::ItemKind::Firmware),
+        );
         assert_eq!(
             r.step(true),
-            "Enter: update the router's software (Maintenance does it)"
+            "Enter: upgrade the router's software (it shows the plan first)"
         );
+        r.next = Some("Enter: something it knows better".into());
+        assert_eq!(r.step(true), "Enter: something it knows better");
     }
 
     #[test]
@@ -3573,5 +3608,86 @@ mod tests {
             ["act now", "look", "note"]
         );
         assert!(Rank::Now < Rank::Look && Rank::Look < Rank::Note);
+    }
+
+    /// The audit's certificate, end-of-support and log items say in plain words what
+    /// Enter does, are in their class, and a door's certificate shows the door's panel.
+    #[test]
+    fn the_audits_certificate_release_and_log_rows_say_what_enter_does() {
+        use sentry_core::secaudit::{Group, Item, State as St};
+        let item = |id: &str, group, fix: &str| Item {
+            id: id.into(),
+            group,
+            state: St::Worth,
+            rank: 0,
+            title: format!("about {id}"),
+            why: "Why.".into(),
+            fix: fix.into(),
+            targets: vec!["net:home".into()],
+            evidence: vec![],
+            brief: String::new(),
+            question: None,
+        };
+        let items = [
+            item(
+                "sec:cert:net:home:tcp:443",
+                Group::GettingIn,
+                "Use a certificate from a public authority (Let's Encrypt is free and renews \
+                 by itself).",
+            ),
+            item(
+                "sec:os-life:net:home",
+                Group::KnownHoles,
+                "Upgrade to a supported release (with a backup first); a session with Claude \
+                 can plan it.",
+            ),
+            item(
+                "sec:logs:net:home",
+                Group::Recovering,
+                "Keep more of it (journald's size and age limits); a session with Claude can.",
+            ),
+        ];
+        let w = World::fixture();
+        let rows = w.with(|s| {
+            let mut rows = Vec::new();
+            audit_rows(&items, "net:home", s, &mut rows);
+            rows
+        });
+        let of = |id: &str| {
+            rows.iter()
+                .find(|r| r.id == sentry_app::secaudit::row_key(id))
+                .unwrap_or_else(|| panic!("no row for {id}: {rows:#?}"))
+        };
+        for (id, step, class, subject) in [
+            (
+                "sec:cert:net:home:tcp:443",
+                "Enter: renew or replace it with Claude (you approve the plan)",
+                Class::Login,
+                Subject::Ingress,
+            ),
+            (
+                "sec:os-life:net:home",
+                "Enter: plan the upgrade with Claude (you approve the plan)",
+                Class::Hole,
+                Subject::None,
+            ),
+            (
+                "sec:logs:net:home",
+                "Enter: keep the log longer, with Claude (you approve the plan)",
+                Class::Recovery,
+                Subject::None,
+            ),
+        ] {
+            let r = of(id);
+            assert_eq!(r.step(true), step, "{id}");
+            assert!(step.chars().count() <= 63, "{step}");
+            assert_eq!(r.class, class, "{id}");
+            assert_eq!(r.subject, subject, "{id}");
+            // Without Claude Code: what Enter still does.
+            assert_eq!(
+                r.step(false),
+                "Enter: read it in the security audit's report"
+            );
+        }
     }
 }

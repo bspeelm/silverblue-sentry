@@ -132,6 +132,57 @@ fn the_firmware_draft_starts_from_its_box_and_nowhere_else() {
     }
 }
 
+/// The Security page's "newer firmware" row (the security audit's item) goes where the
+/// firmware's item on Maintenance goes: the draft's box, whose Enter starts the run.
+#[test]
+fn the_security_pages_firmware_row_opens_the_drafts_box() {
+    let _turn = runs();
+    let mut a = with_workflows(&backup_cfg(), None);
+    let me = crate::tui::id_of(NAME);
+    a.slot_mut().shared.sec = vec![sentry_core::secaudit::Item {
+        id: format!("sec:firmware:{me}"),
+        group: sentry_core::secaudit::Group::GettingIn,
+        state: sentry_core::secaudit::State::DoFirst,
+        rank: 0,
+        title: "A newer router firmware with security fixes is out".into(),
+        why: "It fixes holes.".into(),
+        fix: "Upgrade the firmware.".into(),
+        targets: vec![me.clone()],
+        evidence: vec![],
+        brief: String::new(),
+        question: None,
+    }];
+    let _ = screen(&mut a, '4', 158, 41);
+    key(&mut a, KeyCode::Esc);
+    typed(&mut a, "/A newer router firmware");
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Enter: upgrade the router's software (it shows the plan first)"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Upgrade the router's firmware (a draft)")
+            && s.contains("Not proven anywhere yet: the flash itself"),
+        "{s}"
+    );
+    assert_eq!(a.slot().screen, ScreenId::Security);
+    assert!(a.slot().run.is_none() && on_disk().is_none());
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.slot()
+            .run
+            .as_ref()
+            .expect("its Enter starts it")
+            .wf()
+            .name,
+        WF
+    );
+    a.apply(vec![Effect::Wf(WfCmd::Abandon)], Instant::now());
+    a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+}
+
 /// After one good run, the offer to take `draft = true` out of the file takes out that
 /// line and nothing else.
 #[test]

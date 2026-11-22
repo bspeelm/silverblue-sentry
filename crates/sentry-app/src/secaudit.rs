@@ -298,6 +298,40 @@ mod tests {
     /// Each item is listed by one target: the network for what names it or spans targets,
     /// else the target it is about; fine and couldn't-check stay in the report; an
     /// answered question isn't asked again.
+    /// A door's certificate is the network's (the session spans both); a machine's end of
+    /// support and its log are that machine's alone, on its own Maintenance.
+    #[test]
+    fn certificates_releases_and_logs_have_their_home() {
+        let mut sec = Sec::new();
+        let items = vec![
+            item(
+                "sec:cert:net:home:tcp:443",
+                State::DoFirst,
+                &["net:home", "srv:nas"],
+            ),
+            item("sec:os-life:srv:nas", State::DoFirst, &["srv:nas"]),
+            item("sec:os-life:local", State::Worth, &["local"]),
+            item("sec:logs:srv:nas", State::Worth, &["srv:nas"]),
+        ];
+        sec.report = Some(Report {
+            version: 1,
+            at: "2026-11-01T00:00:00Z".parse().unwrap(),
+            targets: Vec::new(),
+            observed: false,
+            items,
+            errors: Vec::new(),
+            diff: Default::default(),
+            alone: String::new(),
+        });
+        let ids = |me: &str| -> Vec<String> {
+            let all = [sys(""), sys("srv:nas"), sys("net:home")];
+            mine(&sec, me, &all).iter().map(|i| i.id.clone()).collect()
+        };
+        assert_eq!(ids("net:home"), ["sec:cert:net:home:tcp:443"]);
+        assert_eq!(ids("srv:nas"), ["sec:os-life:srv:nas", "sec:logs:srv:nas"]);
+        assert_eq!(ids(""), ["sec:os-life:local"]);
+    }
+
     #[test]
     fn each_item_has_one_home() {
         let mut sec = Sec::new();
