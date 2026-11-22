@@ -31,9 +31,12 @@ impl Slot {
                         c.push(chatmod::Kind::Info, text);
                     }
                 }
-                Effect::Reaudited(gone) => {
+                // The audit ran again: the list is made from the new report, and the
+                // session hears whether what it fixed is still reported.
+                Effect::Reaudited(still) => {
+                    self.rows_changed(w);
                     if let Some(sess) = self.apply.as_mut() {
-                        let fx = sess.reaudited(gone);
+                        let fx = sess.reaudited(still);
                         self.apply_fx(w, fx);
                     }
                 }
@@ -89,6 +92,7 @@ impl Slot {
                         let _ = sentry_core::maint::plan::close(&doc, PlanStatus::Dropped);
                     }
                     self.plan_view = None;
+                    self.rows_changed(w);
                     w.toast(&format!("{id}: plan dropped (kept in plans/done/)"));
                 }
                 // To read: there's only something to open once a session has shown its plan.
@@ -110,6 +114,7 @@ impl Slot {
                         let _ = sentry_core::maint::plan::close(&doc, PlanStatus::Replaced);
                     }
                     self.plan_view = None;
+                    self.rows_changed(w);
                     self.apply_plan(w, &id, now);
                 }
                 Effect::PlanApply(id) => self.apply_plan(w, &id, now),
@@ -126,7 +131,17 @@ impl Slot {
                         return;
                     };
                     if w.offline {
+                        // (A task of the target's own is turned off, as the file would.)
+                        let own = !self.shared.tasks.iter().any(|x| x.id == id);
                         self.shared.tasks.retain(|x| x.id != id);
+                        if own {
+                            self.shared.tasks.push(Task {
+                                off: true,
+                                source: sentry_core::maint::tasks::Source::File,
+                                ..t
+                            });
+                        }
+                        self.rows_changed(w);
                         return;
                     }
                     match sentry_core::maint::tasks::remove_or_off(
@@ -141,7 +156,7 @@ impl Slot {
                         }),
                         Err(e) => return w.toast(&format!("couldn't change it: {e}")),
                     }
-                    self.shared.tasks = sentry_core::maint::tasks::load(&self.scope);
+                    self.rows_changed(w);
                 }
                 Effect::TaskDone(id) => self.task_done(w, &id),
                 Effect::StartWorkflow(name) => self.wf_start(w, &name, now),
@@ -162,12 +177,16 @@ impl Slot {
                 },
                 Effect::Snooze(id, until) => {
                     let today = jiff::Zoned::now().date();
-                    match sentry_core::maint::later::set(&self.scope, &id, until, today) {
+                    let saved = if w.offline {
+                        self.shared.later.insert(id.clone(), until);
+                        Ok(())
+                    } else {
+                        sentry_core::maint::later::set(&self.scope, &id, until, today)
+                    };
+                    match saved {
                         Ok(()) => {
                             w.toast(&format!("{id}: look again {until} (Records › Later)"));
-                            // The recommendations filter on the loaded dates: read them again.
-                            self.shared.later = sentry_core::maint::later::load(&self.scope);
-                            self.refresh(w, Why::Lists);
+                            self.rows_changed(w);
                         }
                         Err(e) => w.toast(&format!("couldn't save it: {e}")),
                     }

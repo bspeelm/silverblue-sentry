@@ -101,6 +101,11 @@ impl Upkeep for LocalTarget {
         (Vec::new(), self.audited())
     }
 
+    fn row_at(&self, sh: &Shared, cx: &Cx) -> Option<String> {
+        let v = self.view(sh, cx);
+        self.screens.maint.selected(&v).map(|r| r.key)
+    }
+
     fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, _cx: &Cx) -> Result<Vec<Effect>, String> {
         Ok(match row.kind {
             LaterKind::Expected => vec![lift(local::Effect::Unbaseline(BaselineEdit::Finding(

@@ -485,6 +485,17 @@ fn step_lines(
                 ));
             }
         }
+        // Nothing on the host changes: sentry's own note, taken back in Records.
+        K::Unwatch { what, why } => {
+            push(
+                &mut l,
+                &format!(
+                    "stop watching {what}  (sentry's watch.toml; nothing on the host changes)"
+                ),
+                t.s(t.cyan),
+            );
+            push(&mut l, &format!("because: {why}"), t.dim());
+        }
         K::Run(c) | K::Check(c) => {
             let col = if crate::claude::risky(c).is_some() {
                 t.red

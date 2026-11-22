@@ -961,6 +961,36 @@ impl App {
     pub fn pane_cmd_for_test(&self) -> Option<String> {
         self.slot().pane.as_ref().map(|p| p.cmd.clone())
     }
+    /// The keys of every row Maintenance lists (what can wait too).
+    pub fn rows_for_test(&mut self) -> Vec<String> {
+        let (s, w) = self.parts();
+        s.rows_for_test(w)
+    }
+    /// The key of the Maintenance row the cursor is on.
+    pub fn row_at_for_test(&mut self) -> Option<String> {
+        let (s, w) = self.parts();
+        s.row_at_for_test(w)
+    }
+    /// Maintenance lists what can wait too (`o`).
+    pub fn everything_for_test(&self) -> bool {
+        self.slot().everything_for_test()
+    }
+    /// Records › Later's row with this key, taken back. False: there is none.
+    pub fn undo_for_test(&mut self, key: &str) -> bool {
+        let (s, w) = self.parts();
+        s.undo_for_test(w, key)
+    }
+    /// What the app does on `r`, on entering a screen and on getting the window back:
+    /// what changed on disk is read (an offline app's own `look` reads nothing).
+    pub fn look_for_test(&mut self) -> bool {
+        let (s, w) = self.parts();
+        s.look_now(w)
+    }
+    /// A plan kept under `key`, on disk too.
+    pub fn plan_keep_for_test(&mut self, key: &str, body: &str) {
+        let (s, w) = self.parts();
+        s.plan_keep_for_test(w, key, body);
+    }
     /// A task lands in `tasks.toml` (as an apply session's follow-up does).
     pub fn add_task_for_test(&mut self, task: sentry_core::maint::tasks::Task) {
         let (s, w) = self.parts();

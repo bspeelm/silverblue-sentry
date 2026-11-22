@@ -393,7 +393,7 @@ mod tests {
         let t = r.iter().find(|r| r.key == "task:ups").expect("the task");
         assert_eq!(t.action, Action::Task("ups".into()));
         assert_eq!(t.level, Level::Soon);
-        assert!(t.why.contains("every 90d; not done yet"));
+        assert!(t.why.contains("(not done yet)") && t.title.ends_with(" · every 90d"));
         let mut s = Snoozes::new();
         s.insert("task:ups".into(), "2026-11-30".parse().unwrap());
         let mut i = base(&cfg, &b, &s, &p);

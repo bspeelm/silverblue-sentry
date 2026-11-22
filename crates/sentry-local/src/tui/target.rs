@@ -324,7 +324,6 @@ impl LocalTarget {
                     exit_kills_run: false,
                     exit_kills_session: true,
                     run_checks: false,
-                    log_kept: true,
                     pane_lines: 2000,
                     pane_took: true,
                     pane_failed: ("", 127),
@@ -380,6 +379,19 @@ impl LocalTarget {
     #[cfg(test)]
     pub fn all_tasks(&self, sh: &Shared) -> Vec<crate::maint::tasks::Task> {
         crate::maint::tasks::effective(&sh.tasks, crate::jobs::state::tasks(&self.cfg))
+    }
+
+    /// Tests: the audit a finding's session asked for is done, and its report has the
+    /// finding (`still`) or not. The stream whose exit says so.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn audited_for_test(&mut self, finding: &str, still: bool) -> Option<u64> {
+        if !still
+            && let Some(v) = self.data.reports.value.as_mut()
+            && let Some(s) = v.last_mut()
+        {
+            s.report.findings.retain(|f| f.id != finding);
+        }
+        self.reaudit
     }
 
     fn hz(v: f32) -> Duration {
@@ -488,8 +500,58 @@ impl LocalTarget {
         sh.workflows = sh.wf_entries.iter().map(|e| e.name.clone()).collect();
     }
 
-    fn baseline(&mut self, edit: &BaselineEdit, sh: &mut Shared) -> Vec<Effect> {
+    /// Tests (offline) write nothing: the edit is made on what's in memory, the records'
+    /// copy and the one the screens judge by alike. How many entries it added or removed.
+    fn baseline_in_memory(&mut self, edit: &BaselineEdit, on: bool, sh: &mut Shared) -> usize {
+        use crate::baseline::{glob, listener_entry_matches};
+        let (keys, listener): (Vec<String>, bool) = match edit {
+            BaselineEdit::Listener(k) => (vec![k.clone()], true),
+            BaselineEdit::Listeners(v) => (v.clone(), true),
+            BaselineEdit::Finding(k) => (vec![k.clone()], false),
+        };
+        let mut n = 0;
+        for list in [
+            if listener {
+                &mut sh.baseline.listeners
+            } else {
+                &mut sh.baseline.findings
+            },
+            if listener {
+                &mut self.data.baseline.listeners
+            } else {
+                &mut self.data.baseline.findings
+            },
+        ] {
+            let before = list.len();
+            if on {
+                for k in &keys {
+                    if !list.contains(k) {
+                        list.push(k.clone());
+                    }
+                }
+            } else if listener {
+                list.retain(|p| !keys.iter().any(|k| listener_entry_matches(p, k)));
+            } else {
+                list.retain(|p| !keys.iter().any(|k| glob(p, k)));
+            }
+            n = n.max(before.abs_diff(list.len()));
+        }
+        n
+    }
+
+    fn baseline(&mut self, edit: &BaselineEdit, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         use crate::baseline::BaselineFile;
+        if cx.offline {
+            let label = match edit {
+                BaselineEdit::Listener(k) | BaselineEdit::Finding(k) => k.clone(),
+                BaselineEdit::Listeners(v) => format!("{} address(es)", v.len()),
+            };
+            let say = match self.baseline_in_memory(edit, true, sh) {
+                0 => format!("{label} is already in the baseline"),
+                _ => format!("{label} marked expected (baseline.toml)"),
+            };
+            return vec![Effect::Toast(say)];
+        }
         let (r, label) = match edit {
             BaselineEdit::Listener(k) => (
                 BaselineFile::add_listener(crate::maint::LOCAL, k),
@@ -520,8 +582,22 @@ impl LocalTarget {
         vec![Effect::Toast(say)]
     }
 
-    fn unbaseline(&mut self, edit: &BaselineEdit, sh: &mut Shared) -> Vec<Effect> {
+    fn unbaseline(&mut self, edit: &BaselineEdit, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         use crate::baseline::BaselineFile;
+        if cx.offline {
+            let label = match edit {
+                BaselineEdit::Listener(k) | BaselineEdit::Finding(k) => k.clone(),
+                BaselineEdit::Listeners(v) => format!("{} address(es)", v.len()),
+            };
+            let say = match self.baseline_in_memory(edit, false, sh) {
+                0 => format!("{label} wasn't marked expected"),
+                n => format!(
+                    "{label} no longer expected ({n} baseline.toml entr{} removed)",
+                    if n == 1 { "y" } else { "ies" }
+                ),
+            };
+            return vec![Effect::Toast(say)];
+        }
         let (r, label) = match edit {
             BaselineEdit::Listener(k) => (
                 BaselineFile::remove_listeners(crate::maint::LOCAL, std::slice::from_ref(k)),
@@ -585,8 +661,8 @@ impl LocalTarget {
                 }
                 Err(e) => toast(format!("kill {pid}: {e}")),
             },
-            L::Baseline(edit) => self.baseline(edit, sh),
-            L::Unbaseline(edit) => self.unbaseline(edit, sh),
+            L::Baseline(edit) => self.baseline(edit, sh, cx),
+            L::Unbaseline(edit) => self.unbaseline(edit, sh, cx),
             L::ChatBack => vec![Effect::ChatNote("back from Claude Code".into())],
             L::CleanupFocus(job) => {
                 self.screens.focus_cleanup(*job);
@@ -882,19 +958,45 @@ impl Target for LocalTarget {
         };
         self.reaudit = None;
         let finding = cx.finding.unwrap_or_default();
-        let gone = *code == 0
-            && !crate::audit::store::latest()
-                .is_some_and(|r| r.findings.iter().any(|f| f.id == finding));
+        // (Tests read nothing from disk: the newest report in memory is the audit's.)
+        let latest = if cx.offline {
+            self.data
+                .reports
+                .value
+                .as_ref()
+                .and_then(|v| v.last())
+                .map(|s| s.report.clone())
+        } else {
+            crate::audit::store::latest()
+        };
+        let still = if *code != 0 {
+            Some(format!("the audit couldn't run (exit {code})"))
+        } else {
+            latest.and_then(|r| {
+                r.open(&self.data.baseline)
+                    .find(|f| f.id == finding)
+                    .map(crate::finding::Finding::standing)
+            })
+        };
         self.fetch(Fetch::Reports);
         self.fetch(Fetch::Log);
-        Some(vec![Effect::Reaudited(gone)])
+        Some(vec![Effect::Reaudited(still)])
     }
 
-    fn refresh(&mut self, why: Why, cx: &Cx) -> Vec<Effect> {
+    fn refresh(&mut self, why: Why, _sh: &Shared, cx: &Cx) -> Vec<Effect> {
         match why {
-            // The lists are computed from what's loaded; a step's effects show on their
-            // screens' own refresh.
-            Why::Lists | Why::Step | Why::Edited | Why::Facts => {}
+            // The lists are computed from what's loaded as they're drawn. What's expected
+            // is the config's and baseline.toml's together: read again with the records.
+            Why::Lists => {
+                if !cx.offline {
+                    self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
+                }
+            }
+            // A file of the records changed without the app (`Slot::look`): the baseline is
+            // one of them.
+            Why::Edited => self.data.baseline = crate::baseline::Baseline::effective(&self.cfg),
+            // A step's effects show on their screens' own refresh.
+            Why::Step | Why::Facts => {}
             // Keep tabs, dashboard and the workflow list in step with the run.
             Why::Run => self.fetch(Fetch::Workflows),
             Why::Changed => {
@@ -936,6 +1038,12 @@ impl Target for LocalTarget {
             }
         }
         Vec::new()
+    }
+
+    /// (The records' files are looked at by the app; `baseline.toml` is one this target
+    /// judges by itself, so a change to it is its own to take in: `Why::Edited`.)
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        vec![crate::baseline::path(crate::maint::LOCAL)]
     }
 
     fn on_own(&mut self, fx: &effect::Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {

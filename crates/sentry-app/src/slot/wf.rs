@@ -150,10 +150,8 @@ impl Slot {
             if let Err(e) = log::write(&entry) {
                 w.toast(&format!("couldn't write the maintenance log: {e}"));
             }
-            self.shared.log = log::list(&self.scope);
-            self.refresh(w, Why::Lists);
             self.refresh(w, Why::Logged);
-        } else if self.ways.log_kept {
+        } else {
             // Tests write nothing, but what's done is still read from the log: one entry
             // per run, newest first.
             self.shared
@@ -161,6 +159,8 @@ impl Slot {
                 .retain(|e| e.head.run.is_none() || e.head.run != entry.head.run);
             self.shared.log.insert(0, entry.clone());
         }
+        // The rows the run resolves leave now.
+        self.rows_changed(w);
         if done {
             self.review_run = Some(entry.clone());
             self.last_change_at = Some(jiff::Timestamp::now());
@@ -277,15 +277,13 @@ impl Slot {
         {
             return w.toast(&format!("couldn't write the note: {e}"));
         }
-        if !self.ways.log_kept {
-        } else if w.offline {
+        if w.offline {
             self.shared
                 .log
                 .retain(|e| e.head.run.is_none() || e.head.run != with_note.head.run);
             self.shared.log.insert(0, with_note.clone());
-        } else {
-            self.shared.log = sentry_core::maint::log::list(&self.scope);
         }
+        self.rows_changed(w);
         self.last_log = Some(with_note);
         w.toast(self.ways.noted);
     }

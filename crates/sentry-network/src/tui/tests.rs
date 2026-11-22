@@ -2059,7 +2059,7 @@ fn the_items_and_what_they_ask_for() {
     key(&mut a, KeyCode::Char('o'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        line(&s, "│ routine").contains("7 package(s) could be upgraded"),
+        line(&s, "│ normal").contains("7 package(s) could be upgraded"),
         "{s}"
     );
     key(&mut a, KeyCode::Char('o'));
@@ -3562,7 +3562,7 @@ fn a_findings_plan_is_followed_by_an_audit() {
     assert!(s.job.is_none());
     // Its answer (offline nothing is read: this is what the target says once the audit
     // is in): the finding is gone, and Claude verifies with that in hand.
-    a.apply(vec![super::target::Effect::Reaudited(true)], Instant::now());
+    a.apply(vec![super::target::Effect::Reaudited(None)], Instant::now());
     let said = entries(&mut a);
     assert!(
         said.iter().any(|l| l
@@ -3586,7 +3586,7 @@ fn a_findings_plan_is_followed_by_an_audit() {
     a.apply_exit_for_test(0);
     a.apply_exit_for_test(0);
     a.apply(
-        vec![super::target::Effect::Reaudited(false)],
+        vec![super::target::Effect::Reaudited(Some("still there".into()))],
         Instant::now(),
     );
     let said = entries(&mut a);
@@ -5112,3 +5112,25 @@ fn live_security() {
     );
 }
 mod threats;
+
+// ------------------------------------------------------------- a resolved row leaves at once
+
+/// Every way a row is resolved, on a network: the row leaves the list with no restart (or
+/// stays, or returns, as the way says). The ways that need the process's own files are in
+/// `crates/sentry/tests/rows_on_disk.rs`.
+#[test]
+fn every_way_a_row_is_resolved_updates_the_list_at_once() {
+    use sentry_app::resolve::{NEEDS_ALONE, Way, check};
+    let seen = check(&super::testing::Rig, false);
+    for (way, got) in &seen {
+        assert!(
+            got.is_ok() || *got == Err(NEEDS_ALONE),
+            "a network has every way a server has but its items: {way:?} {got:?}"
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        Way::ALL.iter().filter(|w| !w.alone()).count(),
+        "every way that needs no file of the process's own was tried"
+    );
+}

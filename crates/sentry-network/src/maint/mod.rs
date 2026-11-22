@@ -18,7 +18,7 @@ pub fn cadence_tasks(cfg: &crate::config::Network, workflows: &[String]) -> Vec<
         .map(|c| Task {
             id: format!("cadence-{}", c.workflow),
             title: format!("Run {}", c.workflow),
-            why: "Routine (maintenance.cadence in network_config.yaml).".into(),
+            why: "On a cadence (maintenance.cadence in network_config.yaml).".into(),
             level: sentry_core::maint::Level::Routine,
             every: Some(c.every),
             act: format!("run {}", c.workflow),

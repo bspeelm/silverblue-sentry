@@ -537,18 +537,14 @@ mod tests {
                     "engine: held, but newer releases fix security issues"
                 ),
                 (Level::Routine, "db: 1.0 → 1.2 (1 newer)"),
-                (Level::Routine, "Run apt-maintenance"),
+                (Level::Routine, "Run apt-maintenance · every 30d"),
                 (Level::Tidy, "Track ui"),
                 (Level::Tidy, "old is gone"),
                 (Level::Tidy, "sshd: 3 banned"),
             ]
         );
         assert_eq!(r[5].key, "task:cadence-apt-maintenance");
-        assert!(
-            r[5].why.ends_with("(every 30d; last done 2026-09-20)"),
-            "{}",
-            r[5].why
-        );
+        assert!(r[5].why.ends_with("(last done 2026-09-20)"), "{}", r[5].why);
         assert_eq!(r[0].action, Action::OpenPlan("planned".into()));
         assert_eq!(
             r[1].action,
@@ -573,7 +569,7 @@ mod tests {
             snooze: &snooze,
             ..Inputs { ..inputs }
         });
-        assert!(!r.iter().any(|x| x.title == "Run apt-maintenance"));
+        assert!(!r.iter().any(|x| x.title.starts_with("Run apt-maintenance")));
         // A task from a review: shown while due, about its item; done once web's change is.
         let tasks = [sentry_core::maint::tasks::Task {
             id: "web-next".into(),
@@ -637,7 +633,9 @@ mod tests {
         let r = recommend(&i);
         let apt_rows: Vec<&Rec> = r
             .iter()
-            .filter(|x| x.title.contains("package update") || x.title == "Run apt-maintenance")
+            .filter(|x| {
+                x.title.contains("package update") || x.title.starts_with("Run apt-maintenance")
+            })
             .collect();
         assert_eq!(apt_rows.len(), 1, "{r:#?}");
         assert_eq!(apt_rows[0].key, "task:cadence-apt-maintenance");

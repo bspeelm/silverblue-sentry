@@ -18,6 +18,7 @@ pub mod guest;
 mod records;
 mod review;
 mod root;
+mod rows;
 mod secaudit;
 mod series;
 mod session;
@@ -175,6 +176,8 @@ pub struct Slot {
     pub auto_review: sentry_core::config::Review,
     /// When the last maintenance run ended.
     pub(crate) last_change_at: Option<jiff::Timestamp>,
+    /// The files the rows are made from, as they stood when last read (`slot/rows.rs`).
+    stamps: rows::Stamps,
     /// Tests: the last entry written with a note.
     pub last_log: Option<sentry_core::maint::log::LogEntry>,
     /// Claude writing a review, in the background.
@@ -294,6 +297,7 @@ impl Slot {
             start_check: false,
             auto_review: sentry_core::config::Review::default(),
             last_change_at: None,
+            stamps: Default::default(),
             last_log: None,
             writer: None,
             plan_view: None,
@@ -517,7 +521,7 @@ impl Slot {
 
     /// Have the target read something again; what it says to that is done.
     pub(crate) fn refresh(&mut self, w: &mut Win, why: Why) {
-        let e = self.target.refresh(why, &cx!(self, w));
+        let e = self.target.refresh(why, &self.shared, &cx!(self, w));
         self.apply(w, e, w.at);
     }
 

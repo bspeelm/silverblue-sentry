@@ -19,7 +19,7 @@ struct File {
     snooze: Snoozes,
 }
 
-fn path(server: &str) -> PathBuf {
+pub fn path(server: &str) -> PathBuf {
     super::root(server).join("later.toml")
 }
 

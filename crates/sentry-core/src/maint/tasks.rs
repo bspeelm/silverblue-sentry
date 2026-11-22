@@ -358,7 +358,7 @@ pub fn recs(
         .filter(|t| due(t, log, audited, now))
         .map(|t| {
             let last = last_done(t, log, audited);
-            // Twice as long as it should be: it's not routine any more.
+            // Twice as long as it should be: it has waited long enough.
             let late = t
                 .every
                 .zip(last)
@@ -375,18 +375,17 @@ pub fn recs(
                         None => a.why.trim().to_string(),
                     }
                 }
-                (Some(d), Some(l)) => format!(
-                    "{} (every {d}; last done {})",
-                    t.why.trim(),
-                    l.strftime("%Y-%m-%d")
-                ),
-                (Some(d), None) => match counted_from(t, log) {
+                // (How often it recurs is with its title.)
+                (Some(_), Some(l)) => {
+                    format!("{} (last done {})", t.why.trim(), l.strftime("%Y-%m-%d"))
+                }
+                (Some(_), None) => match counted_from(t, log) {
                     Some(f) => format!(
-                        "{} (every {d}; not done yet, tracked since {})",
+                        "{} (not done yet, tracked since {})",
                         t.why.trim(),
                         f.strftime("%Y-%m-%d")
                     ),
-                    None => format!("{} (every {d}; not done yet)", t.why.trim()),
+                    None => format!("{} (not done yet)", t.why.trim()),
                 },
                 (None, _) => t.why.trim().to_string(),
             };
@@ -397,7 +396,12 @@ pub fn recs(
                     t.level
                 },
                 key: t.key(),
-                title: t.title.clone(),
+                // A task that recurs says so beside its name; one without is once. The
+                // level says only how soon.
+                title: match t.every {
+                    Some(d) => format!("{} · every {d}", t.title),
+                    None => t.title.clone(),
+                },
                 why: why.trim().to_string(),
                 id: t.id.clone(),
                 item: t.item.clone(),
@@ -482,7 +486,10 @@ pub fn save(server: &str, tasks: &[Task]) -> anyhow::Result<()> {
     let text = format!(
         "# Maintenance tasks: taken from a review (R on Maintenance), and built-in cadences\n\
          # changed with e (or off = true). Done is read from the maintenance log;\n\
-         # do = run <workflow> | plan <item> | audit | job <name> | by-hand. Edit freely.\n\n{}",
+         # do = run <workflow> | plan <item> | audit | job <name> | by-hand.\n\
+         # level = now | soon | routine | tidy: how soon it matters, nothing else (routine is\n\
+         # normal priority, and is shown as \"normal\"; that spelling is read too).\n\
+         # every = \"30d\": it recurs. Without it the task is done once. Edit freely.\n\n{}",
         toml::to_string(&File {
             task: tasks.to_vec()
         })?
@@ -763,10 +770,20 @@ mod tests {
         let r = recs(std::slice::from_ref(&clean), &long, None, now);
         assert!(
             r[0].why
-                .ends_with("(every 30d; not done yet, tracked since 2026-09-20)"),
+                .ends_with("(not done yet, tracked since 2026-09-20)"),
             "{}",
             r[0].why
         );
+        // That it recurs is said with its name; a task without `every` is once, and says
+        // nothing. The level is only how soon.
+        assert!(r[0].title.ends_with(" · every 30d"), "{}", r[0].title);
+        let once = Task {
+            every: None,
+            source: Source::File,
+            ..clean.clone()
+        };
+        let o = recs(std::slice::from_ref(&once), &[], None, now);
+        assert_eq!(o[0].title, once.title);
         assert_eq!(r[0].level, clean.level, "never done isn't late");
         let mine = Task {
             source: Source::File,

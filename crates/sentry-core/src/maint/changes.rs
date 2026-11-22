@@ -646,7 +646,7 @@ pub fn request_section(k: &Known, server: bool) -> String {
          [[add]]               # a task that is missing\n\
          id = \"short-slug\"\ntitle = \"What to do, in a few words\"\n\
          why = \"One or two sentences: why, and why now\"\n\
-         level = \"soon\"        # now, soon, routine or tidy\n\
+         level = \"normal\"      # how soon it matters: now, soon, normal or tidy\n\
          do = \"by-hand\"\n\
          # every = \"90d\" only for work that recurs; leave it out for once\n\
          # item = \"<item id>\" when it's about one\n\
@@ -674,7 +674,15 @@ pub fn request_section(k: &Known, server: bool) -> String {
              id = \"<item id>\"\nrisk = \"high\"\nwhy = \"…\"\n",
         );
     }
-    s.push_str(&format!("```\n`do` is one of: {}.", dos.join(", ")));
+    s.push_str(&format!(
+        "```\n`do` is one of: {}.\n\
+         `level` is priority only: `now` for what is broken or exposed, `soon` for what \
+         protects against something and shouldn't wait weeks, `normal` for everything with \
+         no hurry (most one-time checks and things to explore are `normal`), `tidy` for \
+         housekeeping nothing depends on. It never says whether a task recurs: that is \
+         `every`, and a task without it is done once.",
+        dos.join(", ")
+    ));
     s
 }
 
@@ -992,7 +1000,7 @@ mod tests {
             changes[4].label, "image cache · risk high",
             "risk is lowercased"
         );
-        assert_eq!(changes[5].label, "every 30d → every 14d · routine → soon");
+        assert_eq!(changes[5].label, "every 30d → every 14d · normal → soon");
         assert_eq!(
             changes[6].label,
             "risk high · held: 2.0 migrates the database"
@@ -1070,7 +1078,7 @@ mod tests {
         let (_, mut changes, dropped) = take(answer, &w.known(), d("2026-11-16"));
         let got: Vec<_> = changes.iter().map(|c| (c.name(), c.word())).collect();
         assert_eq!(got, [("ups", "done"), ("audit", "again")]);
-        assert_eq!(changes[1].label, "due again · routine → soon");
+        assert_eq!(changes[1].label, "due again · normal → soon");
         assert_eq!(
             dropped,
             [

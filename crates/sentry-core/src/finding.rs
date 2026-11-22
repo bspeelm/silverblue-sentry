@@ -44,3 +44,13 @@ pub struct Finding {
     #[serde(default)]
     pub listeners: Vec<String>,
 }
+
+impl Finding {
+    /// How it stands, for Claude: what the audit says, and what it saw.
+    pub fn standing(&self) -> String {
+        match self.evidence.trim() {
+            "" => self.message.clone(),
+            e => format!("{}\nevidence: {e}", self.message),
+        }
+    }
+}

@@ -7,6 +7,8 @@
 pub mod app;
 pub mod effect;
 pub mod remote;
+#[cfg(any(test, feature = "testing"))]
+pub mod resolve;
 pub mod run;
 pub mod secaudit;
 pub mod shared;

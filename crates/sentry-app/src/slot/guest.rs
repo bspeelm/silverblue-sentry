@@ -185,10 +185,6 @@ impl Slot {
             }
             Parcel::Entry(e) => {
                 self.log_event(w, *e);
-                if !self.asleep {
-                    self.refresh(w, Why::Lists);
-                    self.settle(w, Settle::Lists);
-                }
             }
             Parcel::Log { ok, body, tags } => {
                 let e = sentry_core::maint::log::LogEntry::event(
@@ -201,7 +197,6 @@ impl Slot {
                     jiff::Timestamp::now(),
                 );
                 self.log_event(w, e);
-                self.refresh(w, Why::Lists);
             }
             // ---- answers, for this slot's own session
             Parcel::Started { id, pid } => {
