@@ -3842,4 +3842,79 @@ mod tests {
         );
         assert_eq!((s.fixes, s.phase), (fixes, Phase::Thinking(Turn::Fix)));
     }
+
+    #[test]
+    fn a_request_goes_to_the_target_whose_gateway_refused_it() {
+        use crate::claude::{Access, Grant};
+        let req = |line: &str, on: Option<&str>| Grant {
+            access: Access::Run,
+            path: line.into(),
+            whole: None,
+            on: on.map(str::to_string),
+        };
+        let mut s = on_router();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "I asked for three things.");
+        s.chat.requests = vec![
+            // The server's gateway held a line that needs root: it runs on the server.
+            req("sudo ss -ltnp", Some("srv:myserver")),
+            // The router's own: here, as ever.
+            req("apk add crowdsec-firewall-bouncer", Some("net:home")),
+            // Claude Code refused a command on this machine that changes it: this machine's.
+            req("systemctl --user restart thing", None),
+        ];
+        assert!(s.can_grant());
+        // One Enter allows them; the server's sudo is made sure of first.
+        let fx = key(&mut s, KeyCode::Enter);
+        assert_eq!(fx, [Fx::On("srv:myserver".into(), Box::new(Fx::CheckSudo))]);
+        let on: Vec<Option<&str>> = s
+            .run()
+            .unwrap()
+            .plan
+            .steps
+            .iter()
+            .map(|x| x.on.as_deref())
+            .collect();
+        assert_eq!(on, [Some("srv:myserver"), None, Some("")]);
+        // A read-only command on this machine is a grant, and Claude runs it itself.
+        let mut s = on_router();
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "Asked.");
+        s.chat.requests = vec![req("uname -a", None)];
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("uname -a")),
+            "{fx:?}"
+        );
+        assert!(s.runs.is_empty());
+        // The router's rule holds for a line its gateway held, in a session that started
+        // on the server.
+        let mut s = Session::new(Ask::apply(
+            "x",
+            "ctx",
+            Apply {
+                remote: true,
+                ..Default::default()
+            },
+        ));
+        s.in_system(peer("srv:myserver", "myserver"), vec![router()]);
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, "Asked.");
+        s.chat.requests = vec![req("uci commit network", Some("net:home"))];
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("Not allowed: run uci commit network: a guarded config changes only through the guard step")),
+            "{fx:?}"
+        );
+        assert_eq!(
+            crate::claude::gateway_target("sentry-network run home -- 'uci show dhcp'").as_deref(),
+            Some("net:home")
+        );
+        assert_eq!(
+            crate::claude::gateway_target("/usr/bin/sentry server exec myserver -- ss -ltn")
+                .as_deref(),
+            Some("srv:myserver")
+        );
+        assert_eq!(crate::claude::gateway_target("ss -ltn"), None);
+    }
 }

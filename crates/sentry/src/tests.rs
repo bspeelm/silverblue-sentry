@@ -1745,3 +1745,214 @@ fn a_secret_a_plain_router_step_sets_is_a_tag_everywhere_but_on_the_router() {
         assert!(!t.contains(LITERAL), "{t}");
     }
 }
+
+/// The two disposable targets together (`scripts/live-resolution.sh up|test|down`: the
+/// sshd container whose sudo asks for a password, and the OpenWrt container, on one podman
+/// network; scratch XDG dirs). One session, started on the router, Claude's turns scripted
+/// (nothing is sent): its check (fetch a port on the server from the router) fails; the
+/// plan Claude then sends opens that port on the server with sudo, captures the token the
+/// server prints, and the router's check presents it and passes. One Enter approves that
+/// plan, the server's password is typed once, in the session's own line; the token is in
+/// no file; both targets' logs have the run. Never the real server or router.
+#[test]
+#[ignore]
+fn live_resolution() {
+    use sentry_core::apply::session::{End, Phase, Turn};
+    sentry_core::paths::use_real_dirs();
+    let (Ok(server), Ok(network), Ok(addr), Ok(pw)) = (
+        std::env::var("SENTRY_SERVER_SCRATCH"),
+        std::env::var("SENTRY_ROUTER_SCRATCH"),
+        std::env::var("SENTRY_RESOLUTION_ADDR"),
+        std::env::var("SENTRY_SERVER_SCRATCH_PASSWORD"),
+    ) else {
+        return;
+    };
+    for var in [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "SENTRY_SSH_CONFIG",
+    ] {
+        assert!(std::env::var(var).is_ok(), "{var} must be set (scratch)");
+    }
+    let password = std::fs::read_to_string(pw).unwrap().trim().to_string();
+    let (sfile, _) = sentry_server::config::load().unwrap();
+    let (sn, sc) = sentry_server::config::pick(&sfile, Some(&server)).unwrap();
+    let (nfile, _) = sentry_network::config::load().unwrap();
+    let (nn, nc) = sentry_network::config::pick(&nfile, Some(&network)).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (cfg, _) = sentry_core::config::Config::load();
+    let mut a = App::new(tx, sentry_local::tui::ID, sentry_local::tui::target(cfg));
+    a.slots[LOCAL].screen = ScreenId::Upgrade;
+    a.add(
+        &sentry_server::tui::id_of(sn),
+        sentry_server::tui::target(Remote::new(sn, sc)),
+    );
+    a.add(
+        &sentry_network::tui::id_of(nn),
+        sentry_network::tui::target(sentry_network::remote::Router::new(nn, nc)),
+    );
+    a.win.scripted_turns = true;
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: f32, until: &dyn Fn(&App) -> bool| {
+        let end = Instant::now() + std::time::Duration::from_secs_f32(secs);
+        while Instant::now() < end && !until(a) {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    let never = |_: &App| false;
+    let phase = |a: &App| a.apply_session_at(NET).map(|s| s.phase);
+    // The router has the window; the server never does.
+    key(&mut a, KeyCode::F(3));
+    assert_eq!(a.focus, NET);
+    // (What must be hidden from Claude is known once the router was read.)
+    pump(&mut a, 6.0, &never);
+    assert!(!a.started_at(SRV));
+    a.apply(vec![ask_about("reach the server's door")], Instant::now());
+    assert!(a.apply_session_at(NET).is_some(), "{}", screen(&mut a));
+    // The session woke the server, without the window changing hands.
+    assert!(a.started_at(SRV) && a.focus == NET);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(phase(&a), Some(Phase::Thinking(Turn::Investigate)));
+    // Its Claude may read on the server too, through the server's own gateway.
+    let p = a.session_profile_at(NET);
+    assert!(
+        p.allowed
+            .contains(&format!("Bash(sentry-server run {sn}:*)")),
+        "{:?}",
+        p.allowed
+    );
+    assert!(
+        p.system.contains(&format!("`srv:{sn}` (a server over ssh")),
+        "{}",
+        p.system
+    );
+
+    // The check alone: the router can't reach the port, because nothing listens there.
+    let check =
+        |token: &str| format!("wget -q -O - 'http://{addr}:8080/{token}' | grep -q door-open");
+    a.apply_answer_at(
+        NET,
+        &plan_of(&format!(
+            "[[step]]\ntitle = \"Reach the door\"\ncheck = \"{}\"\n",
+            check("none")
+        )),
+    );
+    assert_eq!(phase(&a), Some(Phase::Review), "{}", tall(&mut a));
+    key(&mut a, KeyCode::Enter);
+    pump(&mut a, 30.0, &|a| {
+        phase(a) == Some(Phase::Thinking(Turn::Fix))
+    });
+    assert_eq!(
+        phase(&a),
+        Some(Phase::Thinking(Turn::Fix)),
+        "{}",
+        tall(&mut a)
+    );
+    let sent = a.slots[NET].last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("stopped at step 1 (Reach the door), which failed"),
+        "{sent}"
+    );
+
+    // The fix is on the server: open the door there (sudo), take the token it prints,
+    // and present it from the router.
+    a.apply_answer_at(
+        NET,
+        &plan_of(&format!(
+            "[[step]]\ntitle = \"Open the door\"\non = \"srv:{sn}\"\nrun = \"sudo /usr/local/sbin/open-door\"\n\
+             capture = \"token\"\nsecret = true\n\n\
+             [[step]]\ntitle = \"Reach the door\"\ncheck = \"{}\"\n",
+            check("{{token}}")
+        )),
+    );
+    assert_eq!(phase(&a), Some(Phase::Review), "{}", tall(&mut a));
+    // ONE approval; the server's password is asked here, once.
+    key(&mut a, KeyCode::Enter);
+    pump(&mut a, 10.0, &|a| {
+        matches!(phase(a), Some(Phase::Password { .. }))
+    });
+    assert!(
+        matches!(
+            phase(&a),
+            Some(Phase::Password {
+                tries: 0,
+                checking: false
+            })
+        ),
+        "{}",
+        tall(&mut a)
+    );
+    assert!(
+        tall(&mut a).contains(&format!("sudo password (on {sn}, for step 1)")),
+        "{}",
+        tall(&mut a)
+    );
+    assert_eq!(a.focus, NET);
+    typed(&mut a, &password);
+    key(&mut a, KeyCode::Enter);
+    let mut asked_again = false;
+    let end = Instant::now() + std::time::Duration::from_secs(60);
+    while Instant::now() < end && phase(&a) != Some(Phase::Thinking(Turn::Verify)) {
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+        asked_again |= matches!(phase(&a), Some(Phase::Password { tries, .. }) if tries > 0);
+        asked_again |= a.unlock_at(SRV).is_some();
+    }
+    let view = tall(&mut a);
+    assert_eq!(phase(&a), Some(Phase::Thinking(Turn::Verify)), "{view}");
+    assert!(!asked_again, "the password was asked for once");
+    assert!(a.holds_password_at(SRV));
+    // The token the server printed: read back from the server, it is in nothing sentry
+    // shows, sends or keeps.
+    let token = Remote::new(sn, sc)
+        .output(&Remote::new(sn, sc).sh("cat /tmp/door-token"))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_eq!(token.len(), 24, "the token");
+    let sent = a.slots[NET].last_prompt.clone().unwrap();
+    assert!(
+        sent.contains("all 2 steps") && sent.contains("{{token}}"),
+        "{sent}"
+    );
+    assert!(
+        !sent.contains(&token) && !view.contains(&token),
+        "{sent}\n{view}"
+    );
+    assert!(
+        view.contains("‹token: hidden›") || view.contains("kept as {{token}} (hidden)"),
+        "{view}"
+    );
+    a.apply_answer_at(NET, DONE);
+    assert_eq!(phase(&a), Some(Phase::Settled(End::Done)));
+    pump(&mut a, 1.0, &never);
+    // Both targets' logs have the run.
+    let run = format!("run:{}", a.apply_session_at(NET).unwrap().run_id);
+    for (scope, with) in [
+        (sentry_network::tui::id_of(nn), format!("with:srv:{sn}")),
+        (sn.to_string(), format!("with:net:{nn}")),
+    ] {
+        let log = sentry_core::maint::log::list(&scope);
+        let e = log
+            .iter()
+            .find(|e| e.head.tags.contains(&run))
+            .unwrap_or_else(|| panic!("{scope}: no log entry tagged {run}"));
+        assert!(e.head.tags.contains(&with), "{scope}: {:?}", e.head.tags);
+        assert!(
+            !e.body.contains(&token) && !e.body.contains(&password),
+            "{}",
+            e.body
+        );
+    }
+    assert_eq!(files_with(&token), Vec::<std::path::PathBuf>::new());
+    assert_eq!(files_with(&password), Vec::<std::path::PathBuf>::new());
+    println!(
+        "live_resolution: one plan, two targets; the token went from the server to the router unseen"
+    );
+}

@@ -278,7 +278,10 @@ up() {
   dir=$(mktemp -d "${TMPDIR:-/tmp}/sentry-router.XXXXXXXX")
   touch "$dir/.sentry-router"
   c="sentry-router-${dir##*.}"
+  # SENTRY_LIVE_NET: a podman network to join (scripts/live-resolution.sh: it must reach
+  # the server container beside it).
   "${P[@]}" run -d --name "$c" --label "$LABEL=1" --label "$LABEL.dir=$dir" \
+    ${SENTRY_LIVE_NET:+--network "$SENTRY_LIVE_NET"} \
     -p 127.0.0.1::22 "$IMAGE" /sbin/init >/dev/null
   port=$("${P[@]}" port "$c" 22/tcp | head -n1)
   port=${port##*:}
