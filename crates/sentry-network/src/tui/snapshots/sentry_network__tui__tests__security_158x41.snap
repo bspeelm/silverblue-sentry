@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security 1   6 Maintenance   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Ingress · from outside ──────────────────────────────────────────────┐┌ Egress · 6 devices · 11 live flows · new connections out 180/min, all zones ───────┐
+│ rejected   21/min                             █ 31.2k since 1d ago   ││ device                  zone  flows dests top ports                     ↑        ↓ │
+│ forward        port       to                     new/min  total live ││ nas                     lan       4     3 443×3 993                 29.0K     411K │
+│ web        tcp 443        203.0.113.93:443           2.0   5212    2 ││ ! 192.0.2.77            lan       2     2 23×2                       1.1K     1.4K │
+│ game       udp 8000-8010  192.0.2.20:8000-8010         0     77    0 ││ desk                    lan       2     2 22 u443                   45.9K     606K │
+│ ssh logins 2 from here · 1 from named devices · 1 from elsewhere     ││ ~02:00:5e:00:53:21      lan       1     1 5223                       8.8K    11.7K │
+│            3 refused · 1 left before logging in · in the last 2h 50m ││ ~phone                  lan       1     1 u443                       2.4K     7.4K │
+└──────────────────────────────────────────────────────────────────────┘│ web                     dmz       1     1 443                        2.1K     8.6K │
+┌ DNS ─────────────────────────────────────────────────────────────────┐│                                                                                    │
+│ queries    forwarded 12/min · answered locally 8.0/min               ││                                                                                    │
+│            37.6k / 20.2k since dnsmasq started                       ││                                                                                    │
+│ forced     on (ports 53, 853)                                        ││                                                                                    │
+│ DoT tries  0/min rejected · 1640 since 1d ago                        ││                                                                                    │
+│ blocklist  104200 names · 14d old · not updated by itself            ││                                                                                    │
+│ DoH proxy  running                                                   ││                                                                                    │
+└──────────────────────────────────────────────────────────────────────┘│                                                                                    │
+┌ Wi-Fi ───────────────────────────────────────────────────────────────┐│                                                                                    │
+│ radio0  sae-mixed  MFP optional WPS off 2 stations · 1 without MFP   ││                                                                                    │
+│ radio1  sae        MFP required WPS off 1 station                    ││                                                                                    │
+│ log     2 joined · 1 left · 2 wrong passphrases · in the last 2h 50m ││                                                                                    │
+└──────────────────────────────────────────────────────────────────────┘│                                                                                    │
+┌ Worth a look · 5 ────────────────────────────────────────────────────┐│                                                                                    │
+│ ! 3 refused ssh login(s) in the log window                           ││                                                                                    │
+│ ! 192.0.2.77 has flows out to tcp/23                                 ││                                                                                    │
+│ ! 1 ssh login(s) from an address no named device has                 │└────────────────────────────────────────────────────────────────────────────────────┘
+│ ! 2 wrong Wi-Fi passphrase(s) in the log window                      │┌ Segmentation · nothing crosses what the firewall keeps apart ──────────────────────┐
+│ ! 1 station(s) without management frame protection                   ││ lan→wan     allowed                     9 live flows                               │
+└──────────────────────────────────────────────────────────────────────┘│ lan→dmz     allowed                     1 live flow                                │
+                                                                        │ wan→lan     only Allow-ICMPv6-Forward   none now                                   │
+                                                                        │ wan→dmz     only Allow-ICMPv6-Forward   2 through forwards                         │
+                                                                        │ dmz→lan     rejected                    none now                                   │
+                                                                        │ dmz→wan     allowed                     1 live flow                                │
+                                                                        │ rejected pairs: live flows only. Blocked tries have no counter on this firewall.   │
+                                                                        └────────────────────────────────────────────────────────────────────────────────────┘
+ counters since 1d ago · log window 2h 50m · 212 of 16384 connections tracked, 20 listed
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  its flows   s  sort   /  filter   r  read again   A  ask Claude   ?  help   q  quit

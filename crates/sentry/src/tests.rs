@@ -892,6 +892,7 @@ fn the_strip_has_a_network_as_its_third_target() {
     assert!(
         tabs.contains("1 Dashboard")
             && tabs.contains("2 Clients")
+            && tabs.contains("4 Security")
             && tabs.contains("6 Maintenance")
             && tabs.contains("0 Upgrade")
             && !tabs.contains("Processes"),
@@ -910,9 +911,10 @@ fn the_strip_has_a_network_as_its_third_target() {
     insta::assert_snapshot!("strip_network_in_view_158", top(&mut a, 158));
     let s = screen(&mut a);
     assert!(s.contains("Example Router AX") && s.contains("● 1G"), "{s}");
-    // The digits are the network's: 2 is its Clients, 3 its own Network, 6 its
-    // Maintenance, 0 its workflows; 4 and 5 are nothing there.
-    for c in ['4', '5'] {
+    // The digits are the network's: 2 is its Clients, 3 its own Network, 4 its Security
+    // (where the others have Containers), 6 its Maintenance, 0 its workflows; 5 and 7
+    // are nothing there.
+    for c in ['5', '7'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
     }
@@ -920,6 +922,7 @@ fn the_strip_has_a_network_as_its_third_target() {
         ('0', ScreenId::Upgrade),
         ('2', ScreenId::Clients),
         ('3', ScreenId::Net),
+        ('4', ScreenId::Security),
         ('6', ScreenId::Maint),
         ('1', ScreenId::Dash),
     ] {

@@ -58,6 +58,15 @@ pub enum Kind {
     Lookup,
     /// The config backups against the router's files now.
     Backup,
+    /// What the firewall has counted, how full the connection table is, dnsmasq's
+    /// counters: Security's 10 s read.
+    Counters,
+    /// The connections tracked now.
+    Flows,
+    /// Logins and Wi-Fi joins in the router's log ring.
+    SecLog,
+    /// The blocklist's and the DNS proxy's own status, where the router has them.
+    DnsState,
 }
 
 /// What a fetch thread sends back: the kind, and what it read or why it couldn't.
@@ -77,6 +86,10 @@ pub enum Payload {
     Updates(Updates),
     Upstream(Option<Box<Cached<Upstream>>>),
     Backup(Box<crate::backup::Status>),
+    Counters(Box<collect::counters::Counters>),
+    Flows(Box<collect::flows::Flows>),
+    SecLog(Box<collect::seclog::SecLog>),
+    DnsState(Box<collect::dnsstate::DnsState>),
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -163,6 +176,16 @@ pub struct Store {
     pub upstream: Slot<Option<Cached<Upstream>>>,
     /// The config backups against the router now.
     pub backup: Slot<crate::backup::Status>,
+    /// Security: the firewall's counters as last read, and their rates since the read
+    /// before (on the router's clock).
+    pub counters: Slot<collect::counters::Counters>,
+    counter_rates: crate::security::CounterRates,
+    pub rated: crate::security::Rated,
+    /// Unsolicited packets from outside rejected, per minute, one value a read.
+    pub rejects: Ring,
+    pub flows: Slot<collect::flows::Flows>,
+    pub seclog: Slot<collect::seclog::SecLog>,
+    pub dnsstate: Slot<collect::dnsstate::DnsState>,
     /// `seen.toml` was written by an audit since it was read here.
     seen_stale: bool,
     /// The clients were read and the list isn't made of that read yet (it waits for the
@@ -228,6 +251,10 @@ impl Store {
                 Kind::Updates | Kind::Refresh => self.updates.err = Some(e),
                 Kind::Upstream | Kind::Lookup => self.upstream.err = Some(e),
                 Kind::Backup => self.backup.err = Some(e),
+                Kind::Counters => self.counters.err = Some(e),
+                Kind::Flows => self.flows.err = Some(e),
+                Kind::SecLog => self.seclog.err = Some(e),
+                Kind::DnsState => self.dnsstate.err = Some(e),
             },
             Ok(p) => {
                 if !matches!(
@@ -254,6 +281,10 @@ impl Store {
                     Payload::Updates(u) => self.updates.set(u),
                     Payload::Upstream(u) => self.upstream.set(u.map(|u| *u)),
                     Payload::Backup(b) => self.backup.set(*b),
+                    Payload::Counters(c) => self.on_counters(*c),
+                    Payload::Flows(f) => self.flows.set(*f),
+                    Payload::SecLog(l) => self.seclog.set(*l),
+                    Payload::DnsState(d) => self.dnsstate.set(*d),
                 }
             }
         }
@@ -286,6 +317,28 @@ impl Store {
             self.boot_id = Some(p.host.boot_id.clone());
         }
         self.probe.set(p);
+    }
+
+    /// A read of the counters: its rates against the read before, and the uplink's
+    /// rejects per minute for the row's sparkline (a read with no rate adds nothing).
+    fn on_counters(&mut self, c: collect::counters::Counters) {
+        self.rated = self.counter_rates.feed(&c);
+        if self.rated.reset {
+            self.rejects = Ring::default();
+        }
+        let rate = crate::security::Picture::of(&crate::security::Read {
+            ifaces: self.ifaces.value.as_ref(),
+            uci: self.uci.value.as_ref(),
+            counters: Some(&c),
+            rated: Some(&self.rated),
+            ..Default::default()
+        })
+        .wan_rejects
+        .and_then(|x| x.rate);
+        if let Some(r) = rate {
+            self.rejects.push(r * 60.0);
+        }
+        self.counters.set(c);
     }
 
     /// Reports read from disk: the newest is the latest audit, and what it read stands in
@@ -406,5 +459,9 @@ fn run(k: Kind, r: &Router) -> Result<Payload, CollectError> {
             let uci = collect::uci::collect(r).ok();
             Payload::Backup(Box::new(crate::backup::status(r, uci.as_ref())?))
         }
+        Kind::Counters => Payload::Counters(Box::new(collect::counters::collect(r)?)),
+        Kind::Flows => Payload::Flows(Box::new(collect::flows::collect(r)?)),
+        Kind::SecLog => Payload::SecLog(Box::new(collect::seclog::collect(r)?)),
+        Kind::DnsState => Payload::DnsState(Box::new(collect::dnsstate::collect(r)?)),
     })
 }

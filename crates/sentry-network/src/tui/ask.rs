@@ -439,6 +439,213 @@ fn ask_run(v: &View, s: &Session) -> Ask {
     )
 }
 
+/// The Security screen as text for a prompt. Counts, ports and inside names only: the far
+/// end of a flow, and where a login came from, never leave this machine (a device's row
+/// says how many far ends, the log's rows how many addresses). What is left still goes
+/// through the scrubbing like everything else.
+pub fn security_brief(v: &View) -> String {
+    use super::screens::security::{num, per_min, picture};
+    use crate::security::{Allowed, Mfp};
+    let p = picture(v);
+    let s = v.s;
+    let since = s
+        .counters
+        .value
+        .as_ref()
+        .map_or(String::new(), |c| match c.reset_at {
+            Some(at) => format!(
+                " since the firewall was loaded {}",
+                sentry_core::fmt::ago(c.now - at)
+            ),
+            None => " since the firewall last reloaded".into(),
+        });
+    let window = match p.log.as_ref().and_then(|l| l.window_s) {
+        Some(w) => format!("the last {}", super::screens::span(w)),
+        None => "the log".into(),
+    };
+    let mut out = vec![
+        "What sentry reads on the router about what flows through it. These are the \
+         firewall's own counters and the connections tracked right now: not intrusion \
+         detection, no packet contents, no history."
+            .to_string(),
+        String::new(),
+        "Ingress:".into(),
+    ];
+    match p.wan_rejects {
+        Some(c) => out.push(format!(
+            "- unsolicited packets from outside rejected: {}/min now, {}{since} (packets, \
+             not attackers; background scanning is normal)",
+            per_min(c.rate),
+            num(c.total)
+        )),
+        None => out.push("- no counter for what the uplink rejects".into()),
+    }
+    for f in &p.forwards {
+        out.push(format!(
+            "- port forward {} ({} {} → {}): {} new connections/min, {} in all, {} live now",
+            f.name,
+            f.proto,
+            f.port,
+            f.to,
+            per_min(f.new.and_then(|c| c.rate)),
+            f.new.map_or("uncounted".into(), |c| num(c.total)),
+            f.live.map_or("unknown".into(), |n| n.to_string()),
+        ));
+    }
+    if let Some(l) = &p.log {
+        out.push(format!(
+            "- ssh logins in {window}: {} from this machine (sentry's own), {} from named \
+             devices, {} from {} other address(es); {} refused from {} address(es); {} \
+             connection(s) left before logging in",
+            l.ssh_own,
+            l.ssh_known,
+            l.unknown(),
+            l.ssh_unknown.len(),
+            l.failed(),
+            l.ssh_failed.len(),
+            l.ssh_left
+        ));
+    }
+    out.push(String::new());
+    out.push(
+        "Egress (devices with live flows now; bytes are those flows' so far, not totals):".into(),
+    );
+    if s.flows.value.is_none() {
+        out.push("- (the connection table wasn't read)".into());
+    }
+    for d in p.devices.iter().take(40) {
+        let odd: Vec<String> = d.odd().map(|f| format!("{}/{}", f.proto, f.port)).collect();
+        out.push(format!(
+            "- {} · {} · {} flow(s) to {} far end(s) · ports {} · up {} down {}{}",
+            d.label,
+            d.zone,
+            d.flows,
+            d.dests,
+            d.top_ports(6),
+            d.up.map_or("?".into(), sentry_core::fmt::bytes_short),
+            d.down.map_or("?".into(), sentry_core::fmt::bytes_short),
+            if odd.is_empty() {
+                String::new()
+            } else {
+                format!(" · marked: {}", odd.join(", "))
+            }
+        ));
+    }
+    if let Some(m) = &p.matrix {
+        out.push(String::new());
+        out.push(
+            "Segmentation (the firewall as configured, and live flows now; tries it blocked \
+             between inside zones are not counted on this firewall):"
+                .into(),
+        );
+        for x in m {
+            out.push(format!(
+                "- {}→{}: {} · {} live flow(s){}",
+                x.from,
+                x.to,
+                match &x.allowed {
+                    Allowed::Yes => "allowed".to_string(),
+                    Allowed::Rules(r) => format!("only by rule(s) {}", r.join(", ")),
+                    Allowed::No => "rejected".to_string(),
+                },
+                x.flows,
+                match x.forwarded {
+                    0 => String::new(),
+                    n => format!(" · {n} more through port forwards"),
+                }
+            ));
+        }
+    }
+    out.push(String::new());
+    out.push(
+        "DNS (dnsmasq has no count of blocked names: they are inside \"answered locally\"; \
+         DNS over HTTPS to other resolvers can't be seen):"
+            .into(),
+    );
+    if let Some(d) = s.counters.value.as_ref().and_then(|c| c.dns) {
+        let (f, a) = s
+            .rated
+            .dns
+            .map_or((None, None), |(f, a)| (Some(f), Some(a)));
+        out.push(format!(
+            "- queries forwarded {}/min, answered locally {}/min ({} / {} since dnsmasq started)",
+            per_min(f),
+            per_min(a),
+            num(d.forwarded),
+            num(d.local)
+        ));
+    }
+    if !p.upstreams.is_empty() {
+        out.push(format!("- upstreams: {}", p.upstreams.join(", ")));
+    }
+    if let Some(on) = p.forced_dns {
+        out.push(format!(
+            "- DNS forced to the router: {}",
+            if on { "on" } else { "off" }
+        ));
+    }
+    if let Some(d) = p.dot {
+        out.push(format!(
+            "- DNS over TLS tries rejected: {}/min now, {}{since}",
+            per_min(d.rate),
+            num(d.total)
+        ));
+    }
+    if let Some(d) = &s.dnsstate.value {
+        if let Some(b) = &d.blocklist {
+            out.push(format!(
+                "- blocklist (adblock-fast): {}, {} names, {} old, updates by itself: {}",
+                if b.running { "running" } else { "not running" },
+                b.entries.map_or("?".into(), |n| n.to_string()),
+                d.list_age_days()
+                    .map_or("?".into(), |n| format!("{n} days")),
+                match b.auto_update {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "unknown",
+                }
+            ));
+        }
+        if let Some(x) = &d.proxy {
+            out.push(format!(
+                "- DNS over HTTPS proxy: {}",
+                if x.running { "running" } else { "not running" }
+            ));
+        }
+    }
+    if !p.aps.is_empty() {
+        out.push(String::new());
+        out.push("Wi-Fi:".into());
+        for a in &p.aps {
+            out.push(format!(
+                "- {}: {} · management frame protection {} · WPS {} · {} station(s){}",
+                a.device,
+                a.encryption,
+                a.mfp.word(),
+                if a.wps { "on" } else { "off" },
+                a.stations.map_or("?".into(), |n| n.to_string()),
+                if a.without_mfp > 0 && a.mfp != Mfp::Off {
+                    format!(", {} without it", a.without_mfp)
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        if let Some(l) = &p.log {
+            out.push(format!(
+                "- in {window}: {} joined, {} left, {} wrong passphrase(s)",
+                l.wifi_connects, l.wifi_disconnects, l.wifi_auth_failed
+            ));
+        }
+    }
+    if !p.marks.is_empty() {
+        out.push(String::new());
+        out.push("What sentry marked as worth a look (hints, not findings):".into());
+        out.extend(p.marks.iter().map(|m| format!("- {}", m.text())));
+    }
+    out.join("\n")
+}
+
 /// What `A` asks on the screen in view. Err: why there's nothing to ask (or it can't be
 /// asked yet).
 pub fn ask_for(screen: ScreenId, v: &View) -> Result<Ask, String> {
@@ -473,6 +680,12 @@ pub fn ask_for(screen: ScreenId, v: &View) -> Result<Ask, String> {
                 "How is this router's upkeep? What should I do first?",
             ),
         },
+        ScreenId::Security => Ask::new(
+            format!("{} · security", v.name),
+            format!("{h}{}", security_brief(v)),
+            "Is anything here worth worrying about? What would you look at first, and what \
+             would tell me more than these numbers can?",
+        ),
         ScreenId::Clients => {
             let list: Vec<String> =
                 v.s.clients

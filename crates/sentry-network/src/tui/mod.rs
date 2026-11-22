@@ -1,5 +1,5 @@
-//! A network in sentry's TUI: its router's Dashboard, Clients, Network, Maintenance and
-//! History, everything fetched over ssh
+//! A network in sentry's TUI: its router's Dashboard, Clients, Network, Security,
+//! Maintenance and History, everything fetched over ssh
 //! while you watch (the window itself is opened by the `sentry` binary, with the network as
 //! one of its targets). The app (the frame, sessions, records, the workflow run) is
 //! `sentry_app`'s; what's here is the network as its target ([`target::NetworkTarget`]).
@@ -18,13 +18,15 @@ pub use sentry_app::{App, Event};
 pub use target::NetworkTarget;
 
 /// The network target's screens, with sentry's numbers and names: `1` Dashboard, `2`
-/// Clients, `3` Network, `6` Maintenance, `0` Upgrade (its workflows, and the run) and `H`
+/// Clients, `3` Network, `4` Security (what flows through the router: read-only), `6`
+/// Maintenance, `0` Upgrade (its workflows, and the run) and `H`
 /// History (in the strip once something was recorded).
 pub const SCREENS: ScreenSet = ScreenSet {
     ids: &[
         ScreenId::Dash,
         ScreenId::Clients,
         ScreenId::Net,
+        ScreenId::Security,
         ScreenId::Maint,
         ScreenId::Upgrade,
         ScreenId::Hist,
@@ -124,6 +126,10 @@ pub mod testing {
                 Kind::Upstream => "upstream",
                 Kind::Lookup => "lookup",
                 Kind::Backup => "backup",
+                Kind::Counters => "counters",
+                Kind::Flows => "flows",
+                Kind::SecLog => "seclog",
+                Kind::DnsState => "dnsstate",
             })
             .collect()
     }

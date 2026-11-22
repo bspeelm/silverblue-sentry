@@ -336,6 +336,81 @@ pub fn check(name: Option<&str>) -> u8 {
         }),
         t,
     );
+    // What Security reads: counts only are printed here.
+    let t = Instant::now();
+    timed(
+        "counters",
+        collect::counters::collect(&r).map(|c| {
+            format!(
+                "{} · {} · {}",
+                match &c.rules {
+                    Some(r) => format!("{} counted rules", r.len()),
+                    None => "no fw4 table".to_string(),
+                },
+                match c.conntrack {
+                    Some((n, max)) => format!("{n} of {max} connections tracked"),
+                    None => "no connection tracking".to_string(),
+                },
+                match c.dns {
+                    Some(_) => "dnsmasq counts",
+                    None => "no dnsmasq counters",
+                }
+            )
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "flows",
+        collect::flows::collect(&r).map(|f| {
+            format!(
+                "{} live flows · accounting {}",
+                f.flows.len(),
+                match f.acct {
+                    Some(true) => "on",
+                    Some(false) => "off",
+                    None => "unknown",
+                }
+            )
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "log",
+        collect::seclog::collect(&r).map(|l| {
+            format!(
+                "{} lines · {} · {} ssh and Wi-Fi events",
+                l.lines,
+                match l.window_s() {
+                    Some(w) => format!("{}h {}m back", w / 3600, (w % 3600) / 60),
+                    None => "no window".to_string(),
+                },
+                l.events.len()
+            )
+        }),
+        t,
+    );
+    let t = Instant::now();
+    timed(
+        "dns filter",
+        collect::dnsstate::collect(&r).map(|d| {
+            format!(
+                "{} · {}",
+                match d.blocklist.as_ref().map(|b| b.entries) {
+                    Some(Some(n)) => format!("blocklist {n} names"),
+                    Some(None) => "blocklist".to_string(),
+                    None => "no adblock-fast".to_string(),
+                },
+                match &d.proxy {
+                    Some(p) if p.force_dns => "DNS forced",
+                    Some(_) => "https-dns-proxy",
+                    None => "no https-dns-proxy",
+                }
+            )
+        }),
+        t,
+    );
     // What Maintenance reads about its items.
     let t = Instant::now();
     timed(

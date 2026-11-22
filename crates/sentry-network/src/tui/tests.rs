@@ -508,7 +508,7 @@ fn claude_is_offered_once_what_must_be_hidden_is_known() {
     let _turn = runs();
     let mut a = app();
     // The digits of screens it doesn't have do nothing.
-    for c in ['4', '5', '7'] {
+    for c in ['5', '7'] {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.slot().screen, ScreenId::Dash, "{c}");
     }
@@ -516,7 +516,7 @@ fn claude_is_offered_once_what_must_be_hidden_is_known() {
     assert!(s.contains("0 Upgrade") && !s.contains("Containers"), "{s}");
     // Claude is offered on every screen: in the key bar, and in `?`. Auto mode's key is
     // named where work is started and followed (Maintenance and the run's screen).
-    for c in ['1', '2', '3', '6', '0'] {
+    for c in ['1', '2', '3', '4', '6', '0'] {
         key(&mut a, KeyCode::Char(c));
         let s = render_to_string(&mut a, 200, 41);
         let bar = s.lines().last().unwrap();
@@ -4136,4 +4136,935 @@ fn a_series_over_a_by_hand_task_and_a_workflow() {
     assert!(a.apply_session().is_none(), "the session closed");
     let run = a.slot().run.as_ref().expect("the workflow started");
     assert_eq!(run.wf().name, "config-backup");
+}
+
+// ── Security: what flows through the router ────────────────────────────────────────────
+
+use crate::collect::{counters, dnsstate, flows, seclog};
+
+fn the_counters() -> counters::Counters {
+    counters::parse(&fixture("network/counters.txt")).unwrap()
+}
+
+/// The counters `secs` later by the router's clock: the uplink rejected 21 packets a
+/// minute, the web forward took 2 connections a minute, and the rest stood still.
+fn counters_later(secs: u64) -> counters::Counters {
+    use counters::Role;
+    let mut c = the_counters();
+    c.uptime += secs as f64;
+    c.now += secs as i64;
+    for r in c.rules.as_mut().unwrap() {
+        match &r.role {
+            Role::RejectFrom { zone } if zone == "wan" => r.packets += secs * 21 / 60,
+            Role::Dnat { proto, .. } if proto == "tcp" => r.packets += secs * 2 / 60,
+            Role::AcceptTo { zone } if zone == "wan" => r.packets += secs * 3,
+            _ => {}
+        }
+    }
+    if let Some(d) = c.dns.as_mut() {
+        d.forwarded += secs * 12 / 60;
+        d.local += secs * 8 / 60;
+    }
+    c
+}
+
+fn the_flows() -> flows::Flows {
+    flows::parse(&format!("@acct 1\n{}", fixture("network/conntrack.txt")))
+}
+
+/// Everything Security reads, on top of what the other screens read: two reads of the
+/// counters a minute apart, the flows, the log and the packages' status.
+fn secured_with(mut a: App, f: flows::Flows) -> App {
+    for secs in [0, 60] {
+        data(
+            &mut a,
+            Kind::Counters,
+            Ok(Payload::Counters(Box::new(counters_later(secs)))),
+        );
+    }
+    data(&mut a, Kind::Flows, Ok(Payload::Flows(Box::new(f))));
+    data(
+        &mut a,
+        Kind::SecLog,
+        Ok(Payload::SecLog(Box::new(seclog::parse(&fixture(
+            "network/logread.txt",
+        ))))),
+    );
+    data(
+        &mut a,
+        Kind::DnsState,
+        Ok(Payload::DnsState(Box::new(
+            dnsstate::parse(&fixture("network/dnsstate.txt")).unwrap(),
+        ))),
+    );
+    a
+}
+
+fn secured() -> App {
+    secured_with(full(), the_flows())
+}
+
+#[test]
+fn security_wide() {
+    let mut a = secured();
+    let s = screen(&mut a, '4', 158, 41);
+    insta::assert_snapshot!("security_158x41", s);
+    // The strip has it, between Network and Maintenance, with nothing beside its name
+    // while nothing says the separation or a login failed... here a login was refused.
+    let tabs = s.lines().nth(1).unwrap();
+    assert!(
+        tabs.contains("3 Network   4 Security 1   6 Maintenance"),
+        "{tabs}"
+    );
+    // Ingress: what the uplink rejected, as a rate from two reads and a total with since
+    // when; each forward with new connections and who is connected through it now.
+    let rej = line(&s, "│ rejected");
+    assert!(
+        rej.contains("21/min") && rej.contains("31.2k since 1d ago"),
+        "{rej}"
+    );
+    let web = line(&s, "│ web");
+    assert!(
+        web.contains("tcp") && web.contains("203.0.113.93:443") && web.contains("2.0"),
+        "{web}"
+    );
+    assert!(web.contains("5212    2 │"), "two live: {web}");
+    assert!(line(&s, "│ game").contains("8000-8010"), "{s}");
+    // ssh: this machine's own logins are a count; the refused ones show.
+    let ssh = line(&s, "ssh logins");
+    assert!(
+        ssh.contains("2 from here · 1 from named devices · 1 from elsewhere"),
+        "{ssh}"
+    );
+    assert!(
+        line(&s, "3 refused").contains("1 left before logging in · in the last 2h 50m"),
+        "{s}"
+    );
+    // Egress: a row a device, most flows first; the counter every zone shares is said to
+    // be that.
+    assert!(
+        s.contains("Egress · 6 devices · 11 live flows · new connections out 180/min, all zones"),
+        "{s}"
+    );
+    let nas = line(&s, "│ nas");
+    assert!(nas.contains("lan") && nas.contains("443×3 993"), "{nas}");
+    assert!(line(&s, "! 192.0.2.77").contains("23×2"), "{s}");
+    assert!(
+        s.contains("~phone"),
+        "a private address, as Clients shows it: {s}"
+    );
+    // Segmentation: as configured, with what is observed now.
+    assert!(
+        line(&s, "lan→wan").contains("allowed") && line(&s, "lan→wan").contains("9 live flows")
+    );
+    let apart = line(&s, "dmz→lan");
+    assert!(
+        apart.contains("rejected") && apart.contains("none now"),
+        "{apart}"
+    );
+    assert!(line(&s, "wan→dmz").contains("2 through forwards"), "{s}");
+    assert!(
+        s.contains("nothing crosses what the firewall keeps apart"),
+        "{s}"
+    );
+    assert!(
+        s.contains("Blocked tries have no counter on this firewall."),
+        "{s}"
+    );
+    // DNS: forwarded and answered locally, never "blocked N".
+    let q = line(&s, "│ queries");
+    assert!(
+        q.contains("forwarded 12/min") && q.contains("answered locally 8.0/min"),
+        "{q}"
+    );
+    let counted = |l: &str| {
+        l.split("blocked ")
+            .skip(1)
+            .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    };
+    assert!(!s.to_lowercase().lines().any(counted), "{s}");
+    assert!(line(&s, "│ forced").contains("on (ports 53, 853)"), "{s}");
+    assert!(line(&s, "│ DoT tries").contains("0/min rejected · 1640 since 1d ago"));
+    let list = line(&s, "│ blocklist");
+    assert!(
+        list.contains("104200 names · 14d old · not updated by itself"),
+        "{list}"
+    );
+    // Wi-Fi: how each access point is set, who is on it, and the log's window.
+    let ap = line(&s, "│ radio0");
+    assert!(
+        ap.contains("sae-mixed")
+            && ap.contains("MFP optional")
+            && ap.contains("WPS off")
+            && ap.contains("2 stations · 1 without MFP"),
+        "{ap}"
+    );
+    assert!(
+        line(&s, "│ log").contains("2 joined · 1 left · 2 wrong passphrases · in the last 2h 50m"),
+        "{s}"
+    );
+    // The footer: when the counters started, the window, the table.
+    let foot = line(&s, "counters since");
+    assert!(
+        foot.contains("counters since 1d ago · log window 2h 50m · 212 of 16384 connections tracked, 20 listed"),
+        "{foot}"
+    );
+    // The marks, in words.
+    assert!(s.contains("Worth a look · 5"), "{s}");
+    assert!(
+        s.contains("! 3 refused ssh login(s) in the log window"),
+        "{s}"
+    );
+    // No key here changes anything: the bar names only looking.
+    let bar = s.lines().last().unwrap();
+    assert!(
+        bar.contains("Enter  its flows")
+            && bar.contains("s  sort")
+            && bar.contains("r  read again"),
+        "{bar}"
+    );
+    for k in ["block", "kick", "x  ", "b  "] {
+        assert!(!bar.contains(k), "{k} in {bar}");
+    }
+    // `?`: what each number is, and what it is not.
+    key(&mut a, KeyCode::Char('?'));
+    let help = render_to_string(&mut a, 158, 41);
+    for what in [
+        "packets, not attackers",
+        "never traffic",
+        "one that ended is gone: no totals",
+        "blocked tries between inside zones: not counted",
+        "other DoH can't be seen",
+        "sentry's own logins left out",
+    ] {
+        assert!(help.contains(what), "{what}: {help}");
+    }
+}
+
+#[test]
+fn security_narrow() {
+    let mut a = secured();
+    let s = screen(&mut a, '4', 80, 24);
+    insta::assert_snapshot!("security_80x24", s);
+    assert!(s.lines().all(|l| l.chars().count() <= 80));
+    // What matters most stays: who goes out, and what came in.
+    assert!(s.contains("Egress") && s.contains("│ nas"), "{s}");
+    assert!(s.contains("Ingress") && s.contains("│ rejected"), "{s}");
+    assert!(line(&s, "dmz→lan").contains("none now"), "{s}");
+    // The least important is dropped first.
+    assert!(!s.contains("Wi-Fi"), "{s}");
+}
+
+#[test]
+fn security_with_a_flow_from_the_dmz_into_the_lan() {
+    let mut f = the_flows();
+    f.flows.extend(
+        flows::parse(&crate::security::tests::line(
+            "tcp",
+            "203.0.113.93",
+            "192.0.2.10",
+            445,
+            "192.0.2.10",
+        ))
+        .flows,
+    );
+    let mut a = secured_with(full(), f);
+    // The Dashboard says so, from what was last read.
+    let dash = render_to_string(&mut a, 158, 41);
+    assert!(
+        line(&dash, "│ security").contains("dmz→lan 1 live"),
+        "{dash}"
+    );
+    let s = screen(&mut a, '4', 158, 41);
+    insta::assert_snapshot!("security_crossing_158x41", s);
+    let row = line(&s, "dmz→lan");
+    assert!(
+        row.contains("rejected")
+            && row.contains("1 live flow")
+            && row.contains("≠ should have been refused"),
+        "{row}"
+    );
+    assert!(s.contains("Segmentation · 1 crossing(s)"), "{s}");
+    assert!(
+        s.contains("! 1 live flow(s) from dmz into lan, which the firewall doesn't join"),
+        "{s}"
+    );
+    // The DMZ's server is a device with a flow into another zone: its row, and its box.
+    assert!(s.lines().nth(1).unwrap().contains("4 Security 2"), "{s}");
+}
+
+#[test]
+fn security_with_everything_optional_absent() {
+    // A router with no fw4 table, no dnsmasq counters, neither package, an empty log and
+    // an empty table without accounting; and nothing wireless.
+    let cfg = fx_cfg();
+    let mut a = full_with(&cfg, |c| {
+        let mut s = audit::tests::snap(c);
+        let text: String = fixture("network/uci.txt")
+            .lines()
+            .filter(|l| !l.starts_with("wireless.") && !l.starts_with("firewall.@redirect"))
+            .filter(|l| !l.starts_with("firewall.web_https"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        s.uci = Some(crate::collect::uci::parse(
+            &text,
+            &crate::redact::Salt::fixed([7; 16]),
+        ));
+        s
+    });
+    for _ in 0..2 {
+        data(
+            &mut a,
+            Kind::Counters,
+            Ok(Payload::Counters(Box::new(
+                counters::parse(&fixture("network/counters-bare.txt")).unwrap(),
+            ))),
+        );
+    }
+    data(
+        &mut a,
+        Kind::Flows,
+        Ok(Payload::Flows(Box::new(flows::parse("@acct \n")))),
+    );
+    data(
+        &mut a,
+        Kind::SecLog,
+        Ok(Payload::SecLog(Box::new(seclog::parse(
+            "@@me\n\n@@now\n\n@@log\n",
+        )))),
+    );
+    data(
+        &mut a,
+        Kind::DnsState,
+        Ok(Payload::DnsState(Box::new(
+            dnsstate::parse(&fixture("network/dnsstate-bare.txt")).unwrap(),
+        ))),
+    );
+    let s = screen(&mut a, '4', 158, 41);
+    insta::assert_snapshot!("security_bare_158x41", s);
+    // Absent is said, or left out; nothing is a zero that wasn't counted.
+    assert!(
+        s.contains("no fw4 table on this router: nothing is counted"),
+        "{s}"
+    );
+    assert!(s.contains("no port is forwarded"), "{s}");
+    assert!(s.contains("dnsmasq publishes no counters here"), "{s}");
+    assert!(s.contains("no access point is switched on"), "{s}");
+    assert!(s.contains("no device has a live flow out right now"), "{s}");
+    for gone in [
+        "blocklist",
+        "DoH proxy",
+        "DoT tries",
+        "│ forced",
+        "0/min",
+        "connections tracked",
+    ] {
+        assert!(!s.contains(gone), "{gone}: {s}");
+    }
+    assert!(
+        !s.contains("counters since"),
+        "nothing counted, no since: {s}"
+    );
+    // A table whose state file is gone: counted, since when unknown.
+    let mut c = the_counters();
+    c.reset_at = None;
+    let mut b = full();
+    data(&mut b, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+    let since = screen(&mut b, '4', 158, 41);
+    assert!(
+        since.contains("31.2k since the firewall last reloaded"),
+        "{since}"
+    );
+    assert!(s.contains("in the log"), "no window, none claimed: {s}");
+    assert!(!s.contains("Worth a look"), "{s}");
+    assert!(!s.lines().nth(1).unwrap().contains("Security 1"), "{s}");
+    // A collector that failed says why, in its place.
+    data(
+        &mut a,
+        Kind::SecLog,
+        Err(CollectError::Unavailable("logread".into())),
+    );
+    let mut b = full();
+    data(
+        &mut b,
+        Kind::Flows,
+        Err(CollectError::Unavailable(
+            "the connection table (/proc/net/nf_conntrack)".into(),
+        )),
+    );
+    let s = screen(&mut b, '4', 158, 41);
+    assert!(
+        s.contains("the connection table (/proc/net/nf_conntrack) isn't on the router"),
+        "{s}"
+    );
+    assert!(s.contains("reading the firewall's counters…"), "{s}");
+}
+
+#[test]
+fn security_offloading_accounting_and_a_reset_are_said() {
+    let mut a = secured();
+    // Accounting off: bytes are unknown.
+    let mut f = the_flows();
+    f.acct = Some(false);
+    for x in &mut f.flows {
+        (x.bytes, x.reply_bytes) = (None, None);
+    }
+    f.flows[0].offloaded = true;
+    data(&mut a, Kind::Flows, Ok(Payload::Flows(Box::new(f))));
+    // The firewall was loaded again: every counter is small, and the state file is new.
+    let mut c = counters_later(120);
+    c.reset_at = Some(c.now - 300);
+    for r in c.rules.as_mut().unwrap() {
+        r.packets = 3;
+    }
+    data(&mut a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+    let s = screen(&mut a, '4', 158, 41);
+    let rej = line(&s, "│ rejected");
+    assert!(
+        rej.contains("–/min") && rej.contains("3 since 5m ago"),
+        "{rej}"
+    );
+    let foot = line(&s, "counters since");
+    assert!(
+        foot.contains("counters since 5m ago, just started over")
+            && foot.contains("flow accounting is off: no bytes")
+            && foot.contains("flow offloading is on: bytes and counts undercount"),
+        "{foot}"
+    );
+    let nas = line(&s, "│ nas");
+    assert_eq!(nas.matches('–').count(), 2, "{nas}");
+    // The next read has rates again, from the new baseline.
+    let mut c = counters_later(180);
+    c.reset_at = Some(c.now - 360);
+    for r in c.rules.as_mut().unwrap() {
+        r.packets = 3 + u64::from(matches!(&r.role, counters::Role::RejectFrom { .. })) * 30;
+    }
+    data(&mut a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(line(&s, "│ rejected").contains("30/min"), "{s}");
+    assert!(!s.contains("just started over"), "{s}");
+}
+
+#[test]
+fn security_sort_filter_and_a_devices_flows() {
+    let mut a = secured();
+    key(&mut a, KeyCode::Char('4'));
+    // Enter: the selected device's live flows by port, with the far ends (on this
+    // machine's screen only).
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("security_detail_158x41", s);
+    assert!(s.contains("4 live flow(s) to 3 far end(s)"), "{s}");
+    let https = line(&s, "tcp/443");
+    assert!(
+        https.contains("198.18.0.80, 198.18.0.81, 2001:db8:ffff::1"),
+        "{https}"
+    );
+    assert!(s.contains("Live flows only"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // The marked device: why its port is marked.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("! telnet: unencrypted logins"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // s: by bytes, by destinations, by name, and round.
+    let first = |a: &mut App| {
+        let s = render_to_string(a, 158, 41);
+        let at = s
+            .lines()
+            .position(|l| l.contains("device") && l.contains("top ports"));
+        s.lines().nth(at.unwrap() + 1).unwrap().to_string()
+    };
+    key(&mut a, KeyCode::Char('s'));
+    assert_eq!(a.toast_for_test(), Some("sorted by bytes"));
+    assert!(first(&mut a).contains("desk"), "{}", first(&mut a));
+    key(&mut a, KeyCode::Char('s'));
+    key(&mut a, KeyCode::Char('s'));
+    assert_eq!(a.toast_for_test(), Some("sorted by name"));
+    assert!(
+        first(&mut a).contains("02:00:5e:00:53:21"),
+        "{}",
+        first(&mut a)
+    );
+    key(&mut a, KeyCode::Char('s'));
+    assert!(first(&mut a).contains("nas"));
+    // /: by name, zone or port.
+    typed(&mut a, "/dmz");
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(first(&mut a).contains("web"), "{s}");
+    assert!(!s.contains("│ nas"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    // No key acts on the router or a device.
+    let asked = net(&a).asked.len();
+    for c in ['x', 'b', 'd', 'K', 'B', 'z'] {
+        key(&mut a, KeyCode::Char(c));
+    }
+    assert_eq!(net(&a).asked.len(), asked);
+    assert!(a.box_yes_for_test().is_none() && a.slot().run.is_none());
+}
+
+#[test]
+fn dashboard_has_a_security_row_once_it_was_read() {
+    let mut a = full();
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("│ security"), "nothing read, nothing said: {s}");
+    let mut a = secured();
+    let before = net(&a).asked.len();
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("dashboard_security_158x41", s);
+    assert_eq!(
+        line(&s, "│ security")
+            .trim_end_matches([' ', '│'])
+            .trim_start_matches('│')
+            .trim(),
+        "security rejects 21/min · 2 forwards · dmz→lan none"
+    );
+    // Nothing is fetched for it there.
+    assert_eq!(net(&a).asked.len(), before);
+}
+
+#[test]
+fn security_polls_only_in_view_and_focused() {
+    use sentry_app::target::Target;
+    let mut a = blank();
+    let asked = |a: &App| net(a).asked.clone();
+    // The Dashboard asks for none of it.
+    for k in [Kind::Counters, Kind::Flows, Kind::SecLog, Kind::DnsState] {
+        assert!(!asked(&a).contains(&k), "{k:?}");
+    }
+    let n = asked(&a).len();
+    key(&mut a, KeyCode::Char('4'));
+    assert_eq!(a.slot().screen, ScreenId::Security);
+    assert_eq!(
+        &asked(&a)[n..],
+        [
+            Kind::Counters,
+            Kind::Flows,
+            Kind::Clients,
+            Kind::Ifaces,
+            Kind::Uci,
+            Kind::SecLog,
+            Kind::DnsState
+        ]
+    );
+    // By time: the counters and the clients every 10 s, the flows and the interfaces
+    // every 30; the log and the packages' status only at entry and on `r`.
+    let theme = sentry_core::tui::theme::Theme::truecolor();
+    let t0 = Instant::now();
+    let poll = |a: &mut App, at: Instant, focused: bool| -> Vec<Kind> {
+        let (slot, _) = a.parts();
+        let t: &mut NetworkTarget = slot.target.as_any_mut().downcast_mut().unwrap();
+        let n = t.asked.len();
+        let mut cx = cx_on(&theme, ScreenId::Security, None);
+        cx.focused = focused;
+        t.due(at, &cx);
+        t.asked[n..].to_vec()
+    };
+    assert!(poll(&mut a, t0 + Duration::from_secs(5), true).is_empty());
+    // Another target has the window: nothing, however long.
+    assert!(poll(&mut a, t0 + Duration::from_secs(600), false).is_empty());
+    let mut at_10 = poll(&mut a, t0 + Duration::from_secs(11), true);
+    at_10.sort_by_key(|k| format!("{k:?}"));
+    assert_eq!(at_10, [Kind::Clients, Kind::Counters]);
+    let mut at_31 = poll(&mut a, t0 + Duration::from_secs(31), true);
+    at_31.sort_by_key(|k| format!("{k:?}"));
+    assert_eq!(
+        at_31,
+        [Kind::Clients, Kind::Counters, Kind::Flows, Kind::Ifaces]
+    );
+    // r: everything again.
+    let n = asked(&a).len();
+    key(&mut a, KeyCode::Char('r'));
+    let mut all = asked(&a)[n..].to_vec();
+    all.sort_by_key(|k| format!("{k:?}"));
+    assert_eq!(
+        all,
+        [
+            Kind::Clients,
+            Kind::Counters,
+            Kind::DnsState,
+            Kind::Flows,
+            Kind::Ifaces,
+            Kind::SecLog,
+            Kind::Uci
+        ]
+    );
+    // Leaving it: its polls stop.
+    key(&mut a, KeyCode::Char('1'));
+    let n = asked(&a).len();
+    let (slot, _) = a.parts();
+    let t: &mut NetworkTarget = slot.target.as_any_mut().downcast_mut().unwrap();
+    let cx = cx_on(&theme, ScreenId::Dash, None);
+    t.due(Instant::now() + Duration::from_secs(120), &cx);
+    assert!(
+        t.asked[n..].iter().all(|k| !matches!(
+            k,
+            Kind::Counters | Kind::Flows | Kind::SecLog | Kind::DnsState
+        )),
+        "{:?}",
+        &t.asked[n..]
+    );
+}
+
+/// What `A` on Security sends: counts, ports and inside names. The far ends of flows and
+/// where logins came from never leave; an unnamed device goes by its scrubbed form.
+#[test]
+fn the_security_brief_has_no_far_end_addresses() {
+    let mut a = secured();
+    key(&mut a, KeyCode::Char('4'));
+    key(&mut a, KeyCode::Char('A'));
+    let chat = a
+        .chat_for_test()
+        .expect("the brief, before anything is sent");
+    let sent = format!(
+        "{}\n{}\n{}",
+        chat.ask.subject, chat.ask.context, chat.ask.question
+    );
+    assert!(sent.contains("home · security"), "{sent}");
+    // What it is told.
+    for what in [
+        "unsolicited packets from outside rejected: 21/min now, 31.2k",
+        "port forward web (tcp 443 → 203.0.113.93:443): 2.0 new connections/min",
+        "2 live now",
+        "- nas · lan · 4 flow(s) to 3 far end(s) · ports 443×3 993",
+        "marked: tcp/23",
+        "- dmz→lan: rejected · 0 live flow(s)",
+        "1 from 1 other address(es); 3 refused from 1 address(es)",
+        "blocklist (adblock-fast): running, 104200 names, 14 days old",
+        "not intrusion detection",
+    ] {
+        assert!(sent.contains(what), "{what}:\n{sent}");
+    }
+    // The canaries: every far end in the fixture's table, the address an unknown login
+    // came from, a whole MAC, an SSID, the uplink's address.
+    for never in [
+        "198.18.",
+        "2001:db8:ffff",
+        "::c40",
+        "02:00:5e:00:53:21",
+        "Example Net",
+        "198.51.100.23",
+    ] {
+        assert!(!sent.contains(never), "{never} in:\n{sent}");
+    }
+    // The unnamed phone is there, by its vendor half only.
+    assert!(sent.contains("02:00:5e:xx"), "{sent}");
+    private::absent("the security brief", &sent);
+}
+
+/// Security against a real router, reads only. Every collector parses what the router
+/// really prints, the screen renders from it, and three things are checked against the
+/// router by another road:
+/// - the uplink's reject rate from two of sentry's reads against two readings of the same
+///   rule taken by hand (`nft list chain`, the text form) around them;
+/// - every line of the connection table is a flow, and every flow is classified;
+/// - every flow from a private or delegated address is put in a zone (or is the router's).
+///
+/// It prints counts, never an address, a name or a line of the log.
+/// `SENTRY_NETWORK_LIVE=<name> XDG_CONFIG_HOME=… XDG_DATA_HOME=… cargo test -p sentry-network live_security -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_security() {
+    use crate::security::{Class, CounterRates, End, Nets, Picture, Read};
+    use std::net::IpAddr;
+    let Some(r) = live_router() else {
+        return;
+    };
+    assert!(
+        std::env::var_os("XDG_DATA_HOME").is_some()
+            && std::env::var_os("XDG_CONFIG_HOME").is_some(),
+        "set XDG_DATA_HOME and XDG_CONFIG_HOME to scratch dirs"
+    );
+    let timed = |what: &str, at: Instant| println!("{what}: {} ms", at.elapsed().as_millis());
+    // The uplink's reject rule read by hand: its packets, and the router's clock.
+    let by_hand = || -> (u64, f64) {
+        let out = r
+            .output(&r.sh("nft list chain inet fw4 reject_from_wan; echo @up; cat /proc/uptime"))
+            .expect("the chain by hand");
+        let (chain, up) = out.split_once("@up").expect("both parts");
+        let packets: u64 = chain
+            .lines()
+            .filter_map(|l| l.split("counter packets ").nth(1))
+            .filter_map(|x| x.split_whitespace().next()?.parse::<u64>().ok())
+            .sum();
+        (
+            packets,
+            up.split_whitespace().next().unwrap().parse().unwrap(),
+        )
+    };
+    let mut rates = CounterRates::default();
+    let (h1, hu1) = by_hand();
+    let t = Instant::now();
+    let c1 = counters::collect(&r).expect("the counters");
+    timed("counters", t);
+    rates.feed(&c1);
+    let rules = c1.rules.as_ref().expect("an fw4 table");
+    println!(
+        "counted rules: {} · conntrack {} · dnsmasq counters {} · reset known {}",
+        rules.len(),
+        c1.conntrack.is_some(),
+        c1.dns.is_some(),
+        c1.reset_at.is_some()
+    );
+    let t = Instant::now();
+    let ifaces = crate::collect::ifaces::collect(&r).expect("the interfaces");
+    let uci = crate::collect::uci::collect(&r).expect("the config");
+    let raw = crate::collect::clients::collect(&r).expect("the clients");
+    timed("ifaces + uci + clients", t);
+    // The table once, as text: counted by hand and parsed, the same bytes.
+    let text = r
+        .output(&r.sh("cat /proc/net/nf_conntrack"))
+        .expect("the table");
+    let lines = text.lines().filter(|l| !l.trim().is_empty()).count();
+    let parsed = flows::parse(&text);
+    let nets = Nets::new(&ifaces, Some(&uci));
+    let classes: Vec<Class> = parsed
+        .flows
+        .iter()
+        .map(|f| crate::security::classify(f, &nets))
+        .collect();
+    println!(
+        "conntrack lines {lines} · flows {} · classified {}",
+        parsed.flows.len(),
+        classes.len()
+    );
+    assert_eq!(parsed.flows.len(), lines, "a line that isn't a flow");
+    assert_eq!(classes.len(), lines);
+    // Inside, judged without the zones: a private IPv4 address, or one under a prefix
+    // delegated to the router.
+    let delegated: Vec<(IpAddr, u8)> = ifaces
+        .interfaces
+        .iter()
+        .flat_map(|i| &i.prefixes)
+        .filter_map(|p| {
+            let (a, m) = p.split_once('/')?;
+            Some((a.parse().ok()?, m.parse().ok()?))
+        })
+        .collect();
+    let inside = |a: IpAddr| match a {
+        IpAddr::V4(v) => v.is_private(),
+        IpAddr::V6(v) => delegated.iter().any(|(n, m)| match n {
+            IpAddr::V6(n) => {
+                let mask = u128::MAX.checked_shl(128 - *m as u32).unwrap_or(0);
+                u128::from(v) & mask == u128::from(*n) & mask
+            }
+            IpAddr::V4(_) => false,
+        }),
+    };
+    let from_inside: Vec<End> = parsed
+        .flows
+        .iter()
+        .filter(|f| inside(f.src))
+        .map(|f| nets.end(f.src))
+        .collect();
+    let unplaced = from_inside
+        .iter()
+        .filter(|e| !matches!(e, End::Zone(_) | End::Router))
+        .count();
+    println!(
+        "flows from inside addresses {} · not in a zone {unplaced}",
+        from_inside.len()
+    );
+    assert_eq!(unplaced, 0, "an inside source with no zone");
+    let mut by_class: std::collections::BTreeMap<&str, usize> = Default::default();
+    for c in &classes {
+        *by_class
+            .entry(match c {
+                Class::Egress { .. } => "egress",
+                Class::Forwarded { .. } => "forwarded in",
+                Class::Inbound { .. } => "inbound direct",
+                Class::Between { .. } => "between zones",
+                Class::ToRouter { forced: true, .. } => "dns forced to router",
+                Class::ToRouter { .. } => "to router",
+                Class::RouterOut => "router out",
+                Class::RouterIn => "outside to router",
+                Class::RouterToZone { .. } => "router to zone",
+                Class::Local => "local",
+            })
+            .or_default() += 1;
+    }
+    println!("by class: {by_class:?}");
+    let t = Instant::now();
+    let f = flows::collect(&r).expect("the flows");
+    timed("flows", t);
+    assert!(f.acct.is_some(), "the router says whether it accounts");
+    let t = Instant::now();
+    let log = seclog::collect(&r).expect("the log");
+    timed("seclog", t);
+    println!(
+        "log lines {} · events {} · window {:?} s · own address known {}",
+        log.lines,
+        log.events.len(),
+        log.window_s(),
+        log.me.is_some()
+    );
+    assert!(log.lines > 0 && log.window_s().is_some() && log.me.is_some());
+    let t = Instant::now();
+    let dns = dnsstate::collect(&r).expect("the dns state");
+    timed("dnsstate", t);
+    println!(
+        "blocklist {} (age known {}) · proxy {}",
+        dns.blocklist.is_some(),
+        dns.list_age_days().is_some(),
+        dns.proxy.is_some()
+    );
+    // Sentry's own logins are recognised: this very test made at least one connection.
+    let topo = crate::clients::Topo::of(&ifaces);
+    let mut seen = Default::default();
+    let (clients, _) = crate::clients::read(&raw, &topo, &r.cfg.devices, &mut seen, 0);
+    let sum = crate::security::log_sum(&log, &clients);
+    println!(
+        "ssh: own {} · named {} · elsewhere {} · refused {} · left {} | wifi: joined {} left {} wrong {}",
+        sum.ssh_own,
+        sum.ssh_known,
+        sum.unknown(),
+        sum.failed(),
+        sum.ssh_left,
+        sum.wifi_connects,
+        sum.wifi_disconnects,
+        sum.wifi_auth_failed
+    );
+    assert!(
+        sum.ssh_own >= 1,
+        "this machine's own logins aren't recognised"
+    );
+    // Twenty seconds on: sentry's second read, then the second reading by hand.
+    std::thread::sleep(Duration::from_secs(20));
+    let c2 = counters::collect(&r).expect("the counters again");
+    let rated = rates.feed(&c2);
+    let (h2, hu2) = by_hand();
+    assert!(!rated.reset, "the firewall reloaded during the test");
+    let p = Picture::of(&Read {
+        ifaces: Some(&ifaces),
+        uci: Some(&uci),
+        clients: Some(&clients),
+        stations: Some(&raw.stations),
+        counters: Some(&c2),
+        rated: Some(&rated),
+        flows: Some(&f),
+        log: Some(&log),
+        dns: Some(&dns),
+    });
+    let ours = p.wan_rejects.expect("the uplink's reject counter");
+    let ours_rate = ours.rate.expect("a rate from two reads");
+    let hand_rate = (h2 - h1) as f64 / (hu2 - hu1);
+    let ours_n = ours_rate * (c2.uptime - c1.uptime);
+    println!(
+        "wan rejects over {:.1} s: sentry {:.0} packets ({:.2}/s) · by hand {} packets over {:.1} s ({:.2}/s)",
+        c2.uptime - c1.uptime,
+        ours_n,
+        ours_rate,
+        h2 - h1,
+        hu2 - hu1,
+        hand_rate
+    );
+    // The hand readings bracket sentry's: it can't have seen more, and misses at most
+    // what arrived in the two gaps (well under a second together).
+    assert!(
+        ours_n <= (h2 - h1) as f64 + 0.5,
+        "sentry counted more than there was"
+    );
+    assert!(
+        (h2 - h1) as f64 - ours_n <= 3.0_f64.max(0.15 * (h2 - h1) as f64),
+        "the two disagree"
+    );
+    assert_eq!(ours.total, {
+        let again: u64 = c2
+            .rules
+            .iter()
+            .flatten()
+            .filter(|r| r.chain == "reject_from_wan")
+            .map(|r| r.packets)
+            .sum();
+        again
+    });
+    println!(
+        "forwards {} · devices with flows {} · zone pairs {} · access points {} · marks {}",
+        p.forwards.len(),
+        p.devices.len(),
+        p.matrix.as_ref().map_or(0, Vec::len),
+        p.aps.len(),
+        p.marks.len()
+    );
+    assert!(
+        p.crossings().is_empty(),
+        "a flow crosses zones the firewall keeps apart"
+    );
+    // And through the window: the screen from what its own polls read.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(tx, &super::id_of(&r.name), super::target(r.clone()));
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+    a.start(Instant::now());
+    key(&mut a, KeyCode::Char('4'));
+    let until = Instant::now() + Duration::from_secs(13);
+    while Instant::now() < until {
+        if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+            a.on_event(ev, Instant::now());
+        }
+        a.tick(Instant::now());
+    }
+    let s = render_to_string(&mut a, 158, 41);
+    // (To look at it yourself: the screen goes to this file. It names your devices.)
+    if let Ok(path) = std::env::var("SENTRY_LIVE_SCREEN") {
+        std::fs::write(path, &s).expect("the screen's file");
+    }
+    let t = net(&a);
+    for (what, ok) in [
+        (
+            "counters",
+            t.store.counters.value.is_some() && t.store.counters.err.is_none(),
+        ),
+        (
+            "flows",
+            t.store.flows.value.is_some() && t.store.flows.err.is_none(),
+        ),
+        (
+            "seclog",
+            t.store.seclog.value.is_some() && t.store.seclog.err.is_none(),
+        ),
+        (
+            "dnsstate",
+            t.store.dnsstate.value.is_some() && t.store.dnsstate.err.is_none(),
+        ),
+    ] {
+        assert!(ok, "{what} wasn't read through the window");
+    }
+    println!(
+        "through the window: {} rules with a rate, {} of them moving · dnsmasq rates {:?}",
+        t.store.rated.rules.len(),
+        t.store.rated.rules.values().filter(|v| **v > 0.0).count(),
+        t.store.rated.dns.map(|(f, l)| (f > 0.0, l > 0.0))
+    );
+    let n = |k: Kind| t.asked.iter().filter(|x| **x == k).count();
+    println!(
+        "in 13 s: counters {} · flows {} · clients {} · seclog {} · dnsstate {}",
+        n(Kind::Counters),
+        n(Kind::Flows),
+        n(Kind::Clients),
+        n(Kind::SecLog),
+        n(Kind::DnsState)
+    );
+    assert_eq!(
+        (n(Kind::Counters), n(Kind::Flows), n(Kind::SecLog)),
+        (2, 1, 1)
+    );
+    for panel in [
+        "┌ Ingress",
+        "┌ Egress",
+        "┌ Segmentation",
+        "┌ DNS",
+        "┌ Wi-Fi",
+        "│ rejected",
+    ] {
+        assert!(s.contains(panel), "no {panel} on the screen");
+    }
+    assert!(
+        s.contains("/min") && s.contains("counters since"),
+        "no rate or no since"
+    );
+    assert!(
+        !s.contains("isn't on the router"),
+        "something is said to be missing"
+    );
 }

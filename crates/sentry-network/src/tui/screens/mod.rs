@@ -1,4 +1,5 @@
-//! The network target's screens: `1` Dashboard, `2` Clients, `3` Network, `6` Maintenance,
+//! The network target's screens: `1` Dashboard, `2` Clients, `3` Network, `4` Security,
+//! `6` Maintenance,
 //! `0` Upgrade (the shared `remote::wfview`) and `H` History. Their numbers and names are
 //! sentry's (`super::SCREENS`).
 
@@ -8,6 +9,7 @@ pub mod history;
 pub mod maint;
 pub mod network;
 pub mod report;
+pub mod security;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -66,6 +68,7 @@ impl View<'_> {
 pub struct Screens {
     pub clients: clients::Clients,
     pub net: network::Network,
+    pub security: security::Security,
     pub maint: maint::Maint,
     pub hist: history::History,
     pub upgrade: wfview::Upgrade,
@@ -90,13 +93,17 @@ fn upgrade<'a>(v: &'a View, cur: usize) -> wfview::Shown<'a> {
 impl Screens {
     /// The screens that take a `/` filter.
     pub fn filterable(id: ScreenId) -> bool {
-        matches!(id, ScreenId::Clients | ScreenId::Net | ScreenId::Maint)
+        matches!(
+            id,
+            ScreenId::Clients | ScreenId::Net | ScreenId::Security | ScreenId::Maint
+        )
     }
 
     fn cursor_mut(&mut self, id: ScreenId) -> Option<&mut Cursor> {
         match id {
             ScreenId::Clients => Some(&mut self.clients.cur),
             ScreenId::Net => Some(&mut self.net.cur),
+            ScreenId::Security => Some(&mut self.security.cur),
             ScreenId::Maint => Some(&mut self.maint.cur),
             ScreenId::Upgrade => Some(&mut self.upgrade.cur),
             _ => None,
@@ -108,6 +115,7 @@ impl Screens {
         match id {
             ScreenId::Clients => self.clients.cur.sel,
             ScreenId::Net => self.net.cur.sel,
+            ScreenId::Security => self.security.cur.sel,
             ScreenId::Maint => self.maint.cur.sel,
             ScreenId::Upgrade => self.upgrade.cur.sel,
             _ => 0,
@@ -119,6 +127,7 @@ impl Screens {
         match id {
             ScreenId::Clients => self.clients.count(v),
             ScreenId::Net => network::rows(v).len(),
+            ScreenId::Security => self.security.count(v),
             ScreenId::Maint => self.maint.count(v),
             ScreenId::Upgrade if v.wf.is_none() => v.sh.wf_list.len(),
             _ => 0,
@@ -143,6 +152,7 @@ impl Screens {
         match id {
             ScreenId::Clients => self.clients.handle(a, v),
             ScreenId::Net => self.net.handle(a, v),
+            ScreenId::Security => self.security.handle(a, v),
             ScreenId::Maint => self.maint.handle(a, v),
             ScreenId::Upgrade => self.upgrade.handle(a, &upgrade(v, v.cur)),
             _ => dashboard::handle(a),
@@ -153,6 +163,7 @@ impl Screens {
         match id {
             ScreenId::Clients => self.clients.render(f, area, v),
             ScreenId::Net => self.net.render(f, area, v),
+            ScreenId::Security => self.security.render(f, area, v),
             ScreenId::Maint => self.maint.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
             ScreenId::Upgrade => wfview::draw(f, area, &upgrade(v, v.cur)),
@@ -164,6 +175,7 @@ impl Screens {
         match id {
             ScreenId::Clients => clients::hints(),
             ScreenId::Net => network::hints(),
+            ScreenId::Security => security::hints(),
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => maint::hints(v, maint::ticked(v, &self.maint.ticks)),
             ScreenId::Upgrade => wfview::hints(v.wf),
@@ -185,6 +197,11 @@ impl Screens {
             ScreenId::Net => {
                 let n = network::new_count(v);
                 (n > 0).then(|| (format!(" {n}"), t.yellow))
+            }
+            // What says the separation or a login failed, once something was read.
+            ScreenId::Security => {
+                let n = security::grave(v);
+                (n > 0).then(|| (format!(" {n}"), t.red))
             }
             _ => None,
         }

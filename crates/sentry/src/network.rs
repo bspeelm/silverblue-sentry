@@ -38,8 +38,10 @@ enum Command {
     /// Test the connection and say what was found: the release and board, the ports, the
     /// uplink, the tools.
     Check { name: Option<String> },
-    /// Run one collector (probe, ifaces, clients, listeners, uci, cert, services, updates) and print
-    /// its result as JSON; all of them when none is named. Secrets in `uci` are tags.
+    /// Run one collector (probe, ifaces, clients, listeners, uci, cert, services, updates,
+    /// counters, flows, seclog, dnsstate) and print its result as JSON; all of them when none
+    /// is named. Secrets in `uci` are tags. `flows` and `seclog` print addresses (every far
+    /// end the network talks to, who logged in): keep their output to yourself.
     Collect {
         kind: Option<String>,
         /// The network (needed when several are configured).

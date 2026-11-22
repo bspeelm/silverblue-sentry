@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance 2   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Ingress · from outside ──────────────────────────────────────────────┐┌ Egress · 0 devices · 0 live flows ─────────────────────────────────────────────────┐
+│ rejected   no fw4 table on this router: nothing is counted           ││ no device has a live flow out right now                                            │
+│ forward        port       to                     new/min  total live ││                                                                                    │
+│ no port is forwarded                                                 ││                                                                                    │
+│ ssh logins 0 from here                                               ││                                                                                    │
+│            none refused · in the log                                 ││                                                                                    │
+└──────────────────────────────────────────────────────────────────────┘│                                                                                    │
+┌ DNS ─────────────────────────────────────────────────────────────────┐│                                                                                    │
+│ queries    dnsmasq publishes no counters here                        ││                                                                                    │
+└──────────────────────────────────────────────────────────────────────┘│                                                                                    │
+┌ Wi-Fi ───────────────────────────────────────────────────────────────┐│                                                                                    │
+│ no access point is switched on                                       ││                                                                                    │
+└──────────────────────────────────────────────────────────────────────┘│                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        │                                                                                    │
+                                                                        └────────────────────────────────────────────────────────────────────────────────────┘
+                                                                        ┌ Segmentation · nothing crosses what the firewall keeps apart ──────────────────────┐
+                                                                        │ lan→wan     allowed                     none now                                   │
+                                                                        │ lan→dmz     allowed                     none now                                   │
+                                                                        │ wan→lan     only Allow-ICMPv6-Forward   none now                                   │
+                                                                        │ wan→dmz     only Allow-ICMPv6-Forward   none now                                   │
+                                                                        │ dmz→lan     rejected                    none now                                   │
+                                                                        │ dmz→wan     allowed                     none now                                   │
+                                                                        │ rejected pairs: live flows only. Blocked tries have no counter on this firewall.   │
+                                                                        └────────────────────────────────────────────────────────────────────────────────────┘
+ 0 flows listed
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  its flows   s  sort   /  filter   r  read again   A  ask Claude   ?  help   q  quit

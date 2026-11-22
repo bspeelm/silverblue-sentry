@@ -54,6 +54,12 @@ const IFACES: Duration = Duration::from_secs(30);
 const CLIENTS: Duration = Duration::from_secs(10);
 /// Which services run: the Dashboard's row.
 const SERVICES: Duration = Duration::from_secs(60);
+/// What the firewall counted: Security's rates are made from two of these. Inside ssh's
+/// `ControlPersist` (15 s), so the shared connection stays up between reads and no read
+/// is a new login in the router's log.
+const COUNTERS: Duration = Duration::from_secs(10);
+/// The connections tracked now.
+const FLOWS: Duration = Duration::from_secs(30);
 /// The certificate's dates don't move: read again after this long.
 const CERT_S: i64 = 86_400;
 
@@ -129,6 +135,18 @@ fn polls_of(id: ScreenId) -> Vec<Poll> {
             at(Kind::Updates, None),
             at(Kind::Upstream, None),
             at(Kind::Backup, None),
+        ],
+        // The counters and the flows move; the log and the packages' own status are read
+        // when it's entered (and on `r`). The stations come with the clients' read, as on
+        // Clients.
+        ScreenId::Security => vec![
+            at(Kind::Counters, Some(COUNTERS)),
+            at(Kind::Flows, Some(FLOWS)),
+            at(Kind::Clients, Some(CLIENTS)),
+            at(Kind::Ifaces, Some(IFACES)),
+            at(Kind::Uci, None),
+            at(Kind::SecLog, None),
+            at(Kind::DnsState, None),
         ],
         // The run's own steps are the app's; the list is read from disk.
         ScreenId::Upgrade => Vec::new(),
@@ -591,6 +609,7 @@ impl Target for NetworkTarget {
                 | Kind::Upstream
                 | Kind::Lookup
                 | Kind::Backup
+                | Kind::Flows
         ) {
             self.clamp(sh, cx);
         }
@@ -665,6 +684,10 @@ impl Target for NetworkTarget {
         // `?` on Maintenance: every row key, not only the selected row's.
         if help && cx.screen == ScreenId::Maint && self.screens.maint.view.is_none() {
             return maint::help();
+        }
+        // `?` on Security: what each number is, and what it is not.
+        if help && cx.screen == ScreenId::Security {
+            return super::screens::security::help();
         }
         keys
     }

@@ -96,6 +96,19 @@ fn status_lines(v: &View, w: usize) -> Vec<Line<'static>> {
             Span::styled(said, t.s(c)),
         ]));
     }
+    // What flows through, from the last time Security read it (nothing is read for this).
+    if let Some((said, grave)) = super::security::status(v) {
+        // (Where the panel is narrow the uplink goes without saying.)
+        let said = if said.chars().count() > room {
+            said.replace("WAN rejects", "rejects")
+        } else {
+            said
+        };
+        lines.push(Line::from(vec![
+            label(t, "security"),
+            Span::styled(trunc(&said, room), t.s(if grave { t.red } else { t.fg })),
+        ]));
+    }
     if let Some(rep) = &s.report.value {
         let line = match rep.as_deref() {
             None => Line::from(vec![label(t, "audit"), Span::styled("none yet", t.dim())]),
@@ -207,9 +220,14 @@ const EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '�
 /// The last `w` samples as one row of eighth-blocks, newest at the right, scaled to the
 /// largest shown (never to less than 10 kbit/s, so an idle port stays flat).
 fn spark(ring: Option<&Ring>, w: usize) -> String {
+    spark_from(ring, w, 10_000.0)
+}
+
+/// The same for any series: `floor` is the least the row's full height stands for.
+pub(super) fn spark_from(ring: Option<&Ring>, w: usize, floor: f64) -> String {
     let data: Vec<f64> = ring.map(Ring::vec).unwrap_or_default();
     let shown = &data[data.len().saturating_sub(w)..];
-    let max = shown.iter().copied().fold(10_000.0, f64::max);
+    let max = shown.iter().copied().fold(floor, f64::max);
     let mut out: String = " ".repeat(w - shown.len());
     out.extend(shown.iter().map(|v| {
         let level = ((v / max).clamp(0.0, 1.0) * 8.0).round() as usize;
