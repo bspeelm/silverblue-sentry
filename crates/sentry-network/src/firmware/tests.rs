@@ -215,61 +215,6 @@ fn free_memory_is_read_and_judged() {
 }
 
 #[test]
-fn the_wait_is_judged_on_a_clock_given_to_it() {
-    let t0: Timestamp = "2026-11-22T10:00:00Z".parse().unwrap();
-    let total = Duration::from_secs(15 * 60);
-    let until = deadline(t0, t0, total);
-    assert_eq!(until, t0 + total);
-    let at = |s: i64| t0 + jiff::SignedDuration::from_secs(s);
-    let old = "boot-a";
-    // Nothing answers, or the old boot still does: wait, until the deadline.
-    assert_eq!(poll(&Seen::Nothing, old, at(60), until), Poll::Waiting);
-    assert_eq!(
-        poll(&Seen::Boot(old.into()), old, at(10), until),
-        Poll::Waiting
-    );
-    assert_eq!(
-        poll(&Seen::Boot(String::new()), old, at(10), until),
-        Poll::Waiting
-    );
-    assert_eq!(poll(&Seen::Nothing, old, at(15 * 60), until), Poll::Over);
-    assert_eq!(
-        poll(&Seen::Boot(old.into()), old, at(20 * 60), until),
-        Poll::Over
-    );
-    // A new boot is back, even at the last moment.
-    assert_eq!(
-        poll(&Seen::Boot("boot-b".into()), old, at(15 * 60 + 5), until),
-        Poll::Back
-    );
-    // Picked up again long after: one more minute of looking.
-    let later = at(3600);
-    assert_eq!(deadline(t0, later, total), later + GRACE);
-    assert_eq!(took(250), "4 min 10 s");
-    assert_eq!(took(900), "15 min");
-    assert_eq!(took(7), "7 s");
-}
-
-#[test]
-fn the_flash_log_says_refused_or_installing() {
-    assert_eq!(
-        read_flash_log("Verifying : x\nInstalling /tmp/sentry-firmware.bin and rebooting...\n"),
-        Flashing::Installing
-    );
-    assert_eq!(
-        read_flash_log("ERROR: sha256 doesn't match:\n"),
-        Flashing::Refused(vec!["sha256 doesn't match:".into()])
-    );
-    assert_eq!(read_flash_log(""), Flashing::Starting);
-    let l = flash_line();
-    assert!(
-        l.starts_with("setsid sh -c 'exec owut install -i /tmp/sentry-firmware.bin"),
-        "{l}"
-    );
-    assert!(!l.contains("nohup"));
-}
-
-#[test]
 fn losing_the_router_is_said_calmly_and_exactly() {
     let st = State {
         backup: Some("2026-11-22T100000Z-25.12.5.tar.gz.age".into()),
@@ -301,3 +246,5 @@ fn the_runs_record_round_trips() {
     assert!(missing_now(scope));
     let _ = std::fs::remove_file(state_path(scope));
 }
+
+mod wait;

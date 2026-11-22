@@ -1395,6 +1395,10 @@ impl Host for NetworkTarget {
         if s.wf.name == super::screens::maint::FIRMWARE_WF
             && let Some(i) = s.next.idx()
             && s.wf.steps[i].id == "wait"
+            // (Not when it ended saying the flash didn't happen: nothing to wait for.)
+            && crate::firmware::State::load(&self.router.scope)
+                .flashed_at
+                .is_some()
             && matches!(
                 s.next,
                 sentry_core::workflows::runner::Next::Stopped(_)

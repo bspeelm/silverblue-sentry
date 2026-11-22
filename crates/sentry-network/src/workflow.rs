@@ -232,14 +232,29 @@ pub fn begin_acknowledged(
     begin_hiding(&e, r, vars, given)
 }
 
+/// What the flash's box says while the workflow is a draft (`undraft` takes it out).
+pub const DRAFT_LINE: &str = "sentry has never flashed a router before this run.";
+
 /// Takes `draft = true` out of a workflow's file (after it ran end to end once, when the
 /// user says so). Only that line: the rest of the file is left as it is.
 pub fn undraft(path: &std::path::Path) -> std::io::Result<()> {
     let text = std::fs::read_to_string(path)?;
-    let kept: Vec<&str> = text
-        .lines()
-        .filter(|l| l.replace(' ', "") != "draft=true")
-        .collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skip_blank = false;
+    for l in text.lines() {
+        if l.replace(' ', "") == "draft=true" {
+            continue;
+        }
+        // The flash box's line that is true only of a draft goes too, with its blank line.
+        if l.trim() == DRAFT_LINE {
+            skip_blank = true;
+            continue;
+        }
+        if std::mem::take(&mut skip_blank) && l.trim().is_empty() {
+            continue;
+        }
+        kept.push(l);
+    }
     let mut out = kept.join("\n");
     out.push('\n');
     sentry_core::paths::write_atomic(path, out.as_bytes())

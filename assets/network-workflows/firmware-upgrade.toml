@@ -76,6 +76,8 @@ What can't be helped from here: if the flash itself fails, nothing automatic can
 router; it is then brought back by the device's own recovery procedure (on its OpenWrt
 page). Have those instructions at hand, on paper or another device, before you go on.
 
+sentry has never flashed a router before this run.
+
 Never turn the router off while it is flashing."""
 on_fail = "manual"
 manual = """
@@ -89,10 +91,16 @@ run = "sentry-network firmware wait"
 gate = "auto"
 on_fail = "manual"
 manual = """
-The router hasn't answered since the flash. The log (L) says what was running when contact
+The log (L) says which of these it is.
+The router still runs its old firmware and the flash didn't happen: nothing was changed and
+the downloaded image was removed; abandon (a), and start the upgrade again from the
+firmware row when you want to try once more.
+Or the router hasn't answered since the flash: the log says what was running when contact
 was lost and when your settings were backed up. When the router answers again, open this
 run (0): it carries on by itself. If it never does, the device's own recovery procedure
-brings it back, and the backup restores your settings."""
+brings it back, and the backup restores your settings.
+Or it still answers as it was with the flash still at work: leave its power on, and open
+this run (0) once it has restarted."""
 
 [[steps]]
 id = "after"

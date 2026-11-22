@@ -145,7 +145,20 @@ fn undrafting_takes_out_only_the_draft_line() {
     let after = std::fs::read_to_string(&p).unwrap();
     let w = sentry_core::workflows::parse(&after).unwrap();
     assert!(!w.draft);
-    assert_eq!(after.lines().count() + 1, text.lines().count());
+    // `draft = true`, and the flash box's line that is only true of a draft (with its
+    // blank line): nothing else.
+    assert!(text.contains(crate::workflow::DRAFT_LINE));
+    assert!(!after.contains(crate::workflow::DRAFT_LINE));
+    let ask = w
+        .steps
+        .iter()
+        .find(|s| s.id == "flash")
+        .unwrap()
+        .ask
+        .clone()
+        .unwrap();
+    assert!(!ask.contains("\n\n\n") && ask.contains("Never turn the router off"));
+    assert_eq!(after.lines().count() + 3, text.lines().count());
     assert_eq!(
         sentry_core::workflows::parse(text).unwrap().steps.len(),
         w.steps.len()

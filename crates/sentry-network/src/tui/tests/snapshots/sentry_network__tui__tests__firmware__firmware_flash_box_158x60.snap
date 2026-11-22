@@ -19,7 +19,6 @@ expression: s
 │ ○  8. Install again the add-on packages the new …  risky │  │                                                                                              │
 │ ○  9. Remove the downloaded image from the router…  auto │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│                                                          │  │                                                                                              │
 │                                    ┌ Flash it: the router restarts, and the internet and Wi-Fi are off for a few minut┐                                    │
 │                                    │                                                                                  │                                    │
 │                                    │ This writes the new firmware to the router and restarts it.                      │                                    │
@@ -41,12 +40,13 @@ expression: s
 │                                    │ procedure (on its OpenWrt page). Have those instructions at hand, on paper or    │                                    │
 │                                    │ another device, before you go on.                                                │                                    │
 │                                    │                                                                                  │                                    │
+│                                    │ sentry has never flashed a router before this run.                               │                                    │
+│                                    │                                                                                  │                                    │
 │                                    │ Never turn the router off while it is flashing.                                  │                                    │
 │                                    │                                                                                  │                                    │
 │                                    │                                                                                  │                                    │
 │                                    │  Enter  flash    Esc  cancel                                                     │                                    │
 │                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
-│                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │                                                          │  │                                                                                              │

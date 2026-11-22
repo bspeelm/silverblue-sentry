@@ -41,7 +41,7 @@
 #     /proc/sys/kernel/random/boot_id), os-release says 25.12.6, `partx-utils` is removed in
 #     mode `missing`, and dropbear starts again. Nothing is written to any storage but the
 #     container's, nothing restarts, the kernel and every other process stay as they were.
-#     The mode is in /etc/sentry-stub/mode (ok, warn, badsum, slow, missing); `seed` puts
+#     The mode is in /etc/sentry-stub/mode (ok, warn, badsum, slow, missing; silent: owut install ends without a word and flashes nothing; hang: owut install keeps working for 5 min, the router answering); `seed` puts
 #     it back to ok and the release back to 25.12.5.
 #   - adblock-fast and its always-staged lines; the real router's package set.
 set -euo pipefail
@@ -127,6 +127,10 @@ download)
 install)
   [ -s "$img" ] || { echo "ERROR: Image file '$img' does not exist" >&2; exit 1; }
   sha256sum -c "$stem.sha256sums" >/dev/null 2>&1 || { echo "ERROR: sha256 doesn't match:" >&2; exit 1; }
+  echo "Checks complete, image is valid."
+  # Refused without a word, or at work for a long while (the router answering meanwhile).
+  [ "$mode" = silent ] && exit 0
+  [ "$mode" = hang ] && { sleep 300; exit 0; }
   echo "Installing $img and rebooting..."
   /sbin/sysupgrade "$img"
   ;;
@@ -161,7 +165,7 @@ seed() {
   local c=$1
   "${P[@]}" exec "$c" sh -c 'for p in /tmp/sentry-guard-*/pid /tmp/sentry-guard-*/sleep.pid; do [ -s "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null; done; rm -rf /tmp/.uci /tmp/sentry-guard* /etc/sentry-guard /etc/sentry-guard.last /etc/uci-defaults/zz-sentry-guard-* /tmp/sentry-canary /tmp/sentry-victim /tmp/sentry-proof; [ -x /usr/bin/setsid.off ] && mv /usr/bin/setsid.off /usr/bin/setsid; true'
   # The firmware stand-ins: back to the release it was, nothing downloaded, mode ok.
-  "${P[@]}" exec "$c" sh -c 'S=/usr/share/sentry-stub; [ -d $S ] || exit 0; for p in /proc/[0-9]*; do grep -q "run/sentry-bo[o]t" $p/cmdline 2>/dev/null && kill ${p#/proc/} 2>/dev/null; done; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release; echo ok >/etc/sentry-stub/mode; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log /tmp/sysupgrade.meta; apk --no-network info -e partx-utils >/dev/null 2>&1 || apk add -q partx-utils >/dev/null 2>&1; /etc/init.d/dropbear start >/dev/null 2>&1; true'
+  "${P[@]}" exec "$c" sh -c 'S=/usr/share/sentry-stub; [ -d $S ] || exit 0; for p in /proc/[0-9]*; do grep -qE "run/sentry-bo[o]t|owut[^a-z]*[i]nstall" $p/cmdline 2>/dev/null && kill ${p#/proc/} 2>/dev/null; done; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release; echo ok >/etc/sentry-stub/mode; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log /tmp/sysupgrade.meta; apk --no-network info -e partx-utils >/dev/null 2>&1 || apk add -q partx-utils >/dev/null 2>&1; /etc/init.d/dropbear start >/dev/null 2>&1; true'
   put "$c" /etc/config/network 600 <<'EOF'
 config interface 'loopback'
 	option device 'lo'

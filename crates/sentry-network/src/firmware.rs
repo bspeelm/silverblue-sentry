@@ -64,6 +64,10 @@ pub const WAIT: Duration = Duration::from_secs(15 * 60);
 /// A run picked up after the wait gave up looks for this long before saying so again.
 pub const GRACE: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(5);
+/// `wait`'s exit when the flash didn't happen (the router untouched).
+pub const NOT_FLASHED: u8 = 4;
+/// How long `flash` watches owut before it hands over to `wait`.
+pub const WATCH: Duration = Duration::from_secs(180);
 
 // ---- owut's output ---------------------------------------------------------------
 
@@ -391,12 +395,36 @@ fn strip_ansi(s: &str) -> String {
 
 /// Why the plan stops here (empty: it goes on to the download). `installed`: the version
 /// `ubus call system board` says the router runs.
+/// What `download` runs: always the version `plan` showed (`State.to`, owut's
+/// `Version-to`), never owut's own default, so what was shown is what is built.
+pub fn download_line(to: &str) -> String {
+    format!("owut download -V {to} -i {IMAGE} --verbose 2>&1")
+}
+
+/// `25.12.6` → `[25, 12, 6]` (a release candidate's `-rcN` dropped); none: not a release.
+fn release_parts(v: &str) -> Option<Vec<u64>> {
+    v.split('-')
+        .next()?
+        .split('.')
+        .map(|p| p.parse().ok())
+        .collect()
+}
+
 pub fn stops(c: &Check, code: i32, installed: &str) -> Vec<String> {
     let mut why: Vec<String> = c.warnings.iter().map(Warn::said).collect();
     let (Some(from), Some(to)) = (&c.from, &c.to) else {
         why.push("owut's answer didn't say which version the router would be upgraded to.".into());
         return why;
     };
+    if let (Some(a), Some(b)) = (release_parts(&from.version), release_parts(&to.version))
+        && b < a
+    {
+        why.push(format!(
+            "owut would put the router on {}, older than the {} it runs: sentry never goes back \
+             to an older release.",
+            to.version, from.version
+        ));
+    }
     if from.version != installed {
         why.push(format!(
             "owut read the router as {} but it says it runs {installed}: nothing is upgraded \
@@ -737,13 +765,40 @@ pub fn enough_for(m: &Mem, image: u64) -> Result<(), String> {
 
 // ---- waiting for the router ------------------------------------------------------
 
+/// What one look at the router found when it answered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Look {
+    pub boot: String,
+    /// A process of the flash still runs (`owut`, `sysupgrade`, procd's `upgraded`).
+    pub busy: bool,
+    /// What `owut install` has said (`FLASH_LOG`).
+    pub log: String,
+}
+
 /// What one look at the router found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Seen {
-    /// It answered with this boot id.
-    Boot(String),
+    Answer(Look),
     /// No answer.
     Nothing,
+}
+
+/// The one look `wait` takes, over a new connection: the boot id, whether the flash's
+/// processes still run (`pgrep -x` by name: owut is a script, its process is named so),
+/// and the flash's log.
+pub const LOOK_SCRIPT: &str = "cat /proc/sys/kernel/random/boot_id; echo @@busy; \
+     pgrep -x owut; pgrep -x sysupgrade; pgrep -x upgraded; echo @@log; \
+     cat /tmp/sentry-flash.log 2>/dev/null; true";
+
+pub fn parse_look(text: &str) -> Option<Look> {
+    let (boot, rest) = text.split_once("@@busy")?;
+    let (busy, log) = rest.split_once("@@log").unwrap_or((rest, ""));
+    let boot = boot.trim().to_string();
+    (!boot.is_empty()).then(|| Look {
+        boot,
+        busy: busy.lines().any(|l| !l.trim().is_empty()),
+        log: log.trim_start_matches('\n').to_string(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,8 +807,91 @@ pub enum Poll {
     Back,
     /// Not yet: look again.
     Waiting,
-    /// The deadline passed.
-    Over,
+    /// It answers on the old boot and the flash still works: look again.
+    StillFlashing,
+    /// It answers on the old boot and nothing of the flash runs any more, for long enough:
+    /// the flash didn't happen.
+    NotFlashed,
+    /// The deadline passed with no answer.
+    Gone,
+    /// The deadline passed and it still answers on the old boot with the flash at work.
+    Stuck,
+}
+
+/// How long the router must answer on its old boot with nothing of the flash running
+/// before sentry says the flash didn't happen. owut never handed the image over (no
+/// "Installing" line): a short while, for the log to be written. It was handed over:
+/// sysupgrade hands it to procd, which stops every process before writing; two minutes
+/// with the old boot answering and none of it running means procd never started.
+pub fn idle_needed(log: &str) -> i64 {
+    if read_flash_log(log) == Flashing::Installing {
+        120
+    } else {
+        20
+    }
+}
+
+/// One look, judged. `idle_for`: for how many seconds the looks have found the old boot
+/// answering and nothing of the flash running (none: not so at this look).
+pub fn poll(
+    seen: &Seen,
+    before: &str,
+    now: Timestamp,
+    until: Timestamp,
+    idle_for: Option<i64>,
+) -> Poll {
+    let over = now >= until;
+    match seen {
+        Seen::Answer(l) if !l.boot.is_empty() && l.boot != before => Poll::Back,
+        Seen::Answer(l) if l.busy => {
+            if over {
+                Poll::Stuck
+            } else {
+                Poll::StillFlashing
+            }
+        }
+        Seen::Answer(l) => match idle_for {
+            Some(s) if s >= idle_needed(&l.log) || over => Poll::NotFlashed,
+            _ if over => Poll::NotFlashed,
+            _ => Poll::Waiting,
+        },
+        Seen::Nothing if over => Poll::Gone,
+        Seen::Nothing => Poll::Waiting,
+    }
+}
+
+/// When the flash didn't happen: plainly, with what owut last said.
+pub fn not_flashed_words(st: &State, log: &str) -> Vec<String> {
+    let mut out = vec![
+        format!(
+            "The router is still running {}: the flash did not happen. Nothing was changed.",
+            if st.from.is_empty() {
+                "its old firmware"
+            } else {
+                &st.from
+            }
+        ),
+        "It kept answering on the same start-up, and nothing of the flash is running any more."
+            .into(),
+    ];
+    let said: Vec<String> = log
+        .lines()
+        .map(|l| strip_ansi(l).trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if said.is_empty() {
+        out.push("owut said nothing about why.".into());
+    } else {
+        out.push("What owut said last:".into());
+        let from = said.len().saturating_sub(5);
+        out.extend(said[from..].iter().map(|l| format!("  {l}")));
+    }
+    out.push(
+        "The downloaded image was removed from the router's memory. To try again, start the \
+         upgrade again from the firmware row."
+            .into(),
+    );
+    out
 }
 
 /// When the wait gives up: `total` after the flash started; once that has passed (a run
@@ -761,15 +899,6 @@ pub enum Poll {
 pub fn deadline(flashed: Timestamp, now: Timestamp, total: Duration) -> Timestamp {
     let a = flashed + total;
     if now >= a { now + GRACE } else { a }
-}
-
-/// One look, judged: back only on a boot id that isn't the one before the flash.
-pub fn poll(seen: &Seen, before: &str, now: Timestamp, until: Timestamp) -> Poll {
-    match seen {
-        Seen::Boot(id) if !id.is_empty() && id != before => Poll::Back,
-        _ if now >= until => Poll::Over,
-        _ => Poll::Waiting,
-    }
 }
 
 /// "4 min 10 s".
@@ -875,12 +1004,26 @@ pub fn missing_now(scope: &str) -> bool {
     !State::load(scope).missing.is_empty()
 }
 
-/// How long `wait` waits (`SENTRY_FIRMWARE_WAIT` in tests).
-pub fn wait_total() -> Duration {
-    std::env::var("SENTRY_FIRMWARE_WAIT")
+/// A test knob, in seconds: read only in a debug build (what the disposable router's live
+/// tests run); a release build always waits the full time.
+fn knob(name: &str) -> Option<Duration> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(name)
         .ok()
         .and_then(|s| s.parse().ok())
-        .map_or(WAIT, Duration::from_secs)
+        .map(Duration::from_secs)
+}
+
+/// How long `wait` waits (`SENTRY_FIRMWARE_WAIT`, debug builds only).
+pub fn wait_total() -> Duration {
+    knob("SENTRY_FIRMWARE_WAIT").unwrap_or(WAIT)
+}
+
+/// How long `flash` watches the flash start (`SENTRY_FIRMWARE_WATCH`, debug builds only).
+pub fn watch_total() -> Duration {
+    knob("SENTRY_FIRMWARE_WATCH").unwrap_or(WATCH)
 }
 
 // ---- the steps ---------------------------------------------------------------------
@@ -891,16 +1034,23 @@ pub struct Out<'a> {
     pub err: &'a mut dyn FnMut(String),
 }
 
-fn boot_id(r: &Router) -> Seen {
+/// One look over a new connection (never the shared one, which outlives a restart).
+fn look(r: &Router) -> Seen {
     match r
-        .cmd("cat")
-        .arg("/proc/sys/kernel/random/boot_id")
+        .sh(LOOK_SCRIPT)
         .own_connection()
         .timeout(Some(Duration::from_secs(15)))
         .output()
     {
-        Ok(s) => Seen::Boot(s.trim().to_string()),
+        Ok(s) => parse_look(&s).map_or(Seen::Nothing, Seen::Answer),
         Err(_) => Seen::Nothing,
+    }
+}
+
+fn boot_id(r: &Router) -> Option<String> {
+    match look(r) {
+        Seen::Answer(l) => Some(l.boot),
+        Seen::Nothing => None,
     }
 }
 
@@ -1225,7 +1375,7 @@ pub fn download(r: &Router, o: &mut Out) -> u8 {
             return 1;
         }
     };
-    let line = format!("owut download -V {} -i {IMAGE} --verbose 2>&1", st.to);
+    let line = download_line(&st.to);
     if !plain_name(&st.to) {
         (o.err)("the planned version isn't a version".into());
         return 3;
@@ -1356,6 +1506,10 @@ pub enum Flashing {
     Starting,
 }
 
+/// "Installing" is owut's own line, printed in `install()` right after it handed the image
+/// to sysupgrade (owut 2026.07.08, `/usr/bin/owut`):
+/// `L.log(0, "Installing %s and rebooting...\n", options.image);`
+/// (`flash_log_fixture` holds that line as owut prints it: a rewording fails that test.)
 pub fn read_flash_log(text: &str) -> Flashing {
     let errors: Vec<String> = text
         .lines()
@@ -1403,7 +1557,7 @@ pub fn flash(r: &Router, o: &mut Out) -> u8 {
         );
         return 3;
     }
-    let Seen::Boot(boot) = boot_id(r) else {
+    let Some(boot) = boot_id(r) else {
         (o.err)("The router didn't answer: nothing was flashed.".into());
         return 1;
     };
@@ -1449,55 +1603,59 @@ pub fn flash(r: &Router, o: &mut Out) -> u8 {
         }
     }
     // Watch it go: owut checks the image again, then the router closes every session.
-    let until = Instant::now() + Duration::from_secs(180);
+    // One failed connection is no evidence (a blip); two in a row a few seconds apart, or
+    // a new boot, are. Either way `wait` comes next and tells the cases apart.
+    let boot_before = st.boot_before.clone();
+    let until = Instant::now() + watch_total();
     let mut said_installing = false;
     while Instant::now() < until {
         std::thread::sleep(Duration::from_secs(3));
-        let x = r
-            .sh(&format!("cat {FLASH_LOG} 2>/dev/null"))
-            .own_connection()
-            .timeout(Some(Duration::from_secs(15)))
-            .run();
-        match x {
-            Err(_) => {
-                (o.say)(
-                    "The router has closed its sessions: it is writing the new firmware.".into(),
-                );
+        let l = match look(r) {
+            Seen::Answer(l) if l.boot != boot_before => {
+                (o.say)("The router has restarted.".into());
                 return 0;
             }
-            Ok(x) if x.code == 255 => {
-                (o.say)(
-                    "The router has closed its sessions: it is writing the new firmware.".into(),
-                );
-                return 0;
+            Seen::Answer(l) => l,
+            Seen::Nothing => {
+                std::thread::sleep(Duration::from_secs(3));
+                match look(r) {
+                    Seen::Answer(l) if l.boot == boot_before => l,
+                    _ => {
+                        (o.say)(
+                            "The router has closed its sessions: it is writing the new firmware."
+                                .into(),
+                        );
+                        return 0;
+                    }
+                }
             }
-            Ok(x) => match read_flash_log(&x.stdout) {
-                Flashing::Refused(errs) => {
-                    (o.err)("owut refused to flash the image. Nothing was flashed; the router keeps running as it was.".into());
-                    errs.iter().for_each(|e| (o.err)(format!("  owut: {e}")));
-                    forget_image(r);
-                    let mut st = State::load(&r.scope);
-                    st.flashed_at = None;
-                    let _ = st.save(&r.scope);
-                    return 1;
-                }
-                Flashing::Installing if !said_installing => {
-                    said_installing = true;
-                    (o.say)("owut checked the image and handed it to sysupgrade: the router is about to restart.".into());
-                }
-                _ => {}
-            },
+        };
+        match read_flash_log(&l.log) {
+            Flashing::Refused(errs) => {
+                (o.err)("owut refused to flash the image. Nothing was flashed; the router keeps running as it was.".into());
+                errs.iter().for_each(|e| (o.err)(format!("  owut: {e}")));
+                forget_image(r);
+                let mut st = State::load(&r.scope);
+                st.flashed_at = None;
+                let _ = st.save(&r.scope);
+                return 1;
+            }
+            Flashing::Installing if !said_installing => {
+                said_installing = true;
+                (o.say)("owut checked the image and handed it to sysupgrade: the router is about to restart.".into());
+            }
+            _ => {}
+        }
+        // owut has ended and the router still runs as it was: `wait` says what that means.
+        if !l.busy {
+            return 0;
         }
     }
-    if said_installing {
-        (o.say)("The flash was handed over; the router is still answering. The next step waits for it to restart.".into());
-        return 0;
-    }
-    (o.err)(
-        "The flash was started but owut hasn't said anything for three minutes. The next \
-         step waits for the router to restart, or says it didn't."
-            .into(),
-    );
+    (o.say)(format!(
+        "The flash is still at work after {}, and the router still answers as it was. The \
+         next step waits for it to restart, or says it didn't.",
+        took(watch_total().as_secs() as i64)
+    ));
     0
 }
 
@@ -1516,11 +1674,20 @@ pub fn wait(r: &Router, o: &mut Out) -> u8 {
         took(total.as_secs() as i64)
     ));
     let mut last_said = Instant::now();
+    let mut idle_since: Option<Timestamp> = None;
     loop {
         let now = Timestamp::now();
-        let seen = boot_id(r);
+        let seen = look(r);
         let since = (now - flashed).get_seconds();
-        match poll(&seen, &st.boot_before, now, until) {
+        // The old boot answering with nothing of the flash running: since when.
+        match &seen {
+            Seen::Answer(l) if l.boot == st.boot_before && !l.busy => {
+                idle_since.get_or_insert(now);
+            }
+            _ => idle_since = None,
+        }
+        let idle_for = idle_since.map(|t| (now - t).get_seconds());
+        match poll(&seen, &st.boot_before, now, until, idle_for) {
             Poll::Back => {
                 let v = board(r).map(|b| b.version).unwrap_or_default();
                 (o.say)(format!(
@@ -1537,18 +1704,45 @@ pub fn wait(r: &Router, o: &mut Out) -> u8 {
                 let _ = st.save(&r.scope);
                 return 0;
             }
-            Poll::Over => {
+            Poll::Gone => {
                 lost_words(&st, since).into_iter().for_each(|l| (o.err)(l));
                 return 1;
             }
-            Poll::Waiting => {
+            Poll::NotFlashed => {
+                let log = match &seen {
+                    Seen::Answer(l) => l.log.clone(),
+                    Seen::Nothing => String::new(),
+                };
+                not_flashed_words(&st, &log)
+                    .into_iter()
+                    .for_each(|l| (o.err)(l));
+                forget_image(r);
+                let mut st = State::load(&r.scope);
+                st.flashed_at = None;
+                st.step = String::new();
+                let _ = st.save(&r.scope);
+                return NOT_FLASHED;
+            }
+            Poll::Stuck => {
+                (o.err)(format!(
+                    "The router still runs as it was, {} after the flash started, and the \
+                     flash is still at work. It hasn't restarted yet, so it is reachable and \
+                     nothing was lost. Leave its power on; when it restarts, open this run \
+                     (0): it carries on with the checks.",
+                    took(since)
+                ));
+                return 1;
+            }
+            Poll::Waiting | Poll::StillFlashing => {
                 if last_said.elapsed() >= Duration::from_secs(30) {
                     last_said = Instant::now();
                     (o.say)(format!(
                         "… {} since the flash started{}",
                         took(since),
-                        match seen {
-                            Seen::Boot(_) => " (it still answers on the old boot)",
+                        match &seen {
+                            Seen::Answer(l) if l.busy =>
+                                " (it still answers on the old boot; the flash is still at work)",
+                            Seen::Answer(_) => " (it still answers on the old boot)",
                             Seen::Nothing => "",
                         }
                     ));

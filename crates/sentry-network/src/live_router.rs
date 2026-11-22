@@ -1907,6 +1907,8 @@ fn live_firmware_upgrade() {
     // Short enough for a test; the stand-in comes back after 8 s, or 45 s when slow.
     // SAFETY: these tests run one at a time (`--test-threads=1`), nothing reads it meanwhile.
     unsafe { std::env::set_var("SENTRY_FIRMWARE_WAIT", "20") };
+    // SAFETY: as above. The flash's own watch, short (the hanging stand-in outlasts it).
+    unsafe { std::env::set_var("SENTRY_FIRMWARE_WATCH", "8") };
     let Some(r) = router() else { return };
     let name = r.name.clone();
     // Until a new login is let in (the script's seed has just restarted dropbear; the
@@ -2071,6 +2073,113 @@ fn live_firmware_upgrade() {
         "the image was left in the router's memory"
     );
     assert_eq!(boot(&r), boot_before, "nothing restarted");
+    done_with(&mut a);
+    drop(a);
+
+    // 2b. owut ends without flashing and without an ERROR line: within a minute the run
+    //     says the flash didn't happen; the router untouched; it can be started again.
+    mode("silent");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    let boot_before = boot(&r);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let t = Instant::now();
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(60),
+        "took {:?}",
+        t.elapsed()
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("still running 25.12.5: the flash did not happen. Nothing was changed.")
+            && !said.contains("hasn't answered")
+            && !said.contains("recovery procedure"),
+        "{said}"
+    );
+    assert_eq!(boot(&r), boot_before, "nothing restarted");
+    assert!(!image_there(&r), "the image is left in memory");
+    assert!(crate::firmware::State::load(&r.scope).flashed_at.is_none());
+    done_with(&mut a);
+    // Started again: it runs as before.
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    done_with(&mut a);
+    drop(a);
+
+    // 2c. The flash keeps working past its watch with the router answering: the wait says
+    //     so, never that the router is gone.
+    mode("hang");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("the flash is still at work")
+            && said.contains("still runs as it was")
+            && !said.contains("hasn't answered"),
+        "{said}"
+    );
+    on(
+        &r,
+        "for p in /proc/[0-9]*; do grep -qE 'owut[^a-z]*[i]nstall' $p/cmdline 2>/dev/null && kill ${p#/proc/}; done; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log",
+    );
     done_with(&mut a);
     drop(a);
 
