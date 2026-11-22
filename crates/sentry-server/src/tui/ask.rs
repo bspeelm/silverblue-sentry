@@ -11,6 +11,27 @@ use sentry_core::workflows::runner::{Next, preview};
 use sentry_core::workflows::state::StepStatus;
 
 /// The web for release notes and advisories (plans, reviews, apply sessions).
+/// What ssh makes of a host alias (`ssh -G`: its `hostname`), for telling which host of a
+/// network this server is. Run here, once; nothing connects.
+pub fn ssh_names(host: &str) -> Vec<String> {
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let mut c = sentry_core::exec::Cmd::local("ssh");
+    if let Some(f) = std::env::var("SENTRY_SSH_CONFIG")
+        .ok()
+        .filter(|f| !f.is_empty())
+    {
+        c = c.args(["-F", f.as_str()]);
+    }
+    let Ok(out) = c.args(["-G", host]).output() else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|l| l.strip_prefix("hostname "))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect()
+}
+
 pub fn with_web(mut p: Profile) -> Profile {
     p.tools.extend(["WebFetch", "WebSearch"].map(String::from));
     p.allowed
@@ -19,7 +40,7 @@ pub fn with_web(mut p: Profile) -> Profile {
     p
 }
 
-/// The plans and reviews profile (`p`, `R` on Maintenance): the gateway, plus the web for release notes
+/// The reviews profile (`R` on Maintenance): the gateway, plus the web for release notes
 /// and reading the configured notes files.
 pub fn writer_profile(r: &Remote, os: &str, kernel: &str, sudo: Option<SudoMode>) -> Profile {
     let mut p = profile(r, os, kernel, sudo)
@@ -122,7 +143,7 @@ pub fn nothing_here(tab: ScreenId, v: &View) -> &'static str {
 }
 
 /// The ranked recommendations, about one of them (`A` on Maintenance, any other row). A move
-/// itself is planned with `p`, which researches it; this is a question.
+/// itself is Enter on its row (a session, which researches it); this is a question.
 fn ask_maintenance(v: &View, r: &Remote, about: &str) -> Ask {
     let lines: Vec<String> = super::screens::maint::recs(v)
         .iter()
@@ -379,12 +400,37 @@ fn ask_step(h: &str, r: &Remote, s: &Session) -> Ask {
 /// workflow (the app has the files).
 pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option<Ask> {
     use super::screens::maint::{self as m, Sel};
+    match m::pick(v)? {
+        Sel::Item(s, _) => apply_item(v, r, &s.id, s.id.clone(), steps),
+        Sel::Rec(x) => apply_rec(v, r, &x, steps),
+    }
+}
+
+/// Applying a recommendation with Claude (None: it isn't something to apply).
+pub fn apply_rec(
+    v: &View,
+    r: &Remote,
+    x: &crate::maint::recommend::Rec,
+    steps: &dyn Fn(&str) -> String,
+) -> Option<Ask> {
+    use super::screens::maint as m;
     use crate::maint::recommend::Action;
     use sentry_core::claude::Apply;
     let item = |id: &str, key: String| apply_item(v, r, id, key, steps);
-    match m::pick(v)? {
-        Sel::Item(s, _) => item(&s.id, s.id.clone()),
-        Sel::Rec(x) => match &x.action {
+    {
+        match &x.action {
+            // The audit's own brief (what only the user knows isn't something to apply).
+            Action::Security(id) => {
+                let i =
+                    v.sh.sec
+                        .iter()
+                        .find(|i| &i.id == id && i.question.is_none())?;
+                let mut ask = i.ask();
+                if let Some(sentry_core::claude::Target::Apply(a)) = ask.target.as_mut() {
+                    a.remote = true;
+                }
+                Some(ask)
+            }
             Action::Plan(id) | Action::OpenPlan(id) => item(id, x.key.clone()),
             Action::Look(id) if !id.is_empty() => item(id, x.key.clone()),
             Action::Run(wf) => {
@@ -450,12 +496,12 @@ pub fn apply_ask(v: &View, r: &Remote, steps: &dyn Fn(&str) -> String) -> Option
             }
             Action::Fix(_) | Action::Track(_) | Action::Remove(_) | Action::Audit => None,
             Action::Look(_) => None,
-        },
+        }
     }
 }
 
-/// Applying a maintenance item (its plan if it has one ready), with Claude: also `A` in the
-/// Plan view.
+/// Applying a maintenance item with Claude (Enter on it, `A` → 1, `A` in the Plan view): the
+/// session researches it and keeps its plan under the item.
 pub fn apply_item(
     v: &View,
     r: &Remote,
@@ -479,21 +525,14 @@ pub fn apply_item(
     if let Some(wf) = &wf {
         ctx.push_str(&format!("\n\n{}", steps(wf)));
     }
-    if let Some(p) = plan {
-        let vars: Vec<String> = p
-            .head
-            .vars
-            .iter()
-            .map(|(k, v)| format!("{k} = \"{v}\""))
-            .collect();
+    // A plan from before plans were a session's, with no workflow: Claude carries it out
+    // from its text. (Any other ready plan opens the session on itself.)
+    if let Some(p) =
+        plan.filter(|p| p.head.workflow.is_empty() && !p.body.contains("```sentry-apply"))
+    {
         ctx.push_str(&format!(
-            "\n\nClaude's plan for it, written earlier (target {}{}):\n{}",
+            "\n\nClaude's plan for it, written earlier (target {}):\n{}",
             p.head.to.as_deref().unwrap_or("retire"),
-            if vars.is_empty() {
-                String::new()
-            } else {
-                format!("; the workflow's values: {}", vars.join(", "))
-            },
             p.body
         ));
     }
@@ -504,7 +543,8 @@ pub fn apply_item(
             key,
             workflow: wf,
             item: Some(id.to_string()),
-            plan: plan.map(|_| id.to_string()),
+            // Its plan is kept under the item, and closed when it's done.
+            plan: Some(id.to_string()),
             remote: true,
             ..Default::default()
         },

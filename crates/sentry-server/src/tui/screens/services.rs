@@ -11,7 +11,7 @@ impl Services {
     pub fn handle(&mut self, a: Action, v: &View, r: &Remote) -> Vec<Effect> {
         match a {
             Action::Refresh | Action::Check => {
-                vec![Effect::Fetch(Kind::Units), Effect::Fetch(Kind::Journal)]
+                vec![Own::fetch(Kind::Units), Own::fetch(Kind::Journal)]
             }
             Action::Enter => unit_detail(v),
             Action::Char(c @ ('R' | 'x' | 'L')) => match unit_rows(v).into_iter().nth(v.cur) {

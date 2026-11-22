@@ -25,7 +25,8 @@ pub enum PlanStatus {
     Done,
     /// Dropped without applying it.
     Dropped,
-    /// A new plan for the same item took its place (`P`).
+    /// The session for the same item was started over (`P`), and its plan took this one's
+    /// place.
     Replaced,
 }
 
@@ -101,12 +102,22 @@ impl PlanDoc {
     /// Take Claude's answer: its `TARGET:` line sets the target (or "wait"); the rest is the
     /// body. The image var follows the target, written the way the pin is.
     pub fn take_answer(&mut self, answer: &str) {
+        self.take(answer, true)
+    }
+
+    /// Take what a session's Claude answered with its plan: the same, all of it kept (the
+    /// assessment is the document; a `#` in it may be a comment in the plan's block).
+    pub fn take_session(&mut self, answer: &str) {
+        self.take(answer, false)
+    }
+
+    fn take(&mut self, answer: &str, from_title: bool) {
         let target = target(answer);
         let body: Vec<&str> = answer.lines().filter(|l| !is_target_line(l)).collect();
         // Anything before the plan's title is Claude talking, not the plan.
         let start = body
             .iter()
-            .position(|l| l.trim_start().starts_with('#'))
+            .position(|l| from_title && l.trim_start().starts_with('#'))
             .unwrap_or(0);
         self.body = body[start..].join("\n").trim().to_string();
         self.head.updated = Some(jiff::Timestamp::now());

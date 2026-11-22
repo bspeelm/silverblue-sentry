@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: "stable.join(\"\\n\")"
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance 1   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Workflows · <where they come from>┐  ┌ Last result ─────────────────────────────────────────────────────────────────────────────────┐
+│ config-backup  2 steps                                   │  │ No workflow in progress.                                                                     │
+│ Back the router's configuration up, encrypted on this    │  │                                                                                              │
+│ machine, and check the backup holds what the router has  │  │ config-backup has never run.                                                                 │
+│ now                                                      │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ firmware-upgrade  6 steps  draft                         │  │                                                                                              │
+│ Upgrade the router's firmware with owut, after a config  │  │                                                                                              │
+│ backup, and check it came back                           │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ guarded-change  3 steps                                  │  │                                                                                              │
+│ Change the config the network is reached through, with   │  │                                                                                              │
+│ the router armed to take it back by itself               │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ package-update  6 steps                                  │  │                                                                                              │
+│ Upgrade named packages on the router, after a config     │  │                                                                                              │
+│ backup, and check the services afterwards                │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│ security-action  2 steps                                 │  │                                                                                              │
+│ What Enter on the Security screen does: one change on    │  │                                                                                              │
+│ the router, shown first, taken back by itself if the     │  │                                                                                              │
+│ router stops answering                                   │  │                                                                                              │
+│ never run                                                │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │                                                                                              │
+│                                                          │  │ ┌──────────────────────────────────────────────────────────────────────────────────────────┐ │
+│                                                          │  │ │ config-backup.toml                                                                       │ │
+│                                                          │  │ │ backup → verify                                                                          │ │
+│                                                          │  │ │ [Enter] start   [e] edit   lint ✓                                                        │ │
+│                                                          │  │ └──────────────────────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  start   e  edit toml   r  reload   v  records   C-a  auto   A  ask Claude   ?  help   q  quit

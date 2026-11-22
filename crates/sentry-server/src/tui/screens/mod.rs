@@ -19,8 +19,8 @@ pub mod upgrade;
 
 use std::time::Duration;
 
-use super::app::Effect;
 use super::data::{Kind, Store};
+use super::target::{Effect, Own};
 use crate::collect::apt::{Kind as PkgKind, Pkg};
 use crate::collect::docker::Container;
 use crate::collect::health::SmartHealth;
@@ -37,6 +37,8 @@ use sentry_core::tui::{Cursor, ScreenId};
 pub struct View<'a> {
     pub t: &'a Theme,
     pub s: &'a Store,
+    /// The server's records (plans, tasks, the log…): the app's, read here.
+    pub sh: &'a sentry_app::shared::Shared,
     pub cfg: &'a Server,
     pub name: &'a str,
     /// The row selected on the screen in view (a copy of its cursor).
@@ -50,12 +52,14 @@ pub struct View<'a> {
     pub upstream: Option<jiff::Timestamp>,
     /// That read with sudo is from before the last maintenance run.
     pub inventory_stale: bool,
-    /// The maintenance item Claude is writing a plan for.
-    pub planning: Option<String>,
+    /// Maintenance lists what can wait too (`o`).
+    pub everything: bool,
     /// Open plans, by item.
     pub plans: &'a std::collections::BTreeMap<String, crate::maint::plan::PlanDoc>,
     /// The workflow run in progress (or just ended).
     pub wf: Option<&'a crate::workflow::Session>,
+    /// Auto mode is on.
+    pub auto: bool,
     /// The workflows there are, each with its last run.
     pub wf_list: &'a [sentry_core::tui::wflist::WfInfo],
 }
@@ -137,6 +141,8 @@ impl Screens {
                     at(Kind::Units, Some(SLOW)),
                     at(Kind::Docker, Some(SLOW)),
                     at(Kind::Report, None),
+                    // Its reads are root's: at entry and on `r`, never on a timer.
+                    at(Kind::Crowdsec, None),
                 ];
                 if !cfg.smart.is_empty() {
                     p.push(at(Kind::Smart, Some(SLOW)));
@@ -171,7 +177,7 @@ impl Screens {
         if matches!(id, ScreenId::Dash | ScreenId::Maint)
             && v.s.apt.at.is_none_or(|t| t.elapsed() > APT_MAX_AGE)
         {
-            e.push(Effect::Fetch(Kind::Apt));
+            e.push(Own::fetch(Kind::Apt));
         }
         if id == ScreenId::Maint {
             // Upstream changes slowly: looked up again at most daily without `c`.
@@ -179,7 +185,7 @@ impl Screens {
                 .upstream
                 .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
             if stale && !v.cfg.maintenance.items.is_empty() {
-                e.push(Effect::Fetch(Kind::Upstream));
+                e.push(Own::fetch(Kind::Upstream));
             }
         }
         e
@@ -259,8 +265,18 @@ impl Screens {
             // The selected row's keys, then the screen's.
             ScreenId::Maint if self.maint.view.is_some() => report::hints(v),
             ScreenId::Maint => {
-                let mut h = sentry_core::tui::maintlist::hints(&maint::verbs(v));
+                let mut h = sentry_core::tui::maintlist::hints(
+                    &maint::verbs(v),
+                    maint::ticked(v, &self.maint.ticks),
+                );
                 // The screen's own few; w, e and the rest are in `?`.
+                // o only when something waits (or is shown because of it).
+                if v.everything || maint::waiting(v) > 0 {
+                    h.push((
+                        "o",
+                        sentry_core::tui::maintlist::everything_word(v.everything),
+                    ));
+                }
                 h.extend([("c", "check"), ("v", "records"), ("R", "review")]);
                 h
             }
@@ -414,9 +430,9 @@ fn needs_password(v: &View, what: &str) -> Vec<Line<'static>> {
             Span::styled("Press ", t.fg()),
             Span::styled(" I ", Style::new().fg(t.chip_fg).bg(t.dim)),
             Span::styled(
-                " to read them once with your password: one sudo, read-only. The terminal is \
-                 handed over for the password, then this screen shows that read (with its age) until \
-                 you read again.",
+                " to read them once with your password: one sudo, read-only. It's asked for \
+                 here (once, for everything on this server), then this screen shows that read \
+                 (with its age) until you read again.",
                 t.fg(),
             ),
         ]),

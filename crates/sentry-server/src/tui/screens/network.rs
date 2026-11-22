@@ -9,8 +9,8 @@ use super::{Hints, View};
 use crate::audit;
 use crate::config::Server;
 use crate::remote::SudoMode;
-use crate::tui::app::Effect;
 use crate::tui::data::Kind;
+use crate::tui::target::{Effect, Own};
 use sentry_core::baseline::{BaselineFile, glob};
 use sentry_core::collectors::net::{ListenStatus, Listener};
 use sentry_core::tui::Cursor;
@@ -87,7 +87,7 @@ pub fn all(v: &View) -> Option<Vec<Listener>> {
         &s.listeners,
         names(v).as_deref(),
         v.cfg,
-        &v.s.baseline,
+        &v.sh.baseline,
     ))
 }
 
@@ -142,7 +142,7 @@ pub fn new_count(v: &View) -> usize {
             r.snapshot.listeners.as_deref()?,
             None,
             v.cfg,
-            &v.s.baseline,
+            &v.sh.baseline,
         ))
     };
     all(v)
@@ -156,7 +156,7 @@ pub fn new_count(v: &View) -> usize {
 impl Network {
     pub fn handle(&mut self, a: Action, v: &View) -> Vec<Effect> {
         match a {
-            Action::Refresh => vec![Effect::Fetch(Kind::Sockets), Effect::Fetch(Kind::Listeners)],
+            Action::Refresh => vec![Own::fetch(Kind::Sockets), Own::fetch(Kind::Listeners)],
             // `b` toggles expected (`e` too, as in sentry), for the port on every address:
             // that's what the audit's finding is about.
             Action::Char('b' | 'e') => {
@@ -171,7 +171,7 @@ impl Network {
                 let id = audit::listener_id(&l);
                 let what = format!("{} {}", l.proto, l.port);
                 match l.status {
-                    ListenStatus::New => vec![Effect::ListenExpected {
+                    ListenStatus::New => vec![Effect::own(Own::ListenExpected {
                         // A name not known yet must still match once `I` shows it.
                         keys: group
                             .iter()
@@ -183,13 +183,13 @@ impl Network {
                         id,
                         what,
                         on: true,
-                    }],
-                    ListenStatus::Baseline => vec![Effect::ListenExpected {
+                    })],
+                    ListenStatus::Baseline => vec![Effect::own(Own::ListenExpected {
                         keys: group.iter().map(Listener::key).collect(),
                         id,
                         what,
                         on: false,
-                    }],
+                    })],
                     _ => vec![Effect::Toast(
                         "not reachable from outside: nothing to mark".into(),
                     )],

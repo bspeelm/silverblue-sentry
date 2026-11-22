@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance 1   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Recommended · 1 · 1 can wait (o) · audited 5m ago ─────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│          What                            Why                                       │ │ soon  Firmware 25.12.3 → 25.12.5                                    │
+│ soon     Firmware 25.12.3 → 25.12.5      A newer release of the same series is out │ │                                                                     │
+│                                                                                    │ │ A newer release of the same series is out, and its notes list       │
+│                                                                                    │ │ security fixes.                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
+┌ Items · 3 · upstream 2h ago ───────────────────────────────────────────────────────┐ │ Enter: how it stands (firmware-upgrade is a draft: it starts        │
+│ Item       State                                                                   │ │ nothing yet) · z: later                                             │
+│ firmware   25.12.3 → 25.12.5      no end of life announced                         │ │                                                                     │
+│ packages   7 upgradable           index 9d ago · r fetches it again                │ │ installed    OpenWrt 25.12.3                                        │
+│ backup     newest 6d ago          nothing changed since                            │ │ latest       25.12.5 · its notes list security fixes                │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ end of life  none announced for 25.12                               │
+┌ Last audit · 2026-10-26 ───────────────────────────────────────────────────────────┐ │ Looked up from this machine (endoflife.date, GitHub): nothing runs  │
+│ ✓ firewall      3 zones · 2 forwards                                               │ │ on the router for it.                                               │
+│ ✓ access        ssh keys only · web interface HTTPS                                │ │                                                                     │
+│ ✓ config        nothing staged                                                     │ │                                                                     │
+│ ✓ listeners     24 sockets                                                         │ │                                                                     │
+│ ✓ clients       10 seen                                                            │ │                                                                     │
+│ ✓ services      3 of 3 running                                                     │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  about   z  later   o  everything   r  refresh   c  audit   F  report   R  review   v  records   C-a  auto   A  ask Claude   ?  help   q  quit

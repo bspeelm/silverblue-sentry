@@ -1,0 +1,66 @@
+@@now
+1793016000
+@@abf
+{
+	"adblock-fast": {
+		"version": "1.2.4-r4",
+		"enabled": true,
+		"running": true,
+		"status": "statusSuccess",
+		"message": "",
+		"stats": "adblock-fast 1.2.4-r4 is blocking 104200 domains (with dnsmasq.servers)",
+		"entries": 104200,
+		"dns": "dnsmasq.servers",
+		"outputFile": "/var/run/adblock-fast/dnsmasq.servers",
+		"force_dns_active": false,
+		"force_dns_ports": [
+			
+		],
+		"errors": [
+			
+		],
+		"warnings": [
+			{
+				"code": "warningMissingRecommendedPackages",
+				"info": "gawk, grep, sed, coreutils-sort"
+			}
+		],
+		"file_url": [
+			{
+				"name": "Example - Hosts",
+				"url": "https://lists.example.org/hosts.txt",
+				"size": "3476485"
+			},
+			{
+				"name": "Example - Trackers",
+				"url": "https://lists.example.org/trackers.txt",
+				"size": "624170"
+			}
+		]
+	}
+}
+@@abf-cron
+{
+	"adblock-fast": {
+		"auto_update_enabled": false,
+		"cron_enabled": true,
+		"cron_line_state": "missing",
+		"entry": ""
+	}
+}
+@@abf-files
+/var/run/adblock-fast/dnsmasq.servers 1791806400
+/var/run/adblock-fast/status.json 1793010000
+@@hdp
+{
+	"https-dns-proxy": {
+		"enabled": true,
+		"running": true,
+		"force_dns_active": true,
+		"force_dns_ports": [
+			53,
+			853
+		],
+		"version": "2026.05.06-r1"
+	}
+}

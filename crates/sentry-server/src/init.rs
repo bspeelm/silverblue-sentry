@@ -20,6 +20,7 @@ const NOTABLE: &[&str] = &[
     "nmbd",
     "winbind",
     "fail2ban",
+    "crowdsec",
     "nginx",
     "caddy",
     "apache2",
@@ -49,6 +50,7 @@ const TOOLS: &[&str] = &[
     "sensors",
     "nvidia-smi",
     "fail2ban-client",
+    "cscli",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -266,6 +268,16 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
     }
     if has("fail2ban-client") {
         sudo.push("fail2ban-client status");
+    }
+    // CrowdSec is here: its read-only lists (sentry never changes it).
+    if has("cscli") {
+        sudo.extend([
+            "cscli decisions list",
+            "cscli alerts list",
+            "cscli hub list",
+            "cscli bouncers list",
+            "cscli metrics",
+        ]);
     }
     sudo.extend(["journalctl", "ss -tulpn"]);
     match f.sudo {

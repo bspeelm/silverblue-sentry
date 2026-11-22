@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/sentry-core", "crates/sentry", "crates/sentry-server"]
+members = [
+    "crates/sentry-core",
+    "crates/sentry-app",
+    "crates/sentry-local",
+    "crates/sentry-server",
+    "crates/sentry-network",
+    "crates/sentry",
+]
 
 [workspace.package]
 version = "0.4.0"
@@ -13,6 +20,10 @@ publish = false
 
 [workspace.dependencies]
 sentry-core = { path = "crates/sentry-core" }
+sentry-app = { path = "crates/sentry-app" }
+sentry-local = { path = "crates/sentry-local" }
+sentry-server = { path = "crates/sentry-server" }
+sentry-network = { path = "crates/sentry-network" }
 ratatui = "0.30"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "component", "network", "user"] }
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +40,11 @@ signal-hook = "0.4"
 rustix = { version = "1", features = ["process", "fs"] }
 serde-saphyr = "1.3"
 insta = "1.49"
+# Config backups are encrypted here, in the program: x25519 recipients only (no ssh keys, no
+# plugins, no passphrases), so nothing has to be installed on an image-based system.
+age = { version = "0.12", default-features = false }
+# The filters after a router read (grep, …) run here, on what was already scrubbed.
+regex = "1"
 
 [profile.release]
 opt-level = "s"

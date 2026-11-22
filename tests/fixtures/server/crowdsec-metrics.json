@@ -1,0 +1,54 @@
+{
+ "acquisition": {
+  "file:/var/log/auth.log": {
+   "parsed": 412,
+   "pour": 380,
+   "reads": 2210,
+   "unparsed": 1798
+  }
+ },
+ "alerts": {
+  "example/http-probing": 2,
+  "example/ssh-bf": 3
+ },
+ "decisions": {
+  "example/http-probing": {
+   "crowdsec": {
+    "ban": 1,
+    "captcha": 1
+   }
+  },
+  "example/ssh-bf": {
+   "crowdsec": {
+    "ban": 1
+   }
+  },
+  "example_blocklist": {
+   "lists": {
+    "ban": 237
+   }
+  },
+  "http:scan": {
+   "CAPI": {
+    "ban": 9000
+   }
+  },
+  "manual 'ban' from 'myserver'": {
+   "cscli": {
+    "ban": 1
+   }
+  },
+  "ssh:bruteforce": {
+   "CAPI": {
+    "ban": 6000
+   }
+  }
+ },
+ "lapi": {
+  "/v1/decisions/stream": {
+   "GET": 8640
+  }
+ },
+ "parsers": {},
+ "scenarios": {}
+}

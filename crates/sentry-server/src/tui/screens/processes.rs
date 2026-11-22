@@ -12,8 +12,8 @@ use ratatui::widgets::Paragraph;
 use super::{Hints, View};
 use crate::collect::procs::{kill_script, lineage};
 use crate::remote::{Remote, SrvError, SudoMode};
-use crate::tui::app::{Effect, Modal, RunSpec};
 use crate::tui::data::Kind;
+use crate::tui::target::{Effect, Modal, Own, RunSpec};
 use sentry_core::claude::Ask;
 use sentry_core::collectors::procs::{Proc, SortBy, sort};
 use sentry_core::tui::Cursor;
@@ -77,7 +77,7 @@ impl Processes {
         match a {
             Action::Char('C' | 'P') => self.sort = SortBy::Cpu,
             Action::Char('M') => self.sort = SortBy::Mem,
-            Action::Refresh => return vec![Effect::Fetch(Kind::Procs)],
+            Action::Refresh => return vec![Own::fetch(Kind::Procs)],
             Action::Char('x') => return self.kill(v, r),
             _ => {}
         }
@@ -91,9 +91,9 @@ impl Processes {
     }
 
     /// `x`: the box that asks before SIGTERM, showing the command. Our own process: plain
-    /// `kill`. Another user's: `sudo`, streamed when it needs no password, with the terminal
-    /// handed over when it asks. Either way nothing is signalled unless the pid is still the
-    /// process listed.
+    /// `kill`. Another user's: `sudo kill`, with the server's password when sudo wants one
+    /// (asked once, in the key bar). Either way nothing is signalled unless the pid is still
+    /// the process listed.
     fn kill(&self, v: &View, r: &Remote) -> Vec<Effect> {
         let t = v.t;
         let Some(p) = self.selected(v) else {
@@ -107,13 +107,13 @@ impl Processes {
         let Some(tick) = v.s.proc_ticks.get(&p.pid) else {
             return vec![Effect::Toast(format!("process {} is gone", p.pid))];
         };
-        // (how it's written in the box, how it runs, whether sudo will ask).
-        let (shown, how, interactive) = if !self.needs_root(v) {
-            ("kill", "kill", false)
+        // (how it's written in the box and run, whether it goes through sudo).
+        let (how, root) = if !self.needs_root(v) {
+            ("kill", false)
         } else {
             match v.s.sudo.value {
-                Some(SudoMode::NoPasswd) => ("sudo kill", "sudo -n kill", false),
-                Some(SudoMode::Password) => ("sudo kill", "sudo kill", true),
+                Some(SudoMode::NoPasswd | SudoMode::Password) => ("sudo kill", true),
+                Some(SudoMode::Root) => ("kill", false),
                 Some(SudoMode::Absent) => {
                     return vec![Effect::Toast(format!(
                         "{} is owned by {}, and this login has no sudo on the server",
@@ -127,18 +127,13 @@ impl Processes {
                 }
             }
         };
+        let shown = how;
         let mut lines = proctable::kill_lines(t, &p);
         lines.extend([
             Line::raw(""),
             Line::styled(format!("$ {shown} -TERM {}", p.pid), t.fg()),
             Line::styled(format!("on {} ({})", r.name, r.host), t.dim()),
         ]);
-        if interactive {
-            lines.push(Line::styled(
-                "sudo asks for your password: the terminal is handed over while it runs.",
-                t.dim(),
-            ));
-        }
         // An ancestor of the shell that sampled: the ssh session itself, or the ssh server.
         let ours =
             v.s.proc_self
@@ -150,22 +145,16 @@ impl Processes {
             ));
             lines.push(Line::styled("This is hard to undo.", t.s(t.red)));
         }
-        let cmd = r.sh(&kill_script(p.pid, tick.start, how)).timeout(None);
-        let run = if interactive {
-            Effect::Suspend(
-                cmd,
-                format!("sentry-server · kill {} on {}", p.pid, r.name),
-                vec![Kind::Procs],
-                false,
-            )
-        } else {
-            Effect::Run(RunSpec {
-                title: "Kill process".into(),
-                cmd,
-                then: vec![Kind::Procs],
-                reboot: false,
-            })
-        };
+        let line = kill_script(p.pid, tick.start, how);
+        let run = Own::run(RunSpec {
+            title: "Kill process".into(),
+            cmd: r
+                .sh(&sentry_core::apply::sudo::detached(&line))
+                .timeout(None),
+            then: vec![Kind::Procs],
+            reboot: false,
+            root: root.then_some(line),
+        });
         vec![Effect::Confirm(Modal {
             title: "Kill process".into(),
             color: t.red,

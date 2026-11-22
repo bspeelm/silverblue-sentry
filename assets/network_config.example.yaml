@@ -1,0 +1,70 @@
+# sentry-network configuration: ~/.config/sentry/network_config.yaml
+#
+# Each entry under `networks:` is one network, seen through its router over ssh. Nothing is
+# installed on the router: sentry runs read-only commands through one multiplexed ssh
+# connection while you have it open.
+#
+# `sentry-network init <ssh-host>` drafts this file from what the router reports;
+# `sentry-network lint` checks it. sentry never rewrites this file. The names, addresses and
+# MACs below are placeholders (documentation ranges).
+
+networks:
+  home:
+    # The router. `ssh` is an alias from ~/.ssh/config, or root@host; the login is root, with
+    # a key (sentry never types passwords). Default: the network's name. `kind: openwrt` is
+    # the only kind there is.
+    router: { ssh: myrouter, kind: openwrt }
+
+    # What the firewall should look like. Anything else is a finding you can mark expected.
+    expect:
+      # Each firewall zone and the interfaces in it.
+      zones:
+        lan: [lan]
+        dmz: [dmz]
+        wan: [wan, wan6]
+      # The port forwards that should exist. `port` is one port or a range.
+      forwards:
+        - { name: web, proto: tcp, port: 443, to: 192.0.2.10 }
+        - { name: game, proto: udp, port: 8000-8010, to: 192.0.2.20 }
+      # What may listen on the router itself: proto:port@zone.
+      listeners: [ "tcp:22@lan", "tcp:443@lan", "udp:53@lan" ]
+      # Services that must be running besides dnsmasq, dropbear and uhttpd (optional).
+      services: [ odhcpd ]
+
+    # The devices you know, by MAC. One that randomises its MAC (a phone's "private
+    # address") is known by the hostname it gives instead. `leave_alone`: nothing sentry or
+    # Claude does may touch it.
+    devices:
+      - { name: nas,   mac: "02:00:5e:00:53:01" }
+      - { name: panel, mac: "02:00:5e:00:53:02", leave_alone: true }
+      - { name: phone, hostname: my-phone, private_mac: true }
+
+    # When the Dashboard and the audit call something high, soon or old.
+    thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }
+
+    # Config backups (`sentry-network backup`, the config-backup workflow) are encrypted on
+    # this machine before they touch its disk, to these recipients: age public keys (age1…),
+    # or files holding one a line. `sentry-network backup key <file>` makes a key and prints
+    # its line; keep that file somewhere else too, since sentry never has the secret key and
+    # can't read a backup back. Restoring: `sentry-network backup decrypt <file> -i <key>`,
+    # then OpenWrt's own restore. `keep`: the newest so many are kept, plus each month's
+    # first for a year. Until a recipient is set, no backup is made.
+    backup:
+      recipients: []   # e.g. [ "age1…" ] (62 characters)
+      keep: 12
+
+    maintenance:
+      items:
+        - { id: firmware, kind: firmware }
+        - { id: packages, kind: packages }
+        - { id: backup,   kind: backup }
+      # How often a routine workflow should run.
+      cadence:
+        - { workflow: config-backup,  every: 30d }
+        - { workflow: package-update, every: 60d }
+
+    # Local files Claude may read when planning or reviewing.
+    notes: [ ~/notes/network.md ]
+
+    # Claude never sees secrets or unknown MACs; the WAN address only if you say so.
+    claude: { share_wan_address: false }

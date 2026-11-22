@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 6   6 Maintenance 8   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Recommended · 8 · 2 can wait (o) · audited 5m ago ─────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│          What                            Why                                       │ │ now  udp port 1900 on the router is open to the internet (the       │
+│ now      udp port 1900 on the router is  Anyone on the internet can talk to it.    │ │ kernel)                                                             │
+│ now      udp port 8000-8010 is forwarded Anyone on the internet can reach that dev │ │                                                                     │
+│ soon     ssh accepts passwords           A password can be guessed or phished; a k │ │ Anyone on the internet can talk to it.                              │
+│ soon     the forward cam (tcp 8554 → 192 Whatever it serves can't be reached from  │ │                                                                     │
+│ soon     the web interface answers over  Logging in that way sends the router's pa │ │ Enter: fix it with Claude (it plans, you approve; the audit runs    │
+│ soon     unknown device 00:00:5e:00:53:1 It may be something of yours that was nev │ │ again after) · F: in the report · b or x: expected · z: later       │
+│ soon     unknown device 02:00:5e:00:53:2 It may be something of yours that was nev │ │                                                                     │
+│ soon     zone dmz isn't in expect.zones  Which interfaces share a zone decides wha │ │ What   Something on the router listens where the outside can reach  │
+│                                                                                    │ │        it: on the uplink's address, or on every address with the    │
+└────────────────────────────────────────────────────────────────────────────────────┘ │        firewall letting the port in.                                │
+┌ Items · 3 ─────────────────────────────────────────────────────────────────────────┐ │ Why    Anyone on the internet can talk to it.                       │
+│ Item       State                                                                   │ │ To do  If you meant it, name it in expect.listeners with the        │
+│ firmware   25.12.3                upstream not looked up yet (r)                   │ │        uplink's zone (or press b); otherwise close the firewall     │
+│ packages   …                                                                       │ │        rule or bind it inside.                                      │
+│ backup     …                                                                       │ │        198.51.100.23:1900/?                                         │
+└────────────────────────────────────────────────────────────────────────────────────┘ │        net:listener:udp:1900                                        │
+┌ Last audit · 2026-10-26 ───────────────────────────────────────────────────────────┐ │                                                                     │
+│ ● firewall      3 zones · 2 forwards                                               │ │                                                                     │
+│ ● access        ssh takes passwords · web interface over HTTP too                  │ │                                                                     │
+│ ✓ config        nothing staged                                                     │ │                                                                     │
+│ ● listeners     25 sockets                                                         │ │                                                                     │
+│ ● clients       10 seen · 2 unknown                                                │ │                                                                     │
+│ ✓ services      3 of 3 running                                                     │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  fix   Space  tick   x  expected   B  all like it   z  later   o  everything   r  refresh   c  audit   F  report   A  ask Claude   ?  help   q  quit

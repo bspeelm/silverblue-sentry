@@ -79,34 +79,128 @@ pub fn clock(now: &jiff::Zoned) -> String {
     now.strftime("%a %d %b %H:%M").to_string()
 }
 
+/// What a target in the strip is doing, as its mark says: nothing, at work (`*`), or waiting
+/// for the user (`!`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mark {
+    #[default]
+    None,
+    Working,
+    You,
+}
+
+/// One target in the top bar's strip.
+#[derive(Debug, Clone, Default)]
+pub struct TargetTab {
+    /// The key that gives it the window (`F1`), if one is bound.
+    pub key: Option<String>,
+    pub name: String,
+    pub mark: Mark,
+    /// Auto mode is on for it.
+    pub auto: bool,
+}
+
 /// The top bar: the program, what it watches and a few facts on the left; its state and
 /// the clock on the right.
 pub struct Top<'a> {
     /// The chip: `sentry`, `sentry-server`.
     pub app: &'a str,
     pub subject: String,
+    /// Auto mode is on for it: said beside its name.
+    pub auto: bool,
     /// Dim, in order; the first go first when it's narrow.
     pub facts: Vec<String>,
     pub state: (String, Color),
     pub clock: String,
+    /// The target strip, when more than one target is open: it takes the subject's place
+    /// (`focus` is the one in view). With one target there is no strip.
+    pub targets: Vec<TargetTab>,
+    pub focus: usize,
+}
+
+/// How the targets' names are written: in full, the others cut short, or the others as their
+/// keys and marks only. The one in view is always in full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetNames {
+    Full,
+    Short,
+    Keys,
+}
+
+/// The target strip: key, name, mark and `auto` each; the one in view inverted.
+fn target_spans(t: &Theme, top: &Top, how: TargetNames) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw(" ")];
+    for (i, tab) in top.targets.iter().enumerate() {
+        let on = i == top.focus;
+        let (fg, kc, bg) = if on {
+            (t.ink, t.ink, Style::new().bg(t.fg))
+        } else {
+            (t.fg, t.dim, Style::new())
+        };
+        let name: String = match how {
+            _ if on => tab.name.clone(),
+            TargetNames::Full => tab.name.clone(),
+            TargetNames::Short if tab.name.chars().count() > 8 => {
+                tab.name.chars().take(7).chain(['…']).collect()
+            }
+            TargetNames::Short => tab.name.clone(),
+            // Without a key to name it by, a letter or two still says which it is.
+            TargetNames::Keys if tab.key.is_none() => tab.name.chars().take(2).collect(),
+            TargetNames::Keys => String::new(),
+        };
+        if let Some(k) = &tab.key {
+            spans.push(Span::styled(format!(" {k}"), bg.fg(kc)));
+        }
+        if !name.is_empty() {
+            spans.push(Span::styled(format!(" {name}"), bg.fg(fg)));
+        }
+        match tab.mark {
+            Mark::None => {}
+            Mark::Working => spans.push(Span::styled(" *", bg.fg(if on { t.ink } else { t.cyan }))),
+            Mark::You => spans.push(Span::styled(
+                " !",
+                bg.fg(if on { t.ink } else { t.yellow })
+                    .add_modifier(Modifier::BOLD),
+            )),
+        }
+        if tab.auto {
+            spans.push(Span::styled(
+                " auto",
+                bg.fg(if on { t.ink } else { t.yellow })
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::styled(" ", bg));
+        spans.push(Span::raw(" "));
+    }
+    spans
 }
 
 /// The two sides of the top bar as they fit in `width`: facts are dropped from the front,
-/// then the clock; never the state.
+/// then the clock, then the other targets' names are cut short and left out; never the state.
 fn top_lines(t: &Theme, top: &Top, width: u16) -> (Line<'static>, Line<'static>) {
     let mut facts = top.facts.clone();
     let mut clock = Some(top.clock.clone());
+    let mut names = TargetNames::Full;
     loop {
-        let mut left = vec![
-            Span::styled(
-                format!(" {} ", top.app),
-                Style::new()
-                    .fg(t.ink)
-                    .bg(t.cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("  {}", top.subject), t.fg()),
-        ];
+        let mut left = vec![Span::styled(
+            format!(" {} ", top.app),
+            Style::new()
+                .fg(t.ink)
+                .bg(t.cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if top.targets.len() > 1 {
+            left.extend(target_spans(t, top, names));
+        } else {
+            left.push(Span::styled(format!("  {}", top.subject), t.fg()));
+            if top.auto {
+                left.push(Span::styled(
+                    " · auto",
+                    t.s(t.yellow).add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
         left.extend(
             facts
                 .iter()
@@ -130,6 +224,11 @@ fn top_lines(t: &Theme, top: &Top, width: u16) -> (Line<'static>, Line<'static>)
             facts.remove(0);
         } else if clock.is_some() {
             clock = None;
+        } else if top.targets.len() > 1 && names != TargetNames::Keys {
+            names = match names {
+                TargetNames::Full => TargetNames::Short,
+                _ => TargetNames::Keys,
+            };
         } else {
             return (left, right);
         }
@@ -230,23 +329,46 @@ pub struct Banner<'a> {
     /// The step it's at: (number, of how many, its title).
     pub step: Option<(usize, usize, String)>,
     pub state: &'a str,
+    /// Auto mode is on.
+    pub auto: bool,
 }
 
 pub fn draw_banner(f: &mut Frame, area: Rect, t: &Theme, b: &Banner) {
     let hint = "press 0 to continue";
     let n = b.step.as_ref().map_or(0, |s| s.1);
+    let state = if b.auto {
+        format!("{} · auto", b.state)
+    } else {
+        b.state.to_string()
+    };
     // The step's title gets what the rest leaves.
-    let fixed = format!(" ↻ workflow {} · step 99/{n}  · {}   ", b.workflow, b.state);
+    let fixed = format!(" ↻ workflow {} · step 99/{n}  · {state}   ", b.workflow);
     let room = (area.width as usize).saturating_sub(fixed.chars().count() + hint.len());
     let step = b.step.as_ref().map_or(String::new(), |(i, n, title)| {
         format!("step {i}/{n} {}", widgets::trunc(title, room))
     });
     let line = Line::from(vec![
         Span::styled(
-            format!(" ↻ workflow {} · {step} · {}   ", b.workflow, b.state),
+            format!(" ↻ workflow {} · {step} · {state}   ", b.workflow),
             t.s(t.yellow),
         ),
         Span::styled(hint, t.dim()),
+    ]);
+    f.render_widget(
+        Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
+        area,
+    );
+}
+
+/// A series in progress, in the banner row (when no workflow's banner is there).
+pub fn draw_series(f: &mut Frame, area: Rect, t: &Theme, line: &str, hint: &str) {
+    let room = (area.width as usize).saturating_sub(hint.chars().count() + 8);
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" ▸ {}   ", widgets::trunc(line, room)),
+            t.s(t.yellow),
+        ),
+        Span::styled(hint.to_string(), t.dim()),
     ]);
     f.render_widget(
         Paragraph::new(line).style(Style::new().bg(t.banner_bg)),
@@ -269,6 +391,8 @@ pub enum KeyBar<'a> {
         note: Option<String>,
     },
     Hints(Hints<'a>),
+    /// The sudo password being typed (`applyview::password_line`).
+    Password(Line<'a>),
 }
 
 pub const CONFIRM_HINTS: [(&str, &str); 2] = [("Enter", "confirm"), ("Esc", "cancel")];
@@ -385,6 +509,10 @@ pub fn draw_keybar(f: &mut Frame, area: Rect, t: &Theme, bar: &KeyBar, toast: Op
                 )),
             }
         }
+        KeyBar::Password(line) => {
+            spans.extend(line.spans.iter().cloned());
+            spans.push(Span::styled("   Enter unlock · Esc cancel", t.dim()));
+        }
         KeyBar::Hints(hints) => {
             let room =
                 (area.width as usize).saturating_sub(toast.map_or(0, |m| m.chars().count() + 2));
@@ -416,6 +544,8 @@ pub fn draw_keybar(f: &mut Frame, area: Rect, t: &Theme, bar: &KeyBar, toast: Op
 /// hints): the first that's open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
+    /// The sudo password, typed in the key bar: nothing else takes a key meanwhile.
+    Unlock,
     /// A command's streamed output.
     Run,
     Choice,
@@ -434,6 +564,8 @@ pub enum Layer {
 /// What's open now (apply, chat: shown, not hidden).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Open {
+    /// The sudo password is being asked for in the key bar.
+    pub unlock: bool,
     pub run: bool,
     pub choice: bool,
     pub modal: bool,
@@ -445,6 +577,7 @@ pub struct Open {
 
 pub fn layer(o: &Open) -> Layer {
     [
+        (o.unlock, Layer::Unlock),
         (o.run, Layer::Run),
         (o.choice, Layer::Choice),
         (o.modal, Layer::Modal),
@@ -468,6 +601,8 @@ pub struct Help<'a> {
     pub app: &'a str,
     /// The `:` commands, on one line.
     pub commands: &'a str,
+    /// Claude and auto mode are there to offer (off: their lines are left out).
+    pub claude: bool,
     pub footer: &'a [&'a str],
 }
 
@@ -481,9 +616,14 @@ pub fn help_modal<E>(t: &Theme, h: &Help) -> Modal<E> {
         l("Enter     select / act         Esc   cancel       ?  help    q  quit"),
     ];
     // The screen names its own `A` when it has one.
-    if !h.hints.iter().any(|(k, _)| *k == "A") {
+    if h.claude && !h.hints.iter().any(|(k, _)| *k == "A") {
         lines.push(l(
             "A         ask Claude about the selected thing (you see what's sent first)",
+        ));
+    }
+    if h.claude {
+        lines.push(l(
+            "C-f       forget the sudo password    C-a  auto mode: routine steps need no key",
         ));
     }
     lines.push(l(h.commands));
@@ -675,9 +815,12 @@ mod tests {
         Top {
             app: "sentry",
             subject: "silverblue 44.1".into(),
+            auto: false,
             facts: vec!["kernel 7.2.8-200.fc44.x86_64".into(), "up 3d 04:12".into()],
             state: ("○ idle".into(), Color::Reset),
             clock: "Mon 16 Nov 20:46".into(),
+            targets: Vec::new(),
+            focus: 0,
         }
     }
 
@@ -729,6 +872,103 @@ mod tests {
         assert_eq!(toast.msg(), "saved");
         assert!(!toast.over(Instant::now()));
         assert!(toast.over(toast.until()));
+    }
+
+    /// The top bar's row as drawn at this width.
+    fn top_row(top: &Top, w: u16) -> String {
+        let t = Theme::truecolor();
+        let s = render_to_string(w, 24, |f| {
+            let a = layout(f, &t, false).unwrap();
+            draw_top(f, a.top, &t, top);
+        });
+        s.lines().next().unwrap().to_string()
+    }
+
+    #[test]
+    fn one_target_has_no_strip_and_several_have_one_with_marks() {
+        // One target: the bar as it always was.
+        let row = top_row(&top(), 110);
+        assert!(
+            row.starts_with(
+                " sentry   silverblue 44.1  kernel 7.2.8-200.fc44.x86_64  up 3d 04:12 "
+            ),
+            "{row}"
+        );
+        assert!(row.ends_with(" ○ idle   Mon 16 Nov 20:46"), "{row}");
+        let tab = |key: &str, name: &str, mark, auto| TargetTab {
+            key: Some(key.into()),
+            name: name.into(),
+            mark,
+            auto,
+        };
+        let mut two = top();
+        two.targets = vec![
+            tab("F1", "silverblue 44.1", Mark::Working, false),
+            tab("F2", "myserver", Mark::You, true),
+            tab("F3", "other", Mark::None, false),
+        ];
+        // Each with its key, name, mark and `auto`, in place of the one name.
+        let row = top_row(&two, 140);
+        assert!(
+            row.starts_with(
+                " sentry   F1 silverblue 44.1 *   F2 myserver ! auto   F3 other    \
+                 kernel 7.2.8-200.fc44.x86_64  up 3d 04:12 "
+            ),
+            "{row}"
+        );
+        assert!(row.ends_with(" ○ idle   Mon 16 Nov 20:46"), "{row}");
+        // Narrower: the facts go, then the clock; the strip stays whole while it fits.
+        let row = top_row(&two, 80);
+        assert!(
+            row.starts_with(" sentry   F1 silverblue 44.1 *   F2 myserver ! auto   F3 other  "),
+            "{row}"
+        );
+        assert!(row.ends_with("  ○ idle"), "{row}");
+        // The one in view is the one inverted (legible without colour too: its marks stay).
+        let t = Theme::truecolor();
+        let (l, _) = top_lines(&t, &two, 130);
+        let inverted: String = l
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(t.fg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(inverted, " F1 silverblue 44.1 * ");
+    }
+
+    #[test]
+    fn a_strip_too_wide_cuts_the_other_names_then_leaves_keys_and_marks() {
+        let tab = |i: usize, name: &str, mark| TargetTab {
+            key: Some(format!("F{i}")),
+            name: name.into(),
+            mark,
+            auto: false,
+        };
+        let mut many = top();
+        many.focus = 1;
+        many.targets = vec![
+            tab(1, "silverblue 44.1", Mark::Working),
+            tab(2, "myserver", Mark::None),
+            tab(3, "another-server", Mark::You),
+            tab(4, "a-third-server", Mark::None),
+            tab(5, "the-fourth-one", Mark::None),
+        ];
+        // Cut short, the one in view in full.
+        let row = top_row(&many, 100);
+        assert!(
+            row.starts_with(
+                " sentry   F1 silverb… *   F2 myserver   F3 another… !   F4 a-third…   F5 the-fou…  "
+            ),
+            "{row}"
+        );
+        assert!(row.ends_with(" ○ idle"), "{row}");
+        // Narrower still: keys and marks only for the others.
+        let row = top_row(&many, 80);
+        assert!(
+            row.starts_with(" sentry   F1 *   F2 myserver   F3 !   F4   F5  "),
+            "{row}"
+        );
+        assert!(row.ends_with(" ○ idle"), "{row}");
     }
 
     #[test]
@@ -790,7 +1030,16 @@ mod tests {
 
     #[test]
     fn layers_in_order() {
+        // The sudo password is typed before anything else gets a key.
+        let unlock = Open {
+            unlock: true,
+            run: true,
+            modal: true,
+            ..Default::default()
+        };
+        assert_eq!(layer(&unlock), Layer::Unlock);
         let all = Open {
+            unlock: false,
             run: true,
             choice: true,
             modal: true,
@@ -856,14 +1105,17 @@ mod tests {
                 globals: &[("I", "read what needs root")],
                 app: "sentry-server",
                 commands: ":q  :<screen>",
+                claude: true,
                 footer: &["Nothing keeps running."],
             },
         );
         let text: Vec<String> = help.lines.iter().map(|l| l.to_string()).collect();
         // The screen has its own A, so the general line is left out.
-        assert_eq!(text[5], ":q  :<screen>");
-        assert_eq!(text[7], "Maintenance:");
-        assert_eq!(text[10], "sentry-server:");
+        assert!(text[5].starts_with("C-f       forget the sudo password"));
+        assert!(text[5].contains("C-a  auto mode"));
+        assert_eq!(text[6], ":q  :<screen>");
+        assert_eq!(text[8], "Maintenance:");
+        assert_eq!(text[11], "sentry-server:");
         assert_eq!(text.last().unwrap(), "Nothing keeps running.");
         let c: Choice<u8> = claude_choice(&t, "sentry", vec![1], vec![2]);
         assert!(c.lines[0].to_string().ends_with("sentry runs it"));

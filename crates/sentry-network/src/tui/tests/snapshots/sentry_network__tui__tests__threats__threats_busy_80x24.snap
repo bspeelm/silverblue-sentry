@@ -1,0 +1,28 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: s
+---
+ sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 9   6 Maintenance 8   0 Up
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Needs attention · 10 · o shows 2 good to know ───────────────────────────────┐
+│          What                                                                │
+│ act now  A door from the internet is open that you haven't listed: game, udp │
+│          port 8000-8010 to 192.0.2.20                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ How you're covered ──────────────────────────────────────────────────────────┐
+│ ! weak 2 doors are open from the internet, to 2 devices: web, phone; 1 of    │
+│        them you haven't listed                                               │
+│ ! weak 10 devices on the network, 2 not named (1 with a private address,     │
+│        vouched for by the Wi-Fi password)                                    │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules   │
+│        say so, and nothing crosses right now                                 │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it    │
+│        doesn't update by itself                                              │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by       │
+│        button                                                                │
+│ ! weak ssh takes a password, and the admin page can be opened without        │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  close it   x  expected   z  later   A  ask Claude   ?  help   q  quit

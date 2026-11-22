@@ -1,45 +1,24 @@
-//! The sentry-server TUI: one server, sentry's screens, everything fetched over ssh while you
-//! watch.
+//! A server in sentry's TUI: sentry's screens, everything fetched over ssh while you watch
+//! (the window itself is opened by the `sentry` binary, with the server as one of its targets). The app itself (the frame, sessions, series, reviews, records, the workflow run) is
+//! `sentry_app`'s; what's here is the server as its target ([`target::ServerTarget`]).
 //! Built on the same runtime as the local TUI ([`sentry_core::tui::run_ui`]).
 
 mod actions;
-mod app;
 mod ask;
 mod data;
 mod planview;
 mod screens;
+mod target;
 #[cfg(test)]
 mod tests;
 
-use ratatui::crossterm::event::KeyEvent;
+use std::sync::mpsc::Sender;
 
-use crate::remote::{Remote, SrvError};
-use sentry_core::exec::StreamMsg;
-use sentry_core::tui::{Input, ScreenId, ScreenSet};
+use crate::remote::Remote;
+use sentry_core::tui::{ScreenId, ScreenSet};
 
-pub use app::App;
-
-pub enum Ev {
-    Key(KeyEvent),
-    Paste(String),
-    Resize,
-    Signal,
-    Data(data::Kind, Box<Result<data::Payload, SrvError>>),
-    Run(u64, StreamMsg),
-    /// Output fetched for the pane (logs).
-    Text(u64, Result<String, String>),
-}
-
-impl From<Input> for Ev {
-    fn from(i: Input) -> Self {
-        match i {
-            Input::Key(k) => Ev::Key(k),
-            Input::Paste(t) => Ev::Paste(t),
-            Input::Resize => Ev::Resize,
-            Input::Signal => Ev::Signal,
-        }
-    }
-}
+pub use sentry_app::{App, Event};
+pub use target::ServerTarget;
 
 /// This program's screens, with sentry's numbers and names: `1` Dashboard, `2` Processes,
 /// `3` Network, `4` Containers, `5` Services (where sentry has Flatpaks), `6` Maintenance,
@@ -62,6 +41,67 @@ pub const SCREENS: ScreenSet = ScreenSet {
     ],
 };
 
-pub fn run(remote: Remote) -> anyhow::Result<()> {
-    sentry_core::tui::run_ui(|tx| App::new(remote, tx))
+/// A server's id as a target (`[targets]` calls it the same: `srv:<name>`).
+pub fn id_of(name: &str) -> String {
+    ServerTarget::id_of(name)
+}
+
+/// The server as a target of the app: what `App::new` or `App::add` builds it with.
+pub fn target(
+    remote: Remote,
+) -> impl FnOnce(sentry_app::target::Mail) -> Box<dyn sentry_app::Target> {
+    |mail| Box::new(ServerTarget::new(remote, mail))
+}
+
+/// The app with this server as its one target.
+pub fn app(remote: Remote, tx: Sender<Event>) -> App {
+    App::new(tx, &id_of(&remote.name), target(remote))
+}
+
+/// Test support for the window's own tests (several targets side by side).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::data::{Data, Kind, Payload};
+    use crate::remote::SudoMode;
+
+    /// What reading how sudo works on the server would have sent (`asks`: it wants a
+    /// password).
+    pub fn sudo_ev(server: &str, asks: bool) -> super::Event {
+        let mode = if asks {
+            SudoMode::Password
+        } else {
+            SudoMode::NoPasswd
+        };
+        super::Event::Data(
+            super::id_of(server),
+            Box::new(Data(Kind::Sudo, Box::new(Ok(Payload::Sudo(mode))))),
+        )
+    }
+
+    /// What reading the server's CrowdSec would have sent: its agent running, this many
+    /// alerts in the last day (all of one scenario), no bouncer.
+    pub fn crowdsec_ev(server: &str, alerts: u32, scenario: &str) -> super::Event {
+        use crate::collect::crowdsec::{Agent, Alerts, Crowdsec};
+        let c = Crowdsec {
+            agent: Agent::Running,
+            version: None,
+            now: 1_793_000_000,
+            decisions: None,
+            alerts: Some(Alerts {
+                count: alerts,
+                capped: false,
+                top: vec![(scenario.to_string(), alerts)],
+            }),
+            hub: None,
+            bouncers: Some(Vec::new()),
+            unread: Vec::new(),
+        };
+        super::Event::Data(
+            super::id_of(server),
+            Box::new(Data(
+                Kind::Crowdsec,
+                Box::new(Ok(Payload::Crowdsec(Some(Box::new(c))))),
+            )),
+        )
+    }
 }

@@ -1,0 +1,64 @@
+@@stat
+cpu  412000 0 1687000 541200000 60 371000 930000 0 0 0
+cpu0 61000 0 455000 135300000 10 165000 112000 0 0 0
+cpu1 196000 0 131000 135690000 20 36000 163000 0 0 0
+cpu2 126000 0 128000 135330000 15 51000 563000 0 0 0
+cpu3 29000 0 973000 134880000 15 119000 92000 0 0 0
+intr 2440000000 0 10100000 1182000000 0 0 0 0
+ctxt 2807000000
+btime 1790000000
+processes 124000
+procs_running 1
+procs_blocked 0
+softirq 1667000000 4 79800000 1548000 445200000 301 0 787300000 210700000 13 142100000
+@@loadavg
+0.42 0.31 0.18 1/112 30412
+@@uptime
+1363000.25 5412000.90
+@@meminfo
+MemTotal:        1010032 kB
+MemFree:          803200 kB
+MemAvailable:     798720 kB
+Buffers:            8100 kB
+Cached:            39800 kB
+SwapCached:            0 kB
+Active:            61200 kB
+Inactive:          25100 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Shmem:             13400 kB
+Slab:              44100 kB
+@@net/dev
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 181000000 1400000    0    0    0     0          0         0 181000000 1400000    0    0    0     0       0          0
+  eth0: 185900000000 195400000    0    0    0     0          0         0 257300000000 211500000    0    0    0     0       0          0
+  eth1: 755100000000 596700000  140    0    0     5          0         0 101000000000 234900000    0   20    0     0       0          0
+  lan1: 121900000000 108400000    0    0    0     0          0         0 118300000000 84300000    0    0    0     0       0          0
+  lan2: 148400000  658000    0    0    0     0          0         0 294200000 1575000    0    0    0     0       0          0
+  lan3:       0       0    0    0    0     0          0         0       0       0    0    0    0     0       0          0
+  lan4: 61400000000 84900000    0    0    0     0          0         0 133300000000 75600000    0  800    0     0       0          0
+br-lan: 84600000000 158800000    0  180    0     0          0    980000 664100000000 468700000    0    2    0     0       0          0
+phy0-ap0: 4627000000 13800000    0    0    0     0          0         0 59300000000 46500000    0    0    0     0       0          0
+phy1-ap0: 58600000000 138900000    0    0    0     0          0         0 590000000000 460300000    0    0    0     0       0          0
+@@net/route
+Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
+eth1	00000000	016433C6	0003	0	0	0	00000000	0	0	0
+eth1	006433C6	00000000	0001	0	0	0	00FFFFFF	0	0	0
+br-lan	000200C0	00000000	0001	0	0	0	00FFFFFF	0	0	0
+lan4	007100CB	00000000	0001	0	0	0	00FFFFFF	0	0	0
+@@sys/kernel/random/boot_id
+3f8a1c52-7d04-4e9b-a6c1-52d0b7e4f913
+@@ifs
+br-lan 1 1000
+eth0 1 2500
+eth1 1 1000
+lan1 1 1000
+lan2 1 100
+lan3 0 -1
+lan4 1 1000
+lo 1 
+phy0-ap0 1 -
+phy1-ap0 1 -
+@@temp
+51500

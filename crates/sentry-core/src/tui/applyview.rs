@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::chat::{brief_lines, entry_lines, show_focused};
+use super::stepview::{self, Mark, State};
 use super::theme::Theme;
 use super::widgets::{self, chip, wrap};
 use crate::apply::plan::{Kind as K, Run, RunState};
@@ -21,14 +22,60 @@ fn stage(p: Phase) -> usize {
         Phase::Brief => 0,
         Phase::Thinking(Turn::Investigate | Turn::Fix) => 1,
         Phase::Review => 2,
-        Phase::SudoCheck | Phase::Password { .. } | Phase::Applying => 3,
+        Phase::SudoCheck | Phase::Password { .. } | Phase::Applying | Phase::Value => 3,
         Phase::Thinking(Turn::Verify) => 4,
         Phase::Settled(_) => 5,
     }
 }
 
-/// `wf`: how the workflow the plan waits for is doing (one or two lines, from the app).
-pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, wf: &[String]) {
+/// A session out of view, for the banner row (as a workflow run has one off its screen):
+/// what it's about, where it stands, and whether it waits for the user.
+pub fn banner(s: &Session) -> String {
+    let what = s.chat.ask.subject.trim_start_matches("apply · ");
+    let word = match s.phase {
+        Phase::Settled(End::Failed) => "not done",
+        Phase::Settled(End::Stopped) => "stopped",
+        Phase::Settled(End::Unverified) => "unverified",
+        Phase::Settled(End::Waited) => "wait",
+        p => STAGES[stage(p)],
+    };
+    match s.enter_word() {
+        Some(w) if !s.busy() => format!("session · {what} · {word} · needs you: Enter {w}"),
+        _ => format!("session · {what} · {word}"),
+    }
+}
+
+/// Where the session stands, in the words a workflow run uses (`stepview::State`).
+pub fn state(s: &Session) -> State {
+    let you = || s.enter_word().map_or(State::Idle, |w| State::You(w.into()));
+    match s.phase {
+        Phase::Thinking(Turn::Investigate) => State::Working("Claude is looking into it".into()),
+        Phase::Thinking(Turn::Fix) => State::Working("Claude is correcting the plan".into()),
+        Phase::Thinking(Turn::Verify) => State::Working("Claude is checking the result".into()),
+        Phase::SudoCheck | Phase::Password { checking: true, .. } => {
+            State::Working("checking sudo".into())
+        }
+        Phase::Password { .. } => State::You("unlock".into()),
+        Phase::Value => State::You("gives it".into()),
+        Phase::Applying if s.waiting_workflow().is_some() => you(),
+        Phase::Applying => State::Running,
+        Phase::Settled(End::Done | End::Waited) if s.enter_word() == Some("close") => State::Done,
+        Phase::Settled(End::Failed | End::Unverified) if s.enter_word().is_none() => State::Failed,
+        Phase::Settled(End::Stopped) if s.enter_word().is_none() => State::Stopped,
+        Phase::Brief | Phase::Review | Phase::Settled(_) => you(),
+    }
+}
+
+/// `target`: whose session it is (the header names it, as a run's does). `wf`: how the
+/// workflow the plan waits for is doing (one or two lines, from the app).
+pub fn draw(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    t: &Theme,
+    s: &Session,
+    target: &str,
+    wf: &[String],
+) {
     f.render_widget(ratatui::widgets::Clear, area);
     let rect = widgets::centered(
         area,
@@ -37,7 +84,11 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     );
     let color = if s.busy() { t.cyan } else { t.mag };
     let c = &s.chat;
-    let inner = widgets::overlay(f, rect, t, &format!("Claude · {}", c.ask.subject), color);
+    let title = match s.series {
+        Some((i, n)) => format!("Claude · {i} of {n} · {}", c.ask.subject),
+        None => format!("Claude · {}", c.ask.subject),
+    };
+    let inner = widgets::overlay(f, rect, t, &title, color);
     let [head, log, rule, input, keyline] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Fill(1),
@@ -46,7 +97,13 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
         Constraint::Length(1),
     ])
     .areas(inner);
-    f.render_widget(Paragraph::new(stages(t, s.phase)), head);
+    // The header a workflow run has: whose, what, auto, where it stands. Then the stages.
+    let what = c.ask.subject.trim_start_matches("apply · ");
+    let mut top = stepview::head(t, target, what, s.auto, &state(s), head.width as usize);
+    if top.len() == 1 {
+        top.push(stages(t, s.phase));
+    }
+    f.render_widget(Paragraph::new(top), head);
     let w = log.width as usize;
     let mut lines = brief_lines(c, t, w, s.brief_open || s.phase == Phase::Brief);
     lines.extend(entry_lines(c, t, w, true, &|i| plan_lines(s, i, t, w, wf)));
@@ -56,10 +113,12 @@ pub fn draw(f: &mut Frame, area: ratatui::layout::Rect, t: &Theme, s: &Session, 
     // Applying: the running (or waiting) step stays in view, however long the plan.
     let focus = matches!(s.phase, Phase::Applying)
         .then(|| {
+            // (A step's row starts with its indent, then its mark.)
             lines.iter().rposition(|l| {
                 l.spans
-                    .first()
-                    .is_some_and(|x| x.content.contains('▶') || x.content.contains('⏸'))
+                    .iter()
+                    .take(2)
+                    .any(|x| x.content.starts_with('▶') || x.content.starts_with('⏸'))
             })
         })
         .flatten();
@@ -107,6 +166,7 @@ fn stages(t: &Theme, p: Phase) -> Line<'static> {
                 Phase::Settled(End::Failed) => "not done",
                 Phase::Settled(End::Stopped) => "stopped",
                 Phase::Settled(End::Unverified) => "unverified",
+                Phase::Settled(End::Waited) => "wait",
                 _ => name,
             }
         } else {
@@ -145,7 +205,7 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
                 _ => String::new(),
             };
             return Some(Line::styled(
-                format!("     ▶ Your turn: {why}Enter {word}"),
+                format!("     ⏸ Waiting on you: {why}Enter {word}"),
                 t.s(t.yellow).add_modifier(ratatui::style::Modifier::BOLD),
             ));
         }
@@ -179,28 +239,63 @@ fn input_line(s: &Session, t: &Theme, width: usize) -> Line<'static> {
         Phase::Review if s.run().is_none() => typed("Enter asks for a plan · or type what to do"),
         Phase::Review => typed("tell Claude what to do"),
         Phase::Settled(_) => typed("type to ask Claude more"),
+        Phase::Value => {
+            let (name, prompt, secret) = s.asking().unwrap_or(("value", "", true));
+            let mut v = vec![Span::styled(
+                format!("{prompt} ({{{{{name}}}}}) › "),
+                t.s(t.yellow),
+            )];
+            v.push(Span::styled(
+                if secret {
+                    "●".repeat(s.secret.len())
+                } else {
+                    s.value_typed()
+                },
+                t.fg(),
+            ));
+            v.push(Span::styled("▏", t.s(t.cyan)));
+            Line::from(v)
+        }
         Phase::Password { tries, checking } => {
             let steps: Vec<String> = s.sudo_steps().iter().map(|n| n.to_string()).collect();
-            let mut v = vec![
-                Span::styled(
-                    format!("sudo password (for step {}) › ", steps.join(", ")),
-                    t.s(t.yellow),
-                ),
-                Span::styled("●".repeat(s.secret.len()), t.fg()),
-            ];
-            if !checking {
-                v.push(Span::styled("▏", t.s(t.cyan)));
-            }
-            if tries > 0 {
-                v.push(Span::styled(
-                    format!("   sudo refused it · {} of 3", tries + 1),
-                    t.s(t.red),
-                ));
-            }
-            Line::from(v)
+            password_line(
+                t,
+                &match s.sudo_title() {
+                    Some(who) => format!("on {who}, for step {}", steps.join(", ")),
+                    None => format!("for step {}", steps.join(", ")),
+                },
+                s.secret.len(),
+                tries,
+                checking,
+            )
         }
         _ => Line::styled("  (working · C-c stops it · Esc hides this)", t.dim()),
     }
+}
+
+/// The sudo password being typed, wherever it's asked for (a session's input line, the key
+/// bar): what it's for, a dot for each character, and how often sudo refused it.
+pub fn password_line(
+    t: &Theme,
+    what: &str,
+    len: usize,
+    tries: u8,
+    checking: bool,
+) -> Line<'static> {
+    let mut v = vec![
+        Span::styled(format!("sudo password ({what}) › "), t.s(t.yellow)),
+        Span::styled("●".repeat(len), t.fg()),
+    ];
+    if !checking {
+        v.push(Span::styled("▏", t.s(t.cyan)));
+    }
+    if tries > 0 {
+        v.push(Span::styled(
+            format!("   sudo refused it · {} of 3", tries + 1),
+            t.s(t.red),
+        ));
+    }
+    Line::from(v)
 }
 
 pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
@@ -224,12 +319,17 @@ pub fn keys(s: &Session) -> Vec<(&'static str, &'static str)> {
             k.push(("Enter", "unlock"));
             k.push(("Esc", "back"));
         }
+        Phase::Value => {
+            k.push(("Enter", "give it"));
+            k.push(("Esc", "not now"));
+        }
         _ => {
             k.push(("C-c", "stop"));
             k.push(("Esc", "hide"));
         }
     }
     k.push(("↑↓ PgUp/Dn", "scroll"));
+    k.push(("C-a", if s.auto { "auto off" } else { "auto" }));
     k
 }
 
@@ -278,7 +378,9 @@ fn plan_lines(s: &Session, idx: usize, t: &Theme, w: usize, wf: &[String]) -> Ve
             format!(
                 "Enter applies these {} steps · edited files are backed up first{} · then Claude checks the result",
                 r.plan.steps.len(),
-                if sudo.is_empty() {
+                if s.sudo_away() {
+                    " · sudo asks for its password once on each host, here".into()
+                } else if sudo.is_empty() {
                     String::new()
                 } else {
                     " · sudo asks for your password once".into()
@@ -321,24 +423,31 @@ fn step_lines(
     let st = &r.plan.steps[i];
     let running = r.state == RunState::Running && i == r.current() && s.phase == Phase::Applying;
     let waiting = r.state == RunState::WaitingWorkflow(i);
-    let (glyph, color) = match r.results.get(i) {
-        Some(x) if x.ok => ("✓", t.green),
-        Some(_) => ("✗", t.red),
-        None if waiting => ("⏸", t.yellow),
-        None if running => ("▶", t.cyan),
-        None => ("○", t.dim),
+    let mark = match r.results.get(i) {
+        Some(x) if x.ok => Mark::Done,
+        Some(_) => Mark::Failed,
+        None if waiting => Mark::Waiting,
+        None if running => Mark::Running,
+        None => Mark::Todo,
     };
     let body = w.saturating_sub(9).max(10);
-    let mut l = vec![Line::from(vec![
-        Span::styled(format!("     {glyph} "), t.s(color)),
-        Span::styled(
-            widgets::trunc(
-                &format!("{}. {}", i + 1, st.title),
-                w.saturating_sub(8).max(10),
-            ),
-            t.fg(),
-        ),
-    ])];
+    // The row a workflow's step gets, set in under the plan's line.
+    let idx = s.runs.iter().position(|x| std::ptr::eq(x, r)).unwrap_or(0);
+    let mut first = stepview::row(
+        t,
+        i + 1,
+        &stepview::Row {
+            mark,
+            title: st.title.clone(),
+            // Whose step it is, once a plan has steps on more than one target.
+            tag: s.step_place(st).unwrap_or_default(),
+            took: s.took.get(&(idx, i)).copied(),
+        },
+        w.saturating_sub(6).max(10),
+        false,
+    );
+    first.spans.insert(0, Span::raw("     "));
+    let mut l = vec![first];
     let push = |l: &mut Vec<Line<'static>>, text: &str, style| {
         for x in wrap(text, body) {
             l.push(Line::styled(format!("         {x}"), style));
@@ -382,6 +491,8 @@ fn step_lines(
             } else {
                 t.cyan
             };
+            // A secret the line sets shows as its tag.
+            let c = &s.clean(c);
             for (j, x) in c.lines().enumerate() {
                 let w0 = if j == 0 { st.kind.word() } else { "     " };
                 push(&mut l, &format!("{w0} $ {x}"), t.s(col));
@@ -399,29 +510,54 @@ fn step_lines(
                 t.s(t.cyan),
             )
         }
+        K::Ask { .. } => {}
+    }
+    if let K::Ask { name, prompt } = &st.kind {
+        push(
+            &mut l,
+            &format!(
+                "ask you: {prompt} → {{{{{name}}}}}{}",
+                if st.secret {
+                    "  (hidden as you type, never written down)"
+                } else {
+                    ""
+                }
+            ),
+            t.s(t.cyan),
+        );
+    }
+    if let Some(name) = &st.capture {
+        push(
+            &mut l,
+            &format!(
+                "its last line is kept as {{{{{name}}}}}{}",
+                if st.secret {
+                    "  (hidden, never written down)"
+                } else {
+                    ""
+                }
+            ),
+            t.dim(),
+        );
     }
     for (_, why) in s.problems.iter().filter(|(k, _)| *k == i) {
         push(&mut l, &format!("✗ {why}"), t.s(t.red));
     }
     if running {
-        let n = s.output.len();
-        for x in &s.output[n.saturating_sub(6)..] {
-            push(&mut l, &format!("│ {x}"), t.dim());
-        }
-        // A step that prints nothing for minutes (a backup, `systemctl start` of a long
-        // job) still shows it's alive.
+        // Where a run's step shows its output: under its row, then how long it's been.
+        l.extend(stepview::output(t, &s.output, 6, w, 9));
         if let Some(at) = s.job_started {
-            let e = at.elapsed().as_secs();
-            push(
-                &mut l,
-                &format!(
-                    "… running {}:{:02}{}",
-                    e / 60,
-                    e % 60,
-                    if n == 0 { ", no output yet" } else { "" }
-                ),
-                t.s(t.cyan),
-            );
+            l.push(stepview::running(
+                t,
+                at,
+                s.output.is_empty(),
+                if s.limited() {
+                    "stopped at 2:00 · C-c stops it now"
+                } else {
+                    "C-c stops it"
+                },
+                9,
+            ));
         }
     }
     if waiting {

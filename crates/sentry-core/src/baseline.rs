@@ -20,18 +20,18 @@ pub fn path(server: &str) -> std::path::PathBuf {
 }
 
 /// Where a server's file was before.
-fn old_path(server: &str) -> std::path::PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(format!("{server}.baseline.toml"))
+fn old_path(server: &str) -> Option<std::path::PathBuf> {
+    crate::maint::beside(server, ".baseline.toml")
 }
 
 impl BaselineFile {
     /// A server's file used to be `servers/<name>.baseline.toml` (findings only): it's moved
     /// in the first time, so what was marked expected stays so.
     pub fn load(server: &str) -> Self {
-        let old = old_path(server);
-        if !server.is_empty() && !path(server).exists() && old.exists() {
+        if let Some(old) = old_path(server)
+            && !path(server).exists()
+            && old.exists()
+        {
             if let Some(d) = path(server).parent() {
                 let _ = std::fs::create_dir_all(d);
             }
@@ -210,7 +210,7 @@ mod tests {
     fn server_file_lives_under_its_root_and_migrates() {
         use crate::paths::config_dir;
         let name = "baseline-migrate-test";
-        let old = super::old_path(name);
+        let old = super::old_path(name).unwrap();
         std::fs::create_dir_all(old.parent().unwrap()).unwrap();
         std::fs::write(&old, "findings = [\"srv:docker-sock:*\"]\n").unwrap();
         let b = BaselineFile::load(name);

@@ -1,0 +1,28 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: narrow
+---
+ sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance   0 Upgrade
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Clients · 8 here · 5 wired · 3 Wi-Fi · 0 new · by name · read just now ──────┐
+│ NAME ▼                LINK                  ADDRESS        LEASE             │
+│  (an IPv6 lease)      –                     2001:db8:1200: 6h                │
+│ ~02:00:5e:00:53:21    phy0-ap0 ▂▄▆  -63     192.0.2.21     1h                │
+│  cam                  lan2                  192.0.2.50     –                 │
+│  desk                 lan2                  192.0.2.11     4h                │
+│ ~dock                 lan2                  192.0.2.22     8h                │
+│  nas                  lan1                  192.0.2.10     6h                │
+│  panel  (leave alone) phy0-ap0 ▂    -81     192.0.2.12     9h                │
+│ ~phone                phy1-ap0 ▂▄▆█ -46     192.0.2.20     10h               │
+│  printer              –                     192.0.2.13     15m               │
+│  web                  dmz · lan4            203.0.113.93   11h               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  details   s  sort   A  ask Claude   ?  help   q  quit

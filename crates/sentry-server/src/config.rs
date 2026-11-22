@@ -3,9 +3,8 @@
 //! Whatever sentry-server records itself (findings marked expected) goes in
 //! `servers/<name>.baseline.toml` next to it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -239,10 +238,7 @@ impl Server {
 
     /// Whether `argv` may run as `sudo -n` (it starts with an allowed entry's words).
     pub fn sudo_allows(&self, argv: &[&str]) -> bool {
-        self.sudo.iter().any(|entry| {
-            let words: Vec<&str> = entry.split_whitespace().collect();
-            !words.is_empty() && argv.len() >= words.len() && argv[..words.len()] == words[..]
-        })
+        sentry_app::remote::allows(&self.sudo, argv)
     }
 
     pub fn timer_age(&self, unit: &str) -> Option<Duration> {
@@ -313,13 +309,7 @@ fn names(file: &ServerFile) -> String {
     file.servers.keys().cloned().collect::<Vec<_>>().join(", ")
 }
 
-/// The ssh destination as `&'static str` for [`sentry_core::exec::Site::Ssh`]; leaked once per name.
-pub fn host(target: &str) -> &'static str {
-    static HOSTS: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
-    let mut m = HOSTS.get_or_init(Default::default).lock().expect("hosts");
-    m.entry(target.to_string())
-        .or_insert_with(|| Box::leak(target.to_string().into_boxed_str()))
-}
+pub use sentry_app::remote::host;
 
 /// Problems found without contacting the server.
 pub fn lint(name: &str, s: &Server) -> Vec<String> {

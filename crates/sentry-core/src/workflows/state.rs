@@ -64,6 +64,10 @@ pub struct RunState {
     /// `when` conditions, frozen at first evaluation.
     pub conds: BTreeMap<String, bool>,
     pub steps: Vec<StepState>,
+    /// What auto mode answered in this run, for its log entry: `values` (the defaults were
+    /// taken), `step:<id>` (its confirm), `note` (none was asked for).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto: Vec<String>,
 }
 
 impl RunState {
@@ -89,6 +93,7 @@ impl RunState {
                     note: None,
                 })
                 .collect(),
+            auto: Vec::new(),
         }
     }
 

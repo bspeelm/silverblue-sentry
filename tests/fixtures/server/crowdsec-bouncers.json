@@ -1,0 +1,52 @@
+[
+  {
+    "created_at": "2026-03-02T09:00:00Z",
+    "updated_at": "2026-10-26T11:59:52Z",
+    "name": "firewall-myserver",
+    "revoked": false,
+    "ip_address": "127.0.0.1",
+    "type": "crowdsec-firewall-bouncer",
+    "version": "v0.0.31-debian-pragmatic-amd64",
+    "last_pull": "2026-10-26T11:59:52Z",
+    "auth_type": "api-key",
+    "os": "debian/12",
+    "auto_created": false
+  },
+  {
+    "created_at": "2026-04-11T08:30:00Z",
+    "updated_at": "2026-10-23T12:00:00Z",
+    "name": "web-proxy",
+    "revoked": false,
+    "ip_address": "192.0.2.20",
+    "type": "example-web-bouncer",
+    "version": "v1.2.0",
+    "last_pull": "2026-10-23T14:00:00+02:00",
+    "auth_type": "api-key",
+    "auto_created": false
+  },
+  {
+    "created_at": "2026-10-26T11:30:00Z",
+    "updated_at": "2026-10-26T11:30:00Z",
+    "name": "new-bouncer",
+    "revoked": false,
+    "ip_address": "",
+    "type": "",
+    "version": "",
+    "last_pull": null,
+    "auth_type": "api-key",
+    "auto_created": false
+  },
+  {
+    "id": 2,
+    "created_at": "2025-01-05T10:00:00Z",
+    "updated_at": "2025-01-05T10:00:00Z",
+    "name": "old-bouncer",
+    "revoked": true,
+    "ip_address": "192.0.2.30",
+    "type": "crowdsec-firewall-bouncer",
+    "version": "v0.0.28",
+    "until": "0001-01-01T00:00:00Z",
+    "last_pull": "0001-01-01T00:00:00Z",
+    "auth_type": "api-key"
+  }
+]

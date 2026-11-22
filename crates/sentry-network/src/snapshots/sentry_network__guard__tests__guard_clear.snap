@@ -1,0 +1,30 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: clear_script()
+---
+for d in /tmp/sentry-guard-*/; do
+  [ -d "$d" ] || continue
+  d=${d%/}; t=${d##*sentry-guard-}
+  if [ -s "$d/pid" ] && grep -q "$d/deadman.sh" "/proc/$(cat "$d/pid")/cmdline" 2>/dev/null; then continue; fi
+  H=/etc/uci-defaults/zz-sentry-guard-$t
+  mv "$d/armed" "$d/claim.clear" 2>/dev/null
+  if [ -s "$H" ] && [ -d "/etc/sentry-guard/$t/config" ]; then
+    SENTRY_GUARD_SLEEPER=1 sh "$H"
+    [ -s "$d/reloads.sh" ] && sh "$d/reloads.sh"
+    logger -t sentry-guard "$t: left unconfirmed with no sleeper: restored"
+    echo "restored $t"
+  else
+    echo "cleared $t"
+  fi
+  rm -f "$H"; rm -rf "/etc/sentry-guard/$t" "$d"
+done
+for f in /etc/sentry-guard/*/; do
+  [ -d "$f" ] || continue
+  f=${f%/}; t=${f##*/}
+  [ -d "/tmp/sentry-guard-$t" ] && continue
+  H=/etc/uci-defaults/zz-sentry-guard-$t
+  if [ -s "$H" ]; then SENTRY_GUARD_SLEEPER=1 sh "$H"; echo "restored $t"; else echo "cleared $t"; fi
+  rm -f "$H"; rm -rf "$f"
+done
+rmdir /etc/sentry-guard 2>/dev/null
+true

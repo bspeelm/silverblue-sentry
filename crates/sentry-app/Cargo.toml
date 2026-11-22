@@ -1,0 +1,27 @@
+[package]
+name = "sentry-app"
+description = "What sentry's targets share beyond the kit: the app and its flows, what a target is, and the pieces of a host reached over ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sentry-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+signal-hook.workspace = true
+ratatui.workspace = true
+rustix.workspace = true
+
+[features]
+# Test support for the targets' own tests (what drives the flows without sending anything).
+testing = ["sentry-core/testing"]
+
+[dev-dependencies]
+sentry-core = { workspace = true, features = ["testing"] }

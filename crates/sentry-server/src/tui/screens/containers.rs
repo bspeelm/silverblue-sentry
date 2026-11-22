@@ -10,9 +10,9 @@ pub struct Containers {
 impl Containers {
     pub fn handle(&mut self, a: Action, v: &View, r: &Remote) -> Vec<Effect> {
         match a {
-            Action::Refresh => vec![Effect::Fetch(Kind::Docker)],
+            Action::Refresh => vec![Own::fetch(Kind::Docker)],
             Action::Check => vec![
-                Effect::Fetch(Kind::Stats),
+                Own::fetch(Kind::Stats),
                 Effect::Toast("docker stats…".into()),
             ],
             Action::Enter => container_detail(v),

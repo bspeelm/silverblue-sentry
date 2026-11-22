@@ -1,0 +1,27 @@
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN      2101/uhttpd
+tcp        0      0 127.0.0.1:53            0.0.0.0:*               LISTEN      2202/dnsmasq
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      1711/dropbear
+tcp        0      0 203.0.113.1:53          0.0.0.0:*               LISTEN      2202/dnsmasq
+tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN      2101/uhttpd
+tcp        0      0 127.0.0.1:5053          0.0.0.0:*               LISTEN      3404/https-dns-prox
+tcp        0      0 192.0.2.1:53            0.0.0.0:*               LISTEN      2202/dnsmasq
+tcp        0      0 2001:db8:1200::1:53     :::*                    LISTEN      2202/dnsmasq
+tcp        0      0 :::443                  :::*                    LISTEN      2101/uhttpd
+tcp        0      0 fe80::5eff:fe00:53a0:53 :::*                    LISTEN      2202/dnsmasq
+tcp        0      0 :::22                   :::*                    LISTEN      1711/dropbear
+tcp        0      0 :::80                   :::*                    LISTEN      2101/uhttpd
+tcp        0      0 ::1:53                  :::*                    LISTEN      2202/dnsmasq
+udp        0      0 127.0.0.1:5053          0.0.0.0:*                           3404/https-dns-prox
+udp        0      0 0.0.0.0:51234           0.0.0.0:*                           2550/ntpd
+udp        0      0 127.0.0.1:53            0.0.0.0:*                           2202/dnsmasq
+udp        0      0 203.0.113.1:53          0.0.0.0:*                           2202/dnsmasq
+udp        0      0 192.0.2.1:53            0.0.0.0:*                           2202/dnsmasq
+udp        0      0 0.0.0.0:67              0.0.0.0:*                           2202/dnsmasq
+udp        0      0 :::546                  :::*                                10432/odhcp6c
+udp        0      0 :::547                  :::*                                1890/odhcpd
+udp        0      0 ::1:53                  :::*                                2202/dnsmasq
+udp        0      0 fe80::5eff:fe00:53a0:53 :::*                                2202/dnsmasq
+udp        0      0 2001:db8:1200::1:53     :::*                                2202/dnsmasq
+udp        0      0 198.51.100.23:1900      0.0.0.0:*                           -

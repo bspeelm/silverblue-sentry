@@ -9,8 +9,8 @@ use ratatui::text::Line;
 
 use super::{Hints, View};
 use crate::audit::Report;
-use crate::tui::app::{Effect, Modal};
 use crate::tui::data::Kind;
+use crate::tui::target::{Effect, Modal, Own};
 use sentry_core::finding::{Finding, Sev};
 use sentry_core::tui::keys::Action;
 use sentry_core::tui::reportview::{self, Mark, Page, ReportView, Row};
@@ -103,7 +103,7 @@ pub fn hints(v: &View) -> Hints {
 
 fn audit_now() -> Vec<Effect> {
     vec![
-        Effect::Fetch(Kind::Audit),
+        Own::fetch(Kind::Audit),
         Effect::Toast("auditing the server…".into()),
     ]
 }
@@ -130,7 +130,7 @@ pub fn pattern_effects(v: &View, f: &Finding) -> Vec<Effect> {
                 t.dim(),
             ),
         ],
-        yes: Some(("add pattern".into(), vec![Effect::Expected(pattern, true)])),
+        yes: Some(("add pattern".into(), vec![Own::expected(pattern, true)])),
     })]
 }
 
@@ -138,7 +138,7 @@ pub fn handle(view: &mut ReportView, a: Action, v: &View) -> Vec<Effect> {
     let Some(s) = shown(v) else {
         return match a {
             Action::Enter | Action::Check => audit_now(),
-            Action::Refresh => vec![Effect::Fetch(Kind::Report)],
+            Action::Refresh => vec![Own::fetch(Kind::Report)],
             _ => Vec::new(),
         };
     };
@@ -146,7 +146,7 @@ pub fn handle(view: &mut ReportView, a: Action, v: &View) -> Vec<Effect> {
         Action::Check => return audit_now(),
         Action::Refresh => {
             view.report = None;
-            return vec![Effect::Fetch(Kind::Report)];
+            return vec![Own::fetch(Kind::Report)];
         }
         _ => {}
     }
@@ -156,7 +156,7 @@ pub fn handle(view: &mut ReportView, a: Action, v: &View) -> Vec<Effect> {
     if view.key(a, s.n, rows.len()) {
         // `[` `]`: another report, read from disk.
         return match view.idx(s.n) {
-            Some(i) if i != s.idx => vec![Effect::Fetch(if i + 1 >= s.n {
+            Some(i) if i != s.idx => vec![Own::fetch(if i + 1 >= s.n {
                 Kind::Report
             } else {
                 Kind::ReportAt(i as u16)
@@ -168,8 +168,8 @@ pub fn handle(view: &mut ReportView, a: Action, v: &View) -> Vec<Effect> {
         return Vec::new();
     };
     match a {
-        Action::Enter | Action::Char('f') => vec![Effect::FixFinding(f.id.clone())],
-        Action::Char('x' | 'b') => vec![Effect::Expected(f.id.clone(), !f.expected)],
+        Action::Enter | Action::Char('f') => vec![Own::fix_finding(f.id.clone())],
+        Action::Char('x' | 'b') => vec![Own::expected(f.id.clone(), !f.expected)],
         Action::Char('B') => pattern_effects(v, f),
         _ => Vec::new(),
     }

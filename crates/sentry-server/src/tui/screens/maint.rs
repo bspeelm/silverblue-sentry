@@ -2,8 +2,6 @@
 //! everything tracked, how it stands against upstream, and the deliberate way to change it
 //! (a plan Claude writes, applied with its workflow; or look again later).
 
-use std::collections::BTreeMap;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
@@ -17,7 +15,7 @@ use crate::maint::plan::{Head, PlanDoc, PlanStatus};
 use crate::maint::recommend::{self, Action, Level, Rec};
 use crate::maint::{self, local};
 use crate::remote::Remote;
-use crate::tui::app::{Choice, Effect, Modal};
+use crate::tui::target::{Effect, Modal, Own};
 use sentry_core::fmt;
 use sentry_core::tui::maintlist::{self, Dismiss, Verbs};
 use sentry_core::tui::reportview::ReportView;
@@ -41,30 +39,79 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Status> {
         .collect()
 }
 
-/// What to maintain next (filtered like the items).
+/// What to maintain next: what's due or urgent (everything with `o`), filtered like the items.
 pub fn recs(v: &View) -> Vec<Rec> {
+    let mut r = sentry_core::maint::rec::needed(every_rec(v), v.everything).0;
+    r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
+    r
+}
+
+/// How many recommendations wait, not shown (`o` shows them).
+pub fn waiting(v: &View) -> usize {
+    sentry_core::maint::rec::needed(every_rec(v), v.everything).1
+}
+
+/// Which row here is already about the subject of one of the security audit's items:
+/// the updates waiting, the reboot, an item that is behind, a container's socket.
+fn audit_same(i: &sentry_core::secaudit::Item, recs: &[Rec]) -> Option<usize> {
+    let what = i.id.split(':').nth(1).unwrap_or("");
+    let last = i.id.rsplit(':').next().unwrap_or("");
+    let key = |f: &dyn Fn(&str) -> bool| recs.iter().position(|r| f(&r.key));
+    match what {
+        // The updates waiting: their own row, or the routine run that takes them in.
+        "os" => key(&|k| k.ends_with(":updates") || k.starts_with("finding:srv:updates")).or_else(
+            || {
+                recs.iter().position(|r| match &r.action {
+                    Action::Run(wf) => wf == "apt-maintenance",
+                    Action::Task(_) => r.key.contains("apt-maintenance"),
+                    _ => false,
+                })
+            },
+        ),
+        "reboot" => key(&|k| k == "reboot" || k == "finding:srv:reboot-required"),
+        "app" => recs
+            .iter()
+            .position(|r| r.item.as_deref() == Some(last) || r.key == last),
+        "ctr" => key(&|k| k == format!("finding:srv:docker-sock:{last}")),
+        "watch" => key(&|k| k.starts_with("finding:srv:crowdsec:")),
+        _ => None,
+    }
+}
+
+/// Every recommendation there is, whatever is shown: the server's own, then the security
+/// audit's items that are this server's alone.
+pub fn every_rec(v: &View) -> Vec<Rec> {
+    sentry_core::maint::rec::with_audit(
+        own_recs(v),
+        &v.sh.sec,
+        &v.sh.later,
+        v.now.to_zoned(jiff::tz::TimeZone::UTC).date(),
+        audit_same,
+        Action::Security,
+    )
+}
+
+fn own_recs(v: &View) -> Vec<Rec> {
     let empty = Vec::new();
-    let mut r = recommend::recommend(&recommend::Inputs {
+    recommend::recommend(&recommend::Inputs {
         items: &v.cfg.maintenance.items,
         statuses: v.s.maint.value.as_ref().unwrap_or(&empty),
         plans: v.plans,
         found: &v.s.maint_found,
         apt: v.s.apt.value.as_ref(),
-        log: &v.s.log,
-        workflows: &v.s.workflows,
-        snooze: &v.s.later,
+        log: &v.sh.log,
+        workflows: &v.sh.workflows,
+        snooze: &v.sh.later,
         now: v.now,
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
         tasks: &all_tasks(v),
-    });
-    r.retain(|x| v.matches(&[&x.title, &x.why, x.level.word()]));
-    r
+    })
 }
 
 /// Every task that applies: `tasks.toml`'s and `maintenance.cadence`.
 pub fn all_tasks(v: &View) -> Vec<sentry_core::maint::tasks::Task> {
-    sentry_core::maint::tasks::effective(&v.s.tasks, maint::cadence_tasks(v.cfg, &v.s.workflows))
+    sentry_core::maint::tasks::effective(&v.sh.tasks, maint::cadence_tasks(v.cfg, &v.sh.workflows))
 }
 
 /// The latest audit report, when there is one.
@@ -103,6 +150,84 @@ pub struct Maint {
     pub find: Option<String>,
     pub view: Option<Sub>,
     pub report: ReportView,
+    /// The rows ticked for a series (Space), by key.
+    pub ticks: maintlist::Ticks,
+}
+
+/// How a series takes care of a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeriesKind {
+    /// An apply session for this finding.
+    Finding(String),
+    /// An apply session for the row (a task done by hand, an item: on its ready plan when
+    /// it has one, else from its research).
+    Apply,
+    /// A run of this workflow.
+    Workflow(String),
+    Audit,
+}
+
+/// What a series does for this row (None: Enter does it by itself, it can't be ticked).
+pub fn series_kind(v: &View, x: &Rec) -> Option<SeriesKind> {
+    use sentry_core::maint::tasks::Do;
+    let claude = sentry_core::claude::available();
+    let item = || claude.then_some(SeriesKind::Apply);
+    match &x.action {
+        Action::Fix(id) if claude => Some(SeriesKind::Finding(id.clone())),
+        Action::Plan(_) | Action::OpenPlan(_) => item(),
+        Action::Run(wf) => Some(SeriesKind::Workflow(wf.clone())),
+        Action::Audit => Some(SeriesKind::Audit),
+        Action::Task(id) => match all_tasks(v).into_iter().find(|t| &t.id == id)?.action() {
+            Do::Run(wf) => Some(SeriesKind::Workflow(wf)),
+            Do::Plan(_) => item(),
+            Do::Audit => Some(SeriesKind::Audit),
+            Do::ByHand if claude => Some(SeriesKind::Apply),
+            _ => None,
+        },
+        // Tracking, untracking and looking are one key each.
+        _ => None,
+    }
+}
+
+/// How many of the rows there are ticked.
+pub fn ticked(v: &View, ticks: &maintlist::Ticks) -> usize {
+    if ticks.is_empty() {
+        return 0;
+    }
+    every_rec(v)
+        .iter()
+        .filter(|r| ticks.contains(&r.key))
+        .count()
+}
+
+/// A plan to be written for an item: to `target`, or (None) the version Claude recommends.
+pub fn plan_doc(v: &View, s: &Status, it: &MaintItem, target: Option<&str>) -> PlanDoc {
+    // No workflow: a plan done by hand (every step a command the user runs).
+    let wf = workflow_of(it).unwrap_or("");
+    let l = local::Local {
+        pinned: s.pinned.clone(),
+        repo: v
+            .s
+            .maint_local
+            .as_ref()
+            .and_then(|m| m.get(&s.id))
+            .and_then(|x| x.repo.clone()),
+        ..Default::default()
+    };
+    PlanDoc {
+        head: Head {
+            item: s.id.clone(),
+            server: v.name.to_string(),
+            from: s.pinned.clone(),
+            to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
+            workflow: wf.to_string(),
+            vars: local::vars_for(it, &l, target),
+            created: Some(jiff::Timestamp::now()),
+            repo: l.repo.clone(),
+            ..Default::default()
+        },
+        body: String::new(),
+    }
 }
 
 impl Maint {
@@ -124,22 +249,57 @@ impl Maint {
         // A key on the list: whatever was to be found has been, or isn't wanted any more.
         self.find = None;
         match a {
-            A::Refresh => vec![Effect::Fetch(Kind::Maint), Effect::Fetch(Kind::Report)],
+            A::Refresh => vec![Own::fetch(Kind::Maint), Own::fetch(Kind::Report)],
             // Check everything: audit the server and look upstream up again.
             A::Check => vec![
-                Effect::Fetch(Kind::Audit),
-                Effect::Fetch(Kind::Upstream),
+                Own::fetch(Kind::Audit),
+                Own::fetch(Kind::Upstream),
                 Effect::Toast("auditing the server and looking up newer versions…".into()),
             ],
-            A::Enter => key('\n', v),
+            // Ticks: Space the row, a every row that can be, Esc none.
+            A::Char(' ') => match pick(v) {
+                Some(Sel::Rec(r)) if series_kind(v, &r).is_some() => {
+                    maintlist::tick(&mut self.ticks, &r.key);
+                    Vec::new()
+                }
+                _ => vec![Effect::Toast(maintlist::NOT_IN_A_SERIES.into())],
+            },
+            A::Char('a') => {
+                let can = recs(v)
+                    .iter()
+                    .filter(|r| series_kind(v, r).is_some())
+                    .map(|r| r.key.clone())
+                    .collect();
+                maintlist::tick_all(&mut self.ticks, can);
+                Vec::new()
+            }
+            A::Esc => {
+                self.ticks.clear();
+                Vec::new()
+            }
+            // With rows ticked, Enter does those, one after another.
+            A::Enter => {
+                let rows: Vec<(String, String)> = every_rec(v)
+                    .into_iter()
+                    .filter(|r| self.ticks.contains(&r.key))
+                    .map(|r| (r.key, r.title))
+                    .collect();
+                if rows.is_empty() {
+                    self.ticks.clear();
+                    key('\n', v)
+                } else {
+                    vec![Effect::SeriesStart(rows)]
+                }
+            }
             A::Char(c @ ('z' | 'p' | 'P' | 'x' | 't' | 'd' | 'm' | 'B')) => key(c, v),
             // A task: how often it recurs; anything else: the config, where items are.
             A::Char('e') => match key('e', v) {
-                e if e.is_empty() => vec![Effect::EditConfig],
+                e if e.is_empty() => vec![Effect::Edit(crate::config::path())],
                 e => e,
             },
             A::Char('F') => self.open_report(),
             A::Char('R') => vec![Effect::ReviewOpen],
+            A::Char('o') => vec![Effect::Everything],
             A::Char('w') => vec![Effect::Goto(sentry_core::tui::ScreenId::Upgrade)],
             A::Char('v') => vec![Effect::LogOpen(selected(v).map(|(s, _)| s.id.clone()))],
             _ => Vec::new(),
@@ -150,12 +310,12 @@ impl Maint {
     pub fn open_report(&mut self) -> Vec<Effect> {
         self.view = Some(Sub::Report);
         self.report = ReportView::default();
-        vec![Effect::Fetch(crate::tui::data::Kind::Report)]
+        vec![Own::fetch(crate::tui::data::Kind::Report)]
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, v: &View) {
         let Some(s) = self.view else {
-            return draw(f, area, v);
+            return draw(f, area, v, &self.ticks);
         };
         let t = v.t;
         let [head, body] =
@@ -265,7 +425,15 @@ pub fn row_of(v: &View, id: &str) -> Option<usize> {
 
 /// The keys the selected row takes besides Enter (the key bar shows only these).
 pub fn verbs(v: &View) -> Verbs {
-    let planned = |id: &str| v.plans.contains_key(id) || v.planning.as_deref() == Some(id);
+    let mut vb = row_verbs(v);
+    if let Some(Sel::Rec(r)) = pick(v) {
+        vb.series = series_kind(v, &r).is_some();
+    }
+    vb
+}
+
+fn row_verbs(v: &View) -> Verbs {
+    let planned = |id: &str| v.plans.contains_key(id);
     let item = |id: &str, enter: &'static str| Verbs {
         enter,
         plan: true,
@@ -312,11 +480,18 @@ pub fn verbs(v: &View) -> Verbs {
                 }
             }
             Action::Audit => only("audit"),
+            Action::Security(id) => only(
+                if v.sh.sec.iter().any(|i| &i.id == id && i.question.is_some()) {
+                    "answer"
+                } else {
+                    "fix"
+                },
+            ),
             Action::Run(_) => match r.item.as_deref() {
                 Some(id) => item(id, "start"),
                 None => only("start"),
             },
-            Action::Plan(id) => item(id, "plan"),
+            Action::Plan(id) => item(id, "with Claude"),
             Action::OpenPlan(id) => item(id, "apply the plan"),
             Action::Look(id) if !id.is_empty() => item(id, "go to item"),
             Action::Look(_) => only("details"),
@@ -327,26 +502,30 @@ pub fn verbs(v: &View) -> Verbs {
 /// What Enter does on an item's own row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ItemEnter {
-    /// It has a plan, or one is being written: open it.
+    /// It has a plan ready: its session opens on it, to approve.
     OpenPlan,
-    /// There are newer versions, or it's to retire: Claude plans it (what `p` does).
+    /// There are newer versions, or it's to retire: its session, from the research.
     Plan,
-    /// Nothing to plan: what was done to it.
+    /// Nothing to do to it: what was done to it.
     Log,
 }
 
 impl ItemEnter {
     fn word(self) -> &'static str {
         match self {
-            ItemEnter::OpenPlan => "open plan",
-            ItemEnter::Plan => "plan",
+            ItemEnter::OpenPlan => "apply the plan",
+            ItemEnter::Plan => "with Claude",
             ItemEnter::Log => "its log",
         }
     }
 }
 
 fn item_enter(v: &View, s: &Status, it: &MaintItem) -> ItemEnter {
-    if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) {
+    let ready = v
+        .plans
+        .get(&s.id)
+        .is_some_and(|p| p.head.status == PlanStatus::Ready);
+    if ready {
         ItemEnter::OpenPlan
     } else if !s.newer.is_empty() || it.retire.is_some() {
         ItemEnter::Plan
@@ -358,14 +537,21 @@ fn item_enter(v: &View, s: &Status, it: &MaintItem) -> ItemEnter {
 /// What Enter does on a recommendation, in words.
 fn action_words(a: &Action) -> String {
     match a {
-        Action::Plan(id) => format!("Enter: Claude writes a plan for {id}"),
-        Action::OpenPlan(id) => format!("Enter: apply the plan for {id} (with Claude; p opens it)"),
+        Action::Plan(id) => {
+            format!(
+                "Enter: Claude looks into {id}, then shows its plan (nothing changes before you approve it)"
+            )
+        }
+        Action::OpenPlan(id) => format!("Enter: the plan for {id}, to approve (p reads it)"),
         Action::Run(wf) => format!("Enter: start {wf}"),
         Action::Track(_) => "Enter: track it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
         Action::Look(_) => "Enter: go to the item".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it".into(),
         Action::Audit => "Enter: audit the server now".into(),
+        Action::Security(_) => {
+            "From the security audit (S shows it). Enter: a session with Claude that fixes it, or your answer where only you know".into()
+        }
         Action::Task(_) => "A task: Enter does it".into(),
     }
 }
@@ -395,9 +581,6 @@ fn state(v: &View, s: &Status) -> (String, Color) {
     let t = v.t;
     let n = s.newer.len();
     let held = s.has(Flag::Held);
-    if v.planning.as_deref() == Some(s.id.as_str()) {
-        return ("planning…".into(), t.cyan);
-    }
     if let Some(p) = v.plans.get(&s.id) {
         let to = p.head.to.clone().unwrap_or_else(|| "retire".into());
         return match p.head.status {
@@ -464,7 +647,7 @@ pub fn badge(v: &View) -> Option<(String, Color)> {
     }
 }
 
-pub fn draw(f: &mut Frame, area: Rect, v: &View) {
+pub fn draw(f: &mut Frame, area: Rect, v: &View, ticks: &maintlist::Ticks) {
     let t = v.t;
     // What to maintain next, on top; everything tracked below. The panels are sentry's.
     let recs = if v.s.maint.value.is_some() {
@@ -473,7 +656,7 @@ pub fn draw(f: &mut Frame, area: Rect, v: &View) {
         Vec::new()
     };
     let (rec_a, list_a, detail_a) = maintlist::split(area, recs.len());
-    draw_recs(f, rec_a, v, &recs);
+    draw_recs(f, rec_a, v, &recs, ticks);
     draw_details(f, detail_a, v);
     let up = v
         .upstream
@@ -644,14 +827,14 @@ fn draw_details(f: &mut Frame, detail_a: Rect, v: &View) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), r);
 }
 
-fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
+fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec], ticks: &maintlist::Ticks) {
     let t = v.t;
     let note = if v.s.maint.value.is_none() {
         String::new()
     } else {
         format!(
             "{} · {}",
-            recs.len(),
+            sentry_core::maint::rec::note(recs.len(), ticked(v, ticks), waiting(v)),
             match report(v).and_then(|r| r.snapshot.taken_at) {
                 Some(at) => format!("audited {}", fmt::ago(v.secs_since(at))),
                 None => "no audit yet".into(),
@@ -659,21 +842,24 @@ fn draw_recs(f: &mut Frame, area: Rect, v: &View, recs: &[Rec]) {
         )
     };
     let empty = if v.s.maint.value.is_none() {
-        "reading…"
+        "reading…".to_string()
     } else if v.filter.is_some() {
-        maintlist::NO_MATCH
+        maintlist::NO_MATCH.to_string()
     } else {
-        maintlist::EMPTY
+        maintlist::empty(waiting(v))
     };
-    let empty = (empty, t.dim());
+    let empty = (empty.as_str(), t.dim());
     maintlist::draw(
         f,
         area,
         t,
-        note,
         recs,
-        (v.cur < recs.len()).then_some(v.cur),
-        empty,
+        maintlist::List {
+            note,
+            selected: (v.cur < recs.len()).then_some(v.cur),
+            empty,
+            ticks,
+        },
     );
 }
 
@@ -779,15 +965,9 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
         if let Some(n) = &h.note {
             l.push(Line::styled(format!("note: {n}"), t.fg()));
         }
-        l.push(Line::styled("Enter opens it", t.dim()));
-    } else if v.planning.as_deref() == Some(s.id.as_str()) {
-        l.push(Line::raw(""));
-        l.push(Line::styled(
-            "Claude is writing the plan… (Enter watches it)",
-            t.s(t.cyan),
-        ));
+        l.push(Line::styled("p reads it", t.dim()));
     }
-    let hist = maint::history(&v.s.log, &s.id);
+    let hist = maint::history(&v.sh.log, &s.id);
     if !hist.is_empty() {
         l.push(Line::raw(""));
         l.push(Line::styled("Changes", t.dim()));
@@ -808,10 +988,12 @@ fn detail(v: &View, s: &Status, it: &MaintItem) -> Vec<Line<'static>> {
     l.push(Line::raw(""));
     let mut keys = Vec::new();
     keys.push(match (item_enter(v, s, it), workflow_of(it).is_some()) {
-        (ItemEnter::OpenPlan, _) => "Enter opens the plan · P plans again",
-        (ItemEnter::Plan, true) => "Enter: Claude plans it",
-        (ItemEnter::Plan, false) => "Enter: Claude plans it (no workflow: you run its steps)",
-        (ItemEnter::Log, _) => "Enter opens its log · p: Claude plans it",
+        (ItemEnter::OpenPlan, _) => "Enter: its plan, to approve · P starts over",
+        (ItemEnter::Plan, true) => "Enter: with Claude (it looks into it, then shows its plan)",
+        (ItemEnter::Plan, false) => {
+            "Enter: with Claude (no workflow: its plan is the steps, which sentry-server runs)"
+        }
+        (ItemEnter::Log, _) => "Enter opens its log",
     });
     keys.extend(["z review later", "v its log", "e edit config"]);
     l.push(Line::styled(keys.join(" · "), t.dim()));
@@ -849,14 +1031,11 @@ fn later(v: &View, key: &str, what: &str) -> Vec<Effect> {
 fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
     let found = &v.s.maint_found;
     match (c, &r.action) {
-        ('\n', Action::Plan(id)) => match status_of(v, id).zip(item_of(v, id)) {
-            Some((s, it)) => item_key('P', v, s, it),
-            None => Vec::new(),
-        },
-        ('\n', Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
+        // An item to move or retire: its session (on its plan, when one is ready).
+        ('\n', Action::Plan(id) | Action::OpenPlan(id)) => vec![Effect::PlanApply(id.clone())],
         ('\n', Action::Run(wf)) => vec![Effect::StartWorkflow(wf.clone())],
         ('\n' | 't', Action::Track(n)) => match found.candidates.get(*n) {
-            Some(c) => vec![Effect::Track(c.item.clone())],
+            Some(c) => vec![Own::track(c.item.clone())],
             None => Vec::new(),
         },
         ('x', Action::Track(n)) => match found.candidates.get(*n) {
@@ -865,7 +1044,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
                 "Ignore this",
                 &r.title,
                 "Discovery stops suggesting it (ignore: in items.toml).",
-                Effect::Ignore(c.key.clone(), c.item.id.clone()),
+                Own::ignore(c.key.clone(), c.item.id.clone()),
             ),
             None => Vec::new(),
         },
@@ -874,21 +1053,22 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             "Stop tracking it",
             &r.title,
             "It comes off items.toml; the log keeps its history.",
-            Effect::Untrack(id.clone()),
+            Own::untrack(id.clone()),
         ),
-        ('\n', Action::Look(id)) if !id.is_empty() => vec![Effect::MaintJump(id.clone())],
-        ('\n', Action::Fix(id)) => vec![Effect::FixFinding(id.clone())],
+        ('\n', Action::Look(id)) if !id.is_empty() => vec![Own::maint_jump(id.clone())],
+        ('\n', Action::Fix(id)) => vec![Own::fix_finding(id.clone())],
         ('x', Action::Fix(id)) => dismiss(
             v,
             "Mark it expected",
             &r.title,
             "The audit stops listing it (the server's baseline.toml).",
-            Effect::Expected(id.clone(), true),
+            Own::expected(id.clone(), true),
         ),
         ('\n', Action::Audit) => vec![
-            Effect::Fetch(crate::tui::data::Kind::Audit),
+            Own::fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
+        ('\n', Action::Security(id)) => vec![Effect::SecItem(id.clone())],
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
         ('m', Action::Task(id)) => task_manual(v, id),
@@ -946,12 +1126,12 @@ pub fn task_enter(v: &View, id: &str) -> Vec<Effect> {
     };
     match task.action() {
         Do::Run(wf) => vec![Effect::StartWorkflow(wf)],
-        Do::Plan(it) => match status_of(v, &it).zip(item_of(v, &it)) {
-            Some((s, i)) => item_key('p', v, s, i),
+        Do::Plan(it) => match status_of(v, &it) {
+            Some(_) => vec![Effect::PlanApply(it)],
             None => vec![Effect::Toast(format!("{it} isn't tracked any more"))],
         },
         Do::Audit => vec![
-            Effect::Fetch(crate::tui::data::Kind::Audit),
+            Own::fetch(crate::tui::data::Kind::Audit),
             Effect::Toast("auditing the server…".into()),
         ],
         Do::Job(j) => vec![Effect::Toast(format!(
@@ -998,91 +1178,17 @@ pub fn task_manual(v: &View, id: &str) -> Vec<Effect> {
 fn item_key(c: char, v: &View, s: &Status, it: &MaintItem) -> Vec<Effect> {
     match c {
         'z' => later(v, &s.id, &format!("Review {} later", s.id)),
-        // A plan already there: say so, rather than quietly replacing it.
-        'p' if v.plans.contains_key(&s.id) || v.planning.as_deref() == Some(s.id.as_str()) => {
-            let what = match v.plans.get(&s.id) {
-                Some(p) => format!(
-                    "→ {} · {}",
-                    p.head.to.as_deref().unwrap_or("retire"),
-                    p.head.status.word()
-                ),
-                None => "being written".into(),
-            };
-            vec![Effect::Toast(format!(
-                "{} already has a plan ({what}): Enter opens it · P plans again",
-                s.id
-            ))]
-        }
-        'p' | 'P' => {
-            // No workflow: a plan done by hand (every step a command the user runs).
-            let wf = workflow_of(it).unwrap_or("");
-            let l = local::Local {
-                pinned: s.pinned.clone(),
-                repo: v
-                    .s
-                    .maint_local
-                    .as_ref()
-                    .and_then(|m| m.get(&s.id))
-                    .and_then(|x| x.repo.clone()),
-                ..Default::default()
-            };
-            let plan = |target: Option<&str>| {
-                vec![Effect::PlanNote(
-                    s.id.clone(),
-                    PlanDoc {
-                        head: Head {
-                            item: s.id.clone(),
-                            server: v.name.to_string(),
-                            from: s.pinned.clone(),
-                            to: target.map(|t| maint::version::like_pin(t, s.pinned.as_deref())),
-                            workflow: wf.to_string(),
-                            vars: local::vars_for(it, &l, target),
-                            created: Some(jiff::Timestamp::now()),
-                            repo: l.repo.clone(),
-                            ..Default::default()
-                        },
-                        body: String::new(),
-                    },
-                )]
-            };
-            if it.retire.is_some() || s.newer.is_empty() {
-                return plan(None);
-            }
-            let choices =
-                std::iter::once(("let Claude recommend a version".to_string(), plan(None)))
-                    .chain(s.newer.iter().take(8).map(|r| {
-                        (
-                            format!(
-                                "{}{}{}",
-                                r.version,
-                                r.date
-                                    .as_deref()
-                                    .map_or(String::new(), |d| format!("  {d}")),
-                                if r.security { "  ⚠ security" } else { "" }
-                            ),
-                            plan(Some(r.version.as_str())),
-                        )
-                    }))
-                    .collect();
-            vec![Effect::Choose(Choice::numbered(
-                v.t,
-                &format!(
-                    "Plan: move {} from {} to",
-                    s.id,
-                    s.pinned.as_deref().unwrap_or("?")
-                ),
-                choices,
-            ))]
-        }
-        // Enter: the item's plan (or the one being written), a new plan when there's
-        // something to plan, else what was done to it.
+        // The saved plan, to read; started over, it's set aside and the session begins again.
+        'p' => vec![Effect::PlanOpen(s.id.clone())],
+        'P' if v.plans.contains_key(&s.id) => vec![Effect::PlanAgain(s.id.clone())],
+        'P' => vec![Effect::PlanApply(s.id.clone())],
+        // Enter: its session when there's something to do to it, else what was done to it.
         '\n' => match item_enter(v, s, it) {
-            ItemEnter::OpenPlan => vec![Effect::PlanOpen(s.id.clone())],
-            ItemEnter::Plan => item_key('p', v, s, it),
+            ItemEnter::OpenPlan | ItemEnter::Plan => vec![Effect::PlanApply(s.id.clone())],
             ItemEnter::Log => vec![Effect::LogOpen(Some(s.id.clone()))],
         },
         'x' => match v.plans.get(&s.id) {
-            Some(p) => vec![Effect::Confirm(crate::tui::app::Modal {
+            Some(p) => vec![Effect::Confirm(crate::tui::target::Modal {
                 title: "Drop the plan".into(),
                 color: v.t.yellow,
                 lines: vec![Line::styled(
@@ -1301,16 +1407,3 @@ pub fn ledger_path(server: &str) -> String {
 }
 
 pub use sentry_core::maint::real_path;
-
-/// Vars a prefilled start shows: the workflow's own, with the item's values as defaults.
-pub fn merge_defaults(
-    asks: Vec<(String, String, Option<String>)>,
-    given: &BTreeMap<String, String>,
-) -> Vec<(String, String, Option<String>)> {
-    asks.into_iter()
-        .map(|(k, p, d)| {
-            let d = given.get(&k).cloned().or(d);
-            (k, p, d)
-        })
-        .collect()
-}

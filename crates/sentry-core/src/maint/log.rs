@@ -150,6 +150,13 @@ impl LogEntry {
                 .ended
                 .or(s.started)
                 .map_or(String::new(), |t| t.strftime("%H:%M").to_string());
+            // A confirm nobody pressed a key for says so, in the step's own row.
+            let by_auto = st.auto.contains(&format!("step:{}", step.id));
+            let note = match (s.note.as_deref().unwrap_or(""), by_auto) {
+                (n, false) => n.to_string(),
+                ("", true) => "confirmed by auto".to_string(),
+                (n, true) => format!("{n} · confirmed by auto"),
+            };
             rows.push(format!(
                 "| {} | {} | {result} | {} | {when} | {} |",
                 i + 1,
@@ -159,7 +166,7 @@ impl LogEntry {
                     step.id
                 )),
                 s.code.map_or(String::new(), |c| c.to_string()),
-                cell(s.note.as_deref().unwrap_or(""))
+                cell(&note)
             ));
         }
         h.tags = [
@@ -177,6 +184,7 @@ impl LogEntry {
             (!h.failed.is_empty()).then(|| "had:failed-steps".to_string()),
             (!h.by_hand.is_empty()).then(|| "had:manual-steps".to_string()),
             st.vars.get("service").map(|s| format!("service:{s}")),
+            (!st.auto.is_empty()).then(|| "auto".to_string()),
         ]
         .into_iter()
         .flatten()
@@ -196,6 +204,24 @@ impl LogEntry {
             body.push_str("\n## Values\n\n");
             body.push_str(&vars.join("\n"));
             body.push('\n');
+        }
+        if !st.auto.is_empty() {
+            let steps: Vec<String> = st
+                .auto
+                .iter()
+                .filter_map(|a| a.strip_prefix("step:"))
+                .map(|id| format!("`{id}`"))
+                .collect();
+            body.push_str("\n## Answered by auto\n\n");
+            if st.auto.iter().any(|a| a == "values") {
+                body.push_str("- its values: the defaults, taken without asking\n");
+            }
+            if !steps.is_empty() {
+                body.push_str(&format!("- confirmed: {}\n", steps.join(", ")));
+            }
+            if st.auto.iter().any(|a| a == "note") {
+                body.push_str("- no note was asked for\n");
+            }
         }
         body.push_str("\n## Records\n\n");
         if let Some(p) = &h.plan {
@@ -618,6 +644,7 @@ mod tests {
                 step("copy", StepStatus::Skipped, Some("skipped by user")),
                 step("verify", StepStatus::Ok, Some("done by hand")),
             ],
+            auto: Vec::new(),
         };
         (wf, st)
     }
@@ -643,6 +670,36 @@ mod tests {
             "{}",
             e.file_name()
         );
+    }
+
+    #[test]
+    fn what_auto_answered_is_in_the_entry() {
+        let (wf, mut st) = run();
+        // Without auto: no tag, no section (entries from before parse as they did).
+        let plain = LogEntry::from_run("myserver", &wf, &st, Path::new("/r/run-1"), None, None);
+        assert!(!plain.head.tags.contains(&"auto".to_string()));
+        assert!(!plain.body.contains("auto"), "{}", plain.body);
+        st.auto = vec!["values".into(), "step:pin".into(), "note".into()];
+        let e = LogEntry::from_run("myserver", &wf, &st, Path::new("/r/run-1"), None, None);
+        assert!(
+            e.head.tags.contains(&"auto".to_string()),
+            "{:?}",
+            e.head.tags
+        );
+        let row = e.body.lines().find(|l| l.contains("(`pin`)")).unwrap();
+        assert!(row.ends_with("| confirmed by auto |"), "{row}");
+        let other = e.body.lines().find(|l| l.contains("(`verify`)")).unwrap();
+        assert!(!other.contains("auto"), "{other}");
+        assert!(
+            e.body.contains(
+                "## Answered by auto\n\n- its values: the defaults, taken without asking\n\
+                 - confirmed: `pin`\n- no note was asked for\n"
+            ),
+            "{}",
+            e.body
+        );
+        assert_eq!(LogEntry::parse(&e.to_md()).unwrap(), e);
+        assert!(ledger("myserver", &[e]).contains("auto"));
     }
 
     #[test]

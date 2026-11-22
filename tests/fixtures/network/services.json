@@ -1,0 +1,105 @@
+{
+	"adblock-fast": {
+		"data": {
+			"status": "statusSuccess"
+		}
+	},
+	"cron": {
+		
+	},
+	"dnsmasq": {
+		"instances": {
+			"cfg01411c": {
+				"running": true,
+				"pid": 2202,
+				"command": [
+					"/usr/sbin/dnsmasq",
+					"-C",
+					"/var/etc/dnsmasq.conf.cfg01411c",
+					"-k"
+				],
+				"term_timeout": 5,
+				"respawn": {
+					"threshold": 3600,
+					"timeout": 5,
+					"retry": 5
+				}
+			}
+		}
+	},
+	"dropbear": {
+		"instances": {
+			"instance1": {
+				"running": true,
+				"pid": 1711,
+				"command": [
+					"/usr/sbin/dropbear",
+					"-F",
+					"-p",
+					"22"
+				],
+				"term_timeout": 5
+			}
+		}
+	},
+	"firewall": {
+		
+	},
+	"https-dns-proxy": {
+		"instances": {
+			"instance1": {
+				"running": true,
+				"pid": 3404,
+				"command": [
+					"/usr/sbin/https-dns-proxy"
+				],
+				"term_timeout": 5
+			},
+			"instance2": {
+				"running": false,
+				"command": [
+					"/usr/sbin/https-dns-proxy"
+				],
+				"term_timeout": 5,
+				"exit_code": 1
+			}
+		}
+	},
+	"odhcpd": {
+		"instances": {
+			"instance1": {
+				"running": true,
+				"pid": 1890,
+				"command": [
+					"/usr/sbin/odhcpd"
+				],
+				"term_timeout": 5
+			}
+		}
+	},
+	"uhttpd": {
+		"instances": {
+			"instance1": {
+				"running": true,
+				"pid": 2101,
+				"command": [
+					"/usr/sbin/uhttpd",
+					"-f"
+				],
+				"term_timeout": 5
+			}
+		}
+	},
+	"urandom_seed": {
+		"instances": {
+			"urandom_seed": {
+				"running": false,
+				"command": [
+					"/sbin/urandom_seed"
+				],
+				"term_timeout": 5,
+				"exit_code": 0
+			}
+		}
+	}
+}

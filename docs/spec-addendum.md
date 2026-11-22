@@ -84,7 +84,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `sentry workflow list|lint [name]|abandon|<name> [--var k=v]`.
 
 ## A13. Recorder and History (milestone 6)
-- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `crates/sentry/src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
+- `metrics/ring.bin` is a 64-byte header followed by fixed 128-byte records (layout in `crates/sentry-core/src/recorder/ring.rs`). Capacity is min(`retention_hours`, `max_mb`), so the file never grows. A file with a different shape is moved to `ring.bin.old` rather than reinterpreted.
 - `metrics/recorder.pid` marks a live recorder. Only one runs at a time, and the file is removed on Ctrl-C/SIGTERM/SIGHUP.
 - Footprint, measured on the host with a release build at a 10 s interval: **0.07% of one core including children, 9.8 MB RSS**. Getting there meant:
   - top-3 processes from a CPU-only process refresh (kernel names) once a minute;
@@ -121,7 +121,7 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 ## A17. Audit, explained (supersedes parts of A9)
 - Every finding carries `what` / `why` / `fix` text. The screen shows them in a detail box, and the raw evidence underneath.
 - Severity is shown as **check** (high), **review** (medium) or **info** (low). Stored values are unchanged.
-- **Listeners are grouped by service.** `crates/sentry/src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
+- **Listeners are grouped by service.** `crates/sentry-local/src/audit/known.rs` maps ports to names, descriptions and advice: mDNS, LLMNR, DHCPv6, wsdd, SSH, CUPS, Syncthing, RDP/VNC, Samba, and so on.
   - Reach is described in words (all networks / LAN / VPN / link-local).
   - An unknown root-owned service is **check**, with the `sudo ss` command that names it.
   - A known remote-access service open to every network is **review**. A stock desktop service is **info**.
@@ -220,14 +220,14 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - **quick-update fixes the GL runtimes itself:** a `flatpak-gl-update` step (`flatpak update -y`, confirm, `when = "!flatpak_gl_nvidia"`) runs before the `flatpak-gl` check. The earlier `flatpak` step runs before the new driver is loaded, so it can't pull the matching GL runtimes; the check used to fail and leave the command to the user.
 
 ## A23. sentry-server
-- A second binary (`crates/sentry-server/src/main.rs`) over the shared library (`crates/sentry-core`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`crates/sentry-server/src/config.rs`, sample in `assets/`).
+- A second kind of target (`crates/sentry-server`, a library; the command `sentry-server` is the one binary `crates/sentry` under that name) over the shared library (`crates/sentry-core`). It monitors and maintains a server over ssh; the server is described in `~/.config/sentry/server_config.yaml` (`crates/sentry-server/src/config.rs`, sample in `assets/`).
 - Transport: `exec::Site::Ssh`. Captured commands share one multiplexed connection (`ControlPersist=15s`); streamed and interactive ones get their own, so killing them stops the remote side (`-tt`). Exit 127 = not found there, 255 = unreachable.
 - Collectors (`crates/sentry-server/src/collect/`) parse synthetic fixtures in `tests/fixtures/server/`; the audit (`crates/sentry-server/src/audit.rs`) derives `srv:*` findings from a snapshot.
 - Workflows reuse `workflows::runner` with a remote `Env` (built-ins and conditions over ssh, `Env::builtins`/`live`), `LintRules`, and runs under the server's own data dir. `sentry-server cond` steps run locally and read the server.
 - Ask Claude uses `claude::Profile`: Claude may only run `sentry-server exec <server>` (`crates/sentry-server/src/gateway.rs` allowlist); ssh, scp, sftp and rsync are denied.
 
 ## A24. Workspace (2026-11)
-- One repo, a cargo workspace of three crates: `sentry-core` (what both programs share: `exec`, `paths`, `config`, `baseline`, `finding`, `claude`, `maint`, the workflow format and runner, a few parsers, the TUI kit), `sentry` (this machine) and `sentry-server`. The compiler keeps the direction: core depends on neither binary.
+- One repo, a cargo workspace: `sentry-core` (what every target shares: `exec`, `paths`, `config`, `baseline`, `finding`, `claude`, `maint`, the workflow format and runner, a few parsers, the TUI kit), `sentry-app` (the app: one window, a slot per target), the targets `sentry-local` (this machine) and `sentry-server`, and `sentry`, the one binary over both. The compiler keeps the direction: core depends on nothing above it, and targets never depend on each other.
 - `sentry` re-exports the core modules under their old names (`crate::exec`, `crate::maint`, …), and its `maint`, `workflows`, `collectors` and `tui` add their local parts to core's. sentry-server names core as `sentry_core::…` (its own `config`, `maint`, `tui` and `audit` would clash).
 - Tests: core's `testing` feature (scratch dirs per process, Claude Code counted as installed) is turned on only by the other crates' dev-dependencies; release builds never have it.
 
@@ -287,3 +287,60 @@ On this host, `rpm-ostree upgrade` offers `--preview`/`--check` and `rebase` off
 - `0` is a real screen and always on the strip (` ●` while a run is in progress). With nothing running it lists the workflows as sentry's Upgrade does (core `tui/wflist.rs`, used by both): steps, draft, lint, last run, and the selected one's chain and start card. `Enter` starts the one selected: its values are asked first when it takes any (the key bar's prompt), otherwise the box that says what starting does. `e` edits its file, `r` reads them again, `v` opens Records.
 - A run is followed on the same screen (steps, log, the step's card; Enter, `s`, `d`, `r`, `a`, `L`; `C-c` stops a running step). Its auto steps run only while `0` is in view; on any other screen the banner row says where it stands. A finished run stays until Enter closes it.
 - `w` on Maintenance goes to `0` (the chooser is gone); `:wf` opens it and `:wf <name>` does what Enter on that workflow does. Tab and `h`/`l` walk all the screens, `0` included.
+
+## A35. One program, a window with targets (2026-11)
+- One binary, `sentry` (`crates/sentry`), over the target libraries (`sentry-local`, `sentry-server`). `sentry-server …` is the same executable under that name (a symlink beside it) and `sentry server …` the same command line; every command's output is unchanged.
+- `sentry` opens this machine plus one target per server in `server_config.yaml`; `sentry-server [name]` the same window on that server. `[targets] show` orders and hides them. With one target there is no strip and nothing differs from before.
+- The target strip is in the top bar: `F1`… by place, `{` / `}`, `:local`, `:server <name>` (`[keys] target.*`). A character bound to a target is text wherever text is typed. Each entry shows `*` (at work), `!` (needs you) and `auto`.
+- A target reads and fetches nothing until it first has the window (a run left in progress is still picked up). Only the target in view polls for its screen.
+- Work is parallel across targets and one after another within one. A run goes on whatever screen or target is in view: this replaces A34's "auto steps run only while `0` is in view". A target out of view never takes a key: what only the user can answer waits there, flagged in the strip and said once with the target's name. Auto mode keeps answering out of view what it may answer in view.
+- Each target has its own sudo password; a prompt belongs to the target that asked and is shown only while that target is in view.
+- This machine's reboot waits while another target is at work, says for which, and goes when that settles.
+- `q` with several targets lists what each has going; quitting does for each what it did for one.
+
+## A36. Plans are a session's (2026-11, replaces A31's plan writer)
+- There is no plan writer. A session whose ask names a plan (a server's item, a workflow here) researches first (the ledger, the notes, the web) and answers with its assessment and one plan, or with a verdict `status = "wait"` (nothing changed, put off in `later.toml`, a `kind = "wait"` log entry). What it answered is kept as `plans/<key>.md` (the assessment and the plan's block); a ready plan on disk opens the session on it, at Review.
+- `p` reads the kept plan, `P` starts over (the old one goes to `plans/done/`), `Enter` in the Plan view applies it in a session, `x` drops it. The document writer writes reviews only.
+- A workflow starts without a start box (replaces A34's "the box that says what starting does"): Enter was the approval; values are asked first, confirm steps still ask.
+
+## A37. One sudo password per target (2026-11, replaces the terminal handover of A27/A28 and extends A35)
+- Asked once, in the window (the session's line, or the same line in the key bar), when the first thing needs root and sudo there wants a password; held in memory for that target while the window is open. `C-f`, quitting and a password sudo refuses forget it.
+- Everything that needs root uses it: a workflow's sudo step, a session's, a server action, a kill, the reboot, the audit's sudo fix, the inventory and Claude's queued root reads. The step's shell gets a `sudo` stand-in that reads it through a pipe only the wrapper holds: no argv, environment, file or log has it. Nothing sentry runs for Claude or as a step has a stdin.
+- The terminal is handed over only for an editor, a shell step, a pager, `toolbox enter` and Claude Code, never for sudo. `sentry workflow` in a terminal still lets sudo ask there.
+- Stopping a step reaches what it started as root: each sudo runs in its own session, and the wrapper signals those groups, waits 5 s and kills what stays.
+
+## A38. Auto mode (2026-11)
+- `C-a` toggles it per target; off at start, never saved. Turning it on asks for the sudo password at once when sudo wants one.
+- One pure rule (`auto::answers`) is asked at each decision point: a session's brief, plan and requests, a workflow's values when each has a default, its confirm steps, the log note, a series' next row. At most a fixed number in a row, and never while the user types.
+- Never answered: a reboot, a manual or shell step, a step with `risky = true`, a command that upgrades, rebases, rolls back or flashes, what `claude::grantable` refuses, a box (actions, kill, cleanup), a wrong password, a verdict that isn't done. The one exception is a step with `stage = true`, which lint allows only where the command stages an `rpm-ostree upgrade` without a reboot.
+- What auto answered is logged: the tag `auto`, "confirmed by auto" in the step's row, an "Answered by auto" section.
+
+## A39. The network target (2026-11)
+- A third kind of target (`crates/sentry-network`; `sentry-network …` and `sentry network …` are the one binary): a home network through its router, OpenWrt over ssh as root, described in `~/.config/sentry/network_config.yaml`, which sentry never rewrites. Scope `net:<name>`; in the strip after the servers (`:net <name>`).
+- Nothing is installed on the router and nothing runs there between two looks. Screens: Dashboard, Clients (`2`), Network, Maintenance, Upgrade, History. Fixtures are synthetic; a real router is only ever read while developing, and everything that changes one is proven against a disposable router (`scripts/live-router.sh`).
+- Secrets never leave the read that found them: a `uci` option that holds one is a tag (`redacted:<8 hex>`, a keyed hash with the network's own salt) from the parser on. Config backups are the router's own archive, encrypted on this machine as it arrives (age, recipients only); the plain archive never touches this disk.
+- Workflows are the shared format with a router's `Env`: `config-backup`, `package-update` (named packages only; auto confirms it only when the simulated transaction touches nothing but leaves), `guarded-change`, and `firmware-upgrade` as a draft.
+
+## A40. A router's read grammar and the guard (2026-11)
+- The login is root, so sentry reads every line itself. A read is plain commands from a fixed list with literal arguments; the router runs what sentry rebuilt from its own reading, never the line as written. What follows a pipe is done on this machine, on the scrubbed output. Everything Claude is shown is scrubbed (secrets as tags, the uplink's addresses, MACs, SSIDs, hostnames).
+- Every other line is one of: never (whoever allows it), a request the user is shown and allows (apply sessions only), only as a guard step, only as a workflow step (upgrades, the flash, a reboot). A router's session allows nothing by auto and has no web.
+- The guard is the one way the network, firewall, wireless, dhcp, dropbear and uhttpd configs change: preflight, snapshot, a detached revert armed on the router before anything is staged, then stage, commit, reload, reconnect on a new connection and confirm twice a moment apart. Kept only when the router says its own claim was the one that held; a Wi-Fi or uplink change stays armed until the user says keep. While armed, the snapshot and a one-shot boot hook are on the router's flash, so a restart inside the window reverts too; both are removed after.
+- A secret a guarded change sets is never written down on this machine: the run's `state.json`, its step logs, the guard's `pending.json`, the maintenance log and its ledger, a kept plan and what goes back to Claude have its tag, and the value is held in memory by the window that was given it. What is typed for it shows as dots. A tag is never applied as a value: a run resumed after a restart, or a plan opened later, stops at its guard step with nothing changed and says the value must be given again.
+
+## A41. One session, every target (2026-11)
+- The targets of a window are one system. An apply session reads on any of them (each through its own gateway, under its own read rules and scrubbing) and its one plan may have steps on several: `on = "<target id>"` on a step, the target it started on when left out. One approval; sentry runs each step on its target with that target's mechanics: its sudo password (asked once, in the session's own line, naming the target), a router's guard for its guarded configs, its workflows for upgrades and reboots. When a step fails because of something on another target, Claude fixes it there and retries, in the same session; there is no hand-off session and no to-do fallback. Not done only when the cause is outside every target the window has.
+- Values travel inside the plan: `capture = "name"` keeps the last line a step prints on stdout, `{{name}}` uses it in a later step on any target, `secret = true` keeps it out of the plan, the pane, every log, every state file and every prompt (it is filled in as the step runs, in memory only). An `ask` step is the one way a value comes from the user: typed into the session's line, hidden, and the plan goes on. Claude never tells the user to enter, paste, set or run anything.
+- What stays, because it protects the user rather than separating devices: approval before anything changes; each target's own rules for a step on it, whoever's session it is; `claude::grantable`; a router's scrubbing and its denials, which hold for every session that can reach it (the web aside: A43); auto answers only what it would on every target the session touches, so never with a router; one log entry per target touched, sharing a run id.
+- `Task.after = "task:<target id>/<task id>"`: not due until that task is logged done under that target.
+
+## A42. Security: threats you act on, and an audit of the whole system (2026-11)
+- A network's Security (`4`) opens on a list: **Needs attention** in plain sentences (act now / look / note; what was seen, why it matters, what Enter does), **How you're covered** (a sentence and ok / weak / off per part), **Blocked by you**. The traffic panels are its evidence (`d`). Enter never toggles: a fixed remedy runs as the `security-action` workflow (its plan shown first, then one Enter; a config change through the guard), a real choice is asked first, anything else is a session with Claude. `x`/`b` expected, `z` later, as on Maintenance, with the same ids.
+- The security audit is the window's: every target as one system. `S` on Maintenance or Security of any target, `:audit security`, and `sentry audit security`. Reads only; never a scan or a probe; no score. Its report (Do these first / Worth doing / Fine / Couldn't check) opens when the targets are read; Claude then reviews the evidence with the web and nothing else ("What matters most here"). The evidence carries no address, MAC, hostname or SSID.
+- Each item is one row on one target: the network's Security for its own and for what spans targets, the others' Maintenance for theirs alone. Where a target already has the row for that subject (the one with the action), that row stays and takes the audit's why; nothing is listed twice. Enter on an item is a session that fixes it, across whatever targets it takes (A41); what only the user knows is a pick (yes / no / don't know) and the list follows the answer. What couldn't be checked says what to do in sentry's terms, never a command to run.
+- It is a task of this machine's, every 30 days and after a firmware or OS upgrade; Enter runs it.
+- What a server's guard reports (CrowdSec: attackers blocked today, whether the router enforces the bans) is on the network's Security when the window has such a server: said by the server target, carried by the app, read by name. CrowdSec at the edge is one row whose Enter is one session across the server and the router.
+
+## A43. A session's web access goes by what it has read (2026-11, narrows A41)
+- A session keeps the web until it has read from a router (a call through its gateway, a step or a request there) or was opened on something a router said. From the next turn on it has none, for the rest of the session, and says so once: "the web is off for this session: it has read from the router". What a router prints is partly other people's text; with the web beside it, a line planted there could ask for something to be sent out.
+- A session started on a network never has the web. Sessions on a server or this machine research as before, a router in the window or not.
+- A review can run nothing and write nothing: it keeps the web, the security audit's review included.

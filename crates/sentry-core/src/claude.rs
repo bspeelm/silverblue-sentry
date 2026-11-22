@@ -43,7 +43,8 @@ pub struct Apply {
     pub item: Option<String>,
     /// A task: `d` in the chat marks it done.
     pub task: Option<String>,
-    /// There's a plan for it (by item, or by workflow on this machine).
+    /// What its plan is kept under in plans/ (the item; on this machine, the workflow): the
+    /// session researches first, its plan is saved there, and closed when it's done.
     pub plan: Option<String>,
     /// It's on a server (sentry-server): its files change through `run` steps there; only
     /// files on this machine (the notes) are `edit` steps.
@@ -52,6 +53,48 @@ pub struct Apply {
     pub finding: Option<String>,
     /// A failed workflow step: once it's fixed, the step is retried.
     pub step: Option<StepRef>,
+    /// What this host never runs from a session, whoever allows it (a router's guarded
+    /// and workflow-only commands): a plan's command it names is sent back, a request for
+    /// one isn't run.
+    pub refuses: Refuses,
+    /// A remote host whose own audit says whether the finding is gone (a router's): it
+    /// is audited again after the plan, as this machine is.
+    pub reaudits: bool,
+    /// How the host is talked about where it isn't a server (a router's words).
+    pub how: Option<&'static str>,
+    /// Auto mode never approves this session's plan and allows nothing it asks for (a
+    /// command there, a file here): the host's login is root, with no sudo line between a
+    /// read and a change, so each is the user's own Enter.
+    pub asks_each: bool,
+}
+
+/// A host's own rule for a command line: why it is never a session's to run, if it isn't.
+/// `remote`: the line is for the host (a plan's step, a line its gateway held); else a
+/// command on this machine that Claude Code refused.
+#[derive(Clone, Copy, Default)]
+pub struct Refuses(pub Option<fn(&str, bool) -> Option<String>>);
+
+impl Refuses {
+    pub fn why(&self, cmd: &str, remote: bool) -> Option<String> {
+        self.0.and_then(|f| f(cmd, remote))
+    }
+}
+
+impl std::fmt::Debug for Refuses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Refuses(rule)"
+        } else {
+            "Refuses(none)"
+        })
+    }
+}
+
+/// Two sessions are about the same thing whatever rule their host keeps.
+impl PartialEq for Refuses {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Apply {
@@ -228,11 +271,22 @@ impl Ask {
 /// Help me apply it: Claude investigates, then answers with one plan for sentry to carry out.
 pub fn apply_question(a: &Apply) -> String {
     let files = files_rule(a);
+    // What a plan document used to be written for, done here: the research, and the
+    // answer that it should wait.
     let planned = if a.plan.is_some() {
-        " The brief has the plan written earlier for this, with its research: carry it out. \
-         Its Before checks become `check` steps, its Change the workflow step with the plan's \
-         values (or, when no workflow applies it, `run` and `edit` steps), its Verify `check` \
-         steps. Check first that it still fits (versions, what's running), and say if it doesn't."
+        " This one is worth researching before anything moves: start from the maintenance \
+         ledger named in the brief and read the entries that bear on it (the same item or \
+         workflow, what failed or was done by hand), read the release notes and advisories \
+         (WebFetch, WebSearch; never curl) and my notes files named in the brief, then check \
+         the host. When it moves to a version, begin your answer with a line `TARGET: <exact \
+         upstream tag>`. Keep the assessment to what I need to decide: what changes, how risky \
+         it is, what the log says, how to roll back. sentry keeps your answer with the plan \
+         (plans/), to read later. If the brief has a plan written earlier, carry it out \
+         (its checks as `check` steps, its change as the workflow step with its values, or \
+         `run` and `edit` steps when no workflow applies it) after checking it still fits. If \
+         it shouldn't be done now, send no plan: say why in a few lines and end with a \
+         ```sentry-verdict block with status = \"wait\", the reason as its summary, and \
+         `again = \"30d\"` for when I should look again; sentry puts it off until then."
     } else {
         ""
     };
@@ -259,7 +313,9 @@ pub fn apply_question(a: &Apply) -> String {
         ),
         None => String::new(),
     };
-    let how = if a.remote {
+    let how = if let Some(how) = a.how {
+        how
+    } else if a.remote {
         "Checks you simply run on the server, through the gateway: any command that only looks, \
          pipes and all. One that needs root you call with sudo: sentry-server shows me that exact \
          call, and once I allow it (and give my password) it runs it on the server and tells you \
@@ -304,7 +360,11 @@ pub fn apply_question(a: &Apply) -> String {
 
 /// Where a plan's file changes go: `edit` steps on this machine, `run` steps on a server.
 fn files_rule(a: &Apply) -> &'static str {
-    if a.remote {
+    if a.how.is_some() {
+        "The commands run on the router, as root (there is no sudo there). `edit` steps are \
+         only for my files on this machine (the notes); the router's files are never edited \
+         directly."
+    } else if a.remote {
         "The commands run on the server. Change the server's files with `run` steps there \
          (sudo where needed); `edit` steps are only for my files on this machine (the notes)."
     } else {
@@ -639,8 +699,9 @@ thread_local! {
 }
 
 /// What a grant lets Claude do with one file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Access {
+    #[default]
     Read,
     Write,
     /// Run one exact command (not on the read-only allowlist).
@@ -648,15 +709,48 @@ pub enum Access {
 }
 
 /// One file Claude may use for the rest of a conversation, because the user said so.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grant {
     pub access: Access,
     /// The real path (symlinks resolved), as Claude Code checks it.
-    /// For `Run`: the exact command.
+    /// For `Run`: the exact command (of a compound one, the part that needs approving).
     pub path: String,
+    /// `Run`: the whole command as Claude wrote it, when `path` is only a part of it. What
+    /// sentry runs (or shows) is this: a part cut out of a pipeline means something else.
+    pub whole: Option<String>,
+    /// `Run`: the target whose gateway refused it (`sentry-server run <name>` → `srv:<name>`,
+    /// `sentry-network run <name>` → `net:<name>`): it's a line for that host. None: Claude
+    /// Code refused a command on this machine, which never goes over ssh.
+    pub on: Option<String>,
+}
+
+/// The target a gateway call is for, by how the command names it.
+pub fn gateway_target(input: &str) -> Option<String> {
+    let w: Vec<&str> = input.split_whitespace().take(4).collect();
+    let (kind, rest) = match w.as_slice() {
+        [p, rest @ ..] if p.ends_with("sentry-server") => ("srv", rest),
+        [p, rest @ ..] if p.ends_with("sentry-network") => ("net", rest),
+        [p, "server", rest @ ..] if p.ends_with("sentry") => ("srv", rest),
+        [p, "network", rest @ ..] if p.ends_with("sentry") => ("net", rest),
+        _ => return None,
+    };
+    match rest {
+        ["run" | "exec", name, ..] if *name != "--" => Some(format!("{kind}:{name}")),
+        _ => None,
+    }
 }
 
 impl Grant {
+    /// A gateway refused it: it's a line for a host over ssh.
+    pub fn remote(&self) -> bool {
+        self.on.is_some()
+    }
+
+    /// A `Run`'s command as it's run and shown: all of it.
+    pub fn line(&self) -> &str {
+        self.whole.as_deref().unwrap_or(&self.path)
+    }
+
     pub fn word(&self) -> &'static str {
         match self.access {
             Access::Read => "read",
@@ -671,7 +765,7 @@ impl Grant {
         match self.access {
             Access::Read => false,
             Access::Write => true,
-            Access::Run => !only_reads(&self.path),
+            Access::Run => !only_reads(self.line()),
         }
     }
 }
@@ -803,23 +897,177 @@ fn reads(cmd: &str) -> bool {
             sub,
             Some("list" | "info" | "search" | "repoquery" | "check-update")
         ),
+        "git" => git_reads(&w[1..]),
+        _ => false,
+    }
+}
+
+/// A git command (the words after `git`) only looks: one of the subcommands that never
+/// write, with nothing that makes it write a file or run a program of the caller's choosing.
+fn git_reads(w: &[&str]) -> bool {
+    // What may come before the subcommand: where the repository is, and no pager. A `-c`
+    // only for settings that can't name a program (an alias, a pager, an fsmonitor could).
+    const SETTINGS: &[&str] = &["color.", "advice.", "column.", "status.", "core.quotepath"];
+    let mut i = 0;
+    loop {
+        match w.get(i).copied() {
+            Some("-C") if w.get(i + 1).is_some() => i += 2,
+            Some("-c") => {
+                let Some(kv) = w.get(i + 1) else {
+                    return false;
+                };
+                let key = kv.split('=').next().unwrap_or(kv).to_ascii_lowercase();
+                if !SETTINGS.iter().any(|s| key.starts_with(s)) {
+                    return false;
+                }
+                i += 2;
+            }
+            Some("--no-pager" | "-P" | "--no-optional-locks" | "--literal-pathspecs") => i += 1,
+            Some(a) if a.starts_with("--git-dir=") || a.starts_with("--work-tree=") => i += 1,
+            Some(a) if a.starts_with('-') => return false,
+            _ => break,
+        }
+    }
+    let Some(sub) = w.get(i).copied() else {
+        return false;
+    };
+    let args = &w[i + 1..];
+    let flag = |names: &[&str]| args.iter().any(|a| names.contains(a));
+    // `--output` writes the result to a file, whatever the subcommand.
+    if args
+        .iter()
+        .any(|a| *a == "--output" || a.starts_with("--output="))
+    {
+        return false;
+    }
+    // Words that aren't flags, nor the value of one of `takes`: for `branch` and `tag` such
+    // a word is a name to create, unless they're listing.
+    let names = |takes: &[&str]| {
+        let mut n = 0;
+        let mut skip = false;
+        for a in args {
+            if std::mem::take(&mut skip) {
+                continue;
+            }
+            if takes.contains(a) {
+                skip = true;
+            } else if !a.starts_with('-') {
+                n += 1;
+            }
+        }
+        n
+    };
+    const VALUED: &[&str] = &[
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+        "--format",
+    ];
+    let listing = |extra: &[&str]| {
+        args.iter().filter(|a| a.starts_with('-')).all(|a| {
+            let name = a.split('=').next().unwrap_or(a);
+            VALUED.contains(&name)
+                || extra.contains(&name)
+                || matches!(
+                    name,
+                    "-l" | "--list" | "-i" | "--ignore-case" | "--column" | "--no-column"
+                )
+        }) && (names(VALUED) == 0 || flag(&["-l", "--list"]))
+    };
+    match sub {
+        "status" | "log" | "diff" | "show" | "rev-parse" | "describe" | "blame" | "shortlog" => {
+            !flag(&["-o"])
+        }
+        // (`-o` is `--others` here.)
+        "ls-files" => true,
+        "branch" => listing(&[
+            "-a",
+            "--all",
+            "-r",
+            "--remotes",
+            "-v",
+            "-vv",
+            "--verbose",
+            "--show-current",
+            "--color",
+            "--no-color",
+            "--abbrev",
+            "--no-abbrev",
+        ]),
+        "tag" => listing(&["-n"]) || (args.len() == 1 && args[0].starts_with("-n")),
+        "remote" => match args {
+            [] | ["-v" | "--verbose"] => true,
+            ["get-url", rest @ ..] => rest.iter().filter(|a| !a.starts_with('-')).count() == 1,
+            _ => false,
+        },
+        "stash" => matches!(args.first().copied(), Some("list" | "show")),
+        "config" => {
+            let writes = args.iter().any(|a| {
+                matches!(
+                    *a,
+                    "-e" | "--edit"
+                        | "--add"
+                        | "--replace-all"
+                        | "--rename-section"
+                        | "--remove-section"
+                        | "set"
+                        | "unset"
+                        | "edit"
+                        | "rename-section"
+                        | "remove-section"
+                ) || a.starts_with("--unset")
+            });
+            let looks = args
+                .iter()
+                .any(|a| a.starts_with("--get") || matches!(*a, "--list" | "-l"))
+                || matches!(
+                    args.iter().find(|a| !a.starts_with('-')).copied(),
+                    Some("get" | "list")
+                );
+            looks && !writes
+        }
         _ => false,
     }
 }
 
 /// A refused tool call → what it asked for: the tool and its input (Read, Edit, Write,
 /// MultiEdit, NotebookEdit carry a file path), else the path in the refusal itself.
+/// How a server's gateway words a command it holds for the user (`remote::gateway::run_cli`).
+pub const GATEWAY_ASKS: &str = ": this needs root and requires approval: ";
+
 pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     // A command: the part Claude Code wants approved, else the whole command.
     if name == "Bash" && !refusal.contains("permissions to read") && !refusal.contains("to write") {
-        // (A server's gateway says the same of a command that needs root: one line.)
-        let cmd = refusal
+        // A server's gateway says so of a command that needs root: one line, the line for
+        // the server.
+        if let Some((_, line)) = refusal.split_once(GATEWAY_ASKS) {
+            let line = line.lines().next().unwrap_or(line).trim();
+            return (!line.is_empty()).then(|| Grant {
+                access: Access::Run,
+                path: line.to_string(),
+                whole: None,
+                // (A gateway that doesn't say whose it is: a host all the same.)
+                on: Some(gateway_target(input).unwrap_or_else(|| "srv:".into())),
+            });
+        }
+        // Claude Code names the part of a compound command it wants approved. That part is
+        // what a grant is for; what sentry runs is the command as written (a piece of a
+        // pipeline reads something else, or waits on stdin).
+        let input = input.trim();
+        let part = refusal
             .split_once("requires approval: ")
-            .map_or(input, |(_, part)| part.lines().next().unwrap_or(part))
-            .trim();
-        return (!cmd.is_empty()).then(|| Grant {
+            .map(|(_, part)| part.lines().next().unwrap_or(part).trim())
+            .filter(|p| !p.is_empty() && *p != input);
+        return (!input.is_empty() || part.is_some()).then(|| Grant {
             access: Access::Run,
-            path: cmd.to_string(),
+            path: part.unwrap_or(input).to_string(),
+            whole: part
+                .filter(|_| !input.is_empty())
+                .map(|_| input.to_string()),
+            on: None,
         });
     }
     let access = match name {
@@ -851,6 +1099,7 @@ pub fn requested(name: &str, input: &str, refusal: &str) -> Option<Grant> {
     Some(Grant {
         access,
         path: crate::maint::real_path(&path),
+        ..Default::default()
     })
 }
 
@@ -949,6 +1198,7 @@ fn rule(tool: &str, path: &str) -> String {
 
 /// What a chat may do: its system prompt, tools and permissions. The local machine's is
 /// [`Profile::local`]; sentry-server builds one per server.
+#[derive(Clone, Debug, Default)]
 pub struct Profile {
     pub system: String,
     pub tools: Vec<String>,
@@ -1400,6 +1650,7 @@ mod tests {
             (g.access, g.path.as_str()),
             (Access::Run, "sudo smartctl -a /dev/sda")
         );
+        assert!(g.remote() && g.whole.is_none(), "a line for the server");
         assert!(refused("this needs root and requires approval: sudo x"));
         assert!(!refused("sentry-server run: not run: it names `shadow`"));
     }
@@ -1485,6 +1736,24 @@ mod tests {
             (g.access, g.path.as_str()),
             (Access::Run, "ostree admin status 2>&1")
         );
+        // The part is what a grant is for; what's shown and run is all of it, never a
+        // piece of the pipeline.
+        assert_eq!(
+            g.line(),
+            "rpm-ostree status; ostree admin status 2>&1 | head"
+        );
+        assert!(!g.remote());
+        let tail = requested(
+            "Bash",
+            "journalctl -b | head -20; echo ---; git -C /x status --short 2>&1",
+            "denied: This Bash command contains multiple operations. The following part \
+             requires approval: head -20; echo ---; git -C /x status --short 2>&1",
+        )
+        .unwrap();
+        assert!(tail.line().starts_with("journalctl -b | head -20;"));
+        // Not compound: the command is the request, with nothing more to it.
+        let one = requested("Bash", "rpm -V a", "denied: This command requires approval").unwrap();
+        assert_eq!((one.line(), one.whole.as_deref()), ("rpm -V a", None));
         assert!(grantable(&g).is_ok());
         let g = requested(
             "Bash",
@@ -1499,11 +1768,13 @@ mod tests {
         let out = Grant {
             access: Access::Run,
             path: "rpm -qa > /tmp/x".into(),
+            ..Default::default()
         };
         assert!(grantable(&out).is_ok() && out.changes(), "writes a file");
         let p = Profile::local().with_grants(&[Grant {
             access: Access::Run,
             path: "ostree admin status".into(),
+            ..Default::default()
         }]);
         assert!(p.allowed.iter().any(|a| a == "Bash(ostree admin status)"));
     }
@@ -1529,6 +1800,7 @@ mod tests {
         let g = |access, p: std::path::PathBuf| Grant {
             access,
             path: p.display().to_string(),
+            ..Default::default()
         };
         assert!(grantable(&g(Access::Read, home.join(".ssh/id_ed25519"))).is_err());
         assert!(grantable(&g(Access::Write, "/etc/hosts".into())).is_err());
@@ -1545,6 +1817,7 @@ mod tests {
         let run = |c: &str| Grant {
             access: Access::Run,
             path: c.into(),
+            ..Default::default()
         };
         assert!(grantable(&run("cat ~/.ssh/id_ed25519")).is_err());
         assert!(grantable(&run("rm -rf /tmp/x")).is_ok());
@@ -1584,6 +1857,88 @@ mod tests {
         ] {
             assert!(only_reads(c), "{c}");
         }
+    }
+
+    #[test]
+    fn git_that_only_looks() {
+        for c in [
+            "git status",
+            "git -C /var/mnt/work/repo status --short",
+            "git --no-pager -C repo log --oneline -5",
+            "git -c color.ui=never diff --stat HEAD~1",
+            "git show HEAD:README.md",
+            "git branch",
+            "git branch -a -vv",
+            "git branch --show-current",
+            "git branch --list 'feat*'",
+            "git branch --contains abc123",
+            "git rev-parse --abbrev-ref HEAD",
+            "git remote -v",
+            "git remote",
+            "git remote get-url origin",
+            "git ls-files -o --exclude-standard",
+            "git describe --tags --always",
+            "git blame -L 1,5 src/main.rs",
+            "git shortlog -sn",
+            "git tag",
+            "git tag -l 'v0.*'",
+            "git tag --sort=-creatordate",
+            "git stash list",
+            "git config --get user.name",
+            "git config --list --show-origin",
+            "git config get user.name",
+            "git -C a status --short; git -C a log -1 | head -3",
+        ] {
+            assert!(only_reads(c), "{c}");
+        }
+        for c in [
+            "git",
+            "git commit -m x",
+            "git -C repo push",
+            "git pull",
+            "git fetch",
+            "git checkout main",
+            "git reset --hard",
+            "git clean -fd",
+            "git add .",
+            "git stash",
+            "git stash pop",
+            "git stash drop",
+            "git branch new-branch",
+            "git branch -d old",
+            "git branch -D old",
+            "git branch -m a b",
+            "git branch --set-upstream-to=origin/main",
+            "git tag v1.0",
+            "git tag -d v1.0",
+            "git tag -a v1 -m x",
+            "git remote add origin url",
+            "git remote remove origin",
+            "git remote set-url origin url",
+            "git config user.name me",
+            "git config --unset user.name",
+            "git config --get user.name --add x",
+            "git config set user.name me",
+            "git config --edit",
+            "git diff --output=/tmp/x",
+            "git log --output /tmp/x",
+            "git show --output=x HEAD",
+            "git format-patch -o /tmp/p HEAD~1",
+            "git diff -o x",
+            "git -c core.pager=less log",
+            "git -c alias.st=!rm status",
+            "git -c core.fsmonitor=/tmp/x status",
+            "git --exec-path=/tmp status",
+            "git -p log",
+            "git log > /tmp/x",
+            "git status && git commit -am x",
+        ] {
+            assert!(!only_reads(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn commands_that_change() {
         for c in [
             "sudo ss -tlnp",
             "rpm-ostree upgrade",
@@ -1625,6 +1980,7 @@ mod tests {
         let p = Profile::local().with_grants(&[Grant {
             access: Access::Write,
             path: "/home/u/notes/up.md".into(),
+            ..Default::default()
         }]);
         for r in [
             "Read(//home/u/notes/up.md)",
@@ -1643,6 +1999,7 @@ mod tests {
         let r = Profile::local().with_grants(&[Grant {
             access: Access::Read,
             path: "/home/u/a.md".into(),
+            ..Default::default()
         }]);
         assert!(!r.allowed.iter().any(|a| a.starts_with("Edit(")));
         let w = Profile::local().without_edits();

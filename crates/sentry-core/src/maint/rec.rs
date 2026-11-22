@@ -22,6 +22,9 @@ pub struct Rec<A> {
     pub action: A,
     /// The maintenance item it's about (sentry-server; None on this machine).
     pub item: Option<String>,
+    /// Nothing asks for it yet (a newer version, updates no one is waiting on, something to
+    /// tidy): listed only with everything (`o`).
+    pub can_wait: bool,
 }
 
 /// What a row acts on: a task and a rule acting on the same thing are one row.
@@ -81,6 +84,7 @@ pub fn finish<A: Act>(mut rules: Vec<Rec<A>>, t: &Tail) -> Vec<Rec<A>> {
             why: d.why,
             action: A::task(d.id),
             item: d.item,
+            can_wait: false,
         };
         if target != Target::None {
             let (same, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut rules)
@@ -97,6 +101,88 @@ pub fn finish<A: Act>(mut rules: Vec<Rec<A>>, t: &Tail) -> Vec<Rec<A>> {
     rules.retain(|r| t.snooze.get(&r.key).is_none_or(|d| *d <= t.today));
     rules.sort_by_key(|r| r.level);
     rules
+}
+
+/// The key of the row for one of the security audit's items.
+pub fn audit_key(id: &str) -> String {
+    format!("audit:{id}")
+}
+
+/// The security audit's items this target lists (`items`), among its own rows. `same` says
+/// which row here is already about an item's subject (updates waiting, a reboot, a
+/// finding): that row stays, the one with the action, and takes the audit's plain why and
+/// its urgency; the item gets no row of its own. The rest become rows (`act`: what Enter
+/// does, from the item's id), put off like any other, ranked with the others.
+pub fn with_audit<A>(
+    mut recs: Vec<Rec<A>>,
+    items: &[crate::secaudit::Item],
+    snooze: &std::collections::BTreeMap<String, jiff::civil::Date>,
+    today: jiff::civil::Date,
+    same: impl Fn(&crate::secaudit::Item, &[Rec<A>]) -> Option<usize>,
+    act: impl Fn(String) -> A,
+) -> Vec<Rec<A>> {
+    use crate::secaudit::State;
+    for i in items {
+        let level = match i.state {
+            State::DoFirst => Level::Soon,
+            _ => Level::Routine,
+        };
+        if let Some(n) = same(i, &recs).filter(|n| *n < recs.len()) {
+            let r = &mut recs[n];
+            r.level = r.level.min(level);
+            if !i.why.is_empty() && !r.why.contains(&i.why) {
+                r.why = format!("{} · {}", r.why, i.why);
+            }
+            // What the audit puts first doesn't wait.
+            r.can_wait = r.can_wait && i.state != State::DoFirst;
+            continue;
+        }
+        let key = audit_key(&i.id);
+        if snooze.get(&key).is_some_and(|d| *d > today) {
+            continue;
+        }
+        recs.push(Rec {
+            level,
+            key,
+            title: i.title.clone(),
+            why: match (i.state, i.fix.is_empty()) {
+                (State::Ask, _) => {
+                    "The security audit can't read this: only you know. Enter answers it."
+                        .to_string()
+                }
+                (_, true) => i.why.clone(),
+                (_, false) => format!("{} What it takes: {}", i.why, i.fix),
+            },
+            action: act(i.id.clone()),
+            item: None,
+            can_wait: false,
+        });
+    }
+    recs.sort_by_key(|r| r.level);
+    recs
+}
+
+/// What the list shows: everything, or only what needs doing. With it, how many wait.
+/// A tidy row never needs doing (a low finding, a tidy task), so it waits whatever made it.
+pub fn needed<A>(recs: Vec<Rec<A>>, everything: bool) -> (Vec<Rec<A>>, usize) {
+    let waits = |r: &Rec<A>| r.can_wait || r.level == Level::Tidy;
+    let waiting = recs.iter().filter(|r| waits(r)).count();
+    if everything {
+        return (recs, 0);
+    }
+    (recs.into_iter().filter(|r| !waits(r)).collect(), waiting)
+}
+
+/// The Recommended panel's note: how many rows, how many ticked, how many wait.
+pub fn note(shown: usize, ticked: usize, waiting: usize) -> String {
+    let mut s = shown.to_string();
+    if ticked > 0 {
+        s.push_str(&format!(" · {ticked} ticked"));
+    }
+    if waiting > 0 {
+        s.push_str(&format!(" · {waiting} can wait (o)"));
+    }
+    s
 }
 
 #[cfg(test)]
@@ -130,6 +216,7 @@ mod tests {
             why: String::new(),
             action,
             item: None,
+            can_wait: false,
         }
     }
 
@@ -196,5 +283,34 @@ mod tests {
         let out = finish(rules, &tail(&tasks, &snooze));
         let keys: Vec<&str> = out.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, ["b", "a", "task:by-hand", "t"]);
+    }
+
+    #[test]
+    fn what_can_wait_is_hidden_until_a_due_task_takes_it_in() {
+        let waits = |key: &str, a: A| Rec {
+            can_wait: true,
+            ..rec(Level::Routine, key, a)
+        };
+        let rules = || {
+            vec![
+                waits("updates", A::Run("quick-update".into())),
+                waits("newer", A::Other),
+                rec(Level::Soon, "finding", A::Other),
+            ]
+        };
+        let none = BTreeMap::new();
+        // Nothing due: only the finding; two wait, and `o` shows them.
+        let (out, waiting) = needed(finish(rules(), &tail(&[], &none)), false);
+        assert_eq!((out.len(), waiting), (1, 2));
+        assert_eq!(out[0].key, "finding");
+        let (all, waiting) = needed(finish(rules(), &tail(&[], &none)), true);
+        assert_eq!((all.len(), waiting), (3, 0));
+        // A due task about the same workflow takes the updates in: its row doesn't wait.
+        let tasks = [task("weekly", "run quick-update", Level::Routine)];
+        let (out, waiting) = needed(finish(rules(), &tail(&tasks, &none)), false);
+        let keys: Vec<&str> = out.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!((keys, waiting), (vec!["finding", "task:weekly"], 1));
+        assert_eq!(note(2, 0, 1), "2 · 1 can wait (o)");
+        assert_eq!(note(2, 2, 0), "2 · 2 ticked");
     }
 }

@@ -5,7 +5,7 @@ expression: body(&s)
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ Recommended · 11 · audited 1h ago ─────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+┌ Recommended · 9 · 2 can wait (o) · audited 1h ago ─────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
 │          What                            Why                                       │ │ now  4 package update(s) waiting, 1 for security                    │
 │ now      4 package update(s) waiting, 1  apt-maintenance applies them.             │ │                                                                     │
 │ now      backup.service is failed (faile Whatever it provides is down.             │ │ apt-maintenance applies them.                                       │
@@ -16,16 +16,16 @@ expression: body(&s)
 │ soon     report.service failed           It either crashed or a one-off job exited │ │ 6.1.0-25-amd64                                                      │
 │ soon     web: held, but newer releases f Held because: 1.5 migrates the database o │ │   asked for by linux-image-6.1.0-25-amd64                           │
 │ routine  Retire legacy                   Replaced by app.service.                  │ │ package lists refreshed 4h ago · unattended upgrade ran 8h ago      │
-│ tidy     Track cache                     Not tracked: compose service cache (examp │ │ held back (phased or would remove packages): libfoo1 libfoo-dev     │
-│ tidy     container web restarted 9 h ago Fine after an update or reboot; repeated  │ │ foo-tools                                                           │
-│                                                                                    │ │ would remove: oldpkg                                                │
-└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ Items · 4 · upstream not looked up yet ────────────────────────────────────────────┐ │ 4 update(s), simulated with apt-get -s:                             │
-│ Item      Risk   Pinned    Running        Latest    State               Review     │ │ security libssl3t64 3.0.14-1~deb12u1 → 3.0.15-1~deb12u1             │
-│ web       medium 1.4.2     =              v1.5.2    security · 2 newer  2027-01-15 │ │ update   newpkg (new) → 2.0-1                                       │
-│ engine    high   5:24.3.1- =              5:24.4.0- held · 1 newer                 │ │ update   tzdata 2024a-0+deb12u1 → 2025b-0+deb12u1                   │
-│ legacy    medium -         -              -         to retire                      │ │ vendor   vendor-tool 2.3.0-1 → 2.4.0-1                              │
-│ os        high   12        -              12.12     eol soon                       │ │                                                                     │
+│                                                                                    │ │ held back (phased or would remove packages): libfoo1 libfoo-dev     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ foo-tools                                                           │
+┌ Items · 4 · upstream not looked up yet ────────────────────────────────────────────┐ │ would remove: oldpkg                                                │
+│ Item      Risk   Pinned    Running        Latest    State               Review     │ │                                                                     │
+│ web       medium 1.4.2     =              v1.5.2    security · 2 newer  2027-01-15 │ │ 4 update(s), simulated with apt-get -s:                             │
+│ engine    high   5:24.3.1- =              5:24.4.0- held · 1 newer                 │ │ security libssl3t64 3.0.14-1~deb12u1 → 3.0.15-1~deb12u1             │
+│ legacy    medium -         -              -         to retire                      │ │ update   newpkg (new) → 2.0-1                                       │
+│ os        high   12        -              12.12     eol soon                       │ │ update   tzdata 2024a-0+deb12u1 → 2025b-0+deb12u1                   │
+│                                                                                    │ │ vendor   vendor-tool 2.3.0-1 → 2.4.0-1                              │
+│                                                                                    │ │                                                                     │
 │                                                                                    │ │                                                                     │
 │                                                                                    │ │                                                                     │
 │                                                                                    │ │                                                                     │
@@ -41,4 +41,4 @@ expression: body(&s)
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  start   z  later   A  claude   c  check   v  records   R  review   ?  help   q  quit
+ Enter  start   Space  tick   z  later   A  claude   o  everything   c  check   v  records   R  review   C-a  auto   ?  help   q  quit

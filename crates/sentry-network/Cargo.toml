@@ -1,0 +1,34 @@
+[package]
+name = "sentry-network"
+description = "sentry for a home network: its router over ssh (OpenWrt), as a target of the app"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sentry-core.workspace = true
+sentry-app.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_ignored.workspace = true
+jiff.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde-saphyr.workspace = true
+toml.workspace = true
+age.workspace = true
+regex.workspace = true
+
+[features]
+# Test support for the window's own tests (`crates/sentry`).
+testing = ["sentry-core/testing", "sentry-app/testing"]
+
+[dev-dependencies]
+sentry-core = { workspace = true, features = ["testing"] }
+sentry-app = { workspace = true, features = ["testing"] }
+insta.workspace = true

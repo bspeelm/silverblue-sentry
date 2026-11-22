@@ -34,6 +34,12 @@ pub struct Cmd {
     timeout: Option<Duration>,
     dir: Option<PathBuf>,
     input: Option<Input>,
+    /// A streamed command reads `input` only once it has printed this line (`input_after`).
+    ready: Option<String>,
+    /// Streamed over ssh, its stdin is a pipe held open until it exits (`hold_stdin`).
+    hold_stdin: bool,
+    /// Over ssh, never the shared connection (`own_connection`).
+    own_conn: bool,
 }
 
 /// What a command reads on stdin (a sudo password among it): never shown, never logged.
@@ -125,7 +131,7 @@ pub fn control_dir() -> PathBuf {
 
 /// How a remote command gets a terminal: none (captured), forced (`-tt`: streamed, so killing
 /// the local ssh hangs up the remote command too), or the user's own (`-t`: interactive).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Tty {
     No,
     Forced,
@@ -140,6 +146,9 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
+            hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -151,6 +160,9 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
+            hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -166,6 +178,9 @@ impl Cmd {
             timeout: Some(DEFAULT_TIMEOUT),
             dir: None,
             input: None,
+            ready: None,
+            hold_stdin: false,
+            own_conn: false,
         }
     }
 
@@ -194,6 +209,55 @@ impl Cmd {
     pub fn input(mut self, bytes: impl Into<Vec<u8>>) -> Self {
         self.input = Some(Input(bytes.into()));
         self
+    }
+
+    /// Bytes for a streamed command's stdin, written when it prints the line `marker` (which
+    /// isn't passed on) and not before. Over ssh the command then keeps its terminal, so
+    /// stopping the local side still hangs it up; it turns the terminal's echo off before it
+    /// prints the marker, so what's written is never echoed back.
+    pub fn input_after(mut self, marker: &str, bytes: impl Into<Vec<u8>>) -> Self {
+        self.input = Some(Input(bytes.into()));
+        self.ready = Some(marker.to_string());
+        self
+    }
+
+    /// Streamed over ssh, keep the local stdin open (a pipe nothing is written to) for as long
+    /// as the command runs. For an ssh server that hangs the session up when a forced
+    /// terminal's stdin is at its end (dropbear, on a router): there `ssh -tt </dev/null`
+    /// prints nothing and fails, while with the pipe held the command runs, and stopping the
+    /// local ssh still ends it. Nothing changes for captured commands, nor off ssh.
+    pub fn hold_stdin(mut self) -> Self {
+        self.hold_stdin = true;
+        self
+    }
+
+    /// Over ssh, on a connection of its own even when captured (never the shared,
+    /// multiplexed one): for asking a host that may just have dropped every connection it
+    /// had whether it still answers. Nothing changes off ssh.
+    pub fn own_connection(mut self) -> Self {
+        self.own_conn = true;
+        self
+    }
+
+    /// Whether it was told to (`hold_stdin`).
+    pub fn holds_stdin(&self) -> bool {
+        self.hold_stdin
+    }
+
+    /// How `stream` starts the command: with which terminal, and whether its stdin is a pipe
+    /// kept open (and not fed at once) until it exits.
+    fn streamed(&self) -> (Tty, bool) {
+        let ssh = matches!(self.site, Site::Ssh(_));
+        let waits = self.ready.is_some();
+        let tty = if ssh && (self.input.is_none() || waits) {
+            Tty::Forced
+        } else {
+            Tty::No
+        };
+        (
+            tty,
+            waits || (self.hold_stdin && ssh && self.input.is_none()),
+        )
     }
 
     /// Feed `input` (if any) to the child's stdin from a thread, then close it.
@@ -271,7 +335,7 @@ impl Cmd {
                 let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
             }
             let mut c = Command::new("ssh");
-            c.args(ssh_opts(&dir, tty == Tty::No));
+            c.args(ssh_opts(&dir, tty == Tty::No && !self.own_conn));
             match tty {
                 Tty::No => {}
                 Tty::Forced => {
@@ -392,6 +456,96 @@ impl Cmd {
         }
     }
 
+    /// Run to completion, handing stdout to `sink` as the raw bytes arrive: never decoded
+    /// and never kept here (a binary stream: an archive read over ssh). A non-zero exit is
+    /// an error carrying stderr, as `output` gives it; a sink that fails ends the command.
+    /// Returns how many bytes went through.
+    pub fn bytes_to(&self, sink: &mut dyn io::Write) -> Result<u64, ExecError> {
+        self.check()?;
+        let mut child = self
+            .command()
+            .stdin(self.stdin())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        self.feed(&mut child);
+        let mut out = child.stdout.take().expect("piped");
+        let mut err = child.stderr.take().expect("piped");
+        let t_err = thread::spawn(move || {
+            let mut s = Vec::new();
+            let _ = err.read_to_end(&mut s);
+            s
+        });
+        // The reader hands chunks over, so the wait for one can be cut at the timeout.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        let t_out = thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match out.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let start = Instant::now();
+        let mut total = 0u64;
+        let stop = |child: &mut std::process::Child| {
+            let _ = child.kill();
+            let _ = child.wait();
+        };
+        loop {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(chunk) => {
+                    if let Err(e) = sink.write_all(&chunk) {
+                        drop(rx);
+                        stop(&mut child);
+                        return Err(ExecError::Io(e));
+                    }
+                    total += chunk.len() as u64;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(t) = self.timeout
+                && start.elapsed() > t
+            {
+                drop(rx);
+                stop(&mut child);
+                return Err(ExecError::Timeout(t));
+            }
+        }
+        let _ = t_out.join();
+        let status = child.wait()?;
+        let stderr = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
+        let code = status.code().unwrap_or(-1);
+        if let Site::Ssh(host) = self.site {
+            match code {
+                127 => return Err(ExecError::NotFound(format!("{} on {host}", self.bin()))),
+                255 => {
+                    let why = stderr.trim();
+                    return Err(ExecError::Unreachable(if why.is_empty() {
+                        format!("{host}: ssh failed")
+                    } else {
+                        format!("{host}: {why}")
+                    }));
+                }
+                _ => {}
+            }
+        }
+        if code != 0 {
+            return Err(ExecError::Failed {
+                code,
+                stdout: String::new(),
+                stderr,
+            });
+        }
+        Ok(total)
+    }
+
     /// Spawn and stream stdout/stderr lines to `sink`, followed by exactly one `Exit`.
     /// Returns the child's pid. No timeout: streamed commands are user-confirmed actions.
     pub fn stream(
@@ -399,19 +553,28 @@ impl Cmd {
         sink: impl Fn(StreamMsg) + Send + Sync + 'static,
     ) -> Result<u32, ExecError> {
         self.check()?;
+        let (tty, held_open) = self.streamed();
         let mut child = self
-            .command_tty(
-                if matches!(self.site, Site::Ssh(_)) && self.input.is_none() {
-                    Tty::Forced
-                } else {
-                    Tty::No
-                },
-            )
-            .stdin(self.stdin())
+            .command_tty(tty)
+            .stdin(if held_open {
+                Stdio::piped()
+            } else {
+                self.stdin()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        self.feed(&mut child);
+        // Written when the command says it's ready (if anything is); its stdin stays open
+        // until it exits.
+        let held = Arc::new(Mutex::new(None));
+        let mut ready = None;
+        if held_open {
+            *held.lock().expect("stdin") = child.stdin.take();
+            ready = self.ready.clone().zip(self.input.clone());
+        } else {
+            self.feed(&mut child);
+        }
+        let ready = Arc::new(Mutex::new(ready));
         let pid = child.id();
         let sink = Arc::new(sink);
         let readers: Vec<_> = [
@@ -427,12 +590,25 @@ impl Cmd {
         .into_iter()
         .map(|(is_err, r)| {
             let sink = Arc::clone(&sink);
+            let (held, ready) = (Arc::clone(&held), Arc::clone(&ready));
             thread::spawn(move || {
                 for chunk in BufReader::new(r).split(b'\n') {
                     let Ok(chunk) = chunk else { break };
+                    let text = clean_line(&String::from_utf8_lossy(&chunk));
+                    let mut waiting = ready.lock().expect("ready");
+                    if waiting.as_ref().is_some_and(|(m, _)| *m == text.trim()) {
+                        use std::io::Write;
+                        if let (Some((_, input)), Some(w)) =
+                            (waiting.take(), held.lock().expect("stdin").as_mut())
+                        {
+                            let _ = w.write_all(&input.0).and_then(|_| w.flush());
+                        }
+                        continue;
+                    }
+                    drop(waiting);
                     sink(StreamMsg::Line {
                         stderr: is_err,
-                        text: clean_line(&String::from_utf8_lossy(&chunk)),
+                        text,
                     });
                 }
             })
@@ -444,6 +620,7 @@ impl Cmd {
                 let _ = r.join();
             }
             let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+            drop(held);
             sink(StreamMsg::Exit {
                 code,
                 elapsed: start.elapsed(),
@@ -653,6 +830,75 @@ mod tests {
         assert!(c.detach().is_err());
     }
 
+    /// The whole local command line of a streamed command.
+    fn stream_argv(c: &Cmd) -> (Vec<String>, bool) {
+        let (tty, held) = c.streamed();
+        let cmd = c.command_tty(tty);
+        let argv = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        (argv, held)
+    }
+
+    /// A router's dropbear hangs up `ssh -tt` when stdin is at its end: such a host's
+    /// streamed commands keep a stdin pipe open. Everything else is as it was.
+    #[test]
+    fn a_streamed_ssh_command_can_hold_its_stdin_open() {
+        let plain = Cmd::ssh("myserver", "sh").args(["-c", "sleep 5"]);
+        let (argv, held) = stream_argv(&plain);
+        assert!(!held, "the default: stdin is /dev/null");
+        let tail = &argv[argv.len() - 4..];
+        assert_eq!(
+            tail,
+            ["-tt", "--", "myserver", "env LC_ALL=C sh -c 'sleep 5'"]
+        );
+        assert!(argv.contains(&"ControlPath=none".to_string()));
+        // Held open: the same command line, to the letter.
+        let (held_argv, held) = stream_argv(&plain.clone().hold_stdin());
+        assert!(held);
+        assert_eq!(held_argv, argv);
+        // Captured commands don't differ at all, and still share the connection.
+        let args = |c: &Cmd| -> Vec<String> {
+            c.command()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(args(&plain.clone().hold_stdin()), args(&plain));
+        assert!(!args(&plain).contains(&"-tt".to_string()));
+        // What's written at once goes without a terminal, as ever; what waits for its
+        // marker already held its stdin.
+        let fed = plain.clone().hold_stdin().input("x\n");
+        assert_eq!(fed.streamed(), (Tty::No, false));
+        let waits = plain.clone().input_after("@@ready", "x\n");
+        assert_eq!(waits.streamed(), (Tty::Forced, true));
+        // Off ssh nothing is held.
+        assert_eq!(Cmd::local("sh").hold_stdin().streamed(), (Tty::No, false));
+    }
+
+    /// A held stdin is open, with nothing on it, until the command ends: what reads it
+    /// waits (it sees no end of input), and stopping the command from here ends the stream.
+    #[test]
+    fn a_held_stdin_stays_open_until_the_command_ends() {
+        let c = Cmd::local("sh")
+            .args(["-c", "echo out; exec cat"])
+            .input_after("@@never", "");
+        assert_eq!(c.streamed(), (Tty::No, true));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        let pid = c
+            .stream(move |m| tx.lock().unwrap().send(m).unwrap())
+            .unwrap();
+        let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(first, StreamMsg::Line { ref text, .. } if text == "out"));
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        let pid = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+        let last = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(last, StreamMsg::Exit { .. }));
+    }
+
     #[test]
     fn missing_binary_is_not_found() {
         let e = Cmd::local("definitely-not-a-binary-xyz")
@@ -682,6 +928,50 @@ mod tests {
             .run()
             .unwrap_err();
         assert!(matches!(e, ExecError::Timeout(_)));
+    }
+
+    #[test]
+    fn bytes_go_through_as_they_are() {
+        // Not UTF-8, with a NUL: what `output` would mangle.
+        let mut got = Vec::new();
+        let n = Cmd::local("printf")
+            .arg("\\377\\000\\201ok")
+            .bytes_to(&mut got)
+            .unwrap();
+        assert_eq!(got, [0xff, 0x00, 0x81, b'o', b'k']);
+        assert_eq!(n, 5);
+        // A failure carries stderr, and what arrived before it was still handed over.
+        let mut got = Vec::new();
+        let e = Cmd::local("sh")
+            .args(["-c", "printf part; echo broke >&2; exit 3"])
+            .bytes_to(&mut got)
+            .unwrap_err();
+        assert!(
+            matches!(&e, ExecError::Failed { code: 3, stderr, .. } if stderr.trim() == "broke"),
+            "{e:?}"
+        );
+        assert_eq!(got, b"part");
+        // A sink that can't take it ends the command.
+        struct Full;
+        impl io::Write for Full {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let e = Cmd::local("sh")
+            .args(["-c", "echo x; sleep 30"])
+            .bytes_to(&mut Full)
+            .unwrap_err();
+        assert!(matches!(e, ExecError::Io(_)), "{e:?}");
+        let e = Cmd::local("sleep")
+            .arg("30")
+            .timeout(Some(Duration::from_millis(100)))
+            .bytes_to(&mut Vec::new())
+            .unwrap_err();
+        assert!(matches!(e, ExecError::Timeout(_)), "{e:?}");
     }
 
     #[test]

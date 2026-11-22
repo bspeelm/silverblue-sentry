@@ -250,10 +250,22 @@ pub fn due(t: &Task, log: &[LogEntry], audited: Option<Timestamp>, now: Timestam
             (Some(l), Some(a)) => l < a,
             (Some(_), None) => false,
         },
-        Some(every) => {
-            last.is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64)
-        }
+        Some(every) => last
+            .or(counted_from(t, log))
+            .is_none_or(|l| now.as_second() - l.as_second() >= every.0.as_secs() as i64),
     }
+}
+
+/// A recurring task that was never done. One from tasks.toml is due: someone (you, a review)
+/// put it there to be done. A derived one (a cadence, a job's) was never asked for, so its
+/// interval counts from when the log here began; with no log at all it's due too.
+pub fn counted_from(t: &Task, log: &[LogEntry]) -> Option<Timestamp> {
+    if t.source == Source::File {
+        return None;
+    }
+    log.iter()
+        .filter_map(|e| e.head.started.or(e.head.ended))
+        .min()
 }
 
 /// Why it's due again before its time, while it hasn't been done since.
@@ -264,6 +276,34 @@ pub fn again(t: &Task, last: Option<Timestamp>) -> Option<&Again> {
 /// What a task waits for (`after`) has happened: the workflow ran well since it was added,
 /// or the wait is over. A task with no `added` time doesn't wait.
 pub fn waited(t: &Task, log: &[LogEntry], now: Timestamp) -> bool {
+    waited_in(t, log, now, &|scope| crate::maint::log::list(scope))
+}
+
+/// `after = "task:<target id>/<task id>"`: the scope of that target's records (`""` this
+/// machine, a server's name, `net:<name>`) and the task's id.
+pub fn after_task(after: &str) -> Option<(String, &str)> {
+    let (target, id) = after.strip_prefix("task:")?.rsplit_once('/')?;
+    let scope = match target {
+        "" | "local" => "",
+        t if t.starts_with("net:") && t.len() > 4 => t,
+        t => t.strip_prefix("srv:").filter(|n| !n.is_empty())?,
+    };
+    (!id.is_empty()).then(|| (scope.to_string(), id))
+}
+
+/// `waited`, with another target's log read through `other` (by its scope): a task that
+/// is `after = "task:<target id>/<task id>"` isn't due until that task is logged done
+/// (an entry tagged `task:<id>`) under that target's scope, whenever that was.
+pub fn waited_in(
+    t: &Task,
+    log: &[LogEntry],
+    now: Timestamp,
+    other: &dyn Fn(&str) -> Vec<LogEntry>,
+) -> bool {
+    if let Some((scope, id)) = t.after.as_deref().and_then(after_task) {
+        let tag = format!("task:{id}");
+        return other(&scope).iter().any(|e| e.head.tags.contains(&tag));
+    }
     let (Some(after), Some(added)) = (&t.after, t.added) else {
         return true;
     };
@@ -340,7 +380,14 @@ pub fn recs(
                     t.why.trim(),
                     l.strftime("%Y-%m-%d")
                 ),
-                (Some(d), None) => format!("{} (every {d}; not done yet)", t.why.trim()),
+                (Some(d), None) => match counted_from(t, log) {
+                    Some(f) => format!(
+                        "{} (every {d}; not done yet, tracked since {})",
+                        t.why.trim(),
+                        f.strftime("%Y-%m-%d")
+                    ),
+                    None => format!("{} (every {d}; not done yet)", t.why.trim()),
+                },
                 (None, _) => t.why.trim().to_string(),
             };
             TaskRec {
@@ -707,6 +754,25 @@ mod tests {
         assert!(!due(&clean, &log, None, now));
         // Never done: due. Done 70 days ago with a 30-day cadence: due, and soon.
         assert!(due(&clean, &[], None, now));
+        // Never done, but nobody asked for it (a job's own cadence): its 30 days count from
+        // when the log here began. One you put in tasks.toml is due at once.
+        let began = |at| vec![job_run("update-check", true, at)];
+        assert!(!due(&clean, &began("2026-10-23T00:00:00Z"), None, now));
+        let long = began("2026-09-20T00:00:00Z");
+        assert!(due(&clean, &long, None, now));
+        let r = recs(std::slice::from_ref(&clean), &long, None, now);
+        assert!(
+            r[0].why
+                .ends_with("(every 30d; not done yet, tracked since 2026-09-20)"),
+            "{}",
+            r[0].why
+        );
+        assert_eq!(r[0].level, clean.level, "never done isn't late");
+        let mine = Task {
+            source: Source::File,
+            ..clean.clone()
+        };
+        assert!(due(&mine, &began("2026-10-23T00:00:00Z"), None, now));
         let old = vec![job_run("cleanup-ostree", true, "2026-08-24T00:00:00Z")];
         let r = recs(std::slice::from_ref(&clean), &old, None, now);
         assert_eq!(r[0].level, Level::Soon);
@@ -756,5 +822,53 @@ mod tests {
                 .unwrap();
         tag_run(&mut failed, &tasks);
         assert!(failed.head.tags.is_empty());
+    }
+
+    #[test]
+    fn a_task_can_wait_for_a_task_of_another_target() {
+        assert_eq!(
+            after_task("task:srv:myserver/open-api"),
+            Some(("myserver".into(), "open-api"))
+        );
+        assert_eq!(
+            after_task("task:net:home/bouncer"),
+            Some(("net:home".into(), "bouncer"))
+        );
+        assert_eq!(after_task("task:local/x"), Some((String::new(), "x")));
+        assert_eq!(after_task("task:/x"), Some((String::new(), "x")));
+        for bad in [
+            "task:srv:/x",
+            "task:myserver/x",
+            "task:srv:myserver/",
+            "quick-update",
+            "7d",
+            "task:x",
+        ] {
+            assert_eq!(after_task(bad), None, "{bad}");
+        }
+        let now = ts("2026-11-21T12:00:00Z");
+        let mut t: Task = toml::from_str("id = \"bouncer\"\ntitle = \"Install the bouncer\"\nlevel = \"routine\"\ndo = \"by-hand\"").unwrap();
+        t.after = Some("task:srv:myserver/open-api".into());
+        let done = |id: &str| {
+            let mut e = LogEntry::task("myserver", id, id, None);
+            e.head.tags = vec![format!("task:{id}")];
+            e
+        };
+        for (scope_has, want) in [
+            // Nothing logged there yet: it waits.
+            (vec![], false),
+            // Another task done there: still waits.
+            (vec![done("other")], false),
+            // That task logged done under that target's scope: due.
+            (vec![done("other"), done("open-api")], true),
+        ] {
+            let other = |scope: &str| {
+                assert_eq!(scope, "myserver");
+                scope_has.clone()
+            };
+            assert_eq!(waited_in(&t, &[], now, &other), want);
+        }
+        // This target's own log doesn't count for it.
+        assert!(!waited_in(&t, &[done("open-api")], now, &|_| Vec::new()));
     }
 }

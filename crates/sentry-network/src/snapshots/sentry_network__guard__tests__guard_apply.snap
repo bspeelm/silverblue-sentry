@@ -1,0 +1,25 @@
+---
+source: crates/sentry-network/src/guard.rs
+expression: "apply_script(&c, t)"
+---
+D=/tmp/sentry-guard-0123456789abcdef
+[ -e "$D/armed" ] || { echo 'sentry-guard: not armed'; exit 9; }
+fail() { echo "sentry-guard: $1"; exit 3; }
+uci set dhcp.lan.leasetime=6h || fail 'line 1 failed'
+uci add firewall rule || fail 'line 2 failed'
+uci set 'firewall.@rule[-1].name=its new' || fail 'line 3 failed'
+echo @@changes
+for c in dhcp firewall; do uci -q changes $c; done
+echo @@commit
+for c in dhcp firewall; do uci commit $c || fail "commit $c failed"; done
+cat > "$D/reload.sh" <<'SENTRY_EOF'
+#!/bin/sh
+D=/tmp/sentry-guard-0123456789abcdef
+rc=0
+: > "$D/reload.log"
+/etc/init.d/firewall reload >> "$D/reload.log" 2>&1 || rc=1
+/etc/init.d/dnsmasq reload >> "$D/reload.log" 2>&1 || rc=1
+echo $rc > "$D/reloaded"
+SENTRY_EOF
+setsid sh "$D/reload.sh" </dev/null >/dev/null 2>&1 &
+echo @@launched

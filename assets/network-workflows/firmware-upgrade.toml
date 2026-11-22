@@ -1,0 +1,66 @@
+name = "firmware-upgrade"
+description = "Upgrade the router's firmware with owut, after a config backup, and check it came back"
+# A DRAFT: this has never been run end to end on a router. sentry refuses to start it until
+# you have read the steps and deleted the next line.
+draft = true
+# `owut` (OpenWrt's attended-sysupgrade client) asks sysupgrade.openwrt.org for an image
+# with the packages the router has, downloads and verifies it, and flashes it keeping the
+# config; the router then restarts. The first two steps run on this machine; the owut steps
+# run on the router; `firmware flash` runs here, holds sentry's sysupgrade lock for as long
+# as owut works, and waits for the router to come back. Auto mode never confirms the flash.
+# Built-in: network.
+
+[[steps]]
+id = "check"
+title = "Is there a newer release? (asked from this machine)"
+run = "sentry-network firmware check"
+gate = "auto"
+
+[[steps]]
+id = "backup"
+title = "Back the config up first (encrypted, on this machine)"
+run = "sentry-network backup"
+gate = "auto"
+on_fail = "manual"
+manual = """
+No backup was made, so nothing is flashed. The log (L) says why. Retry (r) once it can be
+made; don't skip this one."""
+
+[[steps]]
+id = "owut-check"
+title = "owut check: what the router would be upgraded to (it asks the upgrade server)"
+run = "owut check"
+gate = "confirm"
+
+[[steps]]
+id = "download"
+title = "owut download: fetch the image and verify it"
+run = "owut download"
+gate = "confirm"
+on_fail = "manual"
+manual = """
+The image wasn't downloaded or didn't verify: nothing was flashed. The log (L) says why
+(often the upgrade server is still building it: retry (r) in a few minutes)."""
+
+[[steps]]
+id = "flash"
+title = "Flash it: the router restarts, and everything on the network drops for a few minutes"
+run = "sentry-network firmware flash"
+gate = "confirm"
+risky = true
+on_fail = "manual"
+manual = """
+The router didn't come back within ten minutes, or came back on the old release. Check it
+by hand (its LEDs, a cable to a LAN port, http://<its address>). If it runs the old release,
+nothing was flashed: abandon (a). If it doesn't answer at all, see OpenWrt's failsafe mode;
+the config backup made above restores it (`sentry-network backup decrypt`)."""
+
+[[steps]]
+id = "after"
+title = "The new release runs, the services are up, the clients are back, the audit is clean"
+run = "sentry-network firmware after"
+gate = "auto"
+on_fail = "manual"
+manual = """
+The router is back but something isn't as it should be: the log (L) says what. Retry (r)
+checks again (clients take a minute or two to return)."""

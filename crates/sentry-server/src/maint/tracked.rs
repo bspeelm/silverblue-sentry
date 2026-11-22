@@ -30,10 +30,7 @@ pub struct Tracked {
 }
 
 pub fn path(server: &str) -> PathBuf {
-    paths::config_dir()
-        .join("servers")
-        .join(server)
-        .join("items.toml")
+    sentry_core::maint::root(server).join("items.toml")
 }
 
 pub fn load(server: &str) -> Tracked {

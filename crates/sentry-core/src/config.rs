@@ -24,6 +24,35 @@ pub struct Config {
     pub retention: Retention,
     pub maintenance: Maintenance,
     pub review: Review,
+    pub targets: Targets,
+}
+
+/// Which targets the window opens (`[targets]`): this machine is `local`, a server
+/// `srv:<name>`. Left out: all of them, this machine first.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Targets {
+    /// The targets shown, in the strip's order.
+    pub show: Option<Vec<String>>,
+}
+
+impl Targets {
+    /// `all` (every target there is, as ids: `local`, `srv:<name>`) as `show` orders and
+    /// limits it, and the entries of `show` that name nothing.
+    pub fn pick(&self, all: &[String]) -> (Vec<String>, Vec<String>) {
+        let Some(show) = &self.show else {
+            return (all.to_vec(), Vec::new());
+        };
+        let (mut picked, mut unknown) = (Vec::new(), Vec::new());
+        for s in show {
+            if !all.contains(s) {
+                unknown.push(s.clone());
+            } else if !picked.contains(s) {
+                picked.push(s.clone());
+            }
+        }
+        (picked, unknown)
+    }
 }
 
 /// The reviews sentry starts by itself (both programs). Each is one Claude turn in the
@@ -126,6 +155,11 @@ pub struct Audit {
     pub retention_months: u32,
     pub stale_container_days: u32,
     pub cache_warn_mb: u64,
+    /// The security audit's check from outside: a command of yours, run on this machine,
+    /// given `{address}` (your uplink's public address) and `{ports}` (comma separated),
+    /// that prints the ports it found open, one per line. None: nothing is checked from
+    /// outside (the README has examples: a host elsewhere over ssh, a VPN's namespace).
+    pub outside: Option<String>,
 }
 
 impl Default for Audit {
@@ -134,6 +168,7 @@ impl Default for Audit {
             retention_months: 12,
             stale_container_days: 30,
             cache_warn_mb: 2048,
+            outside: None,
         }
     }
 }
@@ -363,6 +398,23 @@ reports = 100
 [maintenance]
 notes = []
 "#;
+
+    #[test]
+    fn targets_are_all_unless_show_orders_or_hides_them() {
+        let all: Vec<String> = ["local", "srv:a", "srv:b"].map(String::from).to_vec();
+        let (cfg, w) = Config::parse("").unwrap();
+        assert!(w.is_empty());
+        assert_eq!(cfg.targets.pick(&all), (all.clone(), vec![]));
+        let (cfg, _) =
+            Config::parse("[targets]\nshow = [\"srv:b\", \"local\", \"srv:x\"]").unwrap();
+        assert_eq!(
+            cfg.targets.pick(&all),
+            (
+                vec!["srv:b".to_string(), "local".to_string()],
+                vec!["srv:x".to_string()]
+            )
+        );
+    }
 
     #[test]
     fn spec_example_parses_without_warnings() {

@@ -92,6 +92,13 @@ pub struct Step {
     /// `false` suppresses the automatic rpm-ostree dry-run sibling.
     #[serde(default)]
     pub dry_run: Option<bool>,
+    /// Hard to undo: auto mode never confirms it (it stops and asks, as with auto off).
+    #[serde(default)]
+    pub risky: bool,
+    /// It only stages a system upgrade (`rpm-ostree upgrade`, no reboot): the one command
+    /// of that kind auto mode may confirm, and only here, where the workflow says so.
+    #[serde(default)]
+    pub stage: bool,
 }
 
 impl Step {
@@ -304,6 +311,12 @@ pub fn lint_with(w: &Workflow, rules: &LintRules) -> Vec<Issue> {
         }
         if (s.kind == Kind::Manual || s.gate == Gate::Manual) && s.manual.is_none() {
             err(format!("{at}: manual steps need `manual` instructions"));
+        }
+        if s.stage && !s.run.as_deref().is_some_and(crate::auto::stages_only) {
+            err(format!(
+                "{at}: stage = true is only for a step that stages an upgrade \
+                 (`rpm-ostree upgrade`, no reboot)"
+            ));
         }
         if s.on_fail == OnFail::Manual && s.manual.is_none() {
             err(format!(

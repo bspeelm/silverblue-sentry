@@ -38,11 +38,14 @@ optional = true
 
 # routine_update: an update is waiting and keeps the kernel. With nothing to upgrade, both
 # routine steps are skipped (as is the kernel ritual).
+# `stage = true`: the step only stages the upgrade (nothing changes until a reboot), so auto
+# mode may confirm it. Reboots are never auto's.
 [[steps]]
 id = "upgrade-routine"
 title = "Stage upgrade (no kernel change)"
 run = "rpm-ostree upgrade"
 gate = "confirm"
+stage = true
 when = "routine_update"
 
 [[steps]]
@@ -65,6 +68,7 @@ id = "upgrade-ritual"
 title = "Stage upgrade, dropping {{ old_kmod }}"
 run = "rpm-ostree upgrade --uninstall {{ old_kmod }}"
 gate = "confirm"
+stage = true
 when = "kernel_changed"
 on_fail = "manual"
 manual = """

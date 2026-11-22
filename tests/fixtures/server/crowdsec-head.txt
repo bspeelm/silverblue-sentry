@@ -1,0 +1,17 @@
+@@now
+1793016000
+@@unit
+LoadState=loaded
+ActiveState=active
+@@version
+version: v1.6.4-debian-pragmatic-amd64
+Codename: alphaga
+BuildDate: 2026-01-12_10:00:00
+GoVersion: 1.22.6
+Platform: linux
+libre2: C++
+User-Agent: crowdsec/v1.6.4-debian-pragmatic-amd64-linux
+Constraint_parser: >= 1.0, <= 3.0
+Constraint_scenario: >= 1.0, <= 3.0
+Constraint_api: v1
+Constraint_acquis: >= 1.0, < 2.0

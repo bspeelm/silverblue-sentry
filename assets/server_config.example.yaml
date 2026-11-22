@@ -25,6 +25,12 @@ servers:
       - docker stats
       - smartctl
       - fail2ban-client status
+      # Only on a server that runs CrowdSec (sentry reads it, never changes it):
+      # - cscli decisions list
+      # - cscli alerts list
+      # - cscli hub list
+      # - cscli bouncers list
+      # - cscli metrics
       - journalctl
       - ss -tulpn
 

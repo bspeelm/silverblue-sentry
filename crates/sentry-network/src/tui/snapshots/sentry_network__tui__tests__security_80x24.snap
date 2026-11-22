@@ -1,0 +1,28 @@
+---
+source: crates/sentry-network/src/tui/tests.rs
+expression: s
+---
+ sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security 3   6 Maintenance   0 Upgrade
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Ingress · from outside ──────────────────────────────────────────────────────┐
+│ rejected   21/min                             █ 31.2k since 1d ago           │
+│ forward                port       to                     new/min  total live │
+│ web                tcp 443        203.0.113.93:443           2.0   5212    2 │
+│ game               udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │
+│ ssh logins 2 from here · 2 other · 3 refused · in the last 2h 50m            │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Egress · 6 devices · 11 live flows · new connections out 180/min, all zones ─┐
+│ device               zone  flows dests top ports                  ↑        ↓ │
+│ nas                  lan       4     3 443×3 993              29.0K     411K │
+│ ! 192.0.2.77         lan       2     2 23×2                    1.1K     1.4K │
+│ desk                 lan       2     2 22 u443                45.9K     606K │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Segmentation · nothing crosses what the firewall keeps apart ────────────────┐
+│ lan→dmz     allowed                     1 live flow                          │
+│ dmz→lan     rejected                    none now                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+ counters since 1d ago · log window 2h 50m · 212 of 16384 connections tracked, 2
+────────────────────────────────────────────────────────────────────────────────
+ j/k  select   Enter  its flows   s  sort   A  ask Claude   ?  help   q  quit

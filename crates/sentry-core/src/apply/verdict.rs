@@ -1,5 +1,6 @@
 //! Claude's verdict after sentry has carried a plan out: one ```` ```sentry-verdict ```` TOML
-//! block, `status = "done" | "more" | "failed"`, a one-line `summary`, and `next` (what the
+//! block, `status = "done" | "more" | "failed"` (or, before any plan, `"wait"`: it shouldn't be
+//! done now, with `again` for when to look again), a one-line `summary`, and `next` (what the
 //! user does later, e.g. reboot to confirm: words, never commands). `more` comes with a new
 //! sentry-apply block for what's left. Something that can only be confirmed later is a
 //! `[follow_up]`: sentry adds it to Maintenance as a one-time task, due then.
@@ -16,6 +17,8 @@ pub enum Status {
     More,
     /// It didn't work, and Claude has no plan that would.
     Failed,
+    /// It shouldn't be done now: nothing changes, and the row is put off.
+    Wait,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +27,8 @@ pub struct Verdict {
     pub summary: String,
     pub next: String,
     pub follow_up: Option<FollowUp>,
+    /// With `wait`: when to look again (`30d`), if Claude said.
+    pub again: Option<String>,
 }
 
 /// A check for later: what to confirm, how (read-only), and when it's due (`after`: a sentry
@@ -43,6 +48,7 @@ struct Raw {
     #[serde(default)]
     next: String,
     follow_up: Option<RawFollow>,
+    again: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -65,12 +71,17 @@ pub fn take(answer: &str) -> (String, Option<Result<Verdict, String>>) {
                 "done" => Status::Done,
                 "more" => Status::More,
                 "failed" => Status::Failed,
+                "wait" => Status::Wait,
                 s => return Err(format!("status is \"{s}\": done, more or failed")),
             };
             Ok(Verdict {
                 status,
                 summary: r.summary.trim().to_string(),
                 next: r.next.trim().to_string(),
+                again: r
+                    .again
+                    .map(|a| a.trim().to_string())
+                    .filter(|a| !a.is_empty()),
                 follow_up: r
                     .follow_up
                     .filter(|f| !f.title.trim().is_empty())
@@ -104,8 +115,14 @@ mod tests {
                 summary: "remount-fs no longer fails".into(),
                 next: "reboot when it suits you".into(),
                 follow_up: None,
+                again: None,
             }
         );
+        let (_, v) = take(
+            "```sentry-verdict\nstatus = \"wait\"\nsummary = \"1.5.3 fixes it\"\nagain = \"14d\"\n```",
+        );
+        let v = v.unwrap().unwrap();
+        assert_eq!((v.status, v.again.as_deref()), (Status::Wait, Some("14d")));
         let (_, v) = take(
             "```sentry-verdict\nstatus = \"done\"\nsummary = \"s\"\n[follow_up]\n\
              title = \"Confirm it\"\nsteps = \"journalctl -g x\"\nafter = \"quick-update\"\n```",

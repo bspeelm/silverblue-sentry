@@ -1,0 +1,68 @@
+{
+ "appsec-configs": [],
+ "appsec-rules": [],
+ "collections": [
+  {
+   "name": "example/base",
+   "local_version": "0.6",
+   "local_path": "/etc/crowdsec/collections/base.yaml",
+   "description": "core parsers and scenarios",
+   "utf8_status": "✔️  enabled",
+   "status": "enabled"
+  },
+  {
+   "name": "example/linux",
+   "local_version": "0.2",
+   "local_path": "/etc/crowdsec/collections/linux.yaml",
+   "description": "core linux support",
+   "utf8_status": "⚠️  enabled,update-available",
+   "status": "enabled,update-available"
+  }
+ ],
+ "contexts": [],
+ "parsers": [
+  {
+   "name": "example/sshd-logs",
+   "local_version": "2.3",
+   "local_path": "/etc/crowdsec/parsers/s01-parse/sshd-logs.yaml",
+   "description": "Parse openSSH logs",
+   "utf8_status": "⚠️  enabled,tainted",
+   "status": "enabled,tainted"
+  },
+  {
+   "name": "example/syslog-logs",
+   "local_version": "0.8",
+   "local_path": "/etc/crowdsec/parsers/s00-raw/syslog-logs.yaml",
+   "description": "",
+   "utf8_status": "✔️  enabled",
+   "status": "enabled"
+  },
+  {
+   "name": "my-own-parser.yaml",
+   "local_version": "",
+   "local_path": "/etc/crowdsec/parsers/s01-parse/my-own-parser.yaml",
+   "description": "",
+   "utf8_status": "🏠  enabled,local",
+   "status": "enabled,local"
+  }
+ ],
+ "postoverflows": [],
+ "scenarios": [
+  {
+   "name": "example/http-probing",
+   "local_version": "0.4",
+   "local_path": "/etc/crowdsec/scenarios/http-probing.yaml",
+   "description": "Detect site scanning/probing from a single ip",
+   "utf8_status": "✔️  enabled",
+   "status": "enabled"
+  },
+  {
+   "name": "example/ssh-bf",
+   "local_version": "0.3",
+   "local_path": "/etc/crowdsec/scenarios/ssh-bf.yaml",
+   "description": "Detect ssh bruteforce",
+   "utf8_status": "⚠️  enabled,update-available",
+   "status": "enabled,update-available"
+  }
+ ]
+}

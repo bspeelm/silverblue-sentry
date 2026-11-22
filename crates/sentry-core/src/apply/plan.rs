@@ -19,6 +19,43 @@ pub struct Plan {
 pub struct Step {
     pub title: String,
     pub kind: Kind,
+    /// The target it runs on (its id: `""` this machine, `srv:<name>`, `net:<name>`).
+    /// None: where the session started.
+    pub on: Option<String>,
+    /// A run or check step: the last line it prints on stdout, trimmed, is kept under
+    /// this name for the session, and later steps on any target use it as `{{name}}`.
+    pub capture: Option<String>,
+    /// The captured or asked value is never shown or written down: a tag stands for it.
+    pub secret: bool,
+}
+
+impl Step {
+    pub fn new(title: impl Into<String>, kind: Kind) -> Self {
+        Self {
+            title: title.into(),
+            kind,
+            on: None,
+            capture: None,
+            secret: false,
+        }
+    }
+
+    /// The name of the value this step gives the session (a capture, or what it asks for).
+    pub fn gives(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Ask { name, .. } => Some(name),
+            _ => self.capture.as_deref(),
+        }
+    }
+
+    /// Every text of the step a `{{name}}` may stand in.
+    pub fn texts(&self) -> Vec<&str> {
+        match &self.kind {
+            Kind::Run(c) | Kind::Check(c) => vec![c],
+            Kind::Workflow { vars, .. } => vars.values().map(String::as_str).collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,7 +66,7 @@ pub enum Kind {
         old: String,
         new: String,
     },
-    /// A command that changes something (sudo: the terminal is handed over).
+    /// A command that changes something (sudo: with the password, asked once).
     Run(String),
     /// A command that must exit 0, or the plan stops.
     Check(String),
@@ -39,6 +76,9 @@ pub enum Kind {
         name: String,
         vars: std::collections::BTreeMap<String, String>,
     },
+    /// A value only the user has (a password from their head or a manager): asked for in
+    /// the session's own input line when the plan reaches it, kept as `name`.
+    Ask { name: String, prompt: String },
 }
 
 impl Kind {
@@ -48,6 +88,7 @@ impl Kind {
             Kind::Run(_) => "run",
             Kind::Check(_) => "check",
             Kind::Workflow { .. } => "workflow",
+            Kind::Ask { .. } => "ask",
         }
     }
 
@@ -57,8 +98,86 @@ impl Kind {
             Kind::Edit { file, .. } => file,
             Kind::Run(c) | Kind::Check(c) => c,
             Kind::Workflow { name, .. } => name,
+            Kind::Ask { name, .. } => name,
         }
     }
+}
+
+/// The `{{name}}`s in `text`, in order.
+pub fn placeholders(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("{{") {
+        let after = &rest[i + 2..];
+        let Some(j) = after.find("}}") else { break };
+        let name = &after[..j];
+        if value_name(name) {
+            out.push(name);
+            rest = &after[j + 2..];
+        } else {
+            rest = after;
+        }
+    }
+    out
+}
+
+/// A value's name: lowercase letters, digits and `_`.
+pub fn value_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 32
+        && n.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A value that means the same wherever a shell reads it.
+fn plain_value(v: &str) -> bool {
+    v.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._:/+=@%,-".contains(c))
+}
+
+/// Why a value can't be kept: it must be one line, without a single quote (it is put
+/// inside single quotes) or control characters.
+pub fn value_problem(v: &str) -> Option<&'static str> {
+    if v.is_empty() {
+        Some("it is empty")
+    } else if v.chars().any(|c| c.is_control()) {
+        Some("it has a control character or more than one line")
+    } else if v.contains('\'') {
+        Some("it has a single quote in it")
+    } else {
+        None
+    }
+}
+
+/// `text` with each `{{name}}` replaced by its value. A value that isn't plain (spaces,
+/// shell characters) only goes inside single quotes. Err: why not, for Claude.
+pub fn fill(text: &str, value: &dyn Fn(&str) -> Option<String>) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut quoted = false;
+    let mut rest = text;
+    while let Some(i) = rest.find("{{") {
+        let after = &rest[i + 2..];
+        let name = after.find("}}").map(|j| &after[..j]);
+        let Some(name) = name.filter(|n| value_name(n)) else {
+            quoted ^= rest[..i + 2].matches('\'').count() % 2 == 1;
+            out.push_str(&rest[..i + 2]);
+            rest = after;
+            continue;
+        };
+        quoted ^= rest[..i].matches('\'').count() % 2 == 1;
+        out.push_str(&rest[..i]);
+        let v = value(name)
+            .ok_or_else(|| format!("no value {{{{{name}}}}} has been captured or asked for yet"))?;
+        if !quoted && !plain_value(&v) {
+            return Err(format!(
+                "{{{{{name}}}}} must stand inside single quotes ('…{{{{{name}}}}}…'): its value isn't a plain word"
+            ));
+        }
+        out.push_str(&v);
+        rest = &after[name.len() + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -84,6 +203,12 @@ struct RawStep {
     workflow: Option<String>,
     /// A workflow step's values (strings, or numbers and booleans written as they are).
     vars: Option<std::collections::BTreeMap<String, toml::Value>>,
+    ask: Option<String>,
+    prompt: Option<String>,
+    on: Option<String>,
+    capture: Option<String>,
+    #[serde(default)]
+    secret: bool,
 }
 
 /// The answer without its plan block, and the plan (Err: the block is there but wrong, and
@@ -108,14 +233,28 @@ fn parse(block: &str) -> Result<Plan, String> {
             s.run.is_some(),
             s.check.is_some(),
             s.workflow.is_some(),
+            s.ask.is_some(),
         ]
         .iter()
         .filter(|x| **x)
         .count();
         if kinds != 1 {
             return Err(format!(
-                "step {n} needs exactly one of edit, run, check or workflow"
+                "step {n} needs exactly one of edit, run, check, workflow or ask"
             ));
+        }
+        if let Some(c) = &s.capture {
+            if s.run.is_none() && s.check.is_none() {
+                return Err(format!("step {n}: only a run or check step captures"));
+            }
+            if !value_name(c) {
+                return Err(format!(
+                    "step {n}: capture = \"{c}\" isn't a name (lowercase letters, digits, _)"
+                ));
+            }
+        }
+        if s.secret && s.capture.is_none() && s.ask.is_none() {
+            return Err(format!("step {n}: secret = true goes with capture or ask"));
         }
         let kind = if let Some(file) = s.edit {
             match (s.old, s.new) {
@@ -126,6 +265,19 @@ fn parse(block: &str) -> Result<Plan, String> {
             Kind::Run(c)
         } else if let Some(c) = s.check {
             Kind::Check(c)
+        } else if let Some(name) = s.ask {
+            if !value_name(&name) {
+                return Err(format!(
+                    "step {n}: ask = \"{name}\" isn't a name (lowercase letters, digits, _)"
+                ));
+            }
+            match s.prompt.filter(|p| !p.trim().is_empty()) {
+                Some(p) => Kind::Ask {
+                    name,
+                    prompt: p.lines().next().unwrap_or("").trim().to_string(),
+                },
+                None => return Err(format!("step {n} (ask) needs a one-line prompt")),
+            }
         } else {
             Kind::Workflow {
                 name: s.workflow.unwrap_or_default(),
@@ -150,6 +302,9 @@ fn parse(block: &str) -> Result<Plan, String> {
                 s.title
             },
             kind,
+            on: s.on.map(|o| o.trim().to_string()),
+            capture: s.capture,
+            secret: s.secret,
         });
     }
     Ok(Plan {
@@ -159,7 +314,63 @@ fn parse(block: &str) -> Result<Plan, String> {
     })
 }
 
-/// What stops the plan from being approved: (step index, why).
+/// The plan as the block it came in (what's saved with a plan's document, and read back
+/// by `take` when the plan seeds a session later).
+pub fn to_block(p: &Plan) -> String {
+    let mut t = toml::Table::new();
+    t.insert("summary".into(), p.summary.clone().into());
+    if !p.rollback.trim().is_empty() {
+        t.insert("rollback".into(), p.rollback.clone().into());
+    }
+    let steps: Vec<toml::Value> = p
+        .steps
+        .iter()
+        .map(|s| {
+            let mut st = toml::Table::new();
+            st.insert("title".into(), s.title.clone().into());
+            match &s.kind {
+                Kind::Edit { file, old, new } => {
+                    st.insert("edit".into(), file.clone().into());
+                    st.insert("old".into(), old.clone().into());
+                    st.insert("new".into(), new.clone().into());
+                }
+                Kind::Run(c) => {
+                    st.insert("run".into(), c.clone().into());
+                }
+                Kind::Check(c) => {
+                    st.insert("check".into(), c.clone().into());
+                }
+                Kind::Workflow { name, vars } => {
+                    st.insert("workflow".into(), name.clone().into());
+                    if !vars.is_empty() {
+                        let v: toml::Table = vars
+                            .iter()
+                            .map(|(k, v)| (k.clone(), toml::Value::from(v.clone())))
+                            .collect();
+                        st.insert("vars".into(), v.into());
+                    }
+                }
+                Kind::Ask { name, prompt } => {
+                    st.insert("ask".into(), name.clone().into());
+                    st.insert("prompt".into(), prompt.clone().into());
+                }
+            }
+            if let Some(on) = &s.on {
+                st.insert("on".into(), on.clone().into());
+            }
+            if let Some(c) = &s.capture {
+                st.insert("capture".into(), c.clone().into());
+            }
+            if s.secret {
+                st.insert("secret".into(), true.into());
+            }
+            toml::Value::Table(st)
+        })
+        .collect();
+    t.insert("step".into(), steps.into());
+    format!("{FENCE}\n{}```", toml::to_string(&t).unwrap_or_default())
+}
+
 /// A workflow sentry knows: its name and, when its file reads, its `[vars]` (name, whether
 /// it has a default).
 #[derive(Debug, Clone, PartialEq)]
@@ -283,8 +494,13 @@ pub enum RunState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Edit(usize),
-    Command { idx: usize, cmd: String },
+    Command {
+        idx: usize,
+        cmd: String,
+    },
     StartWorkflow(usize, String, std::collections::BTreeMap<String, String>),
+    /// Ask the user for the step's value.
+    Ask(usize),
     Finished,
 }
 
@@ -326,6 +542,7 @@ impl Run {
                 self.state = RunState::WaitingWorkflow(i);
                 Action::StartWorkflow(i, name.clone(), vars.clone())
             }
+            Kind::Ask { .. } => Action::Ask(i),
         }
     }
 
@@ -361,11 +578,15 @@ impl Run {
             .enumerate()
             .map(|(i, (r, s))| {
                 format!(
-                    "{}. {} {} ({} {}): {}",
+                    "{}. {} {} ({}{} {}): {}",
                     i + 1,
                     if r.ok { "✓" } else { "✗" },
                     s.title,
                     s.kind.word(),
+                    match &s.on {
+                        Some(on) => format!(" on {}", if on.is_empty() { "local" } else { on }),
+                        None => String::new(),
+                    },
                     s.kind.target(),
                     r.note
                 )
@@ -404,6 +625,28 @@ rollback = \"sentry restores the backup\"\n\n[[step]]\ntitle = \"Line 5\"\nedit 
 old = \"\"\"old line\"\"\"\nnew = \"\"\"new line\nwith a fence:\n```\nok\n```\"\"\"\n\n\
 [[step]]\ntitle = \"Check\"\ncheck = \"grep -q new /tmp/x.md\"\n\n[[step]]\nworkflow = \"quick-update\"\n```\n\
 Approve it and sentry does it.";
+
+    #[test]
+    fn a_plan_written_back_reads_the_same() {
+        let (_, plan) = take(ANSWER);
+        let plan = plan.unwrap().unwrap();
+        let block = to_block(&plan);
+        let (body, back) = take(&format!("# Plan: x\n\nWhy.\n\n{block}\n"));
+        assert_eq!(body, "# Plan: x\n\nWhy.");
+        assert_eq!(back.unwrap().unwrap(), plan, "{block}");
+        let wf = Plan {
+            summary: "bump web".into(),
+            rollback: String::new(),
+            steps: vec![Step::new(
+                "Run it",
+                Kind::Workflow {
+                    name: "compose-bump".into(),
+                    vars: [("image".to_string(), "example/web:1.5.2".to_string())].into(),
+                },
+            )],
+        };
+        assert_eq!(take(&to_block(&wf)).1.unwrap().unwrap(), wf);
+    }
 
     #[test]
     fn the_plan_is_taken_out_of_the_answer() {
@@ -465,13 +708,15 @@ Approve it and sentry does it.";
         let f = dir.join(format!("plan-{}.md", std::process::id()));
         std::fs::write(&f, "a\nb\nb\n").unwrap();
         let file = f.display().to_string();
-        let edit = |old: &str| Step {
-            title: "e".into(),
-            kind: Kind::Edit {
-                file: file.clone(),
-                old: old.into(),
-                new: "c".into(),
-            },
+        let edit = |old: &str| {
+            Step::new(
+                "e",
+                Kind::Edit {
+                    file: file.clone(),
+                    old: old.into(),
+                    new: "c".into(),
+                },
+            )
         };
         let p = Plan {
             summary: String::new(),
@@ -480,21 +725,21 @@ Approve it and sentry does it.";
                 edit("a"),
                 edit("zz"),
                 edit("b"),
-                Step {
-                    title: "w".into(),
-                    kind: Kind::Workflow {
+                Step::new(
+                    "w",
+                    Kind::Workflow {
                         name: "nope".into(),
                         vars: Default::default(),
                     },
-                },
-                Step {
-                    title: "e".into(),
-                    kind: Kind::Edit {
+                ),
+                Step::new(
+                    "e",
+                    Kind::Edit {
                         file: "/etc/hosts".into(),
                         old: "text no hosts file has".into(),
                         new: "y".into(),
                     },
-                },
+                ),
             ],
         };
         let pr = problems(&p, &["quick-update".into()]);
@@ -542,5 +787,79 @@ Approve it and sentry does it.";
                 && rep.contains("Steps 1–1 are done"),
             "{rep}"
         );
+    }
+
+    #[test]
+    fn a_step_names_its_target_and_what_it_captures() {
+        let (_, p) = take(
+            "```sentry-apply\nsummary = \"bouncer\"\n\n[[step]]\ntitle = \"Key\"\non = \"srv:myserver\"\n\
+             run = \"sudo cscli bouncers add router -o raw\"\ncapture = \"key\"\nsecret = true\n\n\
+             [[step]]\ntitle = \"Set\"\nrun = \"uci set crowdsec.bouncer.api_key='{{key}}'\"\n\n\
+             [[step]]\nask = \"pass\"\nprompt = \"The portal's password\"\nsecret = true\n```",
+        );
+        let p = p.unwrap().unwrap();
+        assert_eq!(p.steps[0].on.as_deref(), Some("srv:myserver"));
+        assert_eq!(p.steps[0].gives(), Some("key"));
+        assert!(p.steps[0].secret && p.steps[1].on.is_none());
+        assert_eq!(placeholders(p.steps[1].texts()[0]), ["key"]);
+        assert_eq!(
+            p.steps[2].kind,
+            Kind::Ask {
+                name: "pass".into(),
+                prompt: "The portal's password".into()
+            }
+        );
+        // Written back, it reads the same; a step without them is written as before.
+        assert_eq!(take(&to_block(&p)).1.unwrap().unwrap(), p);
+        assert!(!to_block(&take(ANSWER).1.unwrap().unwrap()).contains("on ="));
+        for (bad, why) in [
+            (
+                "edit = \"/x\"\nold = \"a\"\nnew = \"b\"\ncapture = \"k\"",
+                "only a run or check",
+            ),
+            ("run = \"a\"\ncapture = \"My Key\"", "isn't a name"),
+            ("run = \"a\"\nsecret = true", "goes with capture or ask"),
+            ("ask = \"k\"", "one-line prompt"),
+        ] {
+            let e = take(&format!("```sentry-apply\n[[step]]\n{bad}\n```"))
+                .1
+                .unwrap()
+                .unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn values_are_filled_in_and_only_plain_ones_outside_quotes() {
+        let v = |n: &str| match n {
+            "key" => Some("abc123+/=".to_string()),
+            "pass" => Some("two words; $x".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            fill("set k={{key}} '{{pass}}'", &v).unwrap(),
+            "set k=abc123+/= 'two words; $x'"
+        );
+        assert!(
+            fill("echo {{pass}}", &v)
+                .unwrap_err()
+                .contains("inside single quotes")
+        );
+        assert!(
+            fill("echo '{{nope}}'", &v)
+                .unwrap_err()
+                .contains("no value {{nope}}")
+        );
+        // Not a placeholder: left as it is.
+        assert_eq!(
+            fill("awk '{{ print }}' {{key}}", &v).unwrap(),
+            "awk '{{ print }}' abc123+/="
+        );
+        assert_eq!(value_problem("it's"), Some("it has a single quote in it"));
+        assert_eq!(
+            value_problem("a\nb"),
+            Some("it has a control character or more than one line")
+        );
+        assert_eq!(value_problem("fine value"), None);
     }
 }

@@ -4,6 +4,7 @@
 //! audit finding type, a few parsers, and the TUI kit both apps are built on.
 
 pub mod apply;
+pub mod auto;
 pub mod baseline;
 pub mod cache;
 pub mod claude;
@@ -15,5 +16,6 @@ pub mod fmt;
 pub mod maint;
 pub mod paths;
 pub mod recorder;
+pub mod secaudit;
 pub mod tui;
 pub mod workflows;

@@ -3,9 +3,10 @@
 //! parallel, keeping going past the ones that fail.
 
 pub mod apt;
+pub mod crowdsec;
 pub mod docker;
 pub mod health;
-pub mod probe;
+pub use sentry_app::remote::probe;
 pub mod procs;
 pub mod sockets;
 pub mod units;
@@ -144,6 +145,9 @@ pub struct Snapshot {
     pub cpu_temp: Option<health::CpuTemp>,
     pub gpu: Option<gpu::Gpu>,
     pub jails: Option<Vec<health::Jail>>,
+    /// CrowdSec, where the server has it (absent otherwise, and in older reports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crowdsec: Option<crowdsec::Crowdsec>,
     pub disks: Option<Vec<disk::Mount>>,
     pub listeners: Option<Vec<net::Listener>>,
     pub journal: Option<Vec<JournalUnit>>,
@@ -189,6 +193,7 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         let temp = sc.spawn(|| health::cpu_temp(r));
         let gpu_ = sc.spawn(|| gpu(r));
         let jails = sc.spawn(|| health::fail2ban(r));
+        let crowdsec_ = sc.spawn(|| crowdsec::collect(r));
         let disks_ = sc.spawn(|| disks(r));
         let listen = sc.spawn(|| listeners(r));
         let journal_ = sc.spawn(|| journal(r));
@@ -211,6 +216,11 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         s.cpu_temp = keep(&mut errors, "sensors", join(temp)).flatten();
         s.gpu = keep(&mut errors, "gpu", join(gpu_)).flatten();
         s.jails = keep(&mut errors, "fail2ban", join(jails));
+        // Not there: nothing, not even a line. There: what it couldn't read is said.
+        s.crowdsec = keep(&mut errors, "crowdsec", join(crowdsec_)).flatten();
+        for (part, why) in s.crowdsec.iter().flat_map(|c| &c.unread) {
+            errors.push((format!("crowdsec {part}"), why.clone()));
+        }
         s.disks = keep(&mut errors, "disks", join(disks_));
         s.listeners = keep(&mut errors, "listeners", join(listen));
         s.journal = keep(&mut errors, "journal", join(journal_));
@@ -291,6 +301,7 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
         "sensors" => j(serde_json::to_value(health::cpu_temp(r)?)),
         "gpu" => j(serde_json::to_value(gpu(r)?)),
         "fail2ban" => j(serde_json::to_value(health::fail2ban(r)?)),
+        "crowdsec" => j(serde_json::to_value(crowdsec::collect(r)?)),
         "disks" => j(serde_json::to_value(disks(r)?)),
         "listeners" => j(serde_json::to_value(listeners(r)?)),
         "sockets" => j(serde_json::to_value(sockets::collect(r)?)),
@@ -314,6 +325,7 @@ pub const KINDS: &[&str] = &[
     "sensors",
     "gpu",
     "fail2ban",
+    "crowdsec",
     "disks",
     "listeners",
     "sockets",

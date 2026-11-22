@@ -46,9 +46,9 @@ impl Dismiss {
 pub struct Verbs {
     /// What Enter does, in a word or two ("install", "fix", "open plan"); empty: "do it".
     pub enter: &'static str,
-    /// `p` plans it.
+    /// Its session keeps a plan (an item, a workflow): `p` reads it once there is one.
     pub plan: bool,
-    /// It has a plan (or one is being written): `p` opens it, `P` plans again.
+    /// It has a plan saved: `p` opens it, `P` starts the session over.
     pub planned: bool,
     /// `t` tracks it (discovery).
     pub track: bool,
@@ -61,17 +61,21 @@ pub struct Verbs {
     pub dismiss: Option<Dismiss>,
     /// `B`: everything like this finding is expected too.
     pub like: bool,
+    /// Space ticks it: it can be done in a series with the other ticked rows.
+    pub series: bool,
 }
 
 /// The row's keys for the key bar, in the same order on both programs. The screen adds its
 /// few own keys after these; everything else is in `?`.
-pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
+pub fn hints(v: &Verbs, ticked: usize) -> Vec<(&'static str, &'static str)> {
     let enter = if v.enter.is_empty() { "do it" } else { v.enter };
-    let mut h = vec![("Enter", enter)];
+    // With rows ticked, Enter does those, one after another.
+    let mut h = vec![("Enter", if ticked > 0 { "do the ticked" } else { enter })];
+    if v.series {
+        h.push(("Space", "tick"));
+    }
     if v.planned {
-        h.extend([("p", "open plan"), ("P", "plan again")]);
-    } else if v.plan {
-        h.push(("p", "plan"));
+        h.extend([("p", "read plan"), ("P", "start over")]);
     }
     if v.track {
         h.push(("t", "track"));
@@ -99,7 +103,7 @@ pub fn hints(v: &Verbs) -> Vec<(&'static str, &'static str)> {
 /// Every row key, for `?`.
 pub const GRAMMAR: &[(&str, &str)] = &[
     ("Enter", "do what the row says (the key bar names it)"),
-    ("p / P", "plan it (Claude writes the plan) / plan again"),
+    ("p / P", "read its saved plan / start its session over"),
     ("t", "track it (something discovery found)"),
     (
         "d",
@@ -115,7 +119,15 @@ pub const GRAMMAR: &[(&str, &str)] = &[
         "expected (a finding) · ignore · untrack · remove (a task) · drop the plan; asks first",
     ),
     ("B", "a finding: everything like it is expected"),
+    (
+        "Space / a",
+        "tick the row / every row that can be: Enter then does the ticked ones in a series",
+    ),
     ("z", "look again later: 7, 30 or 90 days"),
+    (
+        "o",
+        "everything: what can wait too (newer versions, updates nothing asks for, things to tidy)",
+    ),
     (
         "A",
         "Claude: help me apply it (it plans, you approve, sentry applies) or just ask",
@@ -124,8 +136,46 @@ pub const GRAMMAR: &[(&str, &str)] = &[
 
 /// The Recommended panel when there's nothing in it.
 pub const EMPTY: &str = "✓ nothing to maintain right now · c checks everything again";
+/// The Recommended panel with nothing needed, when `waiting` rows can wait.
+pub fn empty(waiting: usize) -> String {
+    match waiting {
+        0 => EMPTY.to_string(),
+        n => format!("✓ nothing to maintain right now · o shows {n} that can wait"),
+    }
+}
+
+/// What `o` does now, for the key bar.
+pub fn everything_word(everything: bool) -> &'static str {
+    if everything {
+        "needed only"
+    } else {
+        "everything"
+    }
+}
 /// … and when the `/` filter leaves nothing.
 pub const NO_MATCH: &str = "nothing matches the filter";
+/// Space on a row a series can't do.
+pub const NOT_IN_A_SERIES: &str = "Enter does this one by itself: it can't go in a series";
+
+/// The rows ticked for a series, by key.
+pub type Ticks = std::collections::BTreeSet<String>;
+
+/// Space: tick the row, or untick it.
+pub fn tick(ticks: &mut Ticks, key: &str) {
+    if !ticks.remove(key) {
+        ticks.insert(key.to_string());
+    }
+}
+
+/// `a`: tick every row that can be; when they all are, untick them.
+pub fn tick_all(ticks: &mut Ticks, can: Vec<String>) {
+    if !can.is_empty() && can.iter().all(|k| ticks.contains(k)) {
+        ticks.clear();
+    } else {
+        ticks.extend(can);
+    }
+}
+
 /// `x` on a row that has nothing to dismiss.
 pub const NOTHING_TO_DISMISS: &str = "only findings can be marked expected: z puts this off";
 
@@ -206,17 +256,26 @@ pub fn level_color(t: &Theme, l: Level) -> Color {
     }
 }
 
+/// What the Recommended panel shows besides its rows.
+pub struct List<'a> {
+    /// After the title: how many, when it was audited.
+    pub note: String,
+    pub selected: Option<usize>,
+    /// Shown (centred) when there are no rows.
+    pub empty: (&'a str, Style),
+    /// The rows ticked for a series.
+    pub ticks: &'a Ticks,
+}
+
 /// The Recommended panel. `empty` is shown (centred) when there are no rows; returns the rows'
 /// height (a page, for the cursor).
-pub fn draw<A>(
-    f: &mut Frame,
-    area: Rect,
-    t: &Theme,
-    note: String,
-    recs: &[Rec<A>],
-    selected: Option<usize>,
-    empty: (&str, Style),
-) -> usize {
+pub fn draw<A>(f: &mut Frame, area: Rect, t: &Theme, recs: &[Rec<A>], l: List) -> usize {
+    let List {
+        note,
+        selected,
+        empty,
+        ticks,
+    } = l;
     let b = panel(t, "Recommended", note);
     let r = inner(&b, area);
     f.render_widget(b, area);
@@ -224,27 +283,40 @@ pub fn draw<A>(
         placeholder(f, r, t, &[empty]);
         return r.height as usize;
     }
+    // The tick column is there only while something is ticked.
+    let ticked = recs.iter().any(|x| ticks.contains(&x.key));
     let rows: Vec<Row> = recs
         .iter()
         .map(|x| {
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(x.level.word()).style(t.s(level_color(t, x.level))),
                 Cell::from(x.title.clone()).style(t.fg()),
                 Cell::from(x.why.clone()).style(t.dim()),
-            ])
+            ];
+            if ticked {
+                let mark = if ticks.contains(&x.key) { "✓" } else { "" };
+                cells.insert(0, Cell::from(mark).style(t.s(t.green)));
+            }
+            Row::new(cells)
         })
         .collect();
+    let mut header = vec!["", "What", "Why"];
+    let mut widths = vec![
+        Constraint::Length(8),
+        Constraint::Fill(3),
+        Constraint::Fill(4),
+    ];
+    if ticked {
+        header.insert(0, "");
+        widths.insert(0, Constraint::Length(1));
+    }
     table(
         f,
         r,
         t,
         TableSpec {
-            header: vec!["", "What", "Why"],
-            widths: vec![
-                Constraint::Length(8),
-                Constraint::Fill(3),
-                Constraint::Fill(4),
-            ],
+            header,
+            widths,
             rows,
             selected,
         },
@@ -280,5 +352,31 @@ mod tests {
         assert_eq!(top.width + 1 + right.width, 158);
         // Many recommendations: half the height at most.
         assert_eq!(split(area, 40).0.height, 17);
+    }
+
+    #[test]
+    fn ticks_toggle_and_a_takes_every_row_that_can_be() {
+        let mut ticks = Ticks::new();
+        tick(&mut ticks, "a");
+        tick(&mut ticks, "b");
+        tick(&mut ticks, "a");
+        assert_eq!(ticks.iter().collect::<Vec<_>>(), ["b"]);
+        let can = || vec!["a".to_string(), "b".to_string()];
+        tick_all(&mut ticks, can());
+        assert_eq!(ticks.len(), 2);
+        // They all are: a unticks them.
+        tick_all(&mut ticks, can());
+        assert!(ticks.is_empty());
+        tick_all(&mut ticks, Vec::new());
+        assert!(ticks.is_empty());
+        // The key bar: Space on a row that can be ticked; with ticks, Enter does those.
+        let v = Verbs {
+            enter: "fix",
+            series: true,
+            ..Default::default()
+        };
+        assert_eq!(hints(&v, 0)[..2], [("Enter", "fix"), ("Space", "tick")]);
+        assert_eq!(hints(&v, 2)[0], ("Enter", "do the ticked"));
+        assert!(!hints(&Verbs::default(), 0).contains(&("Space", "tick")));
     }
 }

@@ -32,24 +32,6 @@ pub fn record(name: Option<&str>) -> u8 {
     }
 }
 
-/// `sentry-server [name]`: the TUI.
-pub fn tui(name: Option<&str>) -> u8 {
-    let (n, s) = match load(name) {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("{e}");
-            return 1;
-        }
-    };
-    match super::tui::run(Remote::new(&n, &s)) {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("sentry-server: {e:#}");
-            1
-        }
-    }
-}
-
 /// `init <ssh-host> [--name N] [--write]`
 pub fn init(ssh: &str, name: Option<&str>, write: bool) -> u8 {
     let name = name.unwrap_or_else(|| {
@@ -475,6 +457,7 @@ pub fn check(name: Option<&str>) -> u8 {
             "· sudo asks for a password: monitoring runs without root; maintenance hands you the terminal"
         ),
         Ok(SudoMode::Absent) => println!("· no sudo for this user"),
+        Ok(SudoMode::Root) => println!("✓ root login: nothing needs sudo"),
         Err(e) => {
             println!("✗ sudo: {e}");
             bad += 1;

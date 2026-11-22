@@ -35,6 +35,9 @@ pub enum Action {
     Audit,
     /// A task from a review (its id): what Enter does is the task's own `do`.
     Task(String),
+    /// One of the security audit's items that is this server's (its id): a session that
+    /// fixes it, or the answer to what only the user knows.
+    Security(String),
 }
 
 /// Keys (for `z`): the item's id, `wf:<name>`, `finding:<id>`, `audit`, `reboot`, the
@@ -94,6 +97,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             why,
             action,
             item: Some(id.clone()),
+            can_wait: false,
         };
         let newest = s.newer.first().map(|r| r.version.as_str()).unwrap_or("?");
         let pinned = s.pinned.as_deref().unwrap_or("?");
@@ -205,12 +209,16 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             ));
         }
         if s.has(Flag::Behind) && !held && !s.has(Flag::Security) {
-            out.push(rec(
-                Level::Routine,
-                format!("{id}: {pinned} → {newest} ({} newer)", s.newer.len()),
-                "Not held; staying far behind makes the eventual move bigger.".into(),
-                Action::Plan(id.clone()),
-            ));
+            // Nothing asks for it: it shows once a fix, an end of life or a review date does.
+            out.push(Rec {
+                can_wait: true,
+                ..rec(
+                    Level::Routine,
+                    format!("{id}: {pinned} → {newest} ({} newer)", s.newer.len()),
+                    "Not held; staying far behind makes the eventual move bigger.".into(),
+                    Action::Plan(id.clone()),
+                )
+            });
         }
         if s.has(Flag::Retire) {
             out.push(rec(
@@ -232,13 +240,16 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             && !eol_only
             && it.is_some_and(|x| x.source.is_none() && x.apt.is_empty() && x.retire.is_none())
         {
-            out.push(rec(
-                Level::Tidy,
-                format!("{id}: nothing to compare it with"),
-                "Give it a source: (github:owner/repo, docker:repo or ghcr:owner/image) in the config."
-                    .into(),
-                Action::Look(id.clone()),
-            ));
+            out.push(Rec {
+                can_wait: true,
+                ..rec(
+                    Level::Tidy,
+                    format!("{id}: nothing to compare it with"),
+                    "Give it a source: (github:owner/repo, docker:repo or ghcr:owner/image) in the config."
+                        .into(),
+                    Action::Look(id.clone()),
+                )
+            });
         }
     }
     // Updates and reboots waiting.
@@ -270,6 +281,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                 why: format!("{apt_wf} applies them."),
                 action: Action::Run(apt_wf.into()),
                 item: None,
+                can_wait: security == 0,
             });
         }
         if let Some(since) = a.reboot_since {
@@ -290,6 +302,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                         Action::Look(String::new())
                     },
                     item: None,
+                    can_wait: false,
                 });
             }
         }
@@ -318,6 +331,8 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             },
             action: Action::Fix(f.id.clone()),
             item: None,
+            // Hub items behind: upkeep nothing asks for yet.
+            can_wait: f.id == "srv:crowdsec:hub",
         });
     }
     // The audit itself: due again after a week.
@@ -335,6 +350,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             },
             action: Action::Audit,
             item: None,
+            can_wait: false,
         });
     }
     // Discovery.
@@ -346,6 +362,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             why: format!("Not tracked: {}.", c.what),
             action: Action::Track(n),
             item: None,
+            can_wait: true,
         });
     }
     for g in &i.found.gone {
@@ -356,6 +373,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             why: format!("{}: stop tracking it.", g.why),
             action: Action::Remove(g.id.clone()),
             item: Some(g.id.clone()),
+            can_wait: true,
         });
     }
     let risk = |r: &Rec| {

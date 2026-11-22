@@ -1,24 +1,35 @@
 //! Maintenance: every action is a confirm box showing the exact command, then streamed output
-//! (or, when sudo wants a password, the terminal handed over). Nothing runs without
-//! Enter on that box.
+//! (with the server's password when sudo wants one: asked once, in the key bar). Nothing runs
+//! without Enter on that box.
 
 use ratatui::text::Line;
 
-use super::app::{Effect, Modal, RunSpec};
 use super::data::Kind;
 use super::screens::View;
+use super::target::{Effect, Modal, Own, RunSpec};
 use crate::config::CustomAction;
 use crate::remote::{Remote, SudoMode};
 use sentry_core::exec::{Cmd, sh_quote};
 use sentry_core::tui::ScreenId;
 
-/// A root command, built for how sudo behaves here: streamed when no password is needed,
-/// interactive when it asks for one.
-fn root(r: &Remote, mode: Option<SudoMode>, argv: &[&str]) -> Result<(Cmd, bool), String> {
+/// A root command: the plain command for the pane, and (unless the login is root) the line
+/// the app runs for it through sudo, with the server's password when sudo wants one.
+fn root(
+    r: &Remote,
+    mode: Option<SudoMode>,
+    argv: &[&str],
+) -> Result<(Cmd, Option<String>), String> {
     match mode {
-        Some(SudoMode::NoPasswd) => Ok((r.cmd("sudo").arg("-n").args(argv).timeout(None), false)),
-        Some(SudoMode::Password) => Ok((r.cmd("sudo").args(argv).timeout(None), true)),
+        Some(SudoMode::NoPasswd | SudoMode::Password) => Ok((
+            r.cmd("sudo").arg("-n").args(argv).timeout(None),
+            Some(format!("sudo {}", cmd_line(argv))),
+        )),
         Some(SudoMode::Absent) => Err("this login has no sudo on the server".into()),
+        // A server's login goes through sudo; a root login would run it as it is.
+        Some(SudoMode::Root) => r
+            .privileged(argv)
+            .map(|c| (c.timeout(None), None))
+            .map_err(|e| e.to_string()),
         None => Err("still checking how sudo works on the server".into()),
     }
 }
@@ -39,7 +50,7 @@ pub struct Spec<'a> {
 pub fn confirm(v: &View, r: &Remote, s: Spec) -> Vec<Effect> {
     let t = v.t;
     let argv: Vec<&str> = s.argv.iter().map(String::as_str).collect();
-    let (cmd, interactive) = match root(r, v.s.sudo.value, &argv) {
+    let (cmd, line) = match root(r, v.s.sudo.value, &argv) {
         Ok(x) => x,
         Err(e) => return vec![Effect::Toast(e)],
     };
@@ -52,33 +63,19 @@ pub fn confirm(v: &View, r: &Remote, s: Spec) -> Vec<Effect> {
     if let Some(u) = &s.undo {
         lines.push(Line::styled(format!("undo: {u}"), t.dim()));
     }
-    if interactive {
-        lines.push(Line::styled(
-            "sudo asks for your password: the terminal is handed over while it runs.",
-            t.dim(),
-        ));
-    }
     if let Some(w) = &s.warn {
         lines.push(Line::styled(w.clone(), t.s(t.yellow)));
     }
     if s.risky {
         lines.push(Line::styled("This is hard to undo.", t.s(t.red)));
     }
-    let run = if interactive {
-        Effect::Suspend(
-            cmd,
-            format!("sentry-server · {} on {}", s.title, r.name),
-            s.then.clone(),
-            s.reboot,
-        )
-    } else {
-        Effect::Run(RunSpec {
-            title: s.title.clone(),
-            cmd,
-            then: s.then.clone(),
-            reboot: s.reboot,
-        })
-    };
+    let run = Own::run(RunSpec {
+        title: s.title.clone(),
+        cmd,
+        then: s.then.clone(),
+        reboot: s.reboot,
+        root: line,
+    });
     vec![Effect::Confirm(Modal {
         title: s.title,
         color: if s.risky { t.red } else { t.yellow },
@@ -318,7 +315,7 @@ pub fn custom(v: &View, r: &Remote) -> Vec<Effect> {
         .iter()
         .map(|a| (a.title.clone(), custom_one(v, r, a)))
         .collect();
-    vec![Effect::Choose(super::app::Choice::numbered(
+    vec![Effect::Choose(super::target::Choice::numbered(
         v.t, "Actions", choices,
     ))]
 }
@@ -342,7 +339,9 @@ fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {
             },
         );
     }
-    let cmd = r.sh(&a.run).timeout(None);
+    let cmd = r
+        .sh(&sentry_core::apply::sudo::detached(&a.run))
+        .timeout(None);
     let mut lines = vec![
         Line::styled(format!("Your action `{}`.", a.id), t.fg()),
         Line::raw(""),
@@ -361,11 +360,12 @@ fn custom_one(v: &View, r: &Remote, a: &CustomAction) -> Vec<Effect> {
         lines,
         yes: Some((
             "run".into(),
-            vec![Effect::Run(RunSpec {
+            vec![Own::run(RunSpec {
                 title: a.title.clone(),
                 cmd,
                 then: vec![Kind::Units, Kind::Docker],
                 reboot: false,
+                root: None,
             })],
         )),
     })]
