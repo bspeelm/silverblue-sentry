@@ -49,6 +49,11 @@ pub struct Snapshot {
     pub crowdsec: Option<collect::crowdsec::Bouncer>,
     /// The config backups against the router's files as they are now (none: not compared).
     pub backup: Option<crate::backup::Status>,
+    /// What the live flows and the log's window said, as far as a finding is made of it
+    /// (flows across zones the firewall keeps apart, refused logins). Counts and inside
+    /// addresses only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<crate::security::Seen>,
     /// (section, why it's missing)
     pub errors: Vec<(String, String)>,
 }
@@ -812,6 +817,68 @@ pub fn derive(
         }
     }
 
+    if let Some(sec) = &s.security {
+        for c in sec.crossings.iter().flatten() {
+            out.push(
+                f(
+                    format!("{NS}:flow:{}-{}", c.from, c.to),
+                    Sev::High,
+                    "firewall",
+                    format!(
+                        "live traffic from {} into {}, which the firewall keeps apart ({} flow(s))",
+                        c.from, c.to, c.flows
+                    ),
+                )
+                .explain(
+                    "The router is tracking a connection from one zone into another, and \
+                     nothing in the firewall's config (no forwarding, no rule, no port \
+                     forward) lets that through.",
+                    "The separation between the two zones isn't holding: a firewall changed \
+                     by hand, a rule added outside the config, or a config not yet reloaded.",
+                    "Look at `nft list chain inet fw4 forward` and the zone's forward chain, \
+                     then `fw4 reload`; if the traffic is meant, add the forwarding or a rule \
+                     for it (or press b).",
+                )
+                .evidence(c.which.join(" · ")),
+            );
+        }
+        if let Some(r) = sec.refused.as_ref().filter(|r| r.tries > 0) {
+            let window = match r.window_s {
+                Some(w) => format!(
+                    "the last {}",
+                    match (w / 3600, (w % 3600) / 60) {
+                        (0, m) => format!("{m}m"),
+                        (h, 0) => format!("{h}h"),
+                        (h, m) => format!("{h}h {m}m"),
+                    }
+                ),
+                None => "the log".to_string(),
+            };
+            let mut from = r.inside.clone();
+            if r.outside > 0 {
+                from.push(format!("{} address(es) outside", r.outside));
+            }
+            out.push(
+                f(
+                    format!("{NS}:ssh:failed"),
+                    Sev::Medium,
+                    "access",
+                    format!("{} refused ssh login(s) in {window}", r.tries),
+                )
+                .explain(
+                    "The router's log has logins that were refused (a wrong password, a user \
+                     that doesn't exist), from an address that isn't this machine's.",
+                    "Someone or something is trying to log in to the router. The log is short: \
+                     this covers only its window.",
+                    "Find the device at that address (Clients); if it's yours and mistyped, \
+                     press b. Keep password logins off (dropbear PasswordAuth), and ssh \
+                     closed to the outside.",
+                )
+                .evidence(from.join(" · ")),
+            );
+        }
+    }
+
     if let Some(b) = &s.crowdsec {
         let running = s
             .services
@@ -934,6 +1001,30 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
         let _ = seen.save(&r.scope);
         list
     });
+    // The live flows and the log's window, for the two findings made of them. A router
+    // that has neither (no connection table, no `logread`) simply has no such part.
+    fn there<T>(
+        sec: &str,
+        res: Result<T, CollectError>,
+        errors: &mut Vec<(String, String)>,
+    ) -> Result<Option<T>, CollectError> {
+        match res {
+            Err(CollectError::Unavailable(_)) => Ok(None),
+            res => part(sec, res, errors),
+        }
+    }
+    let flows = there("flows", collect::flows::collect(r), &mut errors)?;
+    let log = there("log", collect::seclog::collect(r), &mut errors)?;
+    let security = (flows.is_some() || log.is_some()).then(|| {
+        crate::security::Seen::of(&crate::security::Read {
+            ifaces: ifaces.as_ref(),
+            uci: uci.as_ref(),
+            clients: clients.as_deref(),
+            flows: flows.as_ref(),
+            log: log.as_ref(),
+            ..Default::default()
+        })
+    });
     Ok(Snapshot {
         network: r.name.clone(),
         taken_at: Some(now),
@@ -945,6 +1036,7 @@ pub fn snapshot(r: &Router) -> Result<Snapshot, CollectError> {
         services,
         crowdsec,
         backup,
+        security,
         errors,
     })
 }
@@ -1032,6 +1124,7 @@ networks:
             services: Some(services::parse(&fixture("network/services.json")).unwrap()),
             crowdsec: None,
             backup: None,
+            security: None,
             errors: Vec::new(),
         }
     }
@@ -1561,6 +1654,101 @@ networks:
             ))
         );
         assert_eq!(pattern_for("net:load-high"), None);
+    }
+
+    /// The two findings made of what flows: a live flow between zones the firewall keeps
+    /// apart, and refused ssh logins from somewhere that isn't this machine.
+    #[test]
+    fn a_flow_across_zones_and_refused_logins_are_findings() {
+        use crate::collect::{flows, seclog};
+        use crate::security::{Read, Seen};
+        let cfg = cfg();
+        let seen = |s: &Snapshot, f: &flows::Flows, log: &seclog::SecLog| {
+            Seen::of(&Read {
+                ifaces: s.ifaces.as_ref(),
+                uci: s.uci.as_ref(),
+                clients: s.clients.as_deref(),
+                flows: Some(f),
+                log: Some(log),
+                ..Default::default()
+            })
+        };
+        let the_flows = flows::parse(&fixture("network/conntrack.txt"));
+        let the_log = seclog::parse(&fixture("network/logread.txt"));
+        // A quiet log: only this machine's own logins.
+        let mut quiet = the_log.clone();
+        quiet.events.retain(
+            |(_, e)| matches!(e, seclog::Event::SshLogin { from, .. } if *from == the_log.me),
+        );
+        // The fixtures' router with its flows and a quiet log: still nothing to find.
+        let mut s = snap(&cfg);
+        s.security = Some(seen(&s, &the_flows, &quiet));
+        assert_eq!(
+            s.security.as_ref().unwrap().crossings.as_deref(),
+            Some(&[][..])
+        );
+        let f = derive(&s, &cfg, None, &none());
+        assert!(f.is_empty(), "{:#?}", ids(&f));
+        // The DMZ's server with a connection into the LAN.
+        let mut crossed = the_flows.clone();
+        crossed.flows.extend(
+            flows::parse(&crate::security::tests::line(
+                "tcp",
+                "203.0.113.93",
+                "192.0.2.10",
+                445,
+                "192.0.2.10",
+            ))
+            .flows,
+        );
+        s.security = Some(seen(&s, &crossed, &quiet));
+        let f = derive(&s, &cfg, None, &BaselineFile::default());
+        assert_eq!(ids(&f), [("net:flow:dmz-lan", Sev::High)]);
+        assert_eq!(
+            f[0].message,
+            "live traffic from dmz into lan, which the firewall keeps apart (1 flow(s))"
+        );
+        assert_eq!(f[0].evidence, "203.0.113.93 → 192.0.2.10 tcp/445");
+        // Refused logins from a device: medium, with where from (an inside address) and
+        // the window they were counted in.
+        s.security = Some(seen(&s, &the_flows, &the_log));
+        let f = derive(&s, &cfg, None, &BaselineFile::default());
+        assert_eq!(ids(&f), [("net:ssh:failed", Sev::Medium)]);
+        assert_eq!(f[0].message, "3 refused ssh login(s) in the last 2h 50m");
+        assert_eq!(f[0].evidence, "192.0.2.77");
+        // From outside: counted, the address kept out of the report.
+        let mut far = the_log.clone();
+        for (_, e) in &mut far.events {
+            if let seclog::Event::SshFailed { from, .. } = e {
+                *from = Some("198.18.9.9".parse().unwrap());
+            }
+        }
+        s.security = Some(seen(&s, &the_flows, &far));
+        let f = derive(&s, &cfg, None, &BaselineFile::default());
+        assert_eq!(f[0].evidence, "1 address(es) outside");
+        assert!(
+            !serde_json::to_string(&s).unwrap().contains("198.18."),
+            "no far end is kept in a report"
+        );
+        // This machine's own mistyped password isn't someone else trying.
+        let mut mine = the_log.clone();
+        mine.me = Some("192.0.2.77".parse().unwrap());
+        s.security = Some(seen(&s, &the_flows, &mine));
+        assert!(derive(&s, &cfg, None, &BaselineFile::default()).is_empty());
+        // Both marked expected (`b`), like any finding.
+        s.security = Some(seen(&s, &crossed, &the_log));
+        let base = BaselineFile {
+            findings: vec!["net:flow:dmz-lan".into(), "net:ssh:failed".into()],
+            ..Default::default()
+        };
+        let f = derive(&s, &cfg, None, &base);
+        assert_eq!(f.len(), 2);
+        assert!(f.iter().all(|x| x.expected));
+        // Neither was read: nothing is judged, and an old report without the part reads.
+        s.security = Some(Seen::default());
+        assert!(derive(&s, &cfg, None, &BaselineFile::default()).is_empty());
+        let old: Snapshot = serde_json::from_str("{\"network\": \"home\"}").unwrap();
+        assert!(old.security.is_none());
     }
 
     #[test]

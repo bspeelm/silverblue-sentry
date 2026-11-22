@@ -1458,3 +1458,98 @@ fn live_router_session() {
         "the session's entry has the tag where the verdict said the value"
     );
 }
+
+/// Security's reads on a router that has little of what they look for (no nft or fw4
+/// table, no uplink, perhaps no connection table, neither DNS package): each read either
+/// answers with the missing parts absent or says the thing isn't there. None fails, none
+/// reports a zero it didn't count, and the audit still stands with nothing found of it.
+#[test]
+#[ignore]
+fn live_router_security() {
+    use crate::collect::{CollectError, counters, dnsstate, flows, seclog};
+    let Some(r) = router() else { return };
+    let c = counters::collect(&r).expect("the counters' read stands without a firewall");
+    println!(
+        "counters: fw4 table {} · conntrack {} · dnsmasq counters {} · reset known {}",
+        c.rules.is_some(),
+        c.conntrack.is_some(),
+        c.dns.is_some(),
+        c.reset_at.is_some()
+    );
+    assert!(c.uptime > 0.0 && c.now > 1_600_000_000);
+    if let Some(rules) = &c.rules {
+        assert!(rules.iter().all(|x| !x.chain.is_empty()));
+    }
+    let f = match flows::collect(&r) {
+        Ok(f) => {
+            println!("flows: {} lines, accounting {:?}", f.lines, f.acct);
+            assert_eq!(f.flows.len(), f.lines, "a line that isn't a flow");
+            Some(f)
+        }
+        Err(CollectError::Unavailable(what)) => {
+            println!("flows: {what} isn't there");
+            None
+        }
+        Err(e) => panic!("flows: {e}"),
+    };
+    let log = match seclog::collect(&r) {
+        Ok(l) => {
+            println!(
+                "log: {} lines, {} events, own address known {}",
+                l.lines,
+                l.events.len(),
+                l.me.is_some()
+            );
+            // This run's own logins are in it, and recognised as its own.
+            let sum = crate::security::log_sum(&l, &[]);
+            if l.lines > 0 {
+                assert!(
+                    l.me.is_some(),
+                    "the router didn't say where the login came from"
+                );
+                assert!(sum.ssh_own >= 1 && sum.unknown() == 0, "{sum:?}");
+            }
+            Some(l)
+        }
+        Err(CollectError::Unavailable(what)) => {
+            println!("log: {what} isn't there");
+            None
+        }
+        Err(e) => panic!("log: {e}"),
+    };
+    let d = dnsstate::collect(&r).expect("the status read stands without the packages");
+    assert!(d.blocklist.is_none() && d.proxy.is_none(), "{d:?}");
+    // What the screen is made of, from that: nothing is claimed.
+    let ifaces = crate::collect::ifaces::collect(&r).unwrap();
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    let rated = crate::security::Rated::default();
+    let p = crate::security::Picture::of(&crate::security::Read {
+        ifaces: Some(&ifaces),
+        uci: Some(&uci),
+        counters: Some(&c),
+        rated: Some(&rated),
+        flows: f.as_ref(),
+        log: log.as_ref(),
+        dns: Some(&d),
+        ..Default::default()
+    });
+    if c.rules.is_none() {
+        assert!(p.wan_rejects.is_none() && p.dot.is_none() && p.out_new.is_none());
+        assert!(p.forwards.iter().all(|x| x.new.is_none()));
+    }
+    assert!(p.crossings().is_empty(), "{:?}", p.marks);
+    // The audit: its two reads more leave no error behind where the thing isn't there,
+    // and nothing is found.
+    let snap = crate::audit::snapshot(&r).expect("the audit's reads");
+    for (part, why) in &snap.errors {
+        assert!(!matches!(part.as_str(), "flows" | "log"), "{part}: {why}");
+    }
+    let found = crate::audit::derive(&snap, &r.cfg, None, &Default::default());
+    assert!(
+        found
+            .iter()
+            .all(|x| !x.id.starts_with("net:flow:") && x.id != "net:ssh:failed"),
+        "{:?}",
+        found.iter().map(|x| &x.id).collect::<Vec<_>>()
+    );
+}
