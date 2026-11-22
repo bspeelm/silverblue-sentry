@@ -2351,9 +2351,60 @@ fn live_resolution() {
     // (What must be hidden from Claude is known once the router was read.)
     pump(&mut a, 6.0, &never);
     assert!(!a.started_at(SRV));
+
+    // The security audit, for real: this machine and both containers read side by side
+    // (reads only), from the router's Security page. The page starts the server (it
+    // shows what a server's guard says; this one has none, so nothing is said).
+    a.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
+    key(&mut a, KeyCode::Char('4'));
+    assert!(a.started_at(SRV) && a.focus == NET);
+    key(&mut a, KeyCode::Char('S'));
+    assert!(a.win.sec.busy(), "{:?}", a.toast_for_test());
+    pump(&mut a, 180.0, &|a| {
+        a.win.sec.report.is_some() && !a.win.sec.busy()
+    });
+    let report = a.win.sec.report.clone().expect("the audit ran");
+    for id in [format!("srv:{sn}"), format!("net:{nn}")] {
+        assert!(
+            report.targets.iter().any(|t| t.id == id && t.reached),
+            "{id} wasn't read: {:?}",
+            report.errors
+        );
+    }
+    let view = tall(&mut a);
+    assert!(
+        view.contains(" Security audit ") && view.contains("audited today"),
+        "{view}"
+    );
+    key(&mut a, KeyCode::Esc);
+    let page = tall(&mut a);
+    assert!(
+        page.contains("audited today · S shows it") && !page.contains("attacker"),
+        "{page}"
+    );
+    // One of its items for the router opens a session briefed with the audit's words
+    // (nothing is sent: the turns here are the test's).
+    let item = a.slots[NET]
+        .shared
+        .sec
+        .iter()
+        .find(|i| i.question.is_none())
+        .cloned();
+    println!(
+        "audit: {} · the router lists {} item(s)",
+        report.summary(),
+        a.slots[NET].shared.sec.len()
+    );
+    if let Some(item) = item {
+        a.apply(vec![Effect::SecItem(item.id.clone())], Instant::now());
+        let brief = a.consent_text().expect("a session's brief");
+        assert!(brief.contains(&item.title), "{brief}");
+        assert!(a.apply_session_at(NET).is_some_and(|s| s.web_off));
+        a.slots[NET].apply_close_for_test();
+    }
+
     a.apply(vec![ask_about("reach the server's door")], Instant::now());
     assert!(a.apply_session_at(NET).is_some(), "{}", screen(&mut a));
-    // The session woke the server, without the window changing hands.
     assert!(a.started_at(SRV) && a.focus == NET);
     key(&mut a, KeyCode::Enter);
     assert_eq!(phase(&a), Some(Phase::Thinking(Turn::Investigate)));
@@ -2495,4 +2546,108 @@ fn live_resolution() {
     println!(
         "live_resolution: one plan, two targets; the token went from the server to the router unseen"
     );
+}
+
+/// Local-only (`#[ignore]`), reads only, against the real targets of the configs in the
+/// (scratch) `XDG_CONFIG_HOME`: the window as `sentry` opens it, a network's Security page
+/// from live reads, the security audit run from it (`S`: every target read side by side,
+/// nothing sent to Claude), and where its rows land. Prints the pages: what they say is
+/// the user's own and stays out of anything tracked.
+/// `SENTRY_SYSTEM_LIVE=1 XDG_CONFIG_HOME=… XDG_DATA_HOME=… XDG_CACHE_HOME=… cargo test -p sentry live_system_security -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_system_security() {
+    sentry_core::paths::use_real_dirs();
+    if std::env::var("SENTRY_SYSTEM_LIVE").is_err() {
+        return;
+    }
+    for var in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        assert!(std::env::var(var).is_ok(), "{var} must be set (scratch)");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (cfg, _) = sentry_core::config::Config::load();
+    assert!(
+        !cfg.review.at_start && !cfg.review.after_run,
+        "the scratch config.toml must turn [review] at_start and after_run off: no Claude turn here"
+    );
+    let mut a = App::new(tx, sentry_local::tui::ID, sentry_local::tui::target(cfg));
+    a.slots[LOCAL].screen = ScreenId::Maint;
+    let mut net = None;
+    if let Ok((f, _)) = sentry_server::config::load() {
+        for (name, c) in &f.servers {
+            a.add(
+                &sentry_server::tui::id_of(name),
+                sentry_server::tui::target(Remote::new(name, c)),
+            );
+        }
+    }
+    if let Ok((f, _)) = sentry_network::config::load() {
+        for (name, c) in &f.networks {
+            let i = a.add(
+                &sentry_network::tui::id_of(name),
+                sentry_network::tui::target(sentry_network::remote::Router::new(name, c)),
+            );
+            net.get_or_insert(i);
+        }
+    }
+    let net = net.expect("a network in network_config.yaml");
+    a.win.scripted_turns = true;
+    a.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: f32, until: &dyn Fn(&App) -> bool| {
+        let end = Instant::now() + std::time::Duration::from_secs_f32(secs);
+        while Instant::now() < end && !until(a) {
+            if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    let never = |_: &App| false;
+    a.focus(net, Instant::now());
+    pump(&mut a, 6.0, &never);
+    key(&mut a, KeyCode::Char('4'));
+    pump(&mut a, 12.0, &never);
+    a.survey();
+    println!("=== Security, before the audit\n{}", tall(&mut a));
+    key(&mut a, KeyCode::Char('S'));
+    pump(&mut a, 300.0, &|a| {
+        a.win.sec.report.is_some() && !a.win.sec.busy()
+    });
+    let report = a.win.sec.report.clone().expect("the audit ran");
+    assert!(!report.empty());
+    assert!(
+        !a.writing() || a.win.sec.reviewing,
+        "only the audit's own review"
+    );
+    println!("=== the report\n{}", tall(&mut a));
+    key(&mut a, KeyCode::Esc);
+    a.survey();
+    pump(&mut a, 3.0, &never);
+    let page = tall(&mut a);
+    assert!(page.contains("audited today · S shows it"), "{page}");
+    println!("=== Security, after the audit\n{page}");
+    key(&mut a, KeyCode::Char('o'));
+    println!("=== Security, everything\n{}", tall(&mut a));
+    for i in 0..a.slots.len() {
+        if i == net {
+            continue;
+        }
+        a.focus(i, Instant::now());
+        key(&mut a, KeyCode::Char('6'));
+        pump(&mut a, 10.0, &never);
+        println!(
+            "=== Maintenance of slot {i}: {} audit item(s)\n{}",
+            a.slots[i].shared.sec.len(),
+            tall(&mut a)
+        );
+    }
+    // No item is listed by two targets.
+    let mut seen = std::collections::BTreeSet::new();
+    for s in &a.slots {
+        for i in &s.shared.sec {
+            assert!(seen.insert(i.id.clone()), "{} listed twice", i.id);
+        }
+    }
+    sentry_core::tui::Ui::shutdown(&mut a);
 }

@@ -151,12 +151,33 @@ pub struct Row {
 pub struct ServerGuard {
     /// The server, as the window names it.
     pub server: String,
-    /// Addresses it banned today.
-    pub banned_today: usize,
+    /// Attackers it blocked in the last day (None: it runs, the count wasn't read).
+    pub banned_today: Option<usize>,
     /// What they were banned for, most first.
     pub scenarios: Vec<String>,
     /// The router enforces those bans (a bouncer here fed by it). None: unknown.
     pub enforced_here: Option<bool>,
+}
+
+impl ServerGuard {
+    /// "myserver blocked 7 attacker(s) today (mostly ssh brute force)", or that it runs
+    /// when the count wasn't read.
+    pub fn says(&self) -> String {
+        match self.banned_today {
+            Some(n) => format!(
+                "{} blocked {n} attacker(s) today{}",
+                self.server,
+                match self.scenarios.first() {
+                    Some(x) => format!(" (mostly {x})"),
+                    None => String::new(),
+                }
+            ),
+            None => format!(
+                "CrowdSec runs on {} (how many attackers it blocked today wasn't read)",
+                self.server
+            ),
+        }
+    }
 }
 
 /// Everything the list and the posture are made from.
@@ -794,15 +815,7 @@ pub fn attention(s: &State) -> Vec<Row> {
         let seen = |extra: Vec<String>| {
             let mut v = extra;
             if let Some(g) = guard {
-                v.push(format!(
-                    "{} blocked {} attacker(s) today{}",
-                    g.server,
-                    g.banned_today,
-                    match g.scenarios.first() {
-                        Some(x) => format!(" (mostly {x})"),
-                        None => String::new(),
-                    }
-                ));
+                v.push(g.says());
             }
             v
         };
@@ -845,14 +858,15 @@ pub fn attention(s: &State) -> Vec<Row> {
             Some(r)
         } else {
             unenforced
-                .filter(|g| g.banned_today > 0 && s.bouncer.is_none())
-                .map(|g| Row {
+                .filter(|_| s.bouncer.is_none())
+                .and_then(|g| g.banned_today.filter(|n| *n > 0).map(|n| (g, n)))
+                .map(|(g, n)| Row {
                     key: edge_key.clone(),
                     id: EDGE.into(),
                     rank: Rank::Look,
                     title: format!(
-                        "{} blocked {} attacker(s) today, but the router still lets them knock",
-                        g.server, g.banned_today
+                        "{} blocked {n} attacker(s) today, but the router still lets them knock",
+                        g.server
                     ),
                     why: "The server refuses them itself; the router could refuse them at \
                           the door, for every device behind it."
@@ -865,7 +879,7 @@ pub fn attention(s: &State) -> Vec<Row> {
                              firewall enforce them: CrowdSec's firewall bouncer on the router, \
                              fed by the server's CrowdSec. {}",
                             g.server,
-                            g.banned_today,
+                            n,
                             g.scenarios.join(", "),
                             sentry_core::secaudit::EDGE_FIX
                         ),
@@ -1234,26 +1248,16 @@ pub fn posture(s: &State) -> Vec<Line> {
 
     // What the server's own guard reports (the seam: drawn when something provides it).
     if let Some(g) = s.server_guard {
-        let what = match g.scenarios.first() {
-            Some(x) => format!(" (mostly {x})"),
-            None => String::new(),
-        };
         match g.enforced_here {
             Some(true) => say(
                 "server",
                 Cover::Ok,
-                format!(
-                    "{} blocked {} attacker(s) today{what}; the router refuses them too",
-                    g.server, g.banned_today
-                ),
+                format!("{}; the router refuses them too", g.says()),
             ),
             _ => say(
                 "server",
                 Cover::Weak,
-                format!(
-                    "{} blocked {} attacker(s) today{what}; the router doesn't enforce its bans",
-                    g.server, g.banned_today
-                ),
+                format!("{}; the router doesn't enforce its bans", g.says()),
             ),
         }
     }
@@ -1687,7 +1691,7 @@ mod tests {
         assert!(!w.has(EDGE_ROW) && w.cover("server").is_none());
         w.guard = Some(ServerGuard {
             server: "myserver".into(),
-            banned_today: 7,
+            banned_today: Some(7),
             scenarios: vec!["ssh brute force".into()],
             enforced_here: Some(false),
         });
@@ -1721,7 +1725,7 @@ mod tests {
         });
         w.guard = Some(ServerGuard {
             server: "myserver".into(),
-            banned_today: 7,
+            banned_today: Some(7),
             scenarios: vec!["ssh brute force".into()],
             enforced_here: Some(false),
         });
@@ -1745,6 +1749,17 @@ mod tests {
         );
         assert!(r.seen.iter().any(|s| s.starts_with("myserver blocked 7")));
         assert_eq!(w.cover("edge"), Some((Cover::Off, OFF.into())));
+        // The server's CrowdSec runs but its count wasn't read: still the server's
+        // blocklist, and the line says what is known.
+        w.guard.as_mut().unwrap().banned_today = None;
+        assert_eq!(w.row(EDGE_ROW).title, OFF);
+        assert_eq!(
+            w.cover("server"),
+            Some((
+                Cover::Weak,
+                "CrowdSec runs on myserver (how many attackers it blocked today wasn't read); the router doesn't enforce its bans".into()
+            ))
+        );
         // Without a server that says anything, the same sentence without one.
         w.guard = None;
         assert_eq!(

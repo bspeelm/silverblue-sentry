@@ -160,10 +160,10 @@ pub fn server_guard(v: &View) -> Option<crate::security::attention::ServerGuard>
     let sys = v
         .system
         .iter()
-        .find(|s| s.line.fact("guard.blocked").is_some())?;
+        .find(|s| s.line.fact("guard.running") == Some("true"))?;
     Some(crate::security::attention::ServerGuard {
         server: sys.peer.title.clone(),
-        banned_today: sys.line.fact("guard.blocked")?.parse().ok()?,
+        banned_today: sys.line.fact("guard.blocked").and_then(|n| n.parse().ok()),
         scenarios: sys
             .line
             .fact("guard.scenarios")

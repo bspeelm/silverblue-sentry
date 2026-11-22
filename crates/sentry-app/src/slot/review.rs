@@ -48,10 +48,13 @@ impl Slot {
                 .get_or_insert_with(sentry_core::tui::reviewview::ReviewView::show)
                 .brief = false;
         }
+        // (A live test's window sends Claude nothing about the audit: its evidence is of
+        // this machine too.)
+        let scripted = profile.is_some() && w.scripted_turns;
         let profile = profile.unwrap_or_else(|| self.target.profile(ProfileFor::Review, &[]));
         let cmd = claude::turn_cmd_with(&prompt, resume.as_deref(), &profile);
         let rid = self.mail.next();
-        if w.offline {
+        if w.offline || scripted {
             self.last_prompt = Some(prompt);
             self.last_profile = Some(profile);
             wr.live = Some((rid, 0));
