@@ -895,6 +895,12 @@ pub fn latest() -> Option<Report> {
     latest_in(&dir())
 }
 
+/// The newest report's file, by listing the directory and reading nothing: whether a
+/// report was written since (the window looks at it where it looks at its records).
+pub fn latest_stamp() -> Option<PathBuf> {
+    reports_in(&dir()).into_iter().next()
+}
+
 /// At most this many in "Do these first": a short list is one that gets done.
 pub const FIRST: usize = 5;
 
@@ -947,8 +953,13 @@ pub fn release_of(os_release: &str) -> Option<(String, String, String)> {
             .find_map(|l| l.strip_prefix(&format!("{k}=")))
             .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string())
     };
-    let id = get("ID")?.to_ascii_lowercase();
-    let version = get("VERSION_ID")?;
+    release_from(&get("ID")?, &get("VERSION_ID")?)
+}
+
+/// [`release_of`] from `/etc/os-release`'s `ID` and `VERSION_ID` alone (`debian`, `13.2`).
+pub fn release_from(id: &str, version: &str) -> Option<(String, String, String)> {
+    let id = id.trim().trim_matches('"').to_ascii_lowercase();
+    let version = version.trim().trim_matches('"').to_string();
     let major = version.split('.').next().unwrap_or("").to_string();
     let minor2 = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let (product, cycle, name) = match id.as_str() {

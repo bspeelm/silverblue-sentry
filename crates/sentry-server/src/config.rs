@@ -85,7 +85,10 @@ pub struct MaintItem {
     pub constraint: Option<String>,
     /// Look at it again by then (YYYY-MM-DD).
     pub review_by: Option<jiff::civil::Date>,
-    /// End of life from endoflife.date: `product` or `product/cycle`.
+    /// End of life from endoflife.date: write the `product` (`docker-engine`, `nvidia`,
+    /// `debian`); the release series is told from what runs (the item's version, or the
+    /// server's own OS release for an item with nothing else). `product/cycle` is still read:
+    /// that cycle is the fallback when the series can't be told.
     pub eol: Option<String>,
     /// The workflow that applies a change to it (`p` on Maintenance).
     pub workflow: Option<String>,

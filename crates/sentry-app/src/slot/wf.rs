@@ -159,19 +159,17 @@ impl Slot {
                 .retain(|e| e.head.run.is_none() || e.head.run != entry.head.run);
             self.shared.log.insert(0, entry.clone());
         }
-        // An upgrade that ended well: the security audit looks again (`App::sec_after_upgrade`),
-        // and until it has, what the report said of what was upgraded isn't a row.
-        if done
-            && let Some((at, _)) = sentry_core::secaudit::upgrade_in(std::slice::from_ref(&entry))
-        {
-            w.sec.upgrade_new = w.sec.upgrade_new.max(Some(at));
+        // A run that ended well changed the host (not one that found nothing to do): what
+        // was read of it is read again, and the security audit looks again once nothing is
+        // at work (`App::sec_after_change`); until it has, what the report said of what the
+        // run may have changed isn't a row.
+        if done && entry.changed_host() {
+            self.host_changed(w, &entry, Default::default());
         }
         // The rows the run resolves leave now.
         self.rows_changed(w);
         if done {
             self.review_run = Some(entry.clone());
-            self.last_change_at = Some(jiff::Timestamp::now());
-            self.refresh(w, Why::Changed);
         }
         // In a series nothing is asked between its rows: the note can be added in Records;
         // what the target offers after a run and the one review come at its end.

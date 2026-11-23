@@ -189,6 +189,9 @@ pub struct ServerTarget {
     /// The audit asked for is the one after a finding's fix (`Why::Reaudit`): when it's
     /// in, the session hears whether the finding is still reported.
     reaudit: bool,
+    /// The security audit's app items the statuses read since contradict, said once each
+    /// (`Effect::SecStale`), until its next report.
+    sec_stale: std::collections::BTreeSet<String>,
     /// What needs root is being read again first, for that audit.
     reaudit_reads: bool,
     /// Tests: every fetch asked for, in order (nothing is fetched offline).
@@ -246,6 +249,7 @@ impl ServerTarget {
             inventory_at: None,
             offer_reread: false,
             reaudit: false,
+            sec_stale: Default::default(),
             reaudit_reads: false,
             #[cfg(any(test, feature = "testing"))]
             asked: Vec::new(),
@@ -409,6 +413,35 @@ impl ServerTarget {
     }
 
     /// `b` on a finding (or `B`, a pattern): into the baseline file, or out of it.
+    /// The statuses were read again (a lookup, a run's end): an app the security audit's
+    /// report calls unsupported or missing security fixes, which is neither any more, is
+    /// said to the window once (`Effect::SecStale`): its row goes and the audit looks again.
+    fn sec_stale(&mut self, sh: &Shared) -> Vec<Effect> {
+        use crate::maint::eval::Flag;
+        let me = self.ident.id.to_string();
+        let said: Vec<String> = sh
+            .sec
+            .iter()
+            .filter_map(|i| {
+                let (target, item) = i.id.strip_prefix("sec:app:")?.rsplit_once(':')?;
+                (target == me).then(|| item.to_string())
+            })
+            .collect();
+        self.sec_stale.retain(|i| said.contains(i));
+        let statuses = self.store.maint.value.as_deref().unwrap_or_default();
+        let mut fx = Vec::new();
+        for item in said {
+            let fine = statuses
+                .iter()
+                .find(|s| s.id == item)
+                .is_some_and(|s| !s.has(Flag::Eol) && !s.has(Flag::Security));
+            if fine && self.sec_stale.insert(item.clone()) {
+                fx.push(Effect::SecStale(item));
+            }
+        }
+        fx
+    }
+
     fn expected(&mut self, id: &str, on: bool, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         let toast = |s: &str| vec![Effect::Toast(s.to_string())];
         // What's in memory is the file as last read; tests write nothing.
@@ -524,9 +557,9 @@ impl ServerTarget {
         vec![Effect::Toast(said)]
     }
 
-    /// After a run that changed the server: what Maintenance and Containers show was read
-    /// with sudo before it. With the password held it's read again by itself (a read);
-    /// without, `I` does it.
+    /// After a run that changed the server while the password wasn't held: what Maintenance
+    /// and Containers show was read with sudo before it, and `I` reads it again (said once
+    /// the run is settled; with the password held it was read again at once: `Why::Changed`).
     fn reread(&mut self, cx: &Cx) -> Vec<Effect> {
         if !std::mem::take(&mut self.offer_reread) {
             return Vec::new();
@@ -711,6 +744,7 @@ fn view_of<'a>(
             .zip(cx.last_change)
             .is_some_and(|(read, changed)| read < changed),
         upstream: store.upstream_at,
+        upstream_eol: &store.upstream_eol,
         everything: cx.everything,
         auto: cx.auto,
         plans: &sh.plans,
@@ -742,7 +776,10 @@ impl Target for ServerTarget {
                 sentry_core::config::Config::load().0.retention.reports,
             );
             self.inventory_at = crate::inventory::load(name).map(|c| c.fetched_at);
-            self.store.upstream_at = crate::maint::upstream::load(name).map(|c| c.fetched_at);
+            if let Some(c) = crate::maint::upstream::load(name) {
+                self.store.upstream_at = Some(c.fetched_at);
+                self.store.upstream_eol = c.data.eol.into_keys().collect();
+            }
             self.has_ring = sentry_core::recorder::ring::path(name).exists();
             // After the review dates were read: the old plans' file also held them.
             crate::maint::migrate_plans(name);
@@ -825,6 +862,9 @@ impl Target for ServerTarget {
         if matches!(k, Kind::Audit | Kind::Report | Kind::ReportAt(_)) {
             self.remark(sh);
         }
+        if k == Kind::Maint && ok {
+            fx.extend(self.sec_stale(sh));
+        }
         if k == Kind::Audit {
             fx.push(Effect::AuditEnded(ok));
             // The audit after a finding's fix: is it still reported, and with what?
@@ -899,10 +939,36 @@ impl Target for ServerTarget {
                     self.fetch(k, cx);
                 }
             }
-            // What was read with sudo is from before this run: offer to read it again.
-            Why::Changed => {
-                self.offer_reread = self.store.sudo.value == Some(SudoMode::Password)
-                    && self.inventory_at.is_some();
+            // sentry changed the server (a run or a session's steps that ended well): what
+            // was read of it is from before. Read again what a run reads, and CrowdSec;
+            // what needs root, by itself where the password is held (else it's said, and
+            // `I` does it: nothing is asked); then the audit, so its findings follow.
+            Why::Changed | Why::ChangedAudited => {
+                for k in [
+                    Kind::Host,
+                    Kind::Apt,
+                    Kind::Units,
+                    Kind::Docker,
+                    Kind::Maint,
+                    Kind::Crowdsec,
+                ] {
+                    self.fetch(k, cx);
+                }
+                let inventory = self.store.sudo.value == Some(SudoMode::Password)
+                    && !crate::inventory::script(&self.remote).is_empty();
+                // (A finding's session had the audit run after its change already, with
+                // what needs root read again first where the password is held: `Reaudit`.)
+                if why == Why::ChangedAudited {
+                    self.offer_reread = inventory && !cx.root && self.inventory_at.is_some();
+                    return Vec::new();
+                }
+                if inventory && cx.root {
+                    // (The audit runs when the read is in: `after_inventory`.)
+                    self.reaudit_reads = true;
+                    return vec![Own::Inventory.into()];
+                }
+                self.offer_reread = inventory && self.inventory_at.is_some();
+                self.fetch(Kind::Audit, cx);
             }
             // A finding's fix ran: the audit says whether it's still reported. What the
             // audit reads as root comes from the last inventory where sudo asks: with the

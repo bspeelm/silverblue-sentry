@@ -38,6 +38,8 @@ impl Slot {
     /// held first). `quiet`: the run after an upgrade.
     fn sec_read_all(&mut self, w: &mut Win, quiet: bool) {
         w.sec.quiet = quiet;
+        // It answers for every change sentry made so far (not one while it reads).
+        w.sec.run_starts();
         w.sec.pending = Some((w.at, self.mail.id().clone()));
         let me = self.mail.id().clone();
         let others: Vec<String> = w
@@ -64,10 +66,16 @@ impl Slot {
             w.sec.answers = core::Answers::load();
             match Report::finish(&facts) {
                 Ok((r, _)) => r,
-                Err(e) => return w.toast(&format!("security audit: {e}")),
+                Err(e) => {
+                    w.sec.run_from = None;
+                    self.sec_answer_asked(w, Some(format!("it ended with an error ({e})")));
+                    return w.toast(&format!("security audit: {e}"));
+                }
             }
         };
         if report.empty() {
+            w.sec.run_from = None;
+            self.sec_answer_asked(w, Some("nothing could be read from any target".into()));
             return w.toast("security audit: nothing could be read from any target");
         }
         // Its task is this machine's, and done.
@@ -77,10 +85,14 @@ impl Slot {
         ));
         let n = report.of(State::DoFirst).len();
         w.sec.report = Some(report);
+        // What changed before it started is in it; what changed while it read isn't.
+        w.sec.run_answered();
         w.sec.facts = facts;
         w.sec.review = None;
         w.sec.rev += 1;
         self.sec_sync(w);
+        // The sessions that waited for it hear whether their item is still reported.
+        self.sec_answer_asked(w, None);
         if quiet {
             return w.toast(&format!(
                 "security audit read again: {n} to do first · {} shows it",
@@ -355,59 +367,147 @@ impl Slot {
             })
             .filter_map(|(_, u)| u.clone())
             .max_by_key(|(at, _)| *at);
-        // What an upgrade since the report changed is withheld until the audit has looked
-        // again (it runs again by itself: `App::sec_after_upgrade`).
-        let mut upgrades: Vec<(String, jiff::Timestamp)> = w
-            .sec
-            .upgraded
-            .iter()
-            .zip(&w.system)
-            .filter_map(|(u, s)| Some((sec::name(&s.peer.id).to_string(), u.as_ref()?.0)))
-            .collect();
-        if let Some(at) = own {
-            upgrades.push((sec::name(self.mail.id()).to_string(), at));
-        }
-        let at = w.sec.report.as_ref().map(|r| r.at);
+        // What a change sentry made since the report's facts were read may have settled is
+        // withheld until the audit has looked again (it runs again by itself once nothing
+        // is at work: `App::sec_after_change`).
+        let changes = w.sec.since();
         self.shared.sec = sec::mine(&w.sec, self.mail.id(), &w.system)
             .into_iter()
-            .filter(|i| at.is_none_or(|at| !sec::outdated(i, at, &upgrades)))
+            .filter(|i| !sec::outdated(i, &changes))
             .cloned()
             .collect();
     }
 
-    /// A session on one of the audit's items settled done: the audit reads every
-    /// target again by itself (nothing opens, no review), and its rows follow the report.
+    /// A session on one of the audit's items ran its plan, or Claude says it is done: the
+    /// audit reads every target again (nothing opens, no review), and the session hears
+    /// what it found (`sec_audited`) before it settles. While a run is under way the ask
+    /// waits for the next one, which starts when that ends (its facts may be from before
+    /// the change). Offline (tests) without `Sec.rerun_offline` nothing runs, and the
+    /// session says so; a window without the audit can't say, and the session isn't done.
     pub(crate) fn sec_again(&mut self, w: &mut Win) {
-        if w.sec.busy()
-            || (w.sec.collect.is_none() && !w.offline)
-            || (w.offline && !w.sec.rerun_offline)
-        {
+        let Some(item) = self
+            .apply
+            .as_ref()
+            .and_then(|s| s.chat.ask.applying())
+            .and_then(|a| a.key.strip_prefix(sentry_core::maint::rec::AUDIT_ROW))
+            .map(str::to_string)
+        else {
+            return;
+        };
+        if w.offline && !w.sec.rerun_offline {
+            if let Some(sess) = self.apply.as_mut() {
+                let fx = sess.audit_skipped();
+                self.apply_fx(w, fx);
+            }
             return;
         }
+        if w.sec.collect.is_none() && !w.offline {
+            if let Some(sess) = self.apply.as_mut() {
+                let fx = sess.audit_unavailable("it isn't available in this window");
+                self.apply_fx(w, fx);
+            }
+            return;
+        }
+        let me = self.mail.id().clone();
+        let targets = self
+            .shared
+            .sec
+            .iter()
+            .chain(w.sec.report.iter().flat_map(|r| r.items.iter()))
+            .find(|i| i.id == item)
+            .map(|i| i.targets.clone())
+            .unwrap_or_default();
+        let asked = sec::Asked {
+            slot: me,
+            item,
+            targets,
+        };
+        // (One ask per session: a second from the same one replaces the first.)
+        w.sec.asked.retain(|a| a.slot != asked.slot);
+        w.sec.again.retain(|a| a.slot != asked.slot);
+        if w.sec.busy() {
+            w.sec.again.push(asked);
+            return w.toast("the security audit is running · it reads every target again after");
+        }
+        w.sec.asked.push(asked);
         self.sec_read_all(w, true);
         w.toast("the security audit reads every target again · its rows follow");
     }
 
-    /// After an upgrade the window audits again by itself: the facts only, nothing opened,
-    /// nothing asked, no review.
-    pub(crate) fn sec_rerun(&mut self, w: &mut Win, after: jiff::Timestamp) {
+    /// The run ended (`failed`: why it gave no report): every session that waited for it
+    /// hears its answer (in its own slot), and those that asked while it ran get a run of
+    /// their own now.
+    fn sec_answer_asked(&mut self, w: &mut Win, failed: Option<String>) {
+        let me = self.mail.id().clone();
+        for a in std::mem::take(&mut w.sec.asked) {
+            let answer = match &failed {
+                Some(why) => Err(why.clone()),
+                None => w.sec.answer(&a.item, &a.targets),
+            };
+            if a.slot == me {
+                self.sec_audited(w, &a.item, answer);
+            } else {
+                w.outbox.push_back((
+                    a.slot,
+                    Parcel::SecAudited {
+                        item: a.item,
+                        answer,
+                    },
+                ));
+            }
+        }
+        let next = std::mem::take(&mut w.sec.again);
+        if !next.is_empty() && !w.sec.busy() {
+            w.sec.asked = next;
+            self.sec_read_all(w, true);
+            w.toast("the security audit reads every target again · its rows follow");
+        }
+    }
+
+    /// The audit answered the session on its item `id`: still reported, gone, or it
+    /// couldn't say. A session closed or opened on something else since hears nothing.
+    pub(crate) fn sec_audited(&mut self, w: &mut Win, id: &str, answer: sec::Answer) {
+        let key = sec::row_key(id);
+        let waiting = self
+            .apply
+            .as_ref()
+            .is_some_and(|s| s.auditing() && s.chat.ask.applying().is_some_and(|a| a.key == key));
+        if !waiting {
+            return;
+        }
+        self.rows_changed(w);
+        let Some(sess) = self.apply.as_mut() else {
+            return;
+        };
+        let fx = match answer {
+            Ok(still) => sess.reaudited(still),
+            Err(why) => sess.audit_unavailable(&why),
+        };
+        self.apply_fx(w, fx);
+    }
+
+    /// After sentry changed a target the window audits again by itself: the facts only,
+    /// nothing opened, nothing asked, no review.
+    pub(crate) fn sec_rerun(&mut self, w: &mut Win, after: u64) {
         if w.sec.busy() || (w.sec.collect.is_none() && !w.offline) {
             return;
         }
-        w.sec.rerun_for = Some(after);
+        w.sec.rerun_for = after;
+        let upgrade = w.sec.since().iter().any(|c| c.upgrade);
         self.sec_read_all(w, true);
-        w.toast("an upgrade ran · the security audit reads every target again");
+        w.toast(if upgrade {
+            "an upgrade ran · the security audit reads every target again"
+        } else {
+            "sentry changed a target · the security audit reads every target again"
+        });
     }
 
     /// The newest firmware or OS upgrade in this target's log, said with where it ran. A
     /// slot that never had the window hasn't read its log: it is read here, once.
     pub(crate) fn upgraded(&mut self, w: &Win) -> Option<(jiff::Timestamp, String)> {
+        // (Every upgrade that counts changed the host.)
         let found = if self.asleep && !w.offline {
-            self.slept_upgrade
-                .get_or_insert_with(|| {
-                    core::upgrade_in(&sentry_core::maint::log::list(&self.scope))
-                })
-                .clone()
+            core::upgrade_in(&self.host_log(w))
         } else {
             core::upgrade_in(&self.shared.log)
         };
@@ -431,21 +531,68 @@ impl crate::App {
         s.answers = core::Answers::load();
         s.report = core::latest();
         s.review = s.report.as_ref().and_then(core::review_of);
+        s.stamp = core::latest_stamp();
         s.rev += 1;
     }
 
-    /// An upgrade ended well after the report was made (on any target, in this window or
-    /// found in a log): the audit runs again by itself, once for it. Never in tests unless
-    /// one asks (`Sec.rerun_offline`).
-    pub(crate) fn sec_after_upgrade(&mut self) {
+    /// A report written while the window is open (`sentry audit security` on the command
+    /// line) is taken in: one listing of the reports' directory, where the slots look at
+    /// their own files (`Slot::look`). Never offline, never while the window's own runs.
+    pub(crate) fn sec_look(&mut self) {
+        if self.win.offline || !self.win.sec.loaded || self.win.sec.busy() {
+            return;
+        }
+        self.sec_look_now();
+    }
+
+    /// (Tests call this one: their window is offline, and the reports' directory is their
+    /// process's scratch one.) Whether a newer report was taken in.
+    pub fn sec_look_now(&mut self) -> bool {
+        let stamp = core::latest_stamp();
+        if stamp == self.win.sec.stamp {
+            return false;
+        }
+        self.win.sec.stamp = stamp;
+        let Some(r) = core::latest() else {
+            return false;
+        };
+        if self.win.sec.report.as_ref().is_some_and(|o| o.at >= r.at) {
+            return false;
+        }
+        let s = &mut self.win.sec;
+        s.answers = core::Answers::load();
+        s.review = core::review_of(&r);
+        s.report_read(r.at);
+        // (Its facts aren't this window's: answers wait for the next run to go over them.)
+        s.facts.clear();
+        s.report = Some(r);
+        s.rev += 1;
+        self.win.dirty = true;
+        self.win.toast(&format!(
+            "a newer security audit is in · {} shows it",
+            sec::KEY
+        ));
+        true
+    }
+
+    /// sentry changed a target after the report's facts were read (in this window, or found
+    /// in a log at start): the audit runs again by itself, once for it, when no target is
+    /// at work any more (no run, session, series or read under way), so a series of rows
+    /// costs one run, at its end. A session's own audit answers for what it changed
+    /// (`Slot::host_changed`'s `covered`). Never in tests unless one asks
+    /// (`Sec.rerun_offline`).
+    pub(crate) fn sec_after_change(&mut self) {
         if self.win.offline && !self.win.sec.rerun_offline {
             return;
         }
-        let Some(at) = self.win.sec.rerun_due() else {
+        let Some(n) = self.win.sec.rerun_due() else {
             return;
         };
+        if self.slots.iter().any(|s| s.at_work()) {
+            return;
+        }
         let i = self.focus;
-        self.with_one(i, |s, w| s.sec_rerun(w, at));
+        self.with_one(i, |s, w| s.sec_rerun(w, n));
     }
 
     /// An audit was asked for: once nothing is still being read as root for it (or that

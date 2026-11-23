@@ -461,7 +461,9 @@ impl Slot {
                         &tags,
                         jiff::Timestamp::now(),
                     );
-                    self.log_event(w, e);
+                    // (Steps that ran and ended well changed the host: `log_event_as`.)
+                    let covered = super::rows::Covered::by(self.apply.as_ref());
+                    self.log_event_as(w, e, covered);
                 }
                 Fx::TaskDone(id) => {
                     let title = self.task_title(&id);
@@ -876,15 +878,29 @@ impl Slot {
     }
 
     pub(crate) fn log_event(&mut self, w: &mut Win, e: sentry_core::maint::log::LogEntry) {
+        self.log_event_as(w, e, Default::default());
+    }
+
+    /// An entry for the log; one that records a change of the host (`changed_host`: a step
+    /// that ran, a reboot, a job's change) goes through `host_changed` first. `covered`:
+    /// what a session's own audit already read after it.
+    pub(crate) fn log_event_as(
+        &mut self,
+        w: &mut Win,
+        e: sentry_core::maint::log::LogEntry,
+        covered: super::rows::Covered,
+    ) {
         let e = self.kept_entry(e);
         if !w.offline {
             if let Err(err) = sentry_core::maint::log::write(&e) {
                 return w.toast(&format!("couldn't write the maintenance log: {err}"));
             }
         } else {
-            self.shared.log.insert(0, e);
+            self.shared.log.insert(0, e.clone());
         }
-        self.last_change_at = Some(jiff::Timestamp::now());
+        if e.changed_host() {
+            self.host_changed(w, &e, covered);
+        }
         self.rows_changed(w);
     }
 }

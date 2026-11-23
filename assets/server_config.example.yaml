@@ -108,7 +108,7 @@ servers:
           apt: [engine-pkg, engine-cli]  # held packages: installed vs apt's candidate
           risk: high
           hold: "an engine update restarts every container"
-          eol: docker-engine/29          # endoflife.date product/cycle
+          eol: docker-engine             # endoflife.date product: the series is the installed version's
         - id: app
           version_cmd: /opt/app/bin/app --version
           unit: app.service

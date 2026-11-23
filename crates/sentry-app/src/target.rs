@@ -317,8 +317,13 @@ pub enum Why {
     Step,
     /// A workflow run ended: what a run can change is read again.
     Run,
-    /// A run that ended well is in the log: the host is not as it was last read.
+    /// sentry changed the host (`Slot::host_changed`: a run or a session's steps that ended
+    /// well): what was read of it is from before, so what a change can alter is read again,
+    /// its own audit among it.
     Changed,
+    /// The same, but the target's own audit already ran after the change (a finding's
+    /// session, `Why::Reaudit`): everything but the audit is read again.
+    ChangedAudited,
     /// A fix was applied: audit what it was about again.
     Reaudit,
     /// Audit now (a series' row, `:audit now`).

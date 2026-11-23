@@ -74,34 +74,120 @@ pub fn fetch_github(repo: &str) -> Result<Vec<Release>, String> {
     parse_github(&json)
 }
 
-/// endoflife.date `GET /api/{product}.json`: the cycle asked for, or the newest one.
-pub fn parse_eol(json: &str, cycle: Option<&str>) -> Result<Eol, String> {
-    let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let list = v.as_array().ok_or("not a list of cycles")?;
-    let c = match cycle {
-        Some(want) => list
-            .iter()
-            .find(|c| {
-                c["cycle"].as_str() == Some(want)
-                    || c["cycle"].as_u64().map(|n| n.to_string()).as_deref() == Some(want)
-            })
-            .ok_or_else(|| format!("no cycle {want}"))?,
-        None => list.first().ok_or("no cycles")?,
+/// One entry of endoflife.date's list: `cycle` and `latest` are strings, or numbers for
+/// some products.
+fn eol_entry(c: &Value) -> Eol {
+    let text = |v: &Value| {
+        v.as_str()
+            .map(str::to_string)
+            .or_else(|| v.as_number().map(|n| n.to_string()))
     };
-    let cycle = c["cycle"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| c["cycle"].as_u64().map(|n| n.to_string()))
-        .unwrap_or_default();
-    Ok(Eol {
-        cycle,
+    Eol {
+        cycle: text(&c["cycle"]).unwrap_or_default(),
         // `false` (no end announced), `true` (ended, no date) or a date.
         eol: c["eol"]
             .as_str()
             .and_then(|d| d.parse().ok())
             .or_else(|| (c["eol"].as_bool() == Some(true)).then(|| jiff::civil::date(1970, 1, 1))),
-        latest: c["latest"].as_str().map(str::to_string),
-    })
+        latest: text(&c["latest"]),
+    }
+}
+
+/// endoflife.date `GET /api/{product}.json`: every cycle of a product, in the file's order
+/// (newest first).
+pub fn parse_cycles(json: &str) -> Result<Vec<Eol>, String> {
+    let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let list = v.as_array().ok_or("not a list of cycles")?;
+    Ok(list.iter().map(eol_entry).collect())
+}
+
+/// endoflife.date `GET /api/{product}.json`: the cycle asked for, or the newest one.
+pub fn parse_eol(json: &str, cycle: Option<&str>) -> Result<Eol, String> {
+    let list = parse_cycles(json)?;
+    match cycle {
+        Some(want) => list
+            .into_iter()
+            .find(|c| c.cycle == want)
+            .ok_or_else(|| format!("no cycle {want}")),
+        None => list.into_iter().next().ok_or_else(|| "no cycles".into()),
+    }
+}
+
+/// A version as a package or a tag writes it, down to its numbers: no epoch (`5:`), no
+/// leading `v`, nothing from the first `-`, `~` or `+` (`5:29.1.0-1~deb13` → `29.1.0`,
+/// `3.2.4-alpine` → `3.2.4`).
+pub fn bare_version(v: &str) -> &str {
+    let v = v.trim();
+    let v = match v.split_once(':') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.chars().all(|c| c.is_ascii_digit()) => {
+            rest
+        }
+        _ => v,
+    };
+    let v = match v.strip_prefix(['v', 'V']) {
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => rest,
+        _ => v,
+    };
+    v.split(['-', '~', '+']).next().unwrap_or(v)
+}
+
+/// The release series (of `cycles`, one product's) the version that runs belongs to. Pure;
+/// never the newest by default, never a guess:
+/// 1. a cycle named only by numbers that the version starts with, up to a dot (`29` for
+///    `29.10.0`, `26.1` for `26.1.5`; `2` is not `29.1`): the longest;
+/// 2. else the cycle whose `latest` starts with the same number (`620.70.06` → `r620-linux`,
+///    whose latest is `620.70.06`, never `r620-windows`, whose latest is `621.14`); of
+///    several, the one whose latest is the version itself, else the only one whose latest
+///    has as many parts;
+/// 3. else none.
+pub fn cycle_for<'a>(cycles: &'a [Eol], running: &str) -> Option<&'a Eol> {
+    let v = bare_version(running);
+    if !v.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let numeric = |s: &str| {
+        !s.is_empty()
+            && s.split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    };
+    let by_name = cycles
+        .iter()
+        .filter(|c| numeric(&c.cycle))
+        .filter(|c| {
+            v.strip_prefix(c.cycle.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+        .max_by_key(|c| c.cycle.len());
+    if by_name.is_some() {
+        return by_name;
+    }
+    let lead = |s: &str| s.split('.').next().unwrap_or("").to_string();
+    let head = lead(v);
+    if !head.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    fn latest(c: &Eol) -> Option<&str> {
+        c.latest.as_deref().map(bare_version)
+    }
+    let same: Vec<&Eol> = cycles
+        .iter()
+        .filter(|c| latest(c).is_some_and(|l| lead(l) == head))
+        .collect();
+    if let [one] = same[..] {
+        return Some(one);
+    }
+    if let Some(e) = same.iter().find(|c| latest(c) == Some(v)) {
+        return Some(e);
+    }
+    let parts = |s: &str| s.split('.').count();
+    let alike: Vec<&Eol> = same
+        .into_iter()
+        .filter(|c| latest(c).is_some_and(|l| parts(l) == parts(v)))
+        .collect();
+    match alike[..] {
+        [one] => Some(one),
+        _ => None,
+    }
 }
 
 /// A tag's shape: digit runs become `#`, a leading `v` is dropped (`v3.2.4-alpine` →
@@ -149,7 +235,15 @@ pub fn comparable(
     v
 }
 
-/// endoflife.date: a product, or one cycle of it (`debian/13`).
+/// endoflife.date: every cycle of a product (`debian`), newest first.
+pub fn fetch_cycles(product: &str) -> Result<Vec<Eol>, String> {
+    parse_cycles(&curl(
+        &format!("https://endoflife.date/api/{product}.json"),
+        &[],
+    )?)
+}
+
+/// endoflife.date: a product's newest cycle, or one cycle of it (`debian/13`).
 pub fn fetch_eol(key: &str) -> Result<Eol, String> {
     let (product, cycle) = match key.split_once('/') {
         Some((p, c)) => (p, Some(c)),
@@ -252,5 +346,100 @@ mod tests {
         assert_eq!(parse_eol(json, Some("3")).unwrap().eol, None);
         assert!(parse_eol(json, Some("2")).unwrap().eol.is_some());
         assert!(parse_eol(json, Some("9")).is_err());
+    }
+
+    fn cycles(list: &[(&str, &str, &str)]) -> Vec<Eol> {
+        let json: Vec<String> = list
+            .iter()
+            .map(|(c, eol, latest)| format!(r#"{{"cycle":"{c}","eol":{eol},"latest":"{latest}"}}"#))
+            .collect();
+        parse_cycles(&format!("[{}]", json.join(","))).unwrap()
+    }
+
+    #[test]
+    fn a_running_version_names_its_series() {
+        let nvidia = cycles(&[
+            ("r620-linux", r#""2029-11-04""#, "620.70.06"),
+            ("r620-windows", r#""2029-11-04""#, "621.14"),
+            ("r595-linux", "false", "595.112.07"),
+            ("r595-windows", "false", "597.30"),
+            ("r580-linux", "false", "580.196.07"),
+            ("r550-linux", r#""2025-04-17""#, "550.144.03"),
+            ("r550-windows", r#""2025-04-17""#, "553.74"),
+        ]);
+        let docker = cycles(&[
+            ("29", "false", "29.10.0"),
+            ("28", "false", "28.5.2"),
+            ("26.1", "false", "26.1.5"),
+            ("26.0", "false", "26.0.2"),
+            ("25.0", "false", "25.0.5"),
+        ]);
+        let debian = cycles(&[
+            ("13", r#""2030-06-30""#, "13.7"),
+            ("12", r#""2028-06-10""#, "12.15"),
+        ]);
+        let few = cycles(&[("2", "false", "2.9"), ("1", "true", "1.4")]);
+        let table: &[(&[Eol], &str, Option<&str>)] = &[
+            (&nvidia, "620.70.06-1", Some("r620-linux")),
+            (&nvidia, "620.70.06", Some("r620-linux")),
+            (&nvidia, "620.61.01", Some("r620-linux")),
+            (&nvidia, "550.144.03-1", Some("r550-linux")),
+            (&nvidia, "595.100.01", Some("r595-linux")),
+            (&nvidia, "580.82.09-1", Some("r580-linux")),
+            // A Windows latest never stands for a Linux version.
+            (&nvidia, "621.14", Some("r620-windows")),
+            (&nvidia, "470.256.02", None),
+            (&docker, "5:29.10.0-1~debian.13~trixie", Some("29")),
+            (&docker, "29.1.3", Some("29")),
+            (&docker, "v28.0.1", Some("28")),
+            (&docker, "26.1.4", Some("26.1")),
+            (&docker, "26.0.0", Some("26.0")),
+            // No cycle 26.2; 26.1 and 26.0 both lead with 26: can't tell.
+            (&docker, "26.2.0", None),
+            (&docker, "24.0.9", None),
+            (&debian, "13.7", Some("13")),
+            (&debian, "13", Some("13")),
+            (&debian, "12.15", Some("12")),
+            (&debian, "11.11", None),
+            // `2` isn't a prefix of `29.1`.
+            (&few, "29.1", None),
+            (&few, "2.1", Some("2")),
+            (&nvidia, "latest", None),
+            (&docker, "", None),
+        ];
+        for (list, running, want) in table {
+            assert_eq!(
+                cycle_for(list, running).map(|e| e.cycle.as_str()),
+                *want,
+                "{running}"
+            );
+        }
+        // No Windows cycle is ever chosen for a Linux driver.
+        for v in [
+            "620.70.06",
+            "595.112.07",
+            "580.196.07",
+            "550.144.03",
+            "550.54.14",
+        ] {
+            assert!(
+                cycle_for(&nvidia, v).is_some_and(|e| e.cycle.ends_with("-linux")),
+                "{v}"
+            );
+        }
+        assert_eq!(bare_version("620.70.06-1"), "620.70.06");
+        assert_eq!(bare_version("v0.7.4"), "0.7.4");
+        assert_eq!(bare_version("3.2.4-alpine"), "3.2.4");
+        assert_eq!(bare_version("5:29.10.0-1~debian.13~trixie"), "29.10.0");
+        assert_eq!(nvidia[5].eol, Some(jiff::civil::date(2025, 4, 17)));
+        assert_eq!(few[1].eol, Some(jiff::civil::date(1970, 1, 1)));
+        assert_eq!(
+            parse_cycles(r#"[{"cycle":3.9,"eol":false},{"cycle":8,"eol":false}]"#)
+                .unwrap()
+                .iter()
+                .map(|e| e.cycle.as_str())
+                .collect::<Vec<_>>(),
+            ["3.9", "8"]
+        );
     }
 }

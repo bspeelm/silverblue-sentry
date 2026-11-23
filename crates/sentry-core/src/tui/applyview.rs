@@ -187,6 +187,19 @@ fn status(s: &Session, t: &Theme) -> Option<Line<'static>> {
         Phase::Thinking(Turn::Verify) => format!("… Claude is checking the result {clock}"),
         Phase::SudoCheck => "… checking whether sudo needs your password".into(),
         Phase::Password { checking: true, .. } => "… checking the password".into(),
+        Phase::Applying if s.auditing() => {
+            "… the audit is looking again to see whether it is gone".into()
+        }
+        // Claude asked something only the user can decide.
+        Phase::Review if s.question.is_some() => {
+            return Some(Line::styled(
+                format!(
+                    "     ⏸ Waiting on you: Claude asks you {} · type your answer, Enter sends it",
+                    s.question.as_deref().unwrap_or_default()
+                ),
+                t.s(t.yellow).add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
         // Waiting for the user: said plainly, at the bottom, where the eye ends up.
         Phase::Review | Phase::Settled(_) => {
             let word = s.enter_word()?;
@@ -233,6 +246,7 @@ fn input_line(s: &Session, t: &Theme, width: usize) -> Line<'static> {
     };
     match s.phase {
         Phase::Brief => typed("add anything Claude should know, or just press Enter"),
+        Phase::Review if s.question.is_some() => typed("type your answer for Claude"),
         Phase::Review if s.can_approve() => {
             typed("Enter applies the plan · or type to ask for a change")
         }

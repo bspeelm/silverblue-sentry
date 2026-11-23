@@ -200,8 +200,9 @@ pub enum Fx {
         key: String,
         why: String,
     },
-    /// A session about one of the security audit's items settled done: the audit reads
-    /// every target again by itself, and its rows follow what it finds.
+    /// A session about one of the security audit's items ran its plan, or Claude says it is
+    /// done: the security audit reads every target again, and its answer comes back as
+    /// `reaudited` (or `audit_unavailable` / `audit_skipped`) before the session settles.
     SecAgain,
     /// Mark the task (or the plan done by hand) done, by hand: Claude didn't say it is.
     MarkDone,
@@ -298,7 +299,27 @@ pub struct Session {
     pub sudo_for: Option<String>,
     /// What ties this session's log entries together when it ran steps on several targets.
     pub run_id: String,
+    /// Claude's `done` on one of the security audit's items, held while the audit reads
+    /// every target again: the audit's answer decides.
+    held: Option<Held>,
+    /// The audit has answered since this session last changed anything (a run started,
+    /// Claude edited a file): a `done` needn't wait for it again.
+    audited: bool,
+    /// Claude asked the user something only they can decide (`status = "ask"`): the
+    /// question, until the user's answer is sent.
+    pub question: Option<String>,
 }
+
+/// A `done` verdict waiting for the security audit's answer.
+struct Held {
+    summary: String,
+    next: String,
+    task: Option<crate::maint::tasks::Task>,
+}
+
+/// What Enter does while Claude waits for the user's answer to its question (it sends
+/// what they type; with nothing typed, nothing).
+pub const ANSWER: &str = "send your answer";
 
 impl Session {
     pub fn new(ask: Ask) -> Self {
@@ -343,6 +364,9 @@ impl Session {
                 "{:08x}",
                 jiff::Timestamp::now().as_millisecond() as u64 & 0xffff_ffff
             ),
+            held: None,
+            audited: false,
+            question: None,
         }
         .acting()
     }
@@ -629,6 +653,8 @@ impl Session {
         let a = self.chat.ask.applying();
         match self.phase {
             Phase::Brief => Some("start"),
+            // Claude asked something only the user can decide: Enter sends what they type.
+            Phase::Review if self.question.is_some() => Some(ANSWER),
             Phase::Review if self.can_approve() => Some("apply the plan"),
             Phase::Review | Phase::Settled(_) if self.can_grant() => Some("allow it"),
             Phase::Review if self.run().is_none() || self.run().is_some_and(|r| r.finished()) => {
@@ -690,14 +716,15 @@ impl Session {
             && self.run().is_some_and(|r| r.state == RunState::Proposed)
     }
 
-    /// The plan ran and the audit that says whether the finding is gone is under way.
+    /// The plan ran (or Claude said done) and the audit that says whether it is gone is
+    /// under way.
     pub fn auditing(&self) -> bool {
-        self.audit_for.is_some()
+        self.audit_for.is_some() || self.held.is_some()
     }
 
     /// Something runs (a turn, a step, a check): Esc hides instead of closing.
     pub fn busy(&self) -> bool {
-        self.audit_for.is_some()
+        self.auditing()
             || matches!(
                 self.phase,
                 Phase::Thinking(_)
@@ -750,6 +777,7 @@ impl Session {
             None => prompt,
         };
         self.phase = Phase::Thinking(why);
+        self.question = None;
         self.turn_from = self.chat.entries.len();
         // Whatever the words, a secret this session holds isn't among them.
         let prompt = self.clean(&prompt);
@@ -1132,6 +1160,8 @@ impl Session {
         self.auto_run = 0;
         match self.phase {
             Phase::Brief => self.begin(text),
+            // (The answer to Claude's question is what's typed: nothing typed, nothing sent.)
+            Phase::Review if text.is_empty() && self.question.is_some() => Vec::new(),
             Phase::Review if text.is_empty() => match self.enter_word() {
                 Some("apply the plan") => self.approve(),
                 Some("allow it") => self.grant(),
@@ -1193,6 +1223,9 @@ impl Session {
             Allow,
         }
         let what = match self.phase {
+            Phase::Review if self.question.is_some() => {
+                return waits(self, "Claude asks you something only you can answer".into());
+            }
             Phase::Brief => Do::Start,
             Phase::Review if self.can_approve() => Do::Approve,
             Phase::Review | Phase::Settled(_) if self.can_grant() => Do::Allow,
@@ -1435,6 +1468,8 @@ impl Session {
 
     fn start(&mut self) -> Vec<Fx> {
         self.phase = Phase::Applying;
+        // Something changes from here: an earlier audit's answer no longer says how it is.
+        self.audited = false;
         let Some(r) = self.run_mut() else {
             return Vec::new();
         };
@@ -1796,25 +1831,33 @@ impl Session {
     /// told; after the session ended, it's done if the finding is gone.
     pub fn reaudited(&mut self, still: Option<String>) -> Vec<Fx> {
         let gone = still.is_none();
-        let line = if gone {
-            "sentry's audit no longer reports the finding"
-        } else {
-            "sentry's audit still reports the finding"
-        };
+        let line = self.audit_says(gone);
         self.still = still;
+        self.audited = true;
         if let Some(report) = self.audit_for.take() {
             self.chat.push(
                 if gone { Kind::Good } else { Kind::Err },
                 format!("{line} · Claude is verifying the result"),
             );
             let said = match &self.still {
-                Some(how) => format!("{line}:\n{how}\n\n{}", crate::claude::STILL_REPORTED),
+                Some(how) => format!("{line}:\n{how}\n\n{}", self.still_reported()),
                 None => format!("{line}."),
             };
             let prompt = crate::claude::apply_verify(&format!("{report}\n\nAfter it, {said}"));
             return self.turn(Turn::Verify, prompt, None);
         }
-        if matches!(self.phase, Phase::Settled(_)) {
+        // Claude said done: the audit's answer decides.
+        if let Some(h) = self.held.take() {
+            self.chat
+                .push(if gone { Kind::Good } else { Kind::Err }, line.to_string());
+            return if gone {
+                self.settle_done(&h.summary, &h.next, h.task)
+            } else {
+                self.done_but_still(&h.summary)
+            };
+        }
+        // (A finding's session after it ended, audited again by its key.)
+        if matches!(self.phase, Phase::Settled(_)) && self.audit_row().is_none() {
             self.chat
                 .push(if gone { Kind::Good } else { Kind::Err }, line.to_string());
             if gone {
@@ -1822,6 +1865,117 @@ impl Session {
             }
         }
         Vec::new()
+    }
+
+    /// The security audit couldn't answer (it isn't in this window, or the item's target
+    /// wasn't reached): what waited for it isn't done, and the row stays.
+    pub fn audit_unavailable(&mut self, why: &str) -> Vec<Fx> {
+        let held = self.held.take();
+        if self.audit_for.take().is_none() && held.is_none() {
+            return Vec::new();
+        }
+        self.chat.push(
+            Kind::Err,
+            format!("the security audit couldn't check it: {why}"),
+        );
+        self.chat.push(
+            Kind::Err,
+            "✗ Not verified · the row stays until the audit no longer reports it",
+        );
+        let not = format!("Not verified: the security audit couldn't check it: {why}");
+        let said = match held {
+            Some(h) => format!("{}\n{not}", h.summary),
+            None => not,
+        };
+        self.settle_with(End::Unverified, Some(&said))
+    }
+
+    /// Offline (tests): no audit runs, and the transcript says so; what waited for it
+    /// goes on as if it no longer reported the item.
+    pub fn audit_skipped(&mut self) -> Vec<Fx> {
+        let held = self.held.take();
+        let report = self.audit_for.take();
+        if held.is_none() && report.is_none() {
+            return Vec::new();
+        }
+        self.audited = true;
+        self.still = None;
+        self.chat
+            .push(Kind::Info, "(offline: the security audit didn't check it)");
+        if let Some(report) = report {
+            return self.turn(Turn::Verify, crate::claude::apply_verify(&report), None);
+        }
+        match held {
+            Some(h) => self.settle_done(&h.summary, &h.next, h.task),
+            None => Vec::new(),
+        }
+    }
+
+    /// What the audit said, in the words of the audit this session answers to.
+    fn audit_says(&self, gone: bool) -> &'static str {
+        match (self.audit_row().is_some(), gone) {
+            (true, true) => "the security audit no longer reports it",
+            (true, false) => "the security audit still reports it",
+            (false, true) => "sentry's audit no longer reports the finding",
+            (false, false) => "sentry's audit still reports the finding",
+        }
+    }
+
+    fn still_reported(&self) -> &'static str {
+        if self.audit_row().is_some() {
+            crate::claude::SEC_STILL_REPORTED
+        } else {
+            crate::claude::STILL_REPORTED
+        }
+    }
+
+    /// Claude says done, and the audit still reports it: Claude is told how it stands and
+    /// carries on, for as long as the fix rounds last; then it isn't done.
+    fn done_but_still(&mut self, summary: &str) -> Vec<Fx> {
+        let how = self.still.clone().unwrap_or_default();
+        let prompt = format!(
+            "You answered done, but {}:\n{how}\n\n{}",
+            self.audit_says(false),
+            self.still_reported()
+        );
+        match self.told(
+            "Claude says done, but the audit still reports it · sentry told Claude so".into(),
+            prompt,
+        ) {
+            Some(fx) => fx,
+            None => {
+                let what = if self.audit_row().is_some() {
+                    "the security audit still reports it"
+                } else {
+                    "the audit still reports the finding"
+                };
+                self.chat
+                    .push(Kind::Err, format!("✗ Not done · {what}; it's yours now"));
+                self.settle_with(End::Unverified, Some(summary))
+            }
+        }
+    }
+
+    /// Done: said, logged, and Claude's check for later on Maintenance.
+    fn settle_done(
+        &mut self,
+        summary: &str,
+        next: &str,
+        task: Option<crate::maint::tasks::Task>,
+    ) -> Vec<Fx> {
+        self.chat.push(Kind::Good, format!("✓ Done · {summary}"));
+        if !next.is_empty() {
+            self.chat.push(Kind::Info, format!("next: {next}"));
+        }
+        let mut fx = self.settle_with(End::Done, Some(summary));
+        if let Some(t) = task {
+            self.chat.push(
+                Kind::Info,
+                format!("follow-up on Maintenance: {} ({})", t.title, t.when()),
+            );
+            fx.push(Fx::AddTask(Box::new(t)));
+        }
+        fx
     }
 
     /// A workflow run ended: the step that waited for it is done (or failed).
@@ -1878,6 +2032,18 @@ impl Session {
             }
             _ => {
                 let n = r.plan.steps.len();
+                // One of the security audit's items: it reads every target again, and its
+                // answer goes to the verify turn.
+                if self.audit_row().is_some() {
+                    self.chat.push(
+                        Kind::Info,
+                        format!(
+                            "✓ all {n} steps done · the security audit is reading every target again"
+                        ),
+                    );
+                    self.audit_for = Some(report);
+                    return vec![Fx::SecAgain];
+                }
                 if self
                     .chat
                     .ask
@@ -1918,8 +2084,12 @@ impl Session {
     /// Files Claude changed this turn (allowed, backed up): in the transcript and the log.
     fn edits(&mut self) -> Vec<Fx> {
         let tag = self.chat.ask.applying().map(|a| format!("apply:{}", a.key));
-        self.chat
-            .changed()
+        let changed = self.chat.changed();
+        if !changed.is_empty() {
+            // Claude changed something: an earlier audit's answer no longer says how it is.
+            self.audited = false;
+        }
+        changed
             .into_iter()
             .map(|(path, backup, before, after)| {
                 let line = format!(
@@ -1986,6 +2156,20 @@ impl Session {
                     }
                 }
             }
+            // Neither a plan nor a verdict, and nothing asked for: every answer ends one of
+            // those ways, so Claude is asked again while the rounds last.
+            None if self.chat.requests.is_empty() => {
+                match self.told(
+                    "no plan and no verdict · sentry asked Claude to end with one".into(),
+                    crate::claude::NEITHER.into(),
+                ) {
+                    Some(fx) => fx,
+                    None => {
+                        self.phase = Phase::Review;
+                        Vec::new()
+                    }
+                }
+            }
             None => {
                 self.phase = Phase::Review;
                 Vec::new()
@@ -1995,8 +2179,11 @@ impl Session {
 
     fn new_plan(&mut self, at: usize, mut p: Plan, workflows: &[plan::WfInfo]) -> Vec<Fx> {
         let unknown = self.place(&mut p);
-        // Claude's own plan: what it asked to run earlier (and wasn't) is replaced by it.
+        // Claude's own plan: what it asked to run earlier (and wasn't) is replaced by it,
+        // and so is what it asked for and wasn't allowed (it would open the session again
+        // once it settled).
         self.asked = None;
+        self.chat.requests.clear();
         if let Some(i) = self.runs.len().checked_sub(1) {
             let why = match (self.runs[i].state, self.sent_back.take()) {
                 (RunState::Failed(k), _) => format!("stopped at step {}", k + 1),
@@ -2217,28 +2404,45 @@ impl Session {
             }
         };
         match v.status {
-            // Done is the audit's to say for a finding: while it still reports it, Claude
-            // is told how it stands and carries on, for as long as the fix rounds last.
-            Status::Done if self.still.is_some() => {
-                let how = self.still.clone().unwrap_or_default();
-                let prompt = format!(
-                    "You answered done, but sentry's audit still reports the finding:\n{how}\n\n{}",
-                    crate::claude::STILL_REPORTED
+            // One of the security audit's items, and the audit hasn't looked since the
+            // session last changed anything: the verdict waits for its answer.
+            Status::Done if self.audit_row().is_some() && !self.audited => {
+                let task = v
+                    .follow_up
+                    .as_ref()
+                    .map(|f| self.follow_up_task(f, workflows));
+                self.held = Some(Held {
+                    summary: v.summary.clone(),
+                    next: v.next.clone(),
+                    task,
+                });
+                self.phase = Phase::Applying;
+                self.chat.push(
+                    Kind::Info,
+                    format!(
+                        "Claude says it's done ({}) · the security audit is reading every target again to see",
+                        v.summary
+                    ),
                 );
-                match self.told(
-                    "Claude says done, but the audit still reports it · sentry told Claude so"
-                        .into(),
-                    prompt,
-                ) {
-                    Some(fx) => fx,
-                    None => {
-                        self.chat.push(
-                            Kind::Err,
-                            "✗ Not done · the audit still reports the finding; it's yours now",
-                        );
-                        self.settle_with(End::Unverified, Some(&v.summary))
-                    }
-                }
+                vec![Fx::SecAgain]
+            }
+            // Done is the audit's to say: while it still reports it, Claude is told how it
+            // stands and carries on, for as long as the fix rounds last.
+            Status::Done if self.still.is_some() => self.done_but_still(&v.summary),
+            // Only the user can decide: the question is theirs, nothing is logged and the
+            // row stays; what they type goes back to Claude.
+            Status::Ask => {
+                let q = if v.summary.is_empty() {
+                    "(the question is in Claude's answer above)".to_string()
+                } else {
+                    v.summary.clone()
+                };
+                self.chat.push(Kind::Good, format!("Claude asks you: {q}"));
+                self.chat
+                    .push(Kind::Info, "type your answer · Enter sends it to Claude");
+                self.question = Some(q);
+                self.phase = Phase::Review;
+                Vec::new()
             }
             // Fine as it is: nothing changes, it is marked expected and leaves the list.
             Status::Expected if self.expectable().is_some() => {
@@ -2265,19 +2469,11 @@ impl Session {
             }
             // (Anything else that is fine as it is, a task say, is done.)
             Status::Done | Status::Expected => {
-                self.chat
-                    .push(Kind::Good, format!("✓ Done · {}", v.summary));
-                next(self);
-                let mut fx = self.settle_with(End::Done, Some(&v.summary));
-                if let Some(f) = &v.follow_up {
-                    let t = self.follow_up_task(f, workflows);
-                    self.chat.push(
-                        Kind::Info,
-                        format!("follow-up on Maintenance: {} ({})", t.title, t.when()),
-                    );
-                    fx.push(Fx::AddTask(Box::new(t)));
-                }
-                fx
+                let task = v
+                    .follow_up
+                    .as_ref()
+                    .map(|f| self.follow_up_task(f, workflows));
+                self.settle_done(&v.summary, &v.next, task)
             }
             Status::Failed => {
                 self.chat
@@ -2395,6 +2591,19 @@ impl Session {
             .filter(|k| k.starts_with(crate::maint::rec::AUDIT_ROW))
     }
 
+    /// A session on one of the security audit's items whose audit answered after the last
+    /// thing it changed: that run read every target as the session left it, so what the
+    /// session changed needs no run of its own.
+    pub fn audit_covers_its_changes(&self) -> bool {
+        self.audit_row().is_some() && self.audited
+    }
+
+    /// A finding's session whose target's audit answered after the last thing it changed
+    /// (`reaudited`): that audit read the target as the session left it.
+    pub fn reaudit_covers_its_changes(&self) -> bool {
+        self.audit_row().is_none() && self.audited
+    }
+
     /// What an `expected` verdict marks: the session's finding, or its audit item's row.
     fn expectable(&self) -> Option<String> {
         self.chat
@@ -2412,14 +2621,6 @@ impl Session {
         self.phase = Phase::Settled(end);
         self.secret.clear();
         let mut fx = self.log_runs(verdict);
-        // One of the security audit's items: done is the audit's to say.
-        if end == End::Done && self.audit_row().is_some() {
-            self.chat.push(
-                Kind::Info,
-                "the security audit looks again · its row follows",
-            );
-            fx.push(Fx::SecAgain);
-        }
         if end == End::Done
             && let Some(p) = self.chat.ask.applying().and_then(|a| a.plan.clone())
         {
@@ -2496,9 +2697,12 @@ impl Session {
             body.push(format!("Claude: {v}"));
         }
         if let Some(how) = &self.still {
-            body.push(format!(
-                "Not resolved: sentry's audit still reports the finding.\n{how}"
-            ));
+            let what = if self.audit_row().is_some() {
+                "the security audit still reports it"
+            } else {
+                "sentry's audit still reports the finding"
+            };
+            body.push(format!("Not resolved: {what}.\n{how}"));
         }
         // What nobody pressed a key for.
         if !self.auto_log.is_empty() {
@@ -2637,6 +2841,27 @@ mod tests {
         s.turn_ended(0, &["quick-update".into()])
     }
 
+    /// A turn in which Claude asked for something that was refused (its answer waits in
+    /// Review for the user to allow it): the test then says what was asked.
+    fn asked(s: &mut Session, fx: &[Fx], text: &str) -> Vec<Fx> {
+        let Some(Fx::Turn { shown, .. }) = fx.iter().find(|f| matches!(f, Fx::Turn { .. })) else {
+            panic!("no turn in {fx:?}");
+        };
+        match shown {
+            Some(q) => s.chat.begin_turn(q, 1, 7),
+            None => s.chat.begin_quiet(1, 7),
+        }
+        s.chat.on_event(Event::Text(text.into()));
+        s.chat.requests = vec![crate::claude::Grant {
+            access: crate::claude::Access::Read,
+            path: "/placeholder".into(),
+            ..Default::default()
+        }];
+        let fx = s.turn_ended(0, &["quick-update".into()]);
+        s.chat.requests.clear();
+        fx
+    }
+
     /// Whatever a session concludes moves its row: fine as it is marks it expected (an
     /// audit's item by its row, a finding by its id), a wait puts the row itself off, and
     /// done on an audit's item has the audit look again.
@@ -2710,7 +2935,8 @@ mod tests {
             matches!(&fx[0], Fx::Wait { key: k, .. } if k == row),
             "{fx:?}"
         );
-        // Something ran: the audit looks again.
+        // Something ran: the audit looks again (once) before Claude verifies, and done
+        // settles only once it no longer reports the item.
         let mut s = Session::new(item.ask());
         let fx = key(&mut s, KeyCode::Enter);
         answer(
@@ -2720,12 +2946,256 @@ mod tests {
         );
         key(&mut s, KeyCode::Enter);
         let fx = s.step_ended(0);
+        assert_eq!(fx, [Fx::SecAgain]);
+        assert!(s.auditing() && s.busy());
+        let fx = s.reaudited(None);
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.contains("the security audit no longer reports it")),
+            "{fx:?}"
+        );
         let fx = answer(
             &mut s,
             &fx,
             "```sentry-verdict\nstatus = \"done\"\nsummary = \"bound to 127.0.0.1\"\n```",
         );
-        assert!(fx.iter().any(|f| matches!(f, Fx::SecAgain)), "{fx:?}");
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert!(!fx.iter().any(|f| matches!(f, Fx::SecAgain)), "{fx:?}");
+        assert!(
+            matches!(
+                fx.iter().find(|f| matches!(f, Fx::Log { .. })),
+                Some(Fx::Log { ok: true, .. })
+            ),
+            "{fx:?}"
+        );
+    }
+
+    fn listen_item() -> crate::secaudit::Item {
+        crate::secaudit::Item {
+            id: "sec:listen-wide:srv:myserver".into(),
+            group: crate::secaudit::Group::Logins,
+            state: crate::secaudit::State::Worth,
+            rank: 0,
+            title: "7 services listen on every address".into(),
+            why: String::new(),
+            fix: String::new(),
+            targets: vec!["srv:myserver".into()],
+            evidence: Vec::new(),
+            brief: "Fix it.".into(),
+            question: None,
+        }
+    }
+
+    const SEC_DONE: &str =
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"bound to 127.0.0.1\"\n```";
+
+    /// Done on one of the security audit's items is the audit's to say: after the plan it
+    /// reads every target once, and while it still reports the item Claude is told, then
+    /// it isn't done (logged as not resolved).
+    #[test]
+    fn an_audit_row_is_not_done_while_the_audit_reports_it() {
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(
+            &mut s,
+            &fx,
+            &plan("[[step]]\ntitle = \"bind\"\nrun = \"true\"\n"),
+        );
+        key(&mut s, KeyCode::Enter);
+        let fx = s.step_ended(0);
+        assert_eq!(fx, [Fx::SecAgain], "exactly one audit for the plan");
+        let fx = s.reaudited(Some("7 services listen on every address\n- sshd".into()));
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.contains("the security audit still reports it")
+                && prompt.contains(crate::claude::SEC_STILL_REPORTED)),
+            "{fx:?}"
+        );
+        // Claude says done anyway: told (no new audit: nothing changed since), twice.
+        let fx = answer(&mut s, &fx, SEC_DONE);
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.starts_with("You answered done, but the security audit still reports it:")),
+            "{fx:?}"
+        );
+        let fx = answer(&mut s, &fx, SEC_DONE);
+        assert!(matches!(&fx[..], [Fx::Turn { .. }]), "{fx:?}");
+        let fx = answer(&mut s, &fx, SEC_DONE);
+        assert_eq!(s.phase, Phase::Settled(End::Unverified));
+        assert!(
+            !fx.iter().any(|f| matches!(f, Fx::SecAgain | Fx::Next)),
+            "{fx:?}"
+        );
+        match fx.iter().find(|f| matches!(f, Fx::Log { .. })) {
+            Some(Fx::Log { ok, body, .. }) => {
+                assert!(!ok);
+                assert!(
+                    body.contains("Not resolved: the security audit still reports it."),
+                    "{body}"
+                );
+            }
+            _ => panic!("no log entry: {fx:?}"),
+        }
+        assert!(
+            s.chat
+                .entries
+                .iter()
+                .any(|(_, l)| l.contains("the security audit still reports it; it's yours now"))
+        );
+    }
+
+    /// Claude says done with nothing run: the verdict is held, the audit reads every
+    /// target once, and its answer decides; expected doesn't wait for it.
+    #[test]
+    fn a_done_on_an_audit_row_waits_for_the_audit() {
+        // Gone: done, with the verdict's own settle (the follow-up as a task; in a
+        // series, the next).
+        let mut s = Session::new(listen_item().ask());
+        let fx = s.start_in_series((1, 2));
+        let fx = answer(
+            &mut s,
+            &fx,
+            "Already bound.\n```sentry-verdict\nstatus = \"done\"\nsummary = \"already bound\"\n\
+             [follow_up]\ntitle = \"Confirm it\"\nsteps = \"ss -ltn\"\nafter = \"7d\"\n```",
+        );
+        assert_eq!(fx, [Fx::SecAgain], "the series waits for the audit");
+        assert!(s.busy() && s.phase == Phase::Applying);
+        let fx = s.reaudited(None);
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert!(fx.iter().any(|f| matches!(f, Fx::AddTask(_))), "{fx:?}");
+        assert!(fx.iter().any(|f| matches!(f, Fx::Next)), "{fx:?}");
+        assert!(!fx.iter().any(|f| matches!(f, Fx::SecAgain)), "{fx:?}");
+        // Still reported: Claude is told, and it isn't done.
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(&mut s, &fx, SEC_DONE);
+        assert_eq!(fx, [Fx::SecAgain]);
+        let fx = s.reaudited(Some("7 services listen on every address".into()));
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.starts_with("You answered done, but the security audit still reports it:")),
+            "{fx:?}"
+        );
+        assert_eq!(s.phase, Phase::Thinking(Turn::Fix));
+        // It can't check: not verified, the row stays.
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, SEC_DONE);
+        let fx = s.audit_unavailable("myserver wasn't reachable");
+        assert_eq!(s.phase, Phase::Settled(End::Unverified));
+        assert!(
+            !fx.iter().any(|f| matches!(f, Fx::Next | Fx::SecAgain)),
+            "{fx:?}"
+        );
+        assert!(
+            s.chat.entries.iter().any(
+                |(_, l)| l == "the security audit couldn't check it: myserver wasn't reachable"
+            )
+        );
+        // Said twice (a late answer), heard once.
+        assert!(s.audit_unavailable("again").is_empty());
+        assert!(s.reaudited(None).is_empty());
+        assert_eq!(s.phase, Phase::Settled(End::Unverified));
+        // Expected is at once: it stays reported, on purpose.
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"expected\"\nsummary = \"meant to be\"\n```",
+        );
+        assert!(matches!(&fx[..], [Fx::Expect { .. }]), "{fx:?}");
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        // Offline: the transcript says the audit didn't check, and done goes through.
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(&mut s, &fx, SEC_DONE);
+        s.audit_skipped();
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert!(
+            s.chat
+                .entries
+                .iter()
+                .any(|(_, l)| l == "(offline: the security audit didn't check it)")
+        );
+    }
+
+    /// A request Claude made while it looked into it (refused, never allowed) is replaced
+    /// by its plan: once the plan is done, the session doesn't open again on it.
+    #[test]
+    fn a_plan_replaces_what_claude_asked_for_before_it() {
+        use crate::claude::{Access, Grant};
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        // (The request is refused during the turn that sends the plan.)
+        let Some(Fx::Turn { shown, .. }) = fx.first() else {
+            panic!("{fx:?}")
+        };
+        s.chat.begin_turn(shown.as_deref().unwrap_or(""), 1, 7);
+        s.chat.requests = vec![Grant {
+            access: Access::Run,
+            path: "ss -ltnp".into(),
+            ..Default::default()
+        }];
+        s.chat.on_event(Event::Text(plan(
+            "[[step]]\ntitle = \"bind\"\nrun = \"true\"\n",
+        )));
+        s.turn_ended(0, &[]);
+        assert!(s.chat.requests.is_empty());
+        assert_eq!(s.enter_word(), Some("apply the plan"));
+        key(&mut s, KeyCode::Enter);
+        let fx = s.step_ended(0);
+        assert_eq!(fx, [Fx::SecAgain]);
+        let fx = s.reaudited(None);
+        let fx = answer(&mut s, &fx, SEC_DONE);
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert_eq!(s.enter_word(), Some("close"));
+        s.auto = true;
+        assert!(s.auto_go().is_empty(), "auto has nothing to allow");
+        let logs = fx.iter().filter(|f| matches!(f, Fx::Log { .. })).count();
+        assert_eq!(logs, 1, "{fx:?}");
+    }
+
+    /// Every answer ends with a plan, a verdict or a request: one with none is sent back;
+    /// a question only the user can answer waits for what they type.
+    #[test]
+    fn an_answer_with_nothing_is_asked_for_a_verdict_and_a_question_waits_for_you() {
+        let mut s = Session::new(listen_item().ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(&mut s, &fx, "I looked around.");
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.contains("status = \"ask\"")),
+            "{fx:?}"
+        );
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"ask\"\nsummary = \"Is port 8443 meant to be reachable?\"\n```",
+        );
+        assert!(fx.is_empty(), "nothing is logged or moved: {fx:?}");
+        assert_eq!(s.phase, Phase::Review);
+        assert_eq!(
+            s.question.as_deref(),
+            Some("Is port 8443 meant to be reachable?")
+        );
+        assert_eq!(s.enter_word(), Some(ANSWER));
+        assert!(
+            s.chat
+                .entries
+                .iter()
+                .any(|(_, l)| l == "Claude asks you: Is port 8443 meant to be reachable?")
+        );
+        // Enter with nothing typed sends nothing; auto never answers it.
+        assert!(key(&mut s, KeyCode::Enter).is_empty());
+        s.auto = true;
+        assert!(s.auto_go().is_empty());
+        s.auto = false;
+        // The answer typed goes to Claude.
+        for c in "yes, on purpose".chars() {
+            key(&mut s, KeyCode::Char(c));
+        }
+        let fx = key(&mut s, KeyCode::Enter);
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt == "yes, on purpose"),
+            "{fx:?}"
+        );
+        assert!(s.question.is_none());
     }
 
     fn plan(steps: &str) -> String {
@@ -2791,7 +3261,7 @@ mod tests {
         let mut s = session();
         s.auto = true;
         let fx = s.auto_go();
-        answer(&mut s, &fx, "It's refused; I asked.");
+        asked(&mut s, &fx, "It's refused; I asked.");
         s.sudo_free = true;
         s.fixes = 1;
         s.chat.requests = vec![run("systemctl --user restart foo.service")];
@@ -2818,7 +3288,7 @@ mod tests {
             let mut s = session();
             s.auto = true;
             let fx = s.auto_go();
-            answer(&mut s, &fx, "Asked.");
+            asked(&mut s, &fx, "Asked.");
             s.chat.requests = vec![run("uname -a"), req.clone()];
             assert!(s.auto_go().is_empty(), "{req:?}");
             assert_eq!(s.phase, Phase::Review);
@@ -3331,7 +3801,17 @@ mod tests {
         // A task Claude couldn't verify: Enter marks it done.
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "Nothing to plan, it's fine.");
+        let fx = answer(&mut s, &fx, "Nothing to plan, it's fine.");
+        // Neither a plan nor a verdict: Claude is asked to end one of the ways, while the
+        // rounds last; then it's the user's.
+        assert!(
+            matches!(&fx[..], [Fx::Turn { prompt, .. }] if prompt.contains("neither")),
+            "{fx:?}"
+        );
+        assert_eq!(s.phase, Phase::Thinking(Turn::Fix));
+        let fx = answer(&mut s, &fx, "Still nothing to plan.");
+        let fx = answer(&mut s, &fx, "Nothing, again.");
+        assert!(fx.is_empty(), "{fx:?}");
         assert_eq!(s.enter_word(), Some("ask for a plan"));
         let fx = key(&mut s, KeyCode::Enter);
         assert!(matches!(&fx[0], Fx::Turn { prompt, .. } if prompt.contains("sentry-apply")));
@@ -3423,7 +3903,7 @@ mod tests {
                 .contains("any command here that needs no root")
         );
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "It's refused; I asked.");
+        asked(&mut s, &fx, "It's refused; I asked.");
         s.sudo_free = true;
         s.chat.requests = vec![run("rpm-ostree upgrade --preview")];
         assert_eq!(s.enter_word(), Some("allow it"));
@@ -3440,7 +3920,7 @@ mod tests {
         // Upgrading and rebooting are a workflow's: Claude is told, nothing runs.
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "Asked.");
+        asked(&mut s, &fx, "Asked.");
         s.chat.requests = vec![run("sudo rpm-ostree upgrade"), run("systemctl reboot")];
         let fx = key(&mut s, KeyCode::Enter);
         let Some(Fx::Turn { prompt, .. }) = fx.first() else {
@@ -3465,7 +3945,7 @@ mod tests {
             },
         ));
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "It needs root; I asked.");
+        asked(&mut s, &fx, "It needs root; I asked.");
         // (The gateway refused it: it's a line for the server.)
         let gateway = |c: &str| crate::claude::Grant {
             on: Some("srv:myserver".into()),
@@ -3479,7 +3959,7 @@ mod tests {
         // changes something is refused, with why.
         let mut s3 = Session::new(s.chat.ask.clone());
         let fx = key(&mut s3, KeyCode::Enter);
-        answer(&mut s3, &fx, "Asked.");
+        asked(&mut s3, &fx, "Asked.");
         s3.chat.requests = vec![run("journalctl -b -p 3"), run("touch /tmp/x")];
         let fx = key(&mut s3, KeyCode::Enter);
         let [Fx::Turn { prompt, .. }] = &fx[..] else {
@@ -3495,7 +3975,7 @@ mod tests {
         // And a server's line is never run here.
         let mut s4 = session();
         let fx = key(&mut s4, KeyCode::Enter);
-        answer(&mut s4, &fx, "Asked.");
+        asked(&mut s4, &fx, "Asked.");
         s4.chat.requests = vec![gateway("sudo true")];
         let fx = key(&mut s4, KeyCode::Enter);
         assert!(
@@ -3506,7 +3986,7 @@ mod tests {
         // A piece of a pipeline is never run by itself: the command as Claude wrote it is.
         let mut s5 = session();
         let fx = key(&mut s5, KeyCode::Enter);
-        answer(&mut s5, &fx, "Asked.");
+        asked(&mut s5, &fx, "Asked.");
         s5.chat.requests = vec![
             crate::claude::requested(
                 "Bash",
@@ -3534,7 +4014,7 @@ mod tests {
         // A file on the laptop still isn't a server session's to edit.
         let mut s2 = Session::new(s.chat.ask.clone());
         let fx = key(&mut s2, KeyCode::Enter);
-        answer(&mut s2, &fx, "Asked.");
+        asked(&mut s2, &fx, "Asked.");
         s2.chat.requests = vec![Grant {
             access: Access::Write,
             path: crate::paths::home().join("notes.md").display().to_string(),
@@ -3545,7 +4025,7 @@ mod tests {
         // A root command: sentry asks for the password, runs it, tells Claude, logs it.
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "I need root for this.");
+        asked(&mut s, &fx, "I need root for this.");
         s.chat.requests = vec![run("sudo systemctl restart x")];
         let fx = key(&mut s, KeyCode::Enter);
         assert_eq!(fx, vec![Fx::CheckSudo]);
@@ -3583,7 +4063,7 @@ mod tests {
         // A failed command goes back to Claude too; a ready plan keeps Enter.
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "Asked.");
+        asked(&mut s, &fx, "Asked.");
         s.sudo_free = true;
         s.chat.requests = vec![run("rm /tmp/x")];
         let fx = key(&mut s, KeyCode::Enter);
@@ -3605,7 +4085,7 @@ mod tests {
         let path = tmp.display().to_string();
         let mut s = session();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "I asked to edit it.");
+        asked(&mut s, &fx, "I asked to edit it.");
         s.chat.requests = vec![Grant {
             access: Access::Write,
             path: path.clone(),
@@ -4290,7 +4770,7 @@ mod tests {
         };
         let mut s = on_router();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "I asked for three things.");
+        asked(&mut s, &fx, "I asked for three things.");
         s.chat.requests = vec![
             // The server's gateway held a line that needs root: it runs on the server.
             req("sudo ss -ltnp", Some("srv:myserver")),
@@ -4315,7 +4795,7 @@ mod tests {
         // A read-only command on this machine is a grant, and Claude runs it itself.
         let mut s = on_router();
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "Asked.");
+        asked(&mut s, &fx, "Asked.");
         s.chat.requests = vec![req("uname -a", None)];
         let fx = key(&mut s, KeyCode::Enter);
         assert!(
@@ -4335,7 +4815,7 @@ mod tests {
         ));
         s.in_system(peer("srv:myserver", "myserver"), vec![router()]);
         let fx = key(&mut s, KeyCode::Enter);
-        answer(&mut s, &fx, "Asked.");
+        asked(&mut s, &fx, "Asked.");
         s.chat.requests = vec![req("uci commit network", Some("net:home"))];
         let fx = key(&mut s, KeyCode::Enter);
         assert!(

@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use sentry_app::remote::upstream::{
-    Eol, Release, comparable, curl, fetch_eol, fetch_github, parse_eol, parse_github, shape,
+    Eol, Release, bare_version, comparable, curl, cycle_for, fetch_cycles, fetch_eol, fetch_github,
+    parse_cycles, parse_eol, parse_github, shape,
 };
 use sentry_core::cache;
 
@@ -21,11 +22,40 @@ pub struct Upstream {
     pub err: Option<String>,
 }
 
-/// Everything looked up for a server: by source (`github:o/r`) and by eol key (`debian/13`).
+/// Everything looked up for a server: by source (`github:o/r`) and, for end of life, every
+/// cycle of each endoflife.date product (`debian`, `nvidia`): which one is the item's is
+/// told from the version that runs (`eval`). Stored as `eol_cycles`: a cache from before,
+/// one cycle per typed `product/cycle` under `eol`, reads as nothing looked up yet.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lookups {
     pub sources: BTreeMap<String, Upstream>,
-    pub eol: BTreeMap<String, Result<Eol, String>>,
+    #[serde(rename = "eol_cycles", default)]
+    pub eol: BTreeMap<String, Result<Vec<Eol>, String>>,
+}
+
+/// The endoflife.date product of an item's `eol:` (`docker-engine/29` → `docker-engine`).
+pub fn product(eol: &str) -> &str {
+    eol.split_once('/').map_or(eol, |(p, _)| p).trim()
+}
+
+/// Every product the items' `eol:` names, once each.
+pub fn products(items: &[crate::config::MaintItem]) -> Vec<&str> {
+    let mut v: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.eol.as_deref())
+        .map(product)
+        .filter(|p| !p.is_empty())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+impl Lookups {
+    /// Each product the items need has an answer (cycles, or why there are none).
+    pub fn covers(&self, items: &[crate::config::MaintItem]) -> bool {
+        products(items).iter().all(|p| self.eol.contains_key(*p))
+    }
 }
 
 /// Docker Hub `GET /v2/repositories/{ns}/{repo}/tags`.
@@ -133,9 +163,7 @@ pub fn refresh(server: &str, cfg: &crate::config::Server) -> Lookups {
         .collect();
     sources.sort();
     sources.dedup_by(|a, b| a.0 == b.0);
-    let mut eols: Vec<&str> = items.iter().filter_map(|i| i.eol.as_deref()).collect();
-    eols.sort();
-    eols.dedup();
+    let eols = products(items);
     let mut out = Lookups::default();
     std::thread::scope(|sc| {
         let hs: Vec<_> = sources
@@ -144,7 +172,7 @@ pub fn refresh(server: &str, cfg: &crate::config::Server) -> Lookups {
             .collect();
         let he: Vec<_> = eols
             .iter()
-            .map(|k| (*k, sc.spawn(move || fetch_eol(k))))
+            .map(|p| (*p, sc.spawn(move || fetch_cycles(p))))
             .collect();
         for (s, h) in hs {
             let up = match h.join().unwrap_or_else(|_| Err("lookup panicked".into())) {
@@ -171,6 +199,36 @@ pub fn refresh(server: &str, cfg: &crate::config::Server) -> Lookups {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cache_from_before_reads_as_not_looked_up() {
+        // One cycle per typed `product/cycle`, as caches were written before.
+        let old = r#"{"fetched_at":"2026-11-01T10:00:00Z","data":{
+            "sources":{"github:example/web":{"releases":[{"version":"v1.5.2","date":null,"security":false,"url":null}],"err":null}},
+            "eol":{"debian/12":{"Ok":{"cycle":"12","eol":"2028-06-10","latest":"12.15"}}}}}"#;
+        let c: cache::Cached<Lookups> = serde_json::from_str(old).unwrap();
+        assert!(c.data.eol.is_empty());
+        assert_eq!(
+            c.data.sources["github:example/web"].releases[0].version,
+            "v1.5.2"
+        );
+        let items = |eol: &str| {
+            vec![crate::config::MaintItem {
+                id: "os".into(),
+                eol: Some(eol.into()),
+                ..Default::default()
+            }]
+        };
+        assert!(!c.data.covers(&items("debian/12")));
+        // What's written now reads back, by product.
+        let mut lk = c.data.clone();
+        lk.eol.insert("debian".into(), Err("offline".into()));
+        let back: Lookups = serde_json::from_str(&serde_json::to_string(&lk).unwrap()).unwrap();
+        assert_eq!(back, lk);
+        assert!(back.covers(&items("debian/12")) && back.covers(&items("debian")));
+        assert!(!back.covers(&items("nvidia")));
+        assert_eq!(product("docker-engine/29"), "docker-engine");
+    }
 
     #[test]
     fn registry_tags_and_comparable_ones() {

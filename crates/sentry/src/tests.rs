@@ -2027,6 +2027,169 @@ fn enter_on_an_audit_item_is_a_session_across_its_targets() {
     );
 }
 
+/// A session on one of the security audit's rows is done only when the audit says so:
+/// its plan runs, the audit reads every target again (once) for the slot that asked, and
+/// while the new report still lists the item Claude is told and the row stays; when it no
+/// longer does, the session settles done and the row goes. An audit already under way
+/// when the session asks is not its answer: a fresh one runs after it.
+#[test]
+fn a_session_on_an_audit_row_waits_for_the_audit_to_say_it_is_gone() {
+    use sentry_core::apply::session::{End, Phase};
+    let (server, network) = ("asksrv", "asknet");
+    let item = format!("sec:ssh-password:srv:{server}");
+    let mut a = three_with(server, network);
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    // (A slot takes the report in with its next event.)
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('6'));
+    let listed = |a: &App| a.slots[SRV].shared.sec.iter().any(|i| i.id == item);
+    assert!(listed(&a));
+    let srv_id = sentry_server::tui::id_of(server);
+    let fixed = || {
+        let mut f = audit_facts(server, network);
+        f[1].ssh.as_mut().unwrap().password = Some(false);
+        f
+    };
+    let done = |a: &mut App, facts| {
+        a.on_event(
+            Event::Data(srv_id.clone(), Box::new(sentry_app::secaudit::Done(facts))),
+            Instant::now(),
+        )
+    };
+
+    // The session, its plan, run.
+    a.focus(SRV, Instant::now());
+    a.apply_at(SRV, vec![Effect::SecItem(item.clone())]);
+    key(&mut a, KeyCode::Enter);
+    let session = |a: &mut App| {
+        a.apply_answer_at(
+            SRV,
+            &plan_of("[[step]]\ntitle = \"Keys only\"\nrun = \"true\"\n"),
+        );
+        key(a, KeyCode::Enter);
+        a.apply_exit_at(SRV, 0);
+    };
+    session(&mut a);
+    // The audit reads again, for the server's slot; the session waits for it.
+    assert!(a.win.sec.busy());
+    assert_eq!(a.win.sec.asked.len(), 1);
+    assert_eq!(a.win.sec.asked[0].slot, srv_id);
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(s.auditing() && s.phase == Phase::Applying);
+    // It still lists it: Claude is told, nothing is done, the row stays.
+    done(&mut a, audit_facts(server, network));
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(!s.auditing());
+    assert!(
+        s.chat
+            .entries
+            .iter()
+            .any(|(_, l)| l.starts_with("the security audit still reports it")),
+        "{:?}",
+        s.chat.entries
+    );
+    assert!(listed(&a));
+    a.apply_answer_at(
+        SRV,
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(
+        !matches!(s.phase, Phase::Settled(End::Done)),
+        "{:?}",
+        s.phase
+    );
+    assert!(!a.win.sec.busy(), "nothing changed since: no audit");
+    assert!(listed(&a));
+    // Another plan; this time the audit no longer lists it.
+    session(&mut a);
+    assert!(a.win.sec.busy());
+    done(&mut a, fixed());
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(
+        s.chat
+            .entries
+            .iter()
+            .any(|(_, l)| l.starts_with("the security audit no longer reports it")),
+        "{:?}",
+        s.chat.entries
+    );
+    a.apply_answer_at(
+        SRV,
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    assert_eq!(
+        a.apply_session_at(SRV).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    assert!(!a.win.sec.busy(), "done starts no second audit");
+    // Its steps changed the server, and the audit it waited for answered after them: the
+    // window owes the change no run of its own.
+    assert!(a.last_change_at(SRV).is_some());
+    assert!(a.win.sec.since().is_empty());
+    a.tick(Instant::now());
+    assert!(!a.win.sec.busy());
+    assert!(!listed(&a));
+
+    // While an audit is already under way, the ask waits for a fresh one.
+    let mut a = three_with(server, network);
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    a.focus(SRV, Instant::now());
+    a.apply_at(SRV, vec![Effect::SecItem(item.clone())]);
+    key(&mut a, KeyCode::Enter);
+    // (The user's own run, from this machine.)
+    a.apply_at(LOCAL, vec![Effect::SecRun]);
+    assert!(a.win.sec.busy());
+    a.apply_answer_at(
+        SRV,
+        "Keys only already.\n```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    assert!(a.apply_session_at(SRV).unwrap().auditing());
+    assert!(a.win.sec.asked.is_empty() && a.win.sec.again.len() == 1);
+    // The run under way ends: not the session's answer; a fresh one starts for it.
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(fixed())),
+        ),
+        Instant::now(),
+    );
+    assert!(a.apply_session_at(SRV).unwrap().auditing());
+    assert!(a.win.sec.busy() && a.win.sec.asked.len() == 1 && a.win.sec.again.is_empty());
+    // Its answer: gone, and the held done settles. (The fresh run was started where the
+    // last one ended, this machine's slot: the answer goes to the server's as a parcel.)
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(fixed())),
+        ),
+        Instant::now(),
+    );
+    assert_eq!(
+        a.apply_session_at(SRV).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    assert!(!listed(&a) && !a.win.sec.busy());
+}
+
 /// The CrowdSec row on the network's Security page is a session across the server and
 /// the router: what the server's guard says is carried by the app (the network target
 /// knows no server), and Enter briefs one session with the whole job.
@@ -2913,4 +3076,187 @@ fn a_resolved_row_leaves_at_once_on_every_target() {
         .collect();
     assert_eq!(missing, [Way::Unwatch, Way::UnwatchBack], "{table:#?}");
     println!("{}", table.join("\n"));
+}
+
+/// The facts `audit_facts` gives, with a tracked app on the server missing security fixes
+/// (`sec:app:srv:<server>:web`).
+fn audit_facts_with_app(server: &str, network: &str) -> Vec<sentry_core::secaudit::TargetFacts> {
+    use sentry_core::secaudit::{Eol, Software};
+    let mut f = audit_facts(server, network);
+    f[1].software = Some(vec![Software {
+        id: "web".into(),
+        running: Some("1.0".into()),
+        latest: Some("1.2".into()),
+        behind: true,
+        security: true,
+        eol: Eol::Supported,
+        container: None,
+    }]);
+    f
+}
+
+/// A server item's run that ends well changed the server: what the security audit's report
+/// said of that item is withheld at once, while the server's other rows (its logins) stay;
+/// the audit reads every target again by itself, quietly, and its answer is the row's.
+#[test]
+fn a_run_on_an_item_withholds_its_audit_row_until_the_audit_looks_again() {
+    use sentry_app::effect::{ItemChange, WfCmd};
+    let (server, network) = ("itemsrv", "itemnet");
+    let mut a = three_with(server, network);
+    server_wf(&mut a, server, "bump", &step("one", "auto", "true"));
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts_with_app(
+                server, network,
+            ))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('6'));
+    let app = format!("sec:app:srv:{server}:web");
+    let ssh = format!("sec:ssh-password:srv:{server}");
+    let listed = |a: &App, id: &str| a.slots[SRV].shared.sec.iter().any(|i| i.id == id);
+    assert!(listed(&a, &app) && listed(&a, &ssh));
+    a.apply_at(
+        SRV,
+        vec![Effect::Wf(WfCmd::BeginPrefilled(
+            "bump".into(),
+            Default::default(),
+            Some(ItemChange {
+                item: "web".into(),
+                from: Some("1.0".into()),
+                to: Some("1.2".into()),
+            }),
+        ))],
+    );
+    assert!(a.slots[SRV].run.is_some(), "started");
+    assert!(!a.win.sec.busy());
+    a.run_step_exit_at(SRV, 0);
+    assert!(run_at(&a, SRV).2, "done");
+    // Withheld at once; the login's row stays. The audit reads again by itself.
+    assert!(!listed(&a, &app), "{:?}", a.slots[SRV].shared.sec);
+    assert!(listed(&a, &ssh));
+    assert!(a.win.sec.busy() && a.win.sec.quiet);
+    // Its answer: still missing its fixes (nothing really ran): the row is back.
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts_with_app(
+                server, network,
+            ))),
+        ),
+        Instant::now(),
+    );
+    assert!(!a.win.sec.busy() && a.win.sec.since().is_empty());
+    key(&mut a, KeyCode::Null);
+    assert!(listed(&a, &app) && listed(&a, &ssh));
+}
+
+/// A series of rows that each change the host costs one security audit, at its end: none
+/// starts while the series is under way.
+#[test]
+fn a_series_of_changes_is_audited_once_at_its_end() {
+    let mut a = two_with("seriesaudit", false);
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(
+                audit_facts("seriesaudit", "none")
+                    .into_iter()
+                    .take(2)
+                    .collect(),
+            )),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    a.slots[SRV].shared.tasks = vec![task("one", "The first"), task("two", "The second")];
+    a.slots[SRV].screen = ScreenId::Maint;
+    key(&mut a, KeyCode::F(2));
+    a.apply_at(
+        SRV,
+        vec![Effect::SeriesStart(vec![
+            ("task:one".to_string(), "The first".to_string()),
+            ("task:two".to_string(), "The second".to_string()),
+        ])],
+    );
+    let row = |a: &mut App| {
+        a.apply_answer_at(SRV, PLAN);
+        key(a, KeyCode::Enter);
+        while a.apply_session_at(SRV).is_some_and(|s| s.job.is_some())
+            || a.slots[SRV].apply_aux_for_test()
+        {
+            a.apply_exit_at(SRV, 0);
+        }
+        a.apply_answer_at(SRV, DONE);
+    };
+    row(&mut a);
+    assert_eq!(
+        a.win.sec.since().len(),
+        1,
+        "the first row changed the server"
+    );
+    assert!(a.last_change_at(SRV).is_some());
+    assert!(!a.win.sec.busy(), "the series is under way: no audit yet");
+    a.tick(Instant::now());
+    assert!(!a.win.sec.busy());
+    row(&mut a);
+    assert_eq!(a.win.sec.since().len(), 2);
+    // The series is over: one quiet run, for both.
+    assert_ne!(a.needs(SRV), Needs::Working);
+    assert!(a.win.sec.busy() && a.win.sec.quiet);
+    let rerun = a.win.sec.rerun_for;
+    a.tick(Instant::now());
+    assert_eq!(a.win.sec.rerun_for, rerun, "once");
+}
+
+/// A security report written while the window is open (`sentry audit security` from the
+/// command line) is taken in where the window looks at its files: a newer one replaces
+/// the report and its rows follow; an older one, or none new, changes nothing.
+#[test]
+fn a_security_report_written_meanwhile_is_taken_in() {
+    let (server, network) = ("looksrv", "looknet");
+    let mut a = three_with(server, network);
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    let at = a.win.sec.report.as_ref().unwrap().at;
+    let ssh = format!("sec:ssh-password:srv:{server}");
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('6'));
+    assert!(a.slots[SRV].shared.sec.iter().any(|i| i.id == ssh));
+    // (The scratch dir every test process gets.)
+    assert!(sentry_core::secaudit::dir().starts_with(std::env::temp_dir()));
+    let base = a.win.sec.report.clone().unwrap();
+    let written = |hours: i64, items| {
+        let mut r = base.clone();
+        r.at = at + jiff::SignedDuration::from_hours(hours);
+        r.items = items;
+        sentry_core::secaudit::save(&r).unwrap();
+    };
+    // An older one: not taken.
+    written(-1, Vec::new());
+    assert!(!a.sec_look_now());
+    assert_eq!(a.win.sec.report.as_ref().unwrap().at, at);
+    // A newer one, by the command line, with nothing to do: taken, and the rows follow.
+    written(1, Vec::new());
+    assert!(a.sec_look_now());
+    assert!(a.win.sec.report.as_ref().unwrap().at > at);
+    key(&mut a, KeyCode::Null);
+    assert!(!a.slots[SRV].shared.sec.iter().any(|i| i.id == ssh));
+    // Nothing new since: nothing is read.
+    assert!(!a.sec_look_now());
+    let _ = std::fs::remove_dir_all(sentry_core::secaudit::dir());
 }

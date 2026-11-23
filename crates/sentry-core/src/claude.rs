@@ -331,9 +331,10 @@ pub fn apply_question(a: &Apply) -> String {
             " If it is fine as it is and should stay that way, send no plan: say why in a \
              few lines and end with a ```sentry-verdict block with status = \"expected\" \
              and the reason as its `summary`; sentry marks it expected for me, so it leaves \
-             my list (I can take that back in Records). When you answer done, with a plan \
-             or without, sentry runs the security audit again by itself and the item \
-             follows what it finds."
+             my list (I can take that back in Records). After the plan, or when you answer \
+             done without one, sentry runs the security audit again across every target \
+             and tells you whether it still reports the item; it isn't done while the \
+             audit still reports it."
         }
         _ => "",
     };
@@ -383,7 +384,11 @@ pub fn apply_question(a: &Apply) -> String {
          is as it should be or `status = \"wait\"` (with `again = \"30d\"`) when it should be \
          looked at again later, and the reason as its one-line `summary`. Every session ends \
          with a verdict: it is what updates my list, so never leave a conclusion in words \
-         alone. Run every check \
+         alone. Every answer you give is one of: a plan, a verdict, or a request (a command \
+         you call that is refused and that I allow). When only I can decide something (what \
+         a device is, whether something is meant to be so), end with a verdict with \
+         `status = \"ask\"` and the question as its `summary`: sentry shows it to me and \
+         sends you my answer. Run every check \
          yourself first (read files with the Read tool); never ask me to run or paste anything. \
          {how} answer with a short \
          assessment (what you found, anything in the task that no longer fits) and ONE plan, \
@@ -444,6 +449,22 @@ pub const STILL_REPORTED: &str = "It isn't done while sentry's audit reports it:
     sentry watching it (`unwatch`), where the brief names it. If it can't be fixed from \
     here, say so with verdict `failed`.";
 
+/// What a session on one of the security audit's items is told while the audit still
+/// reports it.
+pub const SEC_STILL_REPORTED: &str = "It isn't done while the security audit reports it: the \
+    audit, not your own check, is what takes it off my list. If something is left to fix, \
+    send a plan for it (verdict `more`). If it is fine as it is and should stay that way, \
+    say why with verdict `expected`. If it can't be fixed from here, say so with verdict \
+    `failed`; if only I can decide, ask me with verdict `ask`.";
+
+/// The answer had neither a plan nor a verdict (nor a request): the four ways to end.
+pub const NEITHER: &str = "Your answer has neither a ```sentry-apply plan nor a \
+    ```sentry-verdict block. Every answer ends one of these ways: a plan for sentry to \
+    carry out; a verdict with `status = \"done\"` (it already is as it should be), \
+    `\"expected\"` (fine as it is, and it should stay that way), `\"wait\"` (with `again`: \
+    look again later) or `\"failed\"` (it can't be done from here); or `status = \"ask\"` \
+    with the question as its `summary` when only I can decide. Answer again, ending that way.";
+
 /// Commands the user allowed ran (`report`: each one's result): carry on, or say it's done.
 pub fn apply_ran(report: &str) -> String {
     format!(
@@ -467,7 +488,7 @@ fn verify_tail(lead: &str) -> String {
         "{lead} answer in a few \
          lines and end with one ```sentry-verdict fenced TOML block, and no other code blocks:\n\
          ```sentry-verdict\n\
-         status = \"done\"     # done: it worked · more: something's left · failed: it didn't\n\
+         status = \"done\"     # done: it worked · more: something's left · failed: it didn't · ask: only I can decide (summary = the question)\n\
          summary = \"what changed, in one line\"\n\
          next = \"what I should do later, if anything (e.g. reboot to confirm), in words\"\n\
          ```\n\

@@ -444,6 +444,41 @@ impl LogEntry {
         }
     }
 
+    /// Whether sentry changed the host by what this entry records, so that what was read of
+    /// the host before it (reports, the inventory, the updates waiting, the security audit)
+    /// is out of date. A run or anything carried out that ended well: a workflow run (not one
+    /// that found nothing to do), an apply session's entry with a step that ran and succeeded
+    /// (here or on another target's behalf), a job that changes something, a reboot, a fix,
+    /// a toolbox upgrade. Never what only records a decision or a reading: a task marked done
+    /// by hand or found done (also the security audit's own), something marked expected, a
+    /// wait, a review's changes, a plan done by hand, Claude's allowed edits of the user's
+    /// files, the audit and update-check jobs, and nothing that failed or was abandoned.
+    pub fn changed_host(&self) -> bool {
+        let h = &self.head;
+        if h.result != "done"
+            || RECORDS_ONLY.contains(&h.kind.as_str())
+            || h.workflow == "by-hand"
+            || self.body.contains(crate::workflows::NOT_NEEDED)
+        {
+            return false;
+        }
+        match h.kind.as_str() {
+            "job" => !READ_JOBS.contains(&h.workflow.as_str()),
+            // (Claude's edits are `apply` entries too, with no step in them.)
+            "apply" => self.body.lines().any(ran_ok),
+            _ => true,
+        }
+    }
+
+    /// The maintenance item the entry is about: its header's, else its `item:` tag (an
+    /// apply session's entry names it there).
+    pub fn item_named(&self) -> Option<&str> {
+        self.head
+            .item
+            .as_deref()
+            .or_else(|| self.head.tags.iter().find_map(|t| t.strip_prefix("item:")))
+    }
+
     /// One line for an agent's context: when, what, how, result, and the file.
     pub fn line(&self) -> String {
         let h = &self.head;
@@ -465,6 +500,20 @@ impl LogEntry {
             self.file_name()
         )
     }
+}
+
+/// The kinds of entry that record a decision or a reading, never a change of the host
+/// (`LogEntry::changed_host`).
+pub const RECORDS_ONLY: &[&str] = &["task", "expected", "wait", "review", "edit"];
+
+/// The jobs that only read (`kind = "job"`).
+const READ_JOBS: &[&str] = &["audit", "update-check"];
+
+/// A step's line in an apply entry's report that ran and succeeded: `3. ✓ title (…)`.
+fn ran_ok(line: &str) -> bool {
+    let l = line.trim_start();
+    let digits = l.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && l[digits..].starts_with(". ✓ ")
 }
 
 fn list_or_none(v: &[String]) -> String {
@@ -1031,5 +1080,61 @@ mod tests {
         assert!(ledger.contains("](renamed-by-hand.md)"), "{ledger}");
         assert!(ledger.contains(&format!("]({})", a.file_name())));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// What changed the host and what only records something (`changed_host`): the one
+    /// rule the window's re-reads, the inventory's header and the security audit's re-run
+    /// go by.
+    #[test]
+    fn what_changed_the_host() {
+        let at = jiff::Timestamp::now();
+        let ev = |kind: &str, what: &str, ok: bool, body: &str| {
+            LogEntry::event("", kind, what, ok, body, &[], at)
+        };
+        let (wf, mut st) = run();
+        st.status = RunStatus::Done;
+        let done = LogEntry::from_run("s", &wf, &st, Path::new("/r/1"), None, None);
+        assert!(done.changed_host());
+        let mut idle = st.clone();
+        idle.steps[0].note = Some(crate::workflows::NOT_NEEDED.into());
+        let idle = LogEntry::from_run("s", &wf, &idle, Path::new("/r/2"), None, None);
+        assert!(!idle.changed_host(), "found nothing to do");
+        st.status = RunStatus::Abandoned;
+        let left = LogEntry::from_run("s", &wf, &st, Path::new("/r/3"), None, None);
+        assert!(!left.changed_host(), "abandoned");
+        let steps = "Keys only\n\n1. ✓ Restart it (run on srv:x ssh): ok";
+        assert!(ev("apply", "apply", true, steps).changed_host());
+        assert!(!ev("apply", "apply", false, steps).changed_host(), "failed");
+        assert!(
+            !ev("apply", "apply", true, "1. ✗ Restart it (run ssh): exit 1").changed_host(),
+            "no step succeeded"
+        );
+        assert!(
+            !ev(
+                "apply",
+                "apply",
+                true,
+                "Claude changed /x (1 → 2 lines) · backup /b"
+            )
+            .changed_host(),
+            "an allowed edit"
+        );
+        for kind in ["expected", "wait", "review", "edit", "task"] {
+            assert!(!ev(kind, kind, true, "x").changed_host(), "{kind}");
+        }
+        assert!(!LogEntry::task("", "t", "T", None).changed_host());
+        assert!(!crate::secaudit::done_entry("fine").changed_host());
+        assert!(!LogEntry::by_hand("", "web", "image", None, None, None, None).changed_host());
+        assert!(!ev("job", "audit", true, "").changed_host());
+        assert!(!ev("job", "update-check", true, "").changed_host());
+        assert!(ev("job", "cleanup-flatpak", true, "").changed_host());
+        assert!(ev("reboot", "reboot", true, "").changed_host());
+        assert!(ev("toolbox", "toolbox", true, "").changed_host());
+        // Which item: the header's, else the tag an apply entry carries.
+        let tagged = LogEntry::event("", "apply", "apply", true, "", &["item:web".into()], at);
+        assert_eq!(tagged.item_named(), Some("web"));
+        let mut both = tagged.clone();
+        both.head.item = Some("db".into());
+        assert_eq!(both.item_named(), Some("db"));
     }
 }

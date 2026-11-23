@@ -31,11 +31,17 @@ impl Slot {
             }
             // (After the target moved old files of its own into them.)
             self.read_records();
+            // The last time sentry changed the host (a record isn't one).
             self.last_change_at = self
                 .shared
                 .log
-                .first()
-                .and_then(|e| e.head.ended.or(e.head.started));
+                .iter()
+                .filter(|e| e.changed_host())
+                .filter_map(|e| e.head.ended.or(e.head.started))
+                .max();
+            // What the log says changed since the security audit's report: kept by the
+            // window, so the report's items about it wait for the audit to look again.
+            self.note_logged_changes(w);
             if self.ways.workflows_at_start {
                 self.load_wf_entries();
             }

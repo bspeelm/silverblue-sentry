@@ -2713,3 +2713,38 @@ fn every_way_a_row_is_resolved_updates_the_list_at_once() {
         "every way that needs no file of the process's own was tried"
     );
 }
+
+/// Only what changed this machine has it read again (the updates waiting, its audit): a
+/// reboot, a job that changes something, an apply session's step. Something marked
+/// expected, a wait, a review, a task done by hand and the read-only jobs never do.
+#[test]
+fn only_a_change_of_this_machine_reads_it_again() {
+    use crate::maint::log::LogEntry;
+    let mut a = app(ScreenId::Maint);
+    let ev = |kind: &str, what: &str, body: &str| {
+        crate::tui::app::Effect::LogEvent(Box::new(LogEntry::event(
+            "",
+            kind,
+            what,
+            true,
+            body,
+            &[],
+            jiff::Timestamp::now(),
+        )))
+    };
+    a.apply_for_test(vec![
+        ev("expected", "expected", "x is expected"),
+        ev("wait", "wait", "later"),
+        ev("review", "review", "1 task"),
+        ev("job", "audit", ""),
+        ev("job", "update-check", ""),
+        crate::tui::app::Effect::LogEvent(Box::new(LogEntry::task("", "t", "T", None))),
+    ]);
+    assert_eq!(a.changed_reads_for_test(), 0);
+    assert_eq!(a.last_change_for_test(), None);
+    a.apply_for_test(vec![ev("job", "cleanup-flatpak", "")]);
+    assert_eq!(a.changed_reads_for_test(), 1);
+    a.apply_for_test(vec![ev("apply", "apply", "1. ✓ Do (run true): ok")]);
+    assert_eq!(a.changed_reads_for_test(), 2);
+    assert!(a.last_change_for_test().is_some());
+}
