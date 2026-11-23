@@ -64,10 +64,14 @@ impl Slot {
             w.sec.answers = core::Answers::load();
             match Report::finish(&facts) {
                 Ok((r, _)) => r,
-                Err(e) => return w.toast(&format!("security audit: {e}")),
+                Err(e) => {
+                    self.sec_answer_asked(w, Some(format!("it ended with an error ({e})")));
+                    return w.toast(&format!("security audit: {e}"));
+                }
             }
         };
         if report.empty() {
+            self.sec_answer_asked(w, Some("nothing could be read from any target".into()));
             return w.toast("security audit: nothing could be read from any target");
         }
         // Its task is this machine's, and done.
@@ -81,6 +85,8 @@ impl Slot {
         w.sec.review = None;
         w.sec.rev += 1;
         self.sec_sync(w);
+        // The sessions that waited for it hear whether their item is still reported.
+        self.sec_answer_asked(w, None);
         if quiet {
             return w.toast(&format!(
                 "security audit read again: {n} to do first · {} shows it",
@@ -375,17 +381,112 @@ impl Slot {
             .collect();
     }
 
-    /// A session on one of the audit's items settled done: the audit reads every
-    /// target again by itself (nothing opens, no review), and its rows follow the report.
+    /// A session on one of the audit's items ran its plan, or Claude says it is done: the
+    /// audit reads every target again (nothing opens, no review), and the session hears
+    /// what it found (`sec_audited`) before it settles. While a run is under way the ask
+    /// waits for the next one, which starts when that ends (its facts may be from before
+    /// the change). Offline (tests) without `Sec.rerun_offline` nothing runs, and the
+    /// session says so; a window without the audit can't say, and the session isn't done.
     pub(crate) fn sec_again(&mut self, w: &mut Win) {
-        if w.sec.busy()
-            || (w.sec.collect.is_none() && !w.offline)
-            || (w.offline && !w.sec.rerun_offline)
-        {
+        let Some(item) = self
+            .apply
+            .as_ref()
+            .and_then(|s| s.chat.ask.applying())
+            .and_then(|a| a.key.strip_prefix(sentry_core::maint::rec::AUDIT_ROW))
+            .map(str::to_string)
+        else {
+            return;
+        };
+        if w.offline && !w.sec.rerun_offline {
+            if let Some(sess) = self.apply.as_mut() {
+                let fx = sess.audit_skipped();
+                self.apply_fx(w, fx);
+            }
             return;
         }
+        if w.sec.collect.is_none() && !w.offline {
+            if let Some(sess) = self.apply.as_mut() {
+                let fx = sess.audit_unavailable("it isn't available in this window");
+                self.apply_fx(w, fx);
+            }
+            return;
+        }
+        let me = self.mail.id().clone();
+        let targets = self
+            .shared
+            .sec
+            .iter()
+            .chain(w.sec.report.iter().flat_map(|r| r.items.iter()))
+            .find(|i| i.id == item)
+            .map(|i| i.targets.clone())
+            .unwrap_or_default();
+        let asked = sec::Asked {
+            slot: me,
+            item,
+            targets,
+        };
+        // (One ask per session: a second from the same one replaces the first.)
+        w.sec.asked.retain(|a| a.slot != asked.slot);
+        w.sec.again.retain(|a| a.slot != asked.slot);
+        if w.sec.busy() {
+            w.sec.again.push(asked);
+            return w.toast("the security audit is running · it reads every target again after");
+        }
+        w.sec.asked.push(asked);
         self.sec_read_all(w, true);
         w.toast("the security audit reads every target again · its rows follow");
+    }
+
+    /// The run ended (`failed`: why it gave no report): every session that waited for it
+    /// hears its answer (in its own slot), and those that asked while it ran get a run of
+    /// their own now.
+    fn sec_answer_asked(&mut self, w: &mut Win, failed: Option<String>) {
+        let me = self.mail.id().clone();
+        for a in std::mem::take(&mut w.sec.asked) {
+            let answer = match &failed {
+                Some(why) => Err(why.clone()),
+                None => w.sec.answer(&a.item, &a.targets),
+            };
+            if a.slot == me {
+                self.sec_audited(w, &a.item, answer);
+            } else {
+                w.outbox.push_back((
+                    a.slot,
+                    Parcel::SecAudited {
+                        item: a.item,
+                        answer,
+                    },
+                ));
+            }
+        }
+        let next = std::mem::take(&mut w.sec.again);
+        if !next.is_empty() && !w.sec.busy() {
+            w.sec.asked = next;
+            self.sec_read_all(w, true);
+            w.toast("the security audit reads every target again · its rows follow");
+        }
+    }
+
+    /// The audit answered the session on its item `id`: still reported, gone, or it
+    /// couldn't say. A session closed or opened on something else since hears nothing.
+    pub(crate) fn sec_audited(&mut self, w: &mut Win, id: &str, answer: sec::Answer) {
+        let key = sec::row_key(id);
+        let waiting = self
+            .apply
+            .as_ref()
+            .is_some_and(|s| s.auditing() && s.chat.ask.applying().is_some_and(|a| a.key == key));
+        if !waiting {
+            return;
+        }
+        self.rows_changed(w);
+        let Some(sess) = self.apply.as_mut() else {
+            return;
+        };
+        let fx = match answer {
+            Ok(still) => sess.reaudited(still),
+            Err(why) => sess.audit_unavailable(&why),
+        };
+        self.apply_fx(w, fx);
     }
 
     /// After an upgrade the window audits again by itself: the facts only, nothing opened,

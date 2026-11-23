@@ -2027,6 +2027,163 @@ fn enter_on_an_audit_item_is_a_session_across_its_targets() {
     );
 }
 
+/// A session on one of the security audit's rows is done only when the audit says so:
+/// its plan runs, the audit reads every target again (once) for the slot that asked, and
+/// while the new report still lists the item Claude is told and the row stays; when it no
+/// longer does, the session settles done and the row goes. An audit already under way
+/// when the session asks is not its answer: a fresh one runs after it.
+#[test]
+fn a_session_on_an_audit_row_waits_for_the_audit_to_say_it_is_gone() {
+    use sentry_core::apply::session::{End, Phase};
+    let (server, network) = ("asksrv", "asknet");
+    let item = format!("sec:ssh-password:srv:{server}");
+    let mut a = three_with(server, network);
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    // (A slot takes the report in with its next event.)
+    key(&mut a, KeyCode::F(2));
+    key(&mut a, KeyCode::Char('6'));
+    let listed = |a: &App| a.slots[SRV].shared.sec.iter().any(|i| i.id == item);
+    assert!(listed(&a));
+    let srv_id = sentry_server::tui::id_of(server);
+    let fixed = || {
+        let mut f = audit_facts(server, network);
+        f[1].ssh.as_mut().unwrap().password = Some(false);
+        f
+    };
+    let done = |a: &mut App, facts| {
+        a.on_event(
+            Event::Data(srv_id.clone(), Box::new(sentry_app::secaudit::Done(facts))),
+            Instant::now(),
+        )
+    };
+
+    // The session, its plan, run.
+    a.focus(SRV, Instant::now());
+    a.apply_at(SRV, vec![Effect::SecItem(item.clone())]);
+    key(&mut a, KeyCode::Enter);
+    let session = |a: &mut App| {
+        a.apply_answer_at(
+            SRV,
+            &plan_of("[[step]]\ntitle = \"Keys only\"\nrun = \"true\"\n"),
+        );
+        key(a, KeyCode::Enter);
+        a.apply_exit_at(SRV, 0);
+    };
+    session(&mut a);
+    // The audit reads again, for the server's slot; the session waits for it.
+    assert!(a.win.sec.busy());
+    assert_eq!(a.win.sec.asked.len(), 1);
+    assert_eq!(a.win.sec.asked[0].slot, srv_id);
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(s.auditing() && s.phase == Phase::Applying);
+    // It still lists it: Claude is told, nothing is done, the row stays.
+    done(&mut a, audit_facts(server, network));
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(!s.auditing());
+    assert!(
+        s.chat
+            .entries
+            .iter()
+            .any(|(_, l)| l.starts_with("the security audit still reports it")),
+        "{:?}",
+        s.chat.entries
+    );
+    assert!(listed(&a));
+    a.apply_answer_at(
+        SRV,
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(
+        !matches!(s.phase, Phase::Settled(End::Done)),
+        "{:?}",
+        s.phase
+    );
+    assert!(!a.win.sec.busy(), "nothing changed since: no audit");
+    assert!(listed(&a));
+    // Another plan; this time the audit no longer lists it.
+    session(&mut a);
+    assert!(a.win.sec.busy());
+    done(&mut a, fixed());
+    let s = a.apply_session_at(SRV).unwrap();
+    assert!(
+        s.chat
+            .entries
+            .iter()
+            .any(|(_, l)| l.starts_with("the security audit no longer reports it")),
+        "{:?}",
+        s.chat.entries
+    );
+    a.apply_answer_at(
+        SRV,
+        "```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    assert_eq!(
+        a.apply_session_at(SRV).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    assert!(!a.win.sec.busy(), "done starts no second audit");
+    assert!(!listed(&a));
+
+    // While an audit is already under way, the ask waits for a fresh one.
+    let mut a = three_with(server, network);
+    a.survey();
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(audit_facts(server, network))),
+        ),
+        Instant::now(),
+    );
+    a.writer_answered("Fine.");
+    a.win.sec.rerun_offline = true;
+    a.focus(SRV, Instant::now());
+    a.apply_at(SRV, vec![Effect::SecItem(item.clone())]);
+    key(&mut a, KeyCode::Enter);
+    // (The user's own run, from this machine.)
+    a.apply_at(LOCAL, vec![Effect::SecRun]);
+    assert!(a.win.sec.busy());
+    a.apply_answer_at(
+        SRV,
+        "Keys only already.\n```sentry-verdict\nstatus = \"done\"\nsummary = \"keys only\"\n```",
+    );
+    assert!(a.apply_session_at(SRV).unwrap().auditing());
+    assert!(a.win.sec.asked.is_empty() && a.win.sec.again.len() == 1);
+    // The run under way ends: not the session's answer; a fresh one starts for it.
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(fixed())),
+        ),
+        Instant::now(),
+    );
+    assert!(a.apply_session_at(SRV).unwrap().auditing());
+    assert!(a.win.sec.busy() && a.win.sec.asked.len() == 1 && a.win.sec.again.is_empty());
+    // Its answer: gone, and the held done settles. (The fresh run was started where the
+    // last one ended, this machine's slot: the answer goes to the server's as a parcel.)
+    a.on_event(
+        Event::Data(
+            sentry_local::tui::ID.into(),
+            Box::new(sentry_app::secaudit::Done(fixed())),
+        ),
+        Instant::now(),
+    );
+    assert_eq!(
+        a.apply_session_at(SRV).unwrap().phase,
+        Phase::Settled(End::Done)
+    );
+    assert!(!listed(&a) && !a.win.sec.busy());
+}
+
 /// The CrowdSec row on the network's Security page is a session across the server and
 /// the router: what the server's guard says is carried by the app (the network target
 /// knows no server), and Enter briefs one session with the whole job.

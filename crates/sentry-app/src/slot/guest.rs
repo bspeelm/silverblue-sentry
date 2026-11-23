@@ -183,6 +183,7 @@ impl Slot {
                     self.refresh(w, Why::Facts);
                 }
             }
+            Parcel::SecAudited { item, answer } => self.sec_audited(w, &item, answer),
             Parcel::Entry(e) => {
                 self.log_event(w, *e);
             }

@@ -437,6 +437,7 @@ impl Slot {
                         Some("start") => "a session to start",
                         Some("go on with the next") => "the next row to go on to",
                         Some("open the workflow") => "a workflow to start",
+                        Some(sentry_core::apply::session::ANSWER) => "a question to answer",
                         _ => "a session to look at",
                     });
                 }

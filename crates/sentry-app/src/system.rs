@@ -81,6 +81,13 @@ pub enum Parcel {
     },
     /// The security audit is about to read every target (`Why::Facts`).
     Facts,
+    /// The security audit this target's session waited for answered (`item`: the item's
+    /// id; Ok(None): no longer reported, Ok(Some(how)): still reported, Err(why): it
+    /// couldn't check).
+    SecAudited {
+        item: String,
+        answer: crate::secaudit::Answer,
+    },
     /// A log entry of this target's, made elsewhere in the window (the audit's task done).
     Entry(Box<sentry_core::maint::log::LogEntry>),
     /// This target's own log entry of what the session ran here.

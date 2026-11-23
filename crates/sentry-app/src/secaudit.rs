@@ -61,9 +61,31 @@ pub struct Sec {
     pub rerun_for: Option<jiff::Timestamp>,
     /// The audit running is that one: nothing opens, no review is asked for.
     pub quiet: bool,
-    /// Tests: the run after an upgrade starts offline too (they hand the facts in).
+    /// Tests: the run after an upgrade starts offline too (they hand the facts in), and so
+    /// does the one a session on one of its items waits for.
     pub rerun_offline: bool,
+    /// The sessions waiting for the run under way (or about to start) to say whether
+    /// their item is still reported.
+    pub asked: Vec<Asked>,
+    /// The sessions that asked while a run was already under way: its facts may be from
+    /// before their change, so a fresh run starts for them when it ends.
+    pub again: Vec<Asked>,
 }
+
+/// A session on one of the audit's items that waits for the audit's answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Asked {
+    /// Its slot.
+    pub slot: TargetId,
+    /// The item's id.
+    pub item: String,
+    /// The targets the item is about, as the report it was opened on said.
+    pub targets: Vec<String>,
+}
+
+/// What the audit says of an item a session waits on: Ok(None) it no longer reports it,
+/// Ok(Some(how)) it still does (its title and evidence), Err(why) it couldn't check.
+pub type Answer = Result<Option<String>, String>;
 
 impl Sec {
     pub const fn new() -> Self {
@@ -85,6 +107,46 @@ impl Sec {
             rerun_for: None,
             quiet: false,
             rerun_offline: false,
+            asked: Vec::new(),
+            again: Vec::new(),
+        }
+    }
+
+    /// What the latest report says of the item `id` (about `targets`, as the session was
+    /// opened on it): one of its targets wasn't reached, or the audit couldn't check it,
+    /// is no answer.
+    pub fn answer(&self, id: &str, targets: &[String]) -> Answer {
+        let Some(r) = &self.report else {
+            return Err("there is no report".into());
+        };
+        let item = r.items.iter().find(|i| i.id == id);
+        let about = item.map_or(targets, |i| i.targets.as_slice());
+        let unreached: Vec<&str> = r
+            .targets
+            .iter()
+            .filter(|t| !t.reached && about.contains(&t.id))
+            .map(|t| t.name.as_str())
+            .collect();
+        if !unreached.is_empty() {
+            return Err(format!("{} wasn't reachable", unreached.join(", ")));
+        }
+        match item {
+            Some(i) if i.state == State::CouldNotCheck => Err(format!(
+                "it couldn't check it this time ({})",
+                if i.evidence.is_empty() {
+                    i.title.clone()
+                } else {
+                    i.evidence.join("; ")
+                }
+            )),
+            Some(i) if listed(self, i) => {
+                let mut how = i.title.clone();
+                for e in &i.evidence {
+                    how.push_str(&format!("\n- {e}"));
+                }
+                Ok(Some(how))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -191,15 +253,7 @@ pub fn mine<'a>(sec: &'a Sec, me: &str, system: &[Sys]) -> Vec<&'a Item> {
     let mut out: Vec<&Item> = r
         .items
         .iter()
-        .filter(|i| match i.state {
-            State::DoFirst | State::Worth => true,
-            // Answered since the report was made: nothing to ask any more.
-            State::Ask => i
-                .question
-                .as_ref()
-                .is_some_and(|q| sec.answers.get(q).is_none()),
-            State::Fine | State::CouldNotCheck => false,
-        })
+        .filter(|i| listed(sec, i))
         .filter(|i| {
             if system.len() < 2 {
                 return true;
@@ -210,6 +264,19 @@ pub fn mine<'a>(sec: &'a Sec, me: &str, system: &[Sys]) -> Vec<&'a Item> {
         .collect();
     out.sort_by_key(|i| (std::cmp::Reverse(i.state.weight()), i.rank));
     out
+}
+
+/// Whether an item is one a target lists: to do first, worth doing, or a question not
+/// answered since the report was made.
+fn listed(sec: &Sec, i: &Item) -> bool {
+    match i.state {
+        State::DoFirst | State::Worth => true,
+        State::Ask => i
+            .question
+            .as_ref()
+            .is_some_and(|q| sec.answers.get(q).is_none()),
+        State::Fine | State::CouldNotCheck => false,
+    }
 }
 
 /// What `items` with this id spans: more than one target makes its session one across

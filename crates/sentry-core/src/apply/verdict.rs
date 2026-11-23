@@ -1,7 +1,8 @@
 //! Claude's verdict after sentry has carried a plan out: one ```` ```sentry-verdict ```` TOML
 //! block, `status = "done" | "more" | "failed"` (or, before any plan, `"wait"`: it shouldn't be
 //! done now, with `again` for when to look again; or `"expected"`: a finding or an audit's
-//! item is fine as it is, and sentry marks it expected), a one-line `summary`, and `next` (what the
+//! item is fine as it is, and sentry marks it expected; or `"ask"`: only the user can decide,
+//! and `summary` is the question), a one-line `summary`, and `next` (what the
 //! user does later, e.g. reboot to confirm: words, never commands). `more` comes with a new
 //! sentry-apply block for what's left. Something that can only be confirmed later is a
 //! `[follow_up]`: sentry adds it to Maintenance as a one-time task, due then.
@@ -23,6 +24,9 @@ pub enum Status {
     /// What the session is about (a finding, one of the security audit's items) is fine as
     /// it is: nothing changes, and it is marked expected. For anything else: done.
     Expected,
+    /// Only the user can decide: `summary` is the question, and the session waits for the
+    /// answer they type (nothing is logged, the row stays).
+    Ask,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,9 +81,10 @@ pub fn take(answer: &str) -> (String, Option<Result<Verdict, String>>) {
                 "failed" => Status::Failed,
                 "wait" => Status::Wait,
                 "expected" => Status::Expected,
+                "ask" => Status::Ask,
                 s => {
                     return Err(format!(
-                        "status is \"{s}\": done, more, failed, wait or expected"
+                        "status is \"{s}\": done, more, failed, wait, expected or ask"
                     ));
                 }
             };
@@ -150,7 +155,15 @@ mod tests {
             .unwrap();
         assert!(
             bad.unwrap_err()
-                .contains("done, more, failed, wait or expected")
+                .contains("done, more, failed, wait, expected or ask")
+        );
+        let (_, v) = take(
+            "```sentry-verdict\nstatus = \"ask\"\nsummary = \"Is port 8443 meant to be open?\"\n```",
+        );
+        let v = v.unwrap().unwrap();
+        assert_eq!(
+            (v.status, v.summary.as_str()),
+            (Status::Ask, "Is port 8443 meant to be open?")
         );
     }
 }
