@@ -137,6 +137,8 @@ pub struct Item {
     pub path: String,
     /// What an empty value means, shown in its place.
     pub empty: String,
+    /// A number's bounds, both included (None: zero or more).
+    pub range: Option<(i64, i64)>,
 }
 
 impl Item {
@@ -144,6 +146,7 @@ impl Item {
         Self {
             path: path.to_string(),
             empty: String::new(),
+            range: None,
         }
     }
 
@@ -151,13 +154,162 @@ impl Item {
         self.empty = what.to_string();
         self
     }
+
+    pub fn range(mut self, min: i64, max: i64) -> Self {
+        self.range = Some((min, max));
+        self
+    }
 }
 
-/// A titled group of settings in an entry's form.
+/// A titled group of settings in an entry's form. The common ones are open, first; the
+/// rest are `fold`ed: a header row with `about` (a line saying what the group is for) that
+/// opens on Enter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub title: String,
     pub items: Vec<Item>,
+    pub about: String,
+    pub fold: bool,
+}
+
+impl Section {
+    /// A group shown open.
+    pub fn new(title: &str, items: Vec<Item>) -> Self {
+        Self {
+            title: title.to_string(),
+            items,
+            about: String::new(),
+            fold: false,
+        }
+    }
+
+    /// A group that starts folded, with a line about it.
+    pub fn folded(title: &str, about: &str, items: Vec<Item>) -> Self {
+        Self {
+            title: title.to_string(),
+            items,
+            about: about.to_string(),
+            fold: true,
+        }
+    }
+}
+
+/// One setting of a record, as its row's form has it.
+#[derive(Debug, Clone, Copy)]
+pub struct RecField {
+    pub spec: &'static Field,
+    /// Its path within the record: `unit`, `image.service`.
+    pub rel: &'static str,
+    /// The record within the record it is in (an item's `image`), shown as a small group
+    /// of its own.
+    pub group: Option<&'static Field>,
+}
+
+/// The settings of the records in the list `spec` (`servers.*.timers`), in the order its
+/// row's form shows them: the common ones, the rest, then each nested record's.
+pub fn record_fields(fields: &'static [Field], spec: &Field) -> Vec<RecField> {
+    let prefix = format!("{}[].", spec.path);
+    let inside = |f: &&'static Field| f.path.strip_prefix(&prefix).is_some();
+    let rel = |f: &'static Field| &f.path[prefix.len()..];
+    let direct = |f: &&'static Field| {
+        inside(f) && f.kind != cfg::Kind::Section && !rel(f).contains(['.', '['])
+    };
+    let mut out: Vec<RecField> = fields
+        .iter()
+        .filter(direct)
+        .filter(|f| f.common)
+        .chain(fields.iter().filter(direct).filter(|f| !f.common))
+        .map(|f| RecField {
+            spec: f,
+            rel: rel(f),
+            group: None,
+        })
+        .collect();
+    for g in fields
+        .iter()
+        .filter(|f| inside(f) && f.kind == cfg::Kind::Section && !rel(f).contains(['.', '[']))
+    {
+        let under = format!("{}.", g.path);
+        out.extend(
+            fields
+                .iter()
+                .filter(|f| {
+                    f.kind != cfg::Kind::Section
+                        && f.path
+                            .strip_prefix(&under)
+                            .is_some_and(|r| !r.contains(['.', '[']))
+                })
+                .map(|f| RecField {
+                    spec: f,
+                    rel: rel(f),
+                    group: Some(g),
+                }),
+        );
+    }
+    out
+}
+
+/// Where every setting of a kind's table is in its forms, checked: each one that holds a
+/// value must be in exactly one place. A place is an item of a section of one of `entries`
+/// (for a file of systems: one system stands for all), a field of the row form of a list of
+/// records that is such an item, a named list of words under a map that is one, or one of
+/// `elsewhere` (what the Upkeep group holds, and a file's map of systems). What is in no
+/// place, or in two: a line each.
+pub fn misplaced(
+    kind: &dyn Kind,
+    d: &dyn DocAny,
+    entries: &[&str],
+    elsewhere: &[&str],
+) -> Vec<String> {
+    let fields = kind.fields();
+    let mut homes: Vec<(&str, String)> = elsewhere
+        .iter()
+        .map(|p| (*p, "elsewhere".to_string()))
+        .collect();
+    for entry in entries {
+        for s in kind.sections(d, entry) {
+            for item in &s.items {
+                let Some(f) = cfg::fields::find(fields, &item.path) else {
+                    homes.push(("?", format!("{}: not in the table", item.path)));
+                    continue;
+                };
+                let at = format!("{entry} · {}", s.title);
+                homes.push((f.path, at.clone()));
+                match f.kind {
+                    cfg::Kind::Records => {
+                        for r in record_fields(fields, f) {
+                            homes.push((r.spec.path, format!("{at} · a row")));
+                        }
+                    }
+                    cfg::Kind::Map => {
+                        let under = format!("{}.*", f.path);
+                        if let Some(x) = fields.iter().find(|x| x.path == under) {
+                            homes.push((x.path, format!("{at} · an entry")));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut out: Vec<String> = homes
+        .iter()
+        .filter(|(p, _)| *p == "?")
+        .map(|(_, why)| why.clone())
+        .collect();
+    for f in fields.iter().filter(|f| f.kind != cfg::Kind::Section) {
+        let at: Vec<&str> = homes
+            .iter()
+            .filter(|(p, _)| *p == f.path)
+            .map(|(_, at)| at.as_str())
+            .collect();
+        match at.len() {
+            1 => {}
+            0 => out.push(format!("{} is in no form", f.path)),
+            _ => out.push(format!("{} is in {}", f.path, at.join(" and in "))),
+        }
+    }
+    out
 }
 
 /// A kind of config: one file, described to the area.
@@ -169,8 +321,21 @@ pub trait Kind {
     fn fields(&self) -> &'static [Field];
     /// What it configures, in the order shown.
     fn entries(&self, d: &dyn DocAny) -> Vec<Entry>;
-    /// An entry's form: the settings the table marks `essential`, grouped.
+    /// An entry's form: every setting of it, grouped. The groups of the settings the table
+    /// marks `common` come first and are open; the rest follow, folded.
     fn sections(&self, d: &dyn DocAny, entry: &str) -> Vec<Section>;
+    /// One of this file's entries when nothing is set in it (a server, a network), as a
+    /// tree: what a setting's default is. None: the file isn't a map of entries (its own
+    /// defaults say it).
+    fn entry_default(&self) -> Option<Value> {
+        None
+    }
+    /// The settings of a record of the list at `list` that have a default, each with it (a
+    /// disk's `warn`, an item's unset `hold`): the ones a row's form marks as the default
+    /// and that may be left out.
+    fn record_default(&self, _list: &str) -> Option<Value> {
+        None
+    }
     /// Which entry a setting belongs to (the pending list and the save box say it).
     fn entry_of(&self, path: &str) -> String {
         match parse_path(path).ok().as_deref() {
@@ -405,19 +570,6 @@ pub fn set(d: &mut dyn DocAny, path: &str, to: Option<Value>, by: By) -> Result<
     Ok(c)
 }
 
-/// The essential settings directly in the entry at `prefix` (`servers.myserver`), as items:
-/// what a kind without sections of its own shows.
-pub fn essentials(fields: &[Field], pattern: &str, prefix: &str) -> Vec<Item> {
-    fields
-        .iter()
-        .filter(|f| f.essential && f.kind != cfg::Kind::Section)
-        .filter_map(|f| {
-            let rest = f.path.strip_prefix(pattern)?.strip_prefix('.')?;
-            (!rest.contains(['[', '*'])).then(|| Item::at(&format!("{prefix}.{rest}")))
-        })
-        .collect()
-}
-
 /// A config value as a form shows it, by the kind its table gives it. None: not something a
 /// form holds (a section, a map of records).
 pub fn to_form(kind: cfg::Kind, v: Option<&Value>) -> Option<form::Value> {
@@ -432,6 +584,8 @@ pub fn to_form(kind: cfg::Kind, v: Option<&Value>) -> Option<form::Value> {
         (cfg::Kind::Number, Some(Value::Int(n))) => form::Value::Int(*n),
         (cfg::Kind::Number, Some(Value::Float(x))) => form::Value::Float(*x),
         (cfg::Kind::Duration, Some(Value::Str(s))) => form::Value::Dur(s.parse().ok()?),
+        // A date, or none yet: an empty one.
+        (cfg::Kind::Date, v) => form::Value::Date(v.map(text).unwrap_or_default()),
         (cfg::Kind::Choice(words), Some(Value::Str(s))) => form::Value::Pick(
             words.iter().map(|w| w.to_string()).collect(),
             words.iter().position(|w| w == s)?,
@@ -537,7 +691,24 @@ pub fn from_form(v: &form::Value, nullable: bool) -> Value {
                 .map(|(k, v)| (k.clone(), Value::Str(v.clone())))
                 .collect(),
         ),
-        form::Value::Rows(..) => Value::Null,
+        form::Value::Date(s) if s.is_empty() => Value::Null,
+        form::Value::Date(s) => Value::Str(s.clone()),
+        form::Value::Rows(..) | form::Value::Fold(..) => Value::Null,
+    }
+}
+
+/// A default as a form's side panel says it: a word or a few; nothing for what has none
+/// worth saying (not set, an empty list, a group).
+pub fn default_shown(v: &Value) -> String {
+    match v {
+        Value::Bool(true) => "yes".into(),
+        Value::Bool(false) => "no".into(),
+        Value::Null | Value::Map(_) => String::new(),
+        Value::List(l) if l.is_empty() => String::new(),
+        Value::Str(s) if s.is_empty() => String::new(),
+        // (A whole number reads as one: 90, not 90.0.)
+        Value::Float(x) => x.to_string(),
+        v => plain(Some(v)),
     }
 }
 
@@ -669,6 +840,31 @@ mod tests {
         round(cfg::Kind::Bool, "true", false);
         round(cfg::Kind::Number, "12", false);
         round(cfg::Kind::Number, "1.5", false);
+        // A date; none is an empty one, and empty is unset again.
+        assert_eq!(
+            round(cfg::Kind::Date, "\"2027-03-31\"", true),
+            form::Value::Date("2027-03-31".into())
+        );
+        assert_eq!(
+            round(cfg::Kind::Date, "null", true),
+            form::Value::Date("".into())
+        );
+        assert_eq!(
+            to_form(cfg::Kind::Date, None),
+            Some(form::Value::Date("".into()))
+        );
+        // A map of durations is named entries; the type says what isn't a duration.
+        round(
+            cfg::Kind::Map,
+            "{\"apt-maintenance\": \"30d\", \"compose-update\": \"14d\"}",
+            false,
+        );
+        assert_eq!(default_shown(&v("90.0")), "90");
+        assert_eq!(default_shown(&v("2.5")), "2.5");
+        assert_eq!(default_shown(&v("true")), "yes");
+        assert_eq!(default_shown(&v("[\"host\", \"home\"]")), "host, home");
+        assert_eq!(default_shown(&v("null")), "");
+        assert_eq!(default_shown(&v("[]")), "");
         assert_eq!(
             round(cfg::Kind::Duration, "\"36h\"", false),
             form::Value::Dur(Dur::hours(36))

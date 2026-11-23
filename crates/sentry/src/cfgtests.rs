@@ -45,7 +45,7 @@ fn dir(files: &[(FileId, &str)]) -> PathBuf {
 }
 
 /// The window `a` with the Config area reading the files in a directory of the test's.
-fn with_files(mut a: App, files: &[(FileId, &str)]) -> (App, PathBuf) {
+pub(crate) fn with_files(mut a: App, files: &[(FileId, &str)]) -> (App, PathBuf) {
     let d = dir(files);
     for k in crate::tui::kinds() {
         a.config.register(k);
@@ -64,7 +64,7 @@ fn config(files: &[(FileId, &str)]) -> (App, PathBuf) {
     (a, d)
 }
 
-fn text(d: &Path, f: FileId) -> Option<String> {
+pub(crate) fn text(d: &Path, f: FileId) -> Option<String> {
     std::fs::read_to_string(d.join(f.name())).ok()
 }
 
@@ -86,7 +86,7 @@ fn on_accent(a: &mut App, y: u16) -> String {
 }
 
 /// What is staged: `x path` ticked, `- path` unticked, `-! path` a conflict.
-fn pending(a: &App) -> Vec<String> {
+pub(crate) fn pending(a: &App) -> Vec<String> {
     a.config
         .pending
         .iter()
@@ -101,12 +101,12 @@ fn pending(a: &App) -> Vec<String> {
         .collect()
 }
 
-fn problems(a: &App) -> Vec<String> {
+pub(crate) fn problems(a: &App) -> Vec<String> {
     a.config.problems.iter().map(|p| p.line()).collect()
 }
 
 /// The selected field of the form in view is set to `text` (Enter, the line replaced, Enter).
-fn set_field(a: &mut App, text: &str) {
+pub(crate) fn set_field(a: &mut App, text: &str) {
     key(a, KeyCode::Enter);
     a.on_event(
         Event::Key(ratatui::crossterm::event::KeyEvent::new(
@@ -1049,7 +1049,7 @@ fn refused(ssh: &str) -> Probe {
 }
 
 /// The value at `path` in the file as it is to be.
-fn value(a: &App, path: &str) -> Option<String> {
+pub(crate) fn value(a: &App, path: &str) -> Option<String> {
     let segs = cfg::parse_path(path).unwrap();
     a.config
         .doc(FileId::of_path(path))?
@@ -1812,8 +1812,8 @@ fn upkeep_is_a_section_of_every_system_and_stages_each_kinds_own_cadence() {
     // A server: its workflows, each with how often it is due.
     key(&mut a, KeyCode::Char('4'));
     key(&mut a, KeyCode::Enter);
-    key(&mut a, KeyCode::Char('G'));
-    key(&mut a, KeyCode::Char('k'));
+    // (Upkeep is the last of the open groups: the folded ones come after it.)
+    assert!(a.config.go_for_test("@upkeep:apt-maintenance"));
     insta::assert_snapshot!("config_upkeep_server_158", screen(&mut a));
     assert_eq!(
         a.config.field_for_test().as_deref(),
@@ -1909,7 +1909,7 @@ fn upkeep_is_a_section_of_every_system_and_stages_each_kinds_own_cadence() {
     key(&mut a, KeyCode::Char('5'));
     key(&mut a, KeyCode::Enter);
     key(&mut a, KeyCode::Char('G'));
-    for _ in 0..8 {
+    for _ in 0..16 {
         if a.config.field_for_test().as_deref() == Some("@upkeep:config-backup") {
             break;
         }
@@ -1924,7 +1924,7 @@ fn upkeep_is_a_section_of_every_system_and_stages_each_kinds_own_cadence() {
     // This machine: its jobs' cadences are `[jobs]`; its workflows have none, and `o`
     // there opens the one file (there is no set per system).
     key(&mut a, KeyCode::Char('3'));
-    key(&mut a, KeyCode::Char('G'));
+    assert!(a.config.go_for_test("@upkeep:cleanup-cache"));
     a.win.toast = None;
     insta::assert_snapshot!("config_upkeep_machine_158", screen(&mut a));
     for _ in 0..12 {

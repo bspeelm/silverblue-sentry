@@ -126,45 +126,43 @@ impl ConfigArea {
                      log, plans and baseline are under it.",
                 ),
         ];
-        let mut rest = self.form_fields(kind, doc, &kind.sections(doc, &e.name));
+        // The common groups, the upkeep, then the rest, folded.
+        let (folded, open): (Vec<_>, Vec<_>) = kind
+            .sections(doc, &e.name)
+            .into_iter()
+            .partition(|s| s.fold);
+        let mut rest = self.form_fields(kind, doc, &open);
         // (The name's group goes on with the first section's fields.)
         if let Some(first) = rest.first_mut().filter(|f| f.head == "Who it is") {
             first.head.clear();
         }
         fields.append(&mut rest);
         fields.extend(self.upkeep_fields(kind, doc, &e.name));
+        fields.extend(self.form_fields(kind, doc, &folded));
         Some(Form::new(&format!("{} · {}", e.name, e.kind), fields))
     }
 
-    /// The columns a list of records shows and its rows' form has: the record's settings
-    /// the table marks essential, in the table's order.
-    pub(crate) fn record_fields(&self, kind: &dyn Kind, list: &str) -> Vec<&'static cfg::Field> {
-        let Some(spec) = cfg::fields::find(kind.fields(), list) else {
-            return Vec::new();
-        };
-        let prefix = format!("{}[].", spec.path);
-        kind.fields()
-            .iter()
-            .filter(|f| {
-                f.essential
-                    && f.kind != cfg::Kind::Section
-                    && f.path
-                        .strip_prefix(&prefix)
-                        .is_some_and(|leaf| !leaf.contains(['.', '[']))
-            })
-            .collect()
+    /// A record's settings as its row's form has them (every one), in that order.
+    pub(crate) fn record_fields(&self, kind: &dyn Kind, list: &str) -> Vec<kind::RecField> {
+        match cfg::fields::find(kind.fields(), list) {
+            Some(spec) => kind::record_fields(kind.fields(), spec),
+            None => Vec::new(),
+        }
     }
 
-    /// A list of records as rows: the essential columns only.
+    /// A list of records as rows: the columns are the record's common settings.
     pub(crate) fn rows_of(&self, kind: &dyn Kind, list: &str, v: Option<&Value>) -> form::Value {
-        let cols: Vec<&cfg::Field> = self.record_fields(kind, list);
-        let leaf = |f: &cfg::Field| f.path.rsplit('.').next().unwrap_or("").to_string();
+        let cols: Vec<kind::RecField> = self
+            .record_fields(kind, list)
+            .into_iter()
+            .filter(|r| r.spec.common && r.group.is_none())
+            .collect();
         let rows = match v {
             Some(Value::List(l)) => l
                 .iter()
                 .map(|r| {
                     cols.iter()
-                        .map(|c| match r.get(&leaf(c)) {
+                        .map(|c| match r.get(c.rel) {
                             None | Some(Value::Null) => "–".to_string(),
                             Some(Value::Str(s)) if s.is_empty() => "–".to_string(),
                             Some(Value::Str(s)) => s.clone(),
@@ -177,20 +175,29 @@ impl ConfigArea {
                 .collect(),
             _ => Vec::new(),
         };
-        form::Value::Rows(cols.iter().map(|c| c.label.to_lowercase()).collect(), rows)
+        form::Value::Rows(
+            cols.iter().map(|c| c.spec.label.to_lowercase()).collect(),
+            rows,
+        )
     }
 
-    /// The form of one record: its essential settings, each at its own path.
+    /// The form of one record: every setting of it, each at its own path. The common ones
+    /// first, then the rest, then each record within it (an item's image, its retirement)
+    /// as a small group of its own.
     fn row_form(&self, file: FileId, list: &str, at: usize) -> Option<Form> {
         let kind = self.kind(file)?;
         let doc = self.doc(file)?;
         let tree = doc.tree();
         let spec = cfg::fields::find(kind.fields(), list)?;
+        let defaults = kind.record_default(list);
+        let recs = self.record_fields(kind, list);
         let mut fields = Vec::new();
-        for f in self.record_fields(kind, list) {
-            let leaf = f.path.rsplit('.').next().unwrap_or("");
-            let path = format!("{list}[{at}].{leaf}");
+        let mut last: Option<String> = None;
+        for r in &recs {
+            let f = r.spec;
+            let path = format!("{list}[{at}].{}", r.rel);
             let segs = parse_path(&path).ok()?;
+            let rel = parse_path(r.rel).ok()?;
             let now = tree.at(&segs);
             let value = match kind.choices(doc, &path, self.disk) {
                 // One of what there is; the first row is "none of them".
@@ -226,6 +233,24 @@ impl ConfigArea {
             let mut x = form::Field::new(&path, f.label, value).help(f.help);
             if f.kind == cfg::Kind::Number {
                 x.range = Some((0, i64::MAX));
+            }
+            // What the record leaves out is its default: said so, and emptied it is unset.
+            let default = defaults.as_ref().and_then(|d| within(d, &rel));
+            x.optional = default == Some(Value::Null);
+            x.is_default = default.as_ref() == Some(now.unwrap_or(&Value::Null));
+            x.default = default
+                .as_ref()
+                .map(kind::default_shown)
+                .unwrap_or_default();
+            // A heading where the kind of setting changes: the rest, a record within it.
+            let part = match r.group {
+                Some(g) => format!("{} · {}", g.label, g.help),
+                None if !f.common && recs.iter().any(|r| r.spec.common) => REST.to_string(),
+                None => String::new(),
+            };
+            if last.as_ref() != Some(&part) {
+                x.head = part.clone();
+                last = Some(part);
             }
             fields.push(x);
         }
@@ -297,7 +322,11 @@ impl ConfigArea {
             return;
         };
         let (file, list, at) = (row.file, row.list.clone(), row.at);
-        let leaf = path.rsplit('.').next().unwrap_or("").to_string();
+        // The setting's path within its record: `unit`, `image.service`.
+        let rel: Vec<Seg> = match (parse_path(path), parse_path(&list)) {
+            (Ok(p), Ok(l)) if p.len() > l.len() + 1 => p[l.len() + 1..].to_vec(),
+            _ => return,
+        };
         let mut l = self.list_now(file, &list);
         let Some(rec) = l.get_mut(at) else {
             return;
@@ -306,17 +335,18 @@ impl ConfigArea {
         let nullable = self
             .kind(file)
             .and_then(|k| k.blank(&list))
-            .is_none_or(|b| matches!(b.get(&leaf), None | Some(Value::Null)));
+            .is_none_or(|b| matches!(within(&b, &rel), None | Some(Value::Null)));
         let to = match v {
             form::Value::Pick(words, i) if words.get(*i).is_some_and(|x| x == NONE) => Value::Null,
             v => kind::from_form(v, nullable),
         };
         // (What reads the same is no change: a port typed as it was.)
         let same = |a: &Value, b: &Value| a == b || kind::plain(Some(a)) == kind::plain(Some(b));
-        let staged = if rec.get(&leaf).is_some_and(|now| same(now, &to)) {
+        let now = within(rec, &rel).unwrap_or(Value::Null);
+        let staged = if same(&now, &to) {
             Ok(())
         } else {
-            rec.set(&[Seg::Key(leaf)], Some(to))
+            set_within(rec, &rel, to)
                 .and_then(|()| self.stage(&list, Some(Value::List(l)), By::You))
         };
         self.refresh_forms(w);
@@ -524,10 +554,84 @@ impl ConfigArea {
 
 /// A pick's first word where nothing may be picked.
 pub(crate) const NONE: &str = "(none)";
+/// The heading over a record's less common settings.
+const REST: &str = "More about it";
+
+/// What is at `rel` within a record. A record within it that isn't set (an item's `image`)
+/// has every setting of its own unset: null.
+fn within(rec: &Value, rel: &[Seg]) -> Option<Value> {
+    let mut v = rec;
+    for s in rel {
+        match (s, v) {
+            (_, Value::Null) => return Some(Value::Null),
+            (Seg::Key(k), Value::Map(_)) => v = v.get(k)?,
+            _ => return None,
+        }
+    }
+    Some(v.clone())
+}
+
+/// Put `to` at `rel` within a record. A record within it is made when its first setting is
+/// set, and is unset again (not left there empty) when its last one is: `image: {}` and no
+/// image are not the same thing to the type.
+fn set_within(rec: &mut Value, rel: &[Seg], to: Value) -> Result<(), String> {
+    let [Seg::Key(group), leaf @ Seg::Key(_)] = rel else {
+        return rec.set(rel, Some(to));
+    };
+    let up = [Seg::Key(group.clone())];
+    if !matches!(rec.at(&up), Some(Value::Map(_))) {
+        if to == Value::Null {
+            return Ok(());
+        }
+        rec.set(&up, Some(Value::Map(Vec::new())))?;
+    }
+    rec.set(&[up[0].clone(), leaf.clone()], Some(to))?;
+    if let Some(Value::Map(m)) = rec.at(&up)
+        && m.iter().all(|(_, v)| *v == Value::Null)
+    {
+        rec.set(&up, Some(Value::Null))?;
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_within_a_record_is_made_by_its_first_setting_and_gone_with_its_last() {
+        let v = |json: &str| -> Value { serde_json::from_str(json).unwrap() };
+        let key = |k: &str| Seg::Key(k.to_string());
+        let mut item = v("{\"id\": \"app\", \"image\": null, \"hold\": null}");
+        let service = [key("image"), key("service")];
+        // Not set: every setting of it reads as unset, and unsetting one makes nothing.
+        assert_eq!(within(&item, &service), Some(Value::Null));
+        set_within(&mut item, &service, Value::Null).unwrap();
+        assert_eq!(item.get("image"), Some(&Value::Null));
+        set_within(&mut item, &service, Value::Str("web".into())).unwrap();
+        assert_eq!(item.get("image"), Some(&v("{\"service\": \"web\"}")));
+        set_within(
+            &mut item,
+            &[key("image"), key("compose")],
+            Value::Str("stack".into()),
+        )
+        .unwrap();
+        set_within(&mut item, &service, Value::Null).unwrap();
+        assert_eq!(
+            item.get("image"),
+            Some(&v("{\"service\": null, \"compose\": \"stack\"}"))
+        );
+        // The last one unset: no image, not an empty one.
+        set_within(&mut item, &[key("image"), key("compose")], Value::Null).unwrap();
+        assert_eq!(item.get("image"), Some(&Value::Null));
+        // A setting of the record itself is just set.
+        set_within(&mut item, &[key("hold")], Value::Str("pinned".into())).unwrap();
+        assert_eq!(
+            within(&item, &[key("hold")]),
+            Some(Value::Str("pinned".into()))
+        );
+        assert_eq!(within(&item, &[key("nope")]), None);
+    }
 
     #[test]
     fn a_name_is_one_word() {

@@ -8,8 +8,8 @@ expression: screen(&mut a)
 
 ┌ This machine ───────────────────────────────────────────────────────────────────────┐┌ cleanup-cache ──────────────────────────────────────────────────────┐
 │  Reviews sentry starts by itself                                                    ││ text                                                                │
-│    Review at start     [x] yes                                                      ││                                                                     │
-│    Review after a run  [x] yes                                                      ││ report ~/.cache over threshold; delete opted-in dirs. A job of this │
+│    Review at start     [x] yes  (default)                                           ││                                                                     │
+│    Review after a run  [x] yes  (default)                                           ││ report ~/.cache over threshold; delete opted-in dirs. A job of this │
 │                                                                                     ││ machine's. How often it is due: a duration (7d, 30d), `off`, or     │
 │  Notes Claude may read                                                              ││ empty for its own default.                                          │
 │    Notes               (none)                                                       ││                                                                     │
@@ -28,14 +28,14 @@ expression: screen(&mut a)
 │    cleanup-ostree      (30d)                                                        ││                                                                     │
 │    cleanup-cache       (off)                                                        ││                                                                     │
 │                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▸ Refresh rates  all defaults  How often this machine's live screens sample.       ││                                                                     │
+│  ▸ Update checks  all defaults  How long a cached update check counts as fresh.     ││                                                                     │
+│  ▸ Audit          all defaults  What the audit flags, how long reports stay.        ││                                                                     │
+│  ▸ Flatpak rules  all defaults  Permissions and remotes the audit flags.            ││                                                                     │
+│  ▸ Recorder       all defaults  `sentry record` and History: how often, how much.   ││                                                                     │
+│  ▸ Cleanup        all defaults  The cache directories Cleanup may delete.           ││                                                                     │
+│  ▸ Expected       all defaults  Listeners and findings taken as expected.           ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │

@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgforms.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config* !         ● 1 not saved
+ 1 Overview 1*   2 Agent   3 This machine   4 Servers 1   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+┌ myserver · items · 1 ────────────────────────────────────────────────────────┐
+│    Tags             (not set)                                                │
+│    Why held         (not set)                                                │
+│    Constraint       (not set)                                                │
+│    Review by        2027-03-31                                               │
+│    End of life      (not set)                                                │
+│                                                                              │
+│  Image · A container image: its pin from the compose file, what runs from …  │
+│    Compose service  web                                                      │
+│    Compose project  stack                                                    │
+│    Container        (not set)                                                │
+│                                                                              │
+│  Retire · Planned to be removed.                                             │
+│    Replaced by      (not set)                                                │
+│    Retire workflow  (none)  (default)                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Compose project ─────────────────────────────────────────────────────────────┐
+│ text, or empty: not set                                                      │
+│                                                                              │
+│ The compose project it belongs to (default: the first under compose:).       │
+│                                                                              │
+│ Emptied, it is not set again (the default).                                  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   j/k  move   Esc  back to the list

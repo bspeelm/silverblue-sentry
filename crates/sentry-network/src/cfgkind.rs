@@ -1,5 +1,6 @@
 //! `network_config.yaml` as the window's Config area knows it (`sentry_app::cfgarea::Kind`):
-//! each network an entry with a line about it, its essential settings in sections, what its
+//! each network an entry with a line about it, every setting of it in sections (the common
+//! ones open, the rest in groups that start folded), what its
 //! lint says, its router's connection checks (`sentry-network check` starts with the same
 //! lines), how a router is looked at and drafted (`init`'s discovery), a key for its
 //! backups, and its upkeep: the workflows it has and how often each is due.
@@ -17,7 +18,7 @@ use sentry_core::cfg::{ConfigFile, Field, FileId, Seg, Value, parse_path, path_s
 use sentry_core::workflows;
 
 use crate::collect::ifaces::{self, Ifaces};
-use crate::config::{self, Cadence, Device, Forward, Network, NetworkFile, RouterCfg};
+use crate::config::{self, Cadence, Device, Forward, ItemKind, Network, NetworkFile, RouterCfg};
 use crate::remote::Router;
 
 pub struct NetworksKind;
@@ -221,12 +222,15 @@ impl Kind for NetworksKind {
     }
 
     fn sections(&self, _d: &dyn DocAny, entry: &str) -> Vec<Section> {
-        let section = |title: &str, items: &[(&str, &str)]| Section {
-            title: title.to_string(),
-            items: items
+        let items = |items: &[(&str, &str)]| -> Vec<Item> {
+            items
                 .iter()
                 .map(|(rest, empty)| Item::at(&at(entry, rest)).empty(empty))
-                .collect(),
+                .collect()
+        };
+        let section = |title: &str, list: &[(&str, &str)]| Section::new(title, items(list));
+        let folded = |title: &str, about: &str, list: &[(&str, &str)]| {
+            Section::folded(title, about, items(list))
         };
         vec![
             section("Who it is", &[("router.ssh", "its name")]),
@@ -249,7 +253,64 @@ impl Kind for NetworksKind {
                 "Claude",
                 &[("notes", "none"), ("claude.share_wan_address", "")],
             ),
+            // The rest of what a network's entry says. (Its cadence is the Upkeep group's.)
+            folded(
+                "Router",
+                "Which system the router runs.",
+                &[("router.kind", "")],
+            ),
+            folded(
+                "On the router",
+                "What may listen on it; which services must run.",
+                &[
+                    (
+                        "expect.listeners",
+                        "none: everything listening is a finding",
+                    ),
+                    (
+                        "expect.services",
+                        "none besides dnsmasq, dropbear and uhttpd",
+                    ),
+                ],
+            ),
+            folded(
+                "Thresholds",
+                "When load, memory or a backup's age counts.",
+                &[
+                    ("thresholds.load", ""),
+                    ("thresholds.mem_pct", ""),
+                    ("thresholds.cert_days", ""),
+                    ("thresholds.backup_age", ""),
+                ],
+            ),
+            Section::folded(
+                "Guard",
+                "How long a guarded change waits for its keep.",
+                vec![Item::at(&at(entry, "guard.window")).range(5, 3600)],
+            ),
+            folded(
+                "Maintenance items",
+                "Firmware, packages, backup: what is kept current.",
+                &[("maintenance.items", "none")],
+            ),
         ]
+    }
+
+    fn entry_default(&self) -> Option<Value> {
+        Value::of(&Network::default()).ok()
+    }
+
+    /// What a record may leave out, and what it is then.
+    fn record_default(&self, list: &str) -> Option<Value> {
+        let segs = parse_path(list).ok()?;
+        match segs.last()? {
+            Seg::Key(k) if k == "devices" => Value::of(&Device::default()).ok(),
+            Seg::Key(k) if k == "forwards" => Some(Value::Map(vec![(
+                "proto".to_string(),
+                Value::Str("tcp".into()),
+            )])),
+            _ => None,
+        }
     }
 
     fn problems(&self, d: &dyn DocAny, warnings: &[String]) -> Vec<Problem> {
@@ -272,6 +333,10 @@ impl Kind for NetworksKind {
             Seg::Key(k) if k == "cadence" => Value::of(&Cadence {
                 workflow: String::new(),
                 every: sentry_core::config::Dur::secs(30 * 86400),
+            }),
+            Seg::Key(k) if k == "items" => Value::of(&config::Item {
+                id: String::new(),
+                kind: ItemKind::Firmware,
             }),
             _ => return None,
         };
@@ -458,36 +523,53 @@ mod tests {
                 Some("myrouter")
             )
         );
-        let items: Vec<String> = k
-            .sections(doc.as_ref(), "home")
-            .into_iter()
-            .flat_map(|s| s.items)
-            .map(|i| i.path)
+        // Its form: every setting of a network, each in one place (its cadence is the
+        // Upkeep group's).
+        assert_eq!(
+            kind::misplaced(
+                &k,
+                doc.as_ref(),
+                &["home"],
+                &[
+                    "networks",
+                    "networks.*.maintenance.cadence",
+                    "networks.*.maintenance.cadence[].workflow",
+                    "networks.*.maintenance.cadence[].every",
+                ]
+            ),
+            Vec::<String>::new()
+        );
+        let sections = k.sections(doc.as_ref(), "home");
+        let items: Vec<String> = sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .map(|i| i.path.clone())
             .collect();
         assert!(
             items.contains(&"networks.home.router.ssh".to_string()),
             "{items:?}"
         );
-        for p in &items {
-            let f = sentry_core::cfg::fields::find(k.fields(), p).unwrap_or_else(|| panic!("{p}"));
-            assert!(f.essential, "{p}");
+        // The common ones are in the open groups, which come first; the rest fold.
+        let first_fold = sections.iter().position(|s| s.fold).unwrap();
+        for (i, s) in sections.iter().enumerate() {
+            assert_eq!(s.fold, i >= first_fold, "{}", s.title);
+            assert_eq!(s.fold, !s.about.is_empty(), "{}", s.title);
+            for item in &s.items {
+                let f = sentry_core::cfg::fields::find(k.fields(), &item.path).unwrap();
+                assert_eq!(f.common, !s.fold, "{}", item.path);
+            }
         }
-        // And every essential setting of a network that isn't a record's own field (or a
-        // zone's own list) is in its form, or is its cadence (the Upkeep section's).
-        for f in NetworkFile::FIELDS.iter().filter(|f| {
-            f.essential
-                && f.kind != sentry_core::cfg::Kind::Section
-                && f.path.starts_with("networks.*.")
-                && !f.path.contains("[]")
-                && !f.path.ends_with(".*")
-        }) {
-            let path = f.path.replace("networks.*", "networks.home");
-            assert!(
-                items.contains(&path) || f.path == "networks.*.maintenance.cadence",
-                "{} is in no form",
-                f.path
-            );
-        }
+        let d = k.entry_default().unwrap();
+        assert_eq!(
+            d.at(&parse_path("guard.window").unwrap()),
+            Some(&Value::Int(300))
+        );
+        assert_eq!(
+            k.record_default("networks.home.expect.forwards")
+                .unwrap()
+                .to_string(),
+            "{proto: \"tcp\"}"
+        );
         assert_eq!(
             k.problems(doc.as_ref(), &warnings)
                 .iter()
@@ -512,6 +594,12 @@ mod tests {
         let d: Device = k.blank("networks.home.devices").unwrap().to().unwrap();
         assert_eq!(d, Device::default());
         assert_eq!(k.blank("networks.home.notes"), None);
+        let i: config::Item = k
+            .blank("networks.home.maintenance.items")
+            .unwrap()
+            .to()
+            .unwrap();
+        assert_eq!(i.kind, ItemKind::Firmware);
         // The key is offered on the recipients and nowhere else; what it asks for names
         // the network, and it never writes over a file that is there.
         let a = k.action("networks.home.backup.recipients").unwrap();

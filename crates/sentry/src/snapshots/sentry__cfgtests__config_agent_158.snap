@@ -8,9 +8,11 @@ expression: screen(&mut a)
 
 ┌ Agent ──────────────────────────────────────────────────────────────────────────────┐┌ Kind ───────────────────────────────────────────────────────────────┐
 │  The agent sentry asks                                                              ││ one of: claude-code                                                 │
-│    Kind     claude-code                                                             ││                                                                     │
-│    Command  claude                                                                  ││ Which kind of agent it is: `claude-code`, Claude Code's CLI with    │
+│    Kind     claude-code  (default)                                                  ││                                                                     │
+│    Command  claude  (default)                                                       ││ Which kind of agent it is: `claude-code`, Claude Code's CLI with    │
 │                                                                                     ││ its own login. It is the only kind so far.                          │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ This is the default (claude-code): the file doesn't say it.         │
 │                                                                                     ││                                                                     │
 │                                                                                     ││ Status                                                              │
 │                                                                                     ││ command   claude                                                    │
@@ -20,8 +22,6 @@ expression: screen(&mut a)
 │                                                                                     ││                                                                     │
 │                                                                                     ││ Other agents, API connections and locally deployed models are not   │
 │                                                                                     ││ supported yet.                                                      │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │

@@ -361,7 +361,7 @@ const fn f(
     path: &'static str,
     label: &'static str,
     kind: Kind,
-    essential: bool,
+    common: bool,
     help: &'static str,
 ) -> Field {
     Field {
@@ -369,7 +369,7 @@ const fn f(
         label,
         help,
         kind,
-        essential,
+        common,
     }
 }
 
@@ -387,14 +387,14 @@ pub const FIELDS: &[Field] = &[
         "Dashboard rate",
         Kind::Number,
         false,
-        "Samples a second on the Dashboard (1).",
+        "How many times a second the Dashboard samples, 0.1 to 10. 1 is plenty; more costs CPU.",
     ),
     f(
         "ui.processes_hz",
         "Processes rate",
         Kind::Number,
         false,
-        "Samples a second on Processes (2).",
+        "How many times a second Processes samples, 0.1 to 10 (2).",
     ),
     f(
         "ui.terminal",
@@ -429,21 +429,21 @@ pub const FIELDS: &[Field] = &[
         "Reports kept (months)",
         Kind::Number,
         false,
-        "Audit reports older than this go (12).",
+        "Audit reports older than this many months are deleted (12).",
     ),
     f(
         "audit.stale_container_days",
         "Stale container (days)",
         Kind::Number,
         false,
-        "A stopped container older than this is a finding (30).",
+        "A stopped container older than this many days is a finding, and Cleanup offers it (30).",
     ),
     f(
         "audit.cache_warn_mb",
         "Cache warning (MB)",
         Kind::Number,
         false,
-        "A cache larger than this is a finding (2048).",
+        "A cache in ~/.cache larger than this many MB is a finding (2048).",
     ),
     f(
         "audit.outside",
@@ -471,7 +471,7 @@ pub const FIELDS: &[Field] = &[
         "Flagged bus names",
         Kind::List,
         false,
-        "D-Bus names an app may talk to that are flagged.",
+        "D-Bus names an app may talk to that are flagged (org.freedesktop.Flatpak lets an app run commands on the host).",
     ),
     f(
         "flatpak.trusted_origins",
@@ -513,7 +513,7 @@ pub const FIELDS: &[Field] = &[
         "Cache dirs to delete",
         Kind::List,
         false,
-        "Opt-in: directories under ~/.cache Cleanup may delete (pip, yarn).",
+        "Opt-in: directories under ~/.cache Cleanup may delete (pip, yarn). Empty: it only reports.",
     ),
     f(
         "recorder",
@@ -534,14 +534,14 @@ pub const FIELDS: &[Field] = &[
         "Kept (hours)",
         Kind::Number,
         false,
-        "How much history the ring holds (72).",
+        "How many hours of history the ring holds (72).",
     ),
     f(
         "recorder.max_mb",
         "Size (MB)",
         Kind::Number,
         false,
-        "The ring's size at most (50).",
+        "The ring file's size at most, in MB; it holds less history when that is too small for the hours asked (50).",
     ),
     f(
         "recorder.alerts",
@@ -562,14 +562,14 @@ pub const FIELDS: &[Field] = &[
         "Expected listeners",
         Kind::List,
         false,
-        "Listening sockets, `addr:port/process` (127.0.0.1:631/cupsd).",
+        "Listening sockets that are expected, `addr:port/process` (127.0.0.1:631/cupsd). Anything else listening is a finding.",
     ),
     f(
         "baseline.findings",
         "Expected findings",
         Kind::List,
         false,
-        "Audit finding ids to treat as expected (globs allowed).",
+        "Audit finding ids to treat as expected, globs allowed (`flatpak:*`). What you mark with `x` in the window is kept apart, in baseline.toml.",
     ),
     f(
         "keys",

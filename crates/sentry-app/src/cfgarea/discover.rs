@@ -656,7 +656,7 @@ impl ConfigArea {
         };
         let prefix = format!("{top}.*.");
         let mut out = Vec::new();
-        for f in kind.fields().iter().filter(|f| f.essential) {
+        for f in kind.fields().iter().filter(|f| f.common) {
             let Some(rest) = f.path.strip_prefix(&prefix) else {
                 continue;
             };

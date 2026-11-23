@@ -10,16 +10,16 @@ expression: screen(&mut a)
  nothing is required here · Space toggles · Enter goes on
 ┌ This machine ───────────────────────────────────────────────────────────────────────┐┌ Review at start ────────────────────────────────────────────────────┐
 │  Reviews sentry starts by itself                                                    ││ yes/no                                                              │
-│    Review at start     [x] yes                                                      ││                                                                     │
-│    Review after a run  [x] yes                                                      ││ At each start of the window: which tasks are due again because      │
+│    Review at start     [x] yes  (default)                                           ││                                                                     │
+│    Review after a run  [x] yes  (default)                                           ││ At each start of the window: which tasks are due again because      │
 │                                                                                     ││ something changed (on).                                             │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ This is the default (yes): the file doesn't say it.                 │
 │                                                                                     ││                                                                     │
 │                                                                                     ││ On this machine sentry watches the system as you use it (updates,   │
 │                                                                                     ││ containers, Flatpaks, what listens, what is filling up), audits it, │
 │                                                                                     ││ and walks you through its upkeep. It runs only while this window is │
 │                                                                                     ││ open: nothing is installed, no service, no timer.                   │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │

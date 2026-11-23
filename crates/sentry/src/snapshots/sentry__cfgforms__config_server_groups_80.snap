@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgforms.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config* !         ● 1 not saved
+ 1 Overview 1*   2 Agent   3 This machine   4 Servers 1   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+┌ myserver · server · 1 changed ───────────────────────────────────────────────┐
+│  * Items             1 entry                                                 │
+│                                                                              │
+│  Notes Claude may read                                                       │
+│    Notes             (none)                                                  │
+│                                                                              │
+│  Upkeep · the shared workflows                                               │
+│    apt-maintenance   (not on a cadence)                                      │
+│    compose-update    (not on a cadence)                                      │
+│                                                                              │
+│  More settings · Enter opens a group                                         │
+│  ▸ Thresholds         all defaults  When memory, load or temperature is hi…  │
+│  ▸ Container rules    all defaults  Which may be stopped; what counts as r…  │
+│  ▸ Expected findings  all defaults  Findings that are fine as they are her…  │
+│  ▸ Custom actions     all defaults  Your own commands, behind a confirm bo…  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Custom actions ──────────────────────────────────────────────────────────────┐
+│ a group of settings · Enter opens it                                         │
+│                                                                              │
+│ Your own commands, behind a confirm box.                                     │
+│                                                                              │
+│ In it: Actions.                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  open the group   Esc  back   s  save…   c  check   ?  help   q  quit

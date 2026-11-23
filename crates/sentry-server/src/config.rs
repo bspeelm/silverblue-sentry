@@ -249,7 +249,7 @@ const fn f(
     path: &'static str,
     label: &'static str,
     kind: Kind,
-    essential: bool,
+    common: bool,
     help: &'static str,
 ) -> Field {
     Field {
@@ -257,7 +257,7 @@ const fn f(
         label,
         help,
         kind,
-        essential,
+        common,
     }
 }
 
@@ -305,14 +305,14 @@ pub const FIELDS: &[Field] = &[
         "Warn at",
         Kind::Number,
         true,
-        "Percent used that is a warning (85).",
+        "Percent used from which it is a warning (85).",
     ),
     f(
         "servers.*.disks[].crit",
         "Critical at",
         Kind::Number,
         true,
-        "Percent used that is critical (95).",
+        "Percent used from which it is critical (95).",
     ),
     f(
         "servers.*.smart",
@@ -417,28 +417,28 @@ pub const FIELDS: &[Field] = &[
         "Memory",
         Kind::Number,
         false,
-        "Memory used, percent (90).",
+        "Memory used, in percent, from which it counts as high (90).",
     ),
     f(
         "servers.*.thresholds.load_per_core",
         "Load per core",
         Kind::Number,
         false,
-        "1-minute load divided by cores (2.0).",
+        "The 1-minute load divided by the number of cores, from which it counts as high (2.0).",
     ),
     f(
         "servers.*.thresholds.cpu_temp",
         "CPU temperature",
         Kind::Number,
         false,
-        "°C (85).",
+        "The CPU temperature in °C from which it counts as high (85).",
     ),
     f(
         "servers.*.thresholds.gpu_temp",
         "GPU temperature",
         Kind::Number,
         false,
-        "°C (83).",
+        "The GPU temperature in °C from which it counts as high (83).",
     ),
     f(
         "servers.*.actions",
@@ -487,7 +487,7 @@ pub const FIELDS: &[Field] = &[
         "Undo",
         Kind::Text,
         false,
-        "How it is undone, in words.",
+        "How to undo it, in words: said in its confirm box. Empty: nothing is said.",
     ),
     f(
         "servers.*.maintenance",
@@ -592,21 +592,21 @@ pub const FIELDS: &[Field] = &[
         "Why held",
         Kind::Text,
         false,
-        "Why it's held where it is.",
+        "Why it's held where it is, in a sentence: shown on Maintenance and told to Claude.",
     ),
     f(
         "servers.*.maintenance.items[].constraint",
         "Constraint",
         Kind::Text,
         false,
-        "What limits the choice of version.",
+        "What limits the choice of version (`needs the 550 driver series`): told to Claude when it plans.",
     ),
     f(
         "servers.*.maintenance.items[].review_by",
         "Review by",
-        Kind::Text,
+        Kind::Date,
         false,
-        "Look at it again by then (YYYY-MM-DD).",
+        "Look at it again by this date (YYYY-MM-DD); Maintenance flags it once the date has passed. Empty: no date.",
     ),
     f(
         "servers.*.maintenance.items[].eol",
@@ -634,14 +634,14 @@ pub const FIELDS: &[Field] = &[
         "Replaced by",
         Kind::Text,
         false,
-        "What takes its place.",
+        "What takes its place, in words (another item, a product).",
     ),
     f(
         "servers.*.maintenance.items[].retire.workflow",
         "Retire workflow",
         Kind::Text,
         false,
-        "The workflow that retires it.",
+        "The workflow that retires it, one of this server's.",
     ),
     f(
         "servers.*.maintenance.cadence",

@@ -5,6 +5,8 @@
 
 mod cfgcmd;
 #[cfg(test)]
+mod cfgforms;
+#[cfg(test)]
 mod cfgtests;
 mod network;
 mod secaudit;

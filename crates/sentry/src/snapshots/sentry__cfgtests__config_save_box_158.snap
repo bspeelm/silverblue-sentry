@@ -14,9 +14,9 @@ expression: screen(&mut a)
 │  * Keys                     quit = Q                                                ││                                                                     │
 │                                                                                     ││ * changed here, not saved yet                                       │
 │  How long records are kept (every target)                                           ││                                                                     │
-│    Log (months)             12                                                      ││                                                                     │
-│    Log entries always kept  20                                                      ││                                                                     │
-│    Runs per workflow        10                                                      ││                                                                     │
+│    Log (months)             12  (default)                                           ││                                                                     │
+│    Log entries always kept  20  (default)                                           ││                                                                     │
+│    Runs per workflow        10  (default)                                           ││                                                                     │
 │    Done plans (months)     ┌ Save configuration ──────────────────────────────────────────────────────────────────────────────┐                            │
 │    Reviews kept            │                                                                                                  │                            │
 │    Reports kept            │   config.toml           window: Keys                                                             │                            │

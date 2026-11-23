@@ -307,7 +307,7 @@ const fn f(
     path: &'static str,
     label: &'static str,
     kind: Kind,
-    essential: bool,
+    common: bool,
     help: &'static str,
 ) -> Field {
     Field {
@@ -315,7 +315,7 @@ const fn f(
         label,
         help,
         kind,
-        essential,
+        common,
     }
 }
 
@@ -403,7 +403,7 @@ pub const FIELDS: &[Field] = &[
         "To",
         Kind::Text,
         true,
-        "The address it goes to.",
+        "The inside address it goes to (192.0.2.20).",
     ),
     f(
         "networks.*.expect.listeners",
@@ -431,7 +431,7 @@ pub const FIELDS: &[Field] = &[
         "Name",
         Kind::Text,
         true,
-        "What to call it.",
+        "What to call it: shown wherever the device is, instead of its MAC.",
     ),
     f(
         "networks.*.devices[].mac",
@@ -543,7 +543,7 @@ pub const FIELDS: &[Field] = &[
         "Kind",
         Kind::Choice(&["firmware", "packages", "backup"]),
         false,
-        "firmware, packages or backup.",
+        "What it is: `firmware` (the router's release), `packages` (what apk would upgrade) or `backup` (its config backup).",
     ),
     f(
         "networks.*.maintenance.cadence",

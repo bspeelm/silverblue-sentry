@@ -118,6 +118,15 @@ impl Problem {
         match segs.as_slice() {
             [Seg::Key(s)] => self.text.starts_with(&format!("[{s}]")),
             [Seg::Key(s), Seg::Key(leaf)] => self.text.starts_with(&format!("[{s}] {leaf}")),
+            // A system's own lint names a setting inside a section as `section: leaf …`
+            // (`guard: window: 3 s`, `backup: keep must be at least 1`).
+            [Seg::Key(_), Seg::Key(e), Seg::Key(s), Seg::Key(leaf)]
+                if self.file != FileId::App && self.entry.as_deref() == Some(e) =>
+            {
+                self.text
+                    .strip_prefix(&format!("{s}: {leaf}"))
+                    .is_some_and(|rest| rest.starts_with([':', ' ']))
+            }
             _ => false,
         }
     }
@@ -228,6 +237,11 @@ impl Screen {
 pub const AGENT: &str = "agent";
 pub const MACHINE: &str = "this machine";
 pub const WINDOW: &str = "window";
+
+/// A form field that is a folded group's header, not a setting.
+pub(crate) const GROUP: &str = "@group:";
+/// The heading over the folded groups of a form.
+const MORE: &str = "More settings · Enter opens a group";
 
 /// One file as the area holds it.
 pub struct File {
@@ -390,7 +404,7 @@ pub struct ConfigArea {
     cur: usize,
     /// Servers' and Networks' cursors.
     list: [usize; 2],
-    /// The entry under the cursor is shown with all its essential settings.
+    /// The entry under the cursor is shown with all its common settings.
     open: bool,
     /// The form of the screen in view (Agent, This machine, Window).
     form: Option<Form>,
@@ -473,6 +487,26 @@ impl ConfigArea {
         match &self.row {
             Some(r) => r.form.field().map(|f| f.key.clone()),
             None => self.field_path(),
+        }
+    }
+
+    /// Tests: the cursor of the form in view (a record's, when one is open) goes to the
+    /// field with this key, its group opened. False: the form has no such field.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn go_for_test(&mut self, key: &str) -> bool {
+        match (&mut self.row, &mut self.form) {
+            (Some(r), _) => r.form.go(key),
+            (None, Some(f)) => f.go(key),
+            _ => false,
+        }
+    }
+
+    /// Tests: the form in view (a record's, when one is open).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn form_for_test(&self) -> Option<&Form> {
+        match &self.row {
+            Some(r) => Some(&r.form),
+            None => self.form.as_ref(),
         }
     }
 
@@ -940,24 +974,45 @@ impl ConfigArea {
         if step {
             sections.truncate(1);
         }
-        let mut fields = self.form_fields(kind, doc, &sections);
+        // The common groups, the upkeep, then the rest, folded.
+        let (rest, open): (Vec<Section>, Vec<Section>) = sections.into_iter().partition(|s| s.fold);
+        let mut fields = self.form_fields(kind, doc, &open);
         if self.screen == Screen::Machine && !step {
             fields.extend(self.upkeep_fields(kind, doc, entry));
         }
+        fields.extend(self.form_fields(kind, doc, &rest));
         Some(Form::new(self.screen.name(), fields))
     }
 
-    /// The form's fields for these sections: each item by its table entry and its value.
+    /// What the setting at `segs` is when nobody sets it: the file's own default, or for a
+    /// setting of a server or a network, that of an entry with nothing set.
+    pub(crate) fn default_at(
+        &self,
+        kind: &dyn Kind,
+        doc: &dyn DocAny,
+        segs: &[Seg],
+    ) -> Option<Value> {
+        match (kind.entry_default(), segs) {
+            (Some(entry), [_, Seg::Key(_), rest @ ..]) => entry.at(rest).cloned(),
+            _ => doc.defaults().at(segs).cloned(),
+        }
+    }
+
+    /// The form's fields for these sections: each item by its table entry and its value. A
+    /// folded section is a header row (its name, how many of its settings are set, a line
+    /// about it) and its fields under it.
     pub(crate) fn form_fields(
         &self,
         kind: &dyn Kind,
         doc: &dyn DocAny,
         sections: &[Section],
     ) -> Vec<form::Field> {
-        let (tree, defaults) = (doc.tree(), doc.defaults());
+        let tree = doc.tree();
         let mut out = Vec::new();
+        let mut more = Some(MORE);
         for s in sections {
-            let mut head = Some(s.title.clone());
+            let mut fields = Vec::new();
+            let mut set = 0;
             for item in &s.items {
                 let Ok(segs) = parse_path(&item.path) else {
                     continue;
@@ -975,7 +1030,6 @@ impl ConfigArea {
                 let mut f = form::Field::new(&item.path, spec.label, value)
                     .help(spec.help)
                     .empty(&item.empty);
-                f.head = head.take().unwrap_or_default();
                 f.changed = self.pending.iter().any(|p| p.change.path == item.path);
                 if let Some(a) = kind.action(&item.path) {
                     f.help = format!("{} K: {}.", f.help, a.label);
@@ -985,22 +1039,50 @@ impl ConfigArea {
                     .iter()
                     .find(|p| p.about(&item.path))
                     .map(|p| p.text.clone());
-                if spec.kind == cfg::Kind::Number {
-                    f.range = Some((0, i64::MAX));
-                }
                 // No number in these files is negative; the type says the rest.
+                if spec.kind == cfg::Kind::Number {
+                    f.range = Some(item.range.unwrap_or((0, i64::MAX)));
+                }
                 if item.path == "targets.show" {
                     let all = self.all_targets();
                     f.help = format!("{} There are: {}.", f.help, all.join(", "));
                     f.seed = all;
                 }
+                // What nobody set is said to be the default; what the file says isn't.
+                let default = self.default_at(kind, doc, &segs);
+                let now = tree.at(&segs).cloned().unwrap_or(Value::Null);
+                f.optional = default == Some(Value::Null);
+                f.is_default = default.as_ref() == Some(&now);
+                f.default = default
+                    .as_ref()
+                    .map(kind::default_shown)
+                    .unwrap_or_default();
+                if !f.is_default {
+                    set += 1;
+                }
                 if f.empty.is_empty()
-                    && let Some(Value::Str(d)) = defaults.at(&segs)
+                    && let Some(Value::Str(d)) = &default
                     && !d.is_empty()
                 {
                     f.empty = d.clone();
                 }
-                out.push(f);
+                fields.push(f);
+            }
+            if s.fold {
+                let key = format!("{GROUP}{}", s.title);
+                let summary = match set {
+                    0 => "all defaults".to_string(),
+                    n => format!("{n} set"),
+                };
+                let mut head = form::Field::group(&key, &s.title, &s.about, &summary);
+                head.head = more.take().unwrap_or_default().to_string();
+                out.push(head);
+                out.extend(fields.into_iter().map(|f| f.within(&key)));
+            } else {
+                if let Some(f) = fields.first_mut() {
+                    f.head = s.title.clone();
+                }
+                out.extend(fields);
             }
         }
         out
@@ -1020,10 +1102,16 @@ impl ConfigArea {
             }
             return;
         }
+        // (Unset is what an empty answer means where the setting's default is unset.)
         let nullable = self
-            .doc(FileId::of_path(path))
+            .kind_doc(FileId::of_path(path))
             .zip(parse_path(path).ok())
-            .is_some_and(|(d, segs)| matches!(d.defaults().at(&segs), Some(Value::Null) | None));
+            .is_some_and(|((k, d), segs)| match self.default_at(k, d, &segs) {
+                Some(Value::Null) => true,
+                // (A named entry of config.toml that isn't there yet.)
+                None => k.entry_default().is_none(),
+                Some(_) => false,
+            });
         let mut to = kind::from_form(v, nullable);
         // Named lists of words (a zone's interfaces) are typed `name = a b`.
         let file = FileId::of_path(path);

@@ -34,11 +34,11 @@ expression: screen(&mut a)
 │    apt-maintenance   (not on a cadence)                                             ││                                                                     │
 │    compose-update    (not on a cadence)                                             ││                                                                     │
 │                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▸ Thresholds         all defaults  When memory, load or temperature is high.       ││                                                                     │
+│  ▸ Container rules    all defaults  Which may be stopped; what counts as restarte…  ││                                                                     │
+│  ▸ Expected findings  all defaults  Findings that are fine as they are here.        ││                                                                     │
+│  ▸ Custom actions     all defaults  Your own commands, behind a confirm box.        ││                                                                     │
 │                                                                                     ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

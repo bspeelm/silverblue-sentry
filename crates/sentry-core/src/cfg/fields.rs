@@ -1,5 +1,5 @@
 //! What each setting is, beside the type it describes: a static table per config file (path
-//! pattern, label, help, kind, whether the window's forms cover it). `sentry config explain`
+//! pattern, label, help, kind, whether it is one of the common ones). `sentry config explain`
 //! prints it; the forms and the agent's proposals will be checked against it. Each config
 //! module's tests check that every field its type serializes has an entry
 //! ([`uncovered`], [`unused`]), so a table can't drift from its type.
@@ -14,6 +14,8 @@ pub enum Kind {
     Number,
     /// `10s`, `5m`, `24h`, `30d`.
     Duration,
+    /// `YYYY-MM-DD`.
+    Date,
     /// One of these words.
     Choice(&'static [&'static str]),
     /// A list of words.
@@ -33,6 +35,7 @@ impl Kind {
             Kind::Bool => "yes/no",
             Kind::Number => "number",
             Kind::Duration => "duration",
+            Kind::Date => "date",
             Kind::Choice(_) => "one of",
             Kind::List => "list",
             Kind::Records => "list of records",
@@ -49,8 +52,10 @@ pub struct Field {
     pub label: &'static str,
     pub help: &'static str,
     pub kind: Kind,
-    /// The window's forms cover it (the rest: the file in `$EDITOR`).
-    pub essential: bool,
+    /// One of the common settings: shown first and open in its form, a column of its list
+    /// of records, proposed by the setup. Every other setting is in the forms too, in a
+    /// group that starts folded (a record's: further down its row's form).
+    pub common: bool,
 }
 
 /// One step of a pattern.
@@ -173,28 +178,28 @@ mod tests {
             label: "Timers",
             help: "",
             kind: Kind::Records,
-            essential: true,
+            common: true,
         },
         Field {
             path: "servers.*.timers[].max_age",
             label: "Max age",
             help: "",
             kind: Kind::Duration,
-            essential: true,
+            common: true,
         },
         Field {
             path: "servers.*.sudo",
             label: "sudo",
             help: "",
             kind: Kind::List,
-            essential: true,
+            common: true,
         },
         Field {
             path: "keys",
             label: "Keys",
             help: "",
             kind: Kind::Map,
-            essential: true,
+            common: true,
         },
     ];
 

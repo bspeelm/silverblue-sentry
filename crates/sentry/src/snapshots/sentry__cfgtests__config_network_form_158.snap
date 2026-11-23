@@ -20,11 +20,11 @@ expression: screen(&mut a)
 │                                                                                     ││                                                                     │
 │  Config backups                                                                     ││                                                                     │
 │    Backup recipients      (none: no backup is made)                                 ││                                                                     │
-│    Backups kept           12                                                        ││                                                                     │
+│    Backups kept           12  (default)                                             ││                                                                     │
 │                                                                                     ││                                                                     │
 │  Claude                                                                             ││                                                                     │
 │    Notes                  (none)                                                    ││                                                                     │
-│    Share the WAN address  [ ] no                                                    ││                                                                     │
+│    Share the WAN address  [ ] no  (default)                                         ││                                                                     │
 │                                                                                     ││                                                                     │
 │  Upkeep · the shared workflows                                                      ││                                                                     │
 │    config-backup          (not on a cadence)                                        ││                                                                     │
@@ -33,12 +33,12 @@ expression: screen(&mut a)
 │    package-update         (not on a cadence)                                        ││                                                                     │
 │    security-action        (not on a cadence)                                        ││                                                                     │
 │                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▸ Router             all defaults  Which system the router runs.                   ││                                                                     │
+│  ▸ On the router      all defaults  What may listen on it; which services must ru…  ││                                                                     │
+│  ▸ Thresholds         all defaults  When load, memory or a backup's age counts.     ││                                                                     │
+│  ▸ Guard              all defaults  How long a guarded change waits for its keep.   ││                                                                     │
+│  ▸ Maintenance items  all defaults  Firmware, packages, backup: what is kept curr…  ││                                                                     │
 │                                                                                     ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 //! `server_config.yaml` as the window's Config area knows it (`sentry_app::cfgarea::Kind`):
-//! each server an entry with a line about it, its essential settings in sections, what its
+//! each server an entry with a line about it, every setting of it in sections (the common
+//! ones open, the rest in groups that start folded), what its
 //! lint says, its connection checks (`sentry-server check` prints the same lines), how a
 //! host is looked at and drafted (`init`'s discovery), and its upkeep: the workflows it has
 //! and how often each is due.
@@ -16,7 +17,9 @@ use sentry_app::cfgarea::{Problem, Screen};
 use sentry_core::cfg::{ConfigFile, Field, FileId, Seg, Value, parse_path, path_string};
 use sentry_core::workflows;
 
-use crate::config::{self, Compose, DiskRule, MaintItem, Server, ServerFile, TimerRule};
+use crate::config::{
+    self, Compose, CustomAction, DiskRule, MaintItem, Server, ServerFile, TimerRule,
+};
 use crate::remote::{Remote, SrvError, SudoMode};
 
 pub struct ServersKind;
@@ -230,12 +233,15 @@ impl Kind for ServersKind {
     }
 
     fn sections(&self, _d: &dyn DocAny, entry: &str) -> Vec<Section> {
-        let section = |title: &str, items: &[(&str, &str)]| Section {
-            title: title.to_string(),
-            items: items
+        let items = |items: &[(&str, &str)]| -> Vec<Item> {
+            items
                 .iter()
                 .map(|(rest, empty)| Item::at(&at(entry, rest)).empty(empty))
-                .collect(),
+                .collect()
+        };
+        let section = |title: &str, list: &[(&str, &str)]| Section::new(title, items(list));
+        let folded = |title: &str, about: &str, list: &[(&str, &str)]| {
+            Section::folded(title, about, items(list))
         };
         vec![
             section(
@@ -262,7 +268,70 @@ impl Kind for ServersKind {
                 &[("maintenance.items", "none")],
             ),
             section("Notes Claude may read", &[("maintenance.notes", "none")]),
+            // The rest of what a server's entry says. (Its cadence is the Upkeep group's.)
+            folded(
+                "Thresholds",
+                "When memory, load or temperature is high.",
+                &[
+                    ("thresholds.mem", ""),
+                    ("thresholds.load_per_core", ""),
+                    ("thresholds.cpu_temp", ""),
+                    ("thresholds.gpu_temp", ""),
+                ],
+            ),
+            folded(
+                "Container rules",
+                "Which may be stopped; what counts as restarted.",
+                &[
+                    (
+                        "containers.ignore",
+                        "none: a stopped container is a finding",
+                    ),
+                    ("containers.restart_window", ""),
+                ],
+            ),
+            folded(
+                "Expected findings",
+                "Findings that are fine as they are here.",
+                &[("findings", "none")],
+            ),
+            folded(
+                "Custom actions",
+                "Your own commands, behind a confirm box.",
+                &[("actions", "none")],
+            ),
         ]
+    }
+
+    fn entry_default(&self) -> Option<Value> {
+        Value::of(&Server::default()).ok()
+    }
+
+    /// What a record may leave out, and what it is then.
+    fn record_default(&self, list: &str) -> Option<Value> {
+        let segs = parse_path(list).ok()?;
+        let map = |m: Vec<(&str, Value)>| {
+            Value::Map(m.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+        };
+        match segs.last()? {
+            Seg::Key(k) if k == "disks" => Some(map(vec![
+                ("warn", Value::Int(Server::default_warn().into())),
+                ("crit", Value::Int(Server::default_crit().into())),
+            ])),
+            Seg::Key(k) if k == "actions" => Some(map(vec![
+                ("sudo", Value::Bool(false)),
+                ("risky", Value::Bool(false)),
+                ("undo", Value::Null),
+            ])),
+            // Everything of an item but its id.
+            Seg::Key(k) if k == "items" => match Value::of(&MaintItem::default()).ok()? {
+                Value::Map(m) => Some(Value::Map(
+                    m.into_iter().filter(|(k, _)| k != "id").collect(),
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn problems(&self, d: &dyn DocAny, warnings: &[String]) -> Vec<Problem> {
@@ -289,31 +358,46 @@ impl Kind for ServersKind {
                 file: String::new(),
             }),
             Seg::Key(k) if k == "items" => Value::of(&MaintItem::default()),
+            Seg::Key(k) if k == "actions" => Value::of(&CustomAction {
+                id: String::new(),
+                title: String::new(),
+                run: String::new(),
+                sudo: false,
+                risky: false,
+                undo: None,
+            }),
             _ => return None,
         };
         v.ok()
     }
 
-    /// A tracked item's workflow is one of that server's workflows.
+    /// A tracked item's workflow, and the one that retires it, are each one of that
+    /// server's workflows.
     fn choices(&self, _d: &dyn DocAny, path: &str, disk: bool) -> Option<Vec<String>> {
         let segs = parse_path(path).ok()?;
-        match segs.as_slice() {
-            [
-                Seg::Key(_),
-                Seg::Key(name),
-                Seg::Key(m),
-                Seg::Key(i),
-                Seg::Index(_),
-                Seg::Key(leaf),
-            ] if m == "maintenance" && i == "items" && leaf == "workflow" => Some(
-                workflows_of(name, disk)
-                    .0
-                    .into_iter()
-                    .map(|e| e.name)
-                    .collect(),
-            ),
-            _ => None,
-        }
+        let [
+            Seg::Key(_),
+            Seg::Key(name),
+            Seg::Key(m),
+            Seg::Key(i),
+            Seg::Index(_),
+            rest @ ..,
+        ] = segs.as_slice()
+        else {
+            return None;
+        };
+        let workflow = match rest {
+            [Seg::Key(leaf)] => leaf == "workflow",
+            [Seg::Key(r), Seg::Key(leaf)] => r == "retire" && leaf == "workflow",
+            _ => false,
+        };
+        (m == "maintenance" && i == "items" && workflow).then(|| {
+            workflows_of(name, disk)
+                .0
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        })
     }
 
     fn check(&self, d: &dyn DocAny, entry: &str) -> Option<Checker> {
@@ -432,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn each_server_is_an_entry_with_its_essential_settings() {
+    fn each_server_is_an_entry_with_every_setting_in_one_place() {
         let k = ServersKind;
         let (doc, warnings) = loaded(
             "servers:\n  myserver:\n    ssh: admin@192.0.2.10\n    services: [app.service]\n    timers: [{unit: x, max_age: 1d}]\n  my.other: {}\n",
@@ -464,36 +548,83 @@ mod tests {
                 ),
             ]
         );
-        // Its form: only what the table marks essential, at this server's paths.
-        let items: Vec<String> = k
-            .sections(doc.as_ref(), "my.other")
-            .into_iter()
-            .flat_map(|s| s.items)
-            .map(|i| i.path)
+        // Its form: every setting of a server, each in one place (its cadence is the
+        // Upkeep group's), at this server's paths.
+        assert_eq!(
+            kind::misplaced(
+                &k,
+                doc.as_ref(),
+                &["my.other"],
+                &["servers", "servers.*.maintenance.cadence"]
+            ),
+            Vec::<String>::new()
+        );
+        let sections = k.sections(doc.as_ref(), "my.other");
+        let items: Vec<String> = sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .map(|i| i.path.clone())
             .collect();
         assert!(
             items.contains(&"servers.\"my.other\".ssh".to_string()),
             "{items:?}"
         );
-        for p in &items {
-            let f = sentry_core::cfg::fields::find(k.fields(), p).unwrap_or_else(|| panic!("{p}"));
-            assert!(f.essential, "{p}");
+        // The common ones are in the open groups, which come first; the rest fold.
+        let first_fold = sections.iter().position(|s| s.fold).unwrap();
+        for (i, s) in sections.iter().enumerate() {
+            assert_eq!(s.fold, i >= first_fold, "{}", s.title);
+            assert_eq!(s.fold, !s.about.is_empty(), "{}", s.title);
+            for item in &s.items {
+                let f = sentry_core::cfg::fields::find(k.fields(), &item.path).unwrap();
+                assert_eq!(f.common, !s.fold, "{}", item.path);
+            }
         }
-        // And every essential setting of a server that isn't a record's own field is in its
-        // form, or is its cadence (the Upkeep section's).
-        for f in ServerFile::FIELDS.iter().filter(|f| {
-            f.essential
-                && f.kind != sentry_core::cfg::Kind::Section
-                && f.path.starts_with("servers.*.")
-                && !f.path.contains("[]")
-        }) {
-            let path = f.path.replace("servers.*", "servers.\"my.other\"");
-            assert!(
-                items.contains(&path) || f.path == "servers.*.maintenance.cadence",
-                "{} is in no form",
-                f.path
-            );
-        }
+        // A tracked item's row has every field of it: the common ones first, then the
+        // rest, then its image and its retirement, each a group of its own.
+        let spec =
+            sentry_core::cfg::fields::find(k.fields(), "servers.a.maintenance.items").unwrap();
+        let row: Vec<(&str, Option<&str>)> = kind::record_fields(k.fields(), spec)
+            .iter()
+            .map(|r| (r.rel, r.group.map(|g| g.label)))
+            .collect();
+        assert_eq!(
+            row,
+            [
+                ("id", None),
+                ("source", None),
+                ("risk", None),
+                ("workflow", None),
+                ("apt", None),
+                ("version_cmd", None),
+                ("unit", None),
+                ("tag", None),
+                ("hold", None),
+                ("constraint", None),
+                ("review_by", None),
+                ("eol", None),
+                ("image.service", Some("Image")),
+                ("image.compose", Some("Image")),
+                ("image.container", Some("Image")),
+                ("retire.replaced_by", Some("Retire")),
+                ("retire.workflow", Some("Retire")),
+            ]
+        );
+        // What a setting is when nobody sets it: an entry with nothing in it says.
+        let d = k.entry_default().unwrap();
+        assert_eq!(
+            d.at(&parse_path("thresholds.mem").unwrap()),
+            Some(&Value::Float(90.0))
+        );
+        assert_eq!(d.get("ssh"), Some(&Value::Null));
+        let d = k.record_default("servers.a.maintenance.items").unwrap();
+        assert_eq!(d.get("id"), None);
+        assert_eq!(d.get("image"), Some(&Value::Null));
+        assert_eq!(d.get("risk"), Some(&Value::Str("medium".into())));
+        assert_eq!(
+            k.record_default("servers.a.disks").unwrap().to_string(),
+            "{warn: 85, crit: 95}"
+        );
+        assert_eq!(k.record_default("servers.a.timers"), None);
         assert_eq!(k.entry_of("servers.myserver.timers[0].unit"), "myserver");
         let p = k.problems(doc.as_ref(), &warnings);
         assert_eq!(
@@ -510,6 +641,7 @@ mod tests {
             ("servers.a.disks", "mount"),
             ("servers.a.compose", "name"),
             ("servers.a.maintenance.items", "id"),
+            ("servers.a.actions", "run"),
         ] {
             let v = k.blank(list).unwrap_or_else(|| panic!("{list}"));
             assert!(v.get(key).is_some(), "{list}: {v}");
@@ -575,5 +707,21 @@ mod tests {
             Some(vec!["apt-maintenance".to_string(), "compose-update".into()])
         );
         assert_eq!(k.choices(doc.as_ref(), "servers.myserver.ssh", false), None);
+        assert!(
+            k.choices(
+                doc.as_ref(),
+                "servers.myserver.maintenance.items[0].retire.workflow",
+                false
+            )
+            .is_some()
+        );
+        assert_eq!(
+            k.choices(
+                doc.as_ref(),
+                "servers.myserver.maintenance.items[0].retire.replaced_by",
+                false
+            ),
+            None
+        );
     }
 }

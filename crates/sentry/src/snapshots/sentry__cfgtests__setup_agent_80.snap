@@ -10,8 +10,8 @@ expression: "render_to_string(&mut a, 80, 30)"
  Enter goes on without an agent · Space edits its command, r looks again
 ┌ Agent ───────────────────────────────────────────────────────────────────────┐
 │  The agent sentry asks                                                       │
-│    Kind     claude-code                                                      │
-│    Command  claude                                                           │
+│    Kind     claude-code  (default)                                           │
+│    Command  claude  (default)                                                │
 │                                                                              │
 │                                                                              │
 │                                                                              │

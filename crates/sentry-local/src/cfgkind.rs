@@ -1,6 +1,7 @@
 //! `config.toml` as the window's Config area knows it (`sentry_app::cfgarea::Kind`): its
-//! three parts (the agent, this machine, the window), the settings each part's form has,
-//! and everything wrong in it that can be seen without a host.
+//! three parts (the agent, this machine, the window), the settings each part's form has
+//! (every one of the file's: the common ones in open groups, the rest in groups that start
+//! folded), and everything wrong in it that can be seen without a host.
 
 use std::path::Path;
 
@@ -114,9 +115,9 @@ impl Kind for AppKind {
     }
 
     fn sections(&self, _d: &dyn DocAny, entry: &str) -> Vec<Section> {
-        let section = |title: &str, items: Vec<Item>| Section {
-            title: title.to_string(),
-            items,
+        let section = Section::new;
+        let folded = |title: &str, about: &str, paths: &[&str]| {
+            Section::folded(title, about, paths.iter().map(|p| Item::at(p)).collect())
         };
         match entry {
             AGENT => vec![section(
@@ -138,6 +139,60 @@ impl Kind for AppKind {
                         Item::at("ui.terminal")
                             .empty("$TERMINAL, xdg-terminal-exec, ghostty, ptyxis"),
                     ],
+                ),
+                // Everything else config.toml says about this machine. (`[jobs]` is the
+                // Upkeep group's; what the whole window goes by is on Window.)
+                Section::folded(
+                    "Refresh rates",
+                    "How often this machine's live screens sample.",
+                    vec![
+                        Item::at("ui.dashboard_hz").range(0, 10),
+                        Item::at("ui.processes_hz").range(0, 10),
+                    ],
+                ),
+                folded(
+                    "Update checks",
+                    "How long a cached update check counts as fresh.",
+                    &["cache.update_check_max_age"],
+                ),
+                folded(
+                    "Audit",
+                    "What the audit flags, how long reports stay.",
+                    &[
+                        "audit.stale_container_days",
+                        "audit.cache_warn_mb",
+                        "audit.retention_months",
+                        "audit.outside",
+                    ],
+                ),
+                folded(
+                    "Flatpak rules",
+                    "Permissions and remotes the audit flags.",
+                    &[
+                        "flatpak.flag_filesystems",
+                        "flatpak.flag_talk_names",
+                        "flatpak.trusted_origins",
+                    ],
+                ),
+                folded(
+                    "Recorder",
+                    "`sentry record` and History: how often, how much.",
+                    &[
+                        "recorder.interval",
+                        "recorder.retention_hours",
+                        "recorder.max_mb",
+                        "recorder.alerts",
+                    ],
+                ),
+                folded(
+                    "Cleanup",
+                    "The cache directories Cleanup may delete.",
+                    &["cleanup.cache.delete_dirs"],
+                ),
+                folded(
+                    "Expected",
+                    "Listeners and findings taken as expected.",
+                    &["baseline.listeners", "baseline.findings"],
                 ),
             ],
             WINDOW => vec![
@@ -165,8 +220,8 @@ impl Kind for AppKind {
     fn entry_of(&self, path: &str) -> String {
         match path.split(['.', '[']).next() {
             Some("agent") => AGENT,
-            Some("review" | "maintenance" | "ui") => MACHINE,
-            _ => WINDOW,
+            Some("targets" | "keys" | "retention") => WINDOW,
+            _ => MACHINE,
         }
         .to_string()
     }
@@ -285,28 +340,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_form_setting_is_an_essential_one_of_the_table() {
+    fn every_setting_of_config_toml_has_one_home_in_a_form() {
         let k = AppKind;
         let (doc, _) = k.load(Path::new("/nonexistent/config.toml")).unwrap();
-        let mut seen = Vec::new();
+        // `[jobs]` is what the Upkeep group of This machine sets.
+        assert_eq!(
+            kind::misplaced(
+                &k,
+                doc.as_ref(),
+                &[AGENT, MACHINE, WINDOW],
+                &["jobs", "jobs.*.suggested_every"]
+            ),
+            Vec::<String>::new()
+        );
         for e in k.entries(doc.as_ref()) {
             let sections = k.sections(doc.as_ref(), &e.name);
             assert!(!sections.is_empty(), "{}", e.name);
-            for item in sections.iter().flat_map(|s| &s.items) {
-                let f = sentry_core::cfg::fields::find(k.fields(), &item.path)
-                    .unwrap_or_else(|| panic!("{}", item.path));
-                assert!(f.essential, "{}", item.path);
-                assert_eq!(k.entry_of(&item.path), e.name, "{}", item.path);
-                seen.push(f.path);
+            // The common settings are in the open groups, which come first; the rest fold.
+            let first_fold = sections.iter().position(|s| s.fold);
+            for (i, s) in sections.iter().enumerate() {
+                assert_eq!(s.fold, first_fold.is_some_and(|f| i >= f), "{}", s.title);
+                assert_eq!(s.fold, !s.about.is_empty(), "{}", s.title);
+                for item in &s.items {
+                    let f = sentry_core::cfg::fields::find(k.fields(), &item.path).unwrap();
+                    assert_eq!(f.common, !s.fold, "{}", item.path);
+                    assert_eq!(k.entry_of(&item.path), e.name, "{}", item.path);
+                }
             }
         }
-        // And every essential setting that holds a value is in a form.
-        for f in Config::FIELDS
-            .iter()
-            .filter(|f| f.essential && f.kind != sentry_core::cfg::Kind::Section)
-        {
-            assert!(seen.contains(&f.path), "{} is in no form", f.path);
-        }
+        // Window-wide things stay on Window; what is this machine's is on This machine.
+        assert_eq!(k.entry_of("jobs"), MACHINE);
+        assert_eq!(k.entry_of("retention.reviews"), WINDOW);
+        assert_eq!(k.entry_of("recorder.alerts"), MACHINE);
     }
 
     #[test]

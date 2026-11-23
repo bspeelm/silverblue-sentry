@@ -303,7 +303,7 @@ fn explain(path: Option<&str>) -> ExitCode {
     }
 }
 
-/// What `sentry config explain <path>` prints: the setting, its kind, its help, whether the
+/// What `sentry config explain <path>` prints: the setting, its kind, its help, where the
 /// window's forms have it, and the settings in it.
 pub fn explained(path: &str) -> Option<String> {
     let fields = match FileId::of_path(path) {
@@ -324,8 +324,8 @@ pub fn explained(path: &str) -> Option<String> {
         f.label,
         f.help
     );
-    if !f.essential {
-        out.push_str("Not in the window's forms: `e` there opens the file in $EDITOR.\n");
+    if !f.common {
+        out.push_str("In the window's forms it is in a group that starts folded.\n");
     }
     let inner: Vec<&Field> = fields
         .iter()
@@ -404,7 +404,7 @@ mod tests {
         assert!(t.contains("servers.*.timers[].max_age"), "{t}");
         let t = explained("ui.dashboard_hz").unwrap();
         assert!(t.contains("config.toml · number"), "{t}");
-        assert!(t.contains("Not in the window's forms"), "{t}");
+        assert!(t.contains("in a group that starts folded"), "{t}");
         let t = explained("networks.home.backup.recipients").unwrap();
         assert!(t.contains("age recipients"), "{t}");
         assert!(explained("servers.\"my.server\".timers[3].unit").is_some());

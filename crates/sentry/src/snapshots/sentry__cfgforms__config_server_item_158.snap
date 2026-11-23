@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgforms.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config !    nothing is written before the save box                      ! 1 problem   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers 1   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ myserver · items · 1 ───────────────────────────────────────────────────────────────┐┌ Id ─────────────────────────────────────────────────────────────────┐
+│    Id               app                                                             ││ text                                                                │
+│    Source           github:example/app                                              ││                                                                     │
+│    Risk             low                                                             ││ A short name for it, unique on this server.                         │
+│    Workflow         (none)  (default)                                               ││                                                                     │
+│                                                                                     ││ One entry of the list: each field is staged as it is set · Esc back │
+│  More about it                                                                      ││                                                                     │
+│    Packages         (none)                                                          ││                                                                     │
+│    Version command  (not set)                                                       ││                                                                     │
+│    Unit             (not set)                                                       ││                                                                     │
+│    Tags             (not set)                                                       ││                                                                     │
+│    Why held         pinned                                                          ││                                                                     │
+│    Constraint       (not set)                                                       ││                                                                     │
+│    Review by        (not set)                                                       ││                                                                     │
+│    End of life      (not set)                                                       ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Image · A container image: its pin from the compose file, what runs from `docker…  ││                                                                     │
+│    Compose service  (not set)                                                       ││                                                                     │
+│    Compose project  (not set)                                                       ││                                                                     │
+│    Container        (not set)                                                       ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Retire · Planned to be removed.                                                    ││                                                                     │
+│    Replaced by      (not set)                                                       ││                                                                     │
+│    Retire workflow  (none)  (default)                                               ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   j/k  move   Esc  back to the list

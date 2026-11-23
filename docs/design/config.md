@@ -17,7 +17,9 @@ Decisions made:
   deployed models are one later effort. The setting still gets a home so that effort adds options.
 - sentry **rewrites the config files** (backup kept; hand-written comments are lost on first save).
 - Setup **offers what it finds** (ssh hosts, the gateway, the agent CLI); you tick, then it probes.
-- Forms cover the **essentials**; rarer settings open the file in `$EDITOR` from the same window.
+- Forms cover **every setting**: the common ones first, the rest in groups that start folded
+  (first decided as "the essentials, the rest in `$EDITOR`"; see "As built", every setting).
+  `e` still opens the file for whoever prefers it; nothing needs it.
 - The wizard agent **advises, proposes changes you tick, and may re-run read-only discovery**.
 - A saved change is followed **at once** (targets appear/close without a restart).
 - Existing setups: **nothing opens by itself**; the tab is just there.
@@ -305,6 +307,50 @@ Part 3 (systems):
   (the same first-run condition as `sentry`). With another file there and none of their own
   they still say to run `init`, as the commands without a window do.
 
+Every setting in the forms (after part 3; the decision changed):
+- **Every leaf setting of the three files is in a form.** `Kind::sections` returns the groups
+  of the common settings first (open, as they were, in the same order) and then the rest as
+  `Section::folded(title, about, items)`. A system's form is: the common groups, Upkeep, then
+  "More settings": a header row per folded group (`▸ name · N set / all defaults · a line about
+  it`). The setup's steps are unchanged (This machine still shows its first group only; the
+  review still proposes only the common lists).
+- **Where they went.** This machine: Refresh rates (`[ui]` rates), Update checks (`[cache]`),
+  Audit, Flatpak rules, Recorder, Cleanup, Expected (`[baseline]`): all of it is what this
+  machine's target reads. Window keeps what every target goes by (targets, keys, retention)
+  and gained nothing; `[jobs]` stays Upkeep's. A server: Thresholds, Container rules, Expected
+  findings, Custom actions. A network: Router (its kind), On the router (expected listeners
+  and services), Thresholds, Guard, Maintenance items.
+- **`Field.essential` is `Field.common`**: it no longer says "in the forms" (everything is)
+  but "one of the common ones": in an open group, a column of its list of records, proposed
+  by the setup's review. `cfg::Kind::Date` is new (`review_by`).
+- **Every setting has one home** (`cfgarea::kind::misplaced`, a test per kind): a table entry
+  that holds a value is an item of exactly one section, a field of the row form of a list
+  that is one (`kind::record_fields`), a zone's list under its map, or what Upkeep holds
+  (the cadence, `[jobs]`). A setting added to a type without a home fails its kind's test,
+  as one without a table entry already did.
+- **The form widget folds** (`tui/form.rs`): a `Value::Fold(summary, open)` field is a
+  group's header, the fields naming it in `Field::fold` are in it. Closed, they aren't drawn
+  and the cursor goes past them; Enter or Space on the header toggles; `Form::new` opens a
+  group that holds a problem or a change, `Form::at` keeps a group as it was left and opens
+  one in which something newly needs seeing; `Form::go` opens the group of the field it goes
+  to. Each group's fields have their own label column, so opening one moves nothing above
+  it. A form without such a field behaves as before.
+- **A record's row has every field of it**: the common ones, then "More about it", then each
+  record within it (an item's `image`, its `retire`) under a heading of its own, at
+  `list[i].image.service`. Such a record is made by its first setting and unset again with
+  its last (`systems::set_within`): `image: {}` and no image differ to the type.
+- **Unset, default, set.** A setting whose default is unset (`Option`) is `optional`: an
+  empty text or date means unset and is staged as null, which `render` leaves out; one the
+  type needs stays an empty text. A value equal to the default (`Kind::entry_default`: an
+  entry with nothing set; `Kind::record_default` for a record's fields) is marked
+  `(default)` and the side panel says the file doesn't say it; any other says what the
+  default is. Setting a value back to its default is a change to what `render` omits (or no
+  change at all when the file never said it): `cfgforms.rs` sets every setting of each file
+  through the forms, saves, compares the parsed file with the typed value, sets all back and
+  finds `servers:\n  myserver: {}` (config.toml: the header alone).
+- **A problem finds its field** in a system's form too: `Problem::about` also matches a lint
+  line that starts `section: leaf` (`guard: window: 3 s`), so the group holding it opens.
+
 ## Order of work (one PR at a time)
 
 1. **One writer**: `core/cfg` (`render`, `save` + backups, `diff`/`apply`), `Serialize` clean-up,
@@ -317,8 +363,8 @@ Part 3 (systems):
 
 
 ## Not in this work
-Other agents, API/local connections, API keys and the keyring (one later effort). A form for every
-setting. Keeping comments in rewritten files. Themes.
+Other agents, API/local connections, API keys and the keyring (one later effort). Keeping comments
+in rewritten files. Themes. (A form for every setting was here; it was built after part 3.)
 
 ## Verification
 - `make check`, `make privacy-check` per PR (real exit codes). Fixtures stay synthetic.

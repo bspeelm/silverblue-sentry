@@ -8,6 +8,13 @@
 //! adds, `x` removes, Enter edits the element, `J`/`K` move it (a record's row is its owner's
 //! to open, add and remove: [`Fx::Open`], [`Fx::Add`], [`Fx::Remove`]); Esc leaves the
 //! editor, then the list, then the form ([`Fx::Leave`]).
+//!
+//! Groups that fold: a field whose value is a [`Value::Fold`] is a group's header row (its
+//! name, what is set in it, a line about it), and the fields that name it in
+//! [`Field::fold`] are in it: hidden while it is closed, the cursor going past them. Enter
+//! or Space on the header opens and closes it; a group opens by itself when something in it
+//! has a problem or was changed ([`Form::new`], [`Form::at`]). A form without such a field
+//! is as it always was.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -38,6 +45,10 @@ pub enum Value {
     /// A list of records as rows: (the columns, each record's cells). Enter on a row is
     /// its owner's to open ([`Fx::Open`]).
     Rows(Vec<String>, Vec<Vec<String>>),
+    /// A date, `YYYY-MM-DD`; empty: not set.
+    Date(String),
+    /// A group's header row: (what is set in it, in a few words; whether it is open).
+    Fold(String, bool),
 }
 
 impl Value {
@@ -52,6 +63,8 @@ impl Value {
             Value::List(_) => "list",
             Value::Pairs(_) => "named entries (name = value)",
             Value::Rows(..) => "list of records",
+            Value::Date(_) => "date (YYYY-MM-DD), or empty: not set",
+            Value::Fold(..) => "a group of settings",
         }
     }
 
@@ -102,8 +115,25 @@ impl Value {
                 1 => "1 entry".into(),
                 n => format!("{n} entries"),
             },
+            Value::Date(s) => s.clone(),
+            Value::Fold(summary, _) => summary.clone(),
         }
     }
+}
+
+/// `text` as a date, as it is written back (`2027-03-31`); why it isn't one.
+pub fn date(text: &str) -> Result<String, String> {
+    let b = text.as_bytes();
+    let shaped = b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        });
+    shaped
+        .then(|| text.parse::<jiff::civil::Date>().ok())
+        .flatten()
+        .map(|d| d.to_string())
+        .ok_or_else(|| format!("`{text}` isn't a date: YYYY-MM-DD (2027-03-31), or empty for none"))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +155,15 @@ pub struct Field {
     pub seed: Vec<String>,
     /// A heading over it: it is the first of a group.
     pub head: String,
+    /// The group it is in: the key of that group's header (a [`Value::Fold`] field). It is
+    /// shown only while the group is open.
+    pub fold: String,
+    /// The value is the setting's default: said quietly beside it.
+    pub is_default: bool,
+    /// The default, as it reads (empty: it has none worth saying).
+    pub default: String,
+    /// It may be left unset: an empty text means that.
+    pub optional: bool,
 }
 
 impl Field {
@@ -140,7 +179,22 @@ impl Field {
             range: None,
             seed: Vec::new(),
             head: String::new(),
+            fold: String::new(),
+            is_default: false,
+            default: String::new(),
+            optional: false,
         }
+    }
+
+    /// A group's header row: its name, a line about it, what is set in it.
+    pub fn group(key: &str, name: &str, about: &str, summary: &str) -> Self {
+        Self::new(key, name, Value::Fold(summary.to_string(), false)).help(about)
+    }
+
+    /// It is in the group whose header has this key.
+    pub fn within(mut self, group: &str) -> Self {
+        self.fold = group.to_string();
+        self
     }
 
     pub fn head(mut self, head: &str) -> Self {
@@ -163,6 +217,9 @@ impl Field {
         self
     }
 }
+
+/// Said beside a value nobody set.
+const DEFAULT: &str = "  (default)";
 
 /// Which element the line editor holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,13 +272,77 @@ pub struct Form {
 }
 
 impl Form {
+    /// A group that holds a problem or a change starts open; the others closed.
     pub fn new(title: &str, fields: Vec<Field>) -> Self {
-        Self {
+        let mut f = Self {
             title: title.to_string(),
             fields,
             cur: 0,
             state: State::Browse,
             refused: None,
+        };
+        for i in 0..f.fields.len() {
+            let key = f.fields[i].key.clone();
+            if let Value::Fold(_, open) = &mut f.fields[i].value {
+                *open = false;
+            } else {
+                continue;
+            }
+            if f.wants_open(&key) {
+                f.set_open(&key, true);
+            }
+        }
+        f
+    }
+
+    /// Something in the group has a problem or was changed: it is to be seen.
+    fn wants_open(&self, group: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|f| f.fold == group && (f.problem.is_some() || f.changed))
+    }
+
+    /// The group with this header key is open (a key that is no group's: yes).
+    pub fn is_open(&self, group: &str) -> bool {
+        !self
+            .fields
+            .iter()
+            .any(|f| f.key == group && matches!(f.value, Value::Fold(_, false)))
+    }
+
+    /// Open or close a group; closing one the cursor is in puts the cursor on its header.
+    pub fn set_open(&mut self, group: &str, to: bool) {
+        let Some(i) = self.fields.iter().position(|f| f.key == group) else {
+            return;
+        };
+        if let Value::Fold(_, open) = &mut self.fields[i].value {
+            *open = to;
+        }
+        if !to && self.fields.get(self.cur).is_some_and(|f| f.fold == group) {
+            self.cur = i;
+            self.state = State::Browse;
+        }
+    }
+
+    /// The field is shown: it is in no group, or its group is open.
+    fn visible(&self, i: usize) -> bool {
+        self.fields
+            .get(i)
+            .is_some_and(|f| f.fold.is_empty() || self.is_open(&f.fold))
+    }
+
+    /// The next field shown after `from` (or before it), else `from`.
+    fn step(&self, from: usize, down: bool) -> usize {
+        let mut i = from;
+        loop {
+            i = match down {
+                true if i + 1 < self.fields.len() => i + 1,
+                false if i > 0 => i - 1,
+                _ => return from,
+            };
+            if self.visible(i) {
+                return i;
+            }
         }
     }
 
@@ -229,6 +350,8 @@ impl Form {
     pub fn go(&mut self, key: &str) -> bool {
         match self.fields.iter().position(|f| f.key == key) {
             Some(i) => {
+                let group = self.fields[i].fold.clone();
+                self.set_open(&group, true);
                 self.cur = i;
                 true
             }
@@ -246,6 +369,20 @@ impl Form {
 
     /// The same place in a form made again from newer values (after a change was taken).
     pub fn at(mut self, old: &Form) -> Self {
+        // A group stays as it was left, and opens when something in it newly needs seeing.
+        let groups: Vec<String> = self
+            .fields
+            .iter()
+            .filter(|f| matches!(f.value, Value::Fold(..)))
+            .map(|f| f.key.clone())
+            .collect();
+        for g in groups {
+            if !old.fields.iter().any(|f| f.key == g) {
+                continue;
+            }
+            let open = old.is_open(&g) || (self.wants_open(&g) && !old.wants_open(&g));
+            self.set_open(&g, open);
+        }
         self.cur = old
             .field()
             .and_then(|f| self.fields.iter().position(|x| x.key == f.key))
@@ -254,6 +391,11 @@ impl Form {
         if let State::In(i) = old.state {
             let n = self.fields.get(self.cur).map_or(0, |f| f.value.len());
             self.state = State::In(i.min(n.saturating_sub(1)));
+        }
+        // (The field the cursor was on is in a group that is closed now: its header.)
+        if !self.fields.is_empty() && !self.visible(self.cur) {
+            let group = self.fields[self.cur].fold.clone();
+            self.set_open(&group, false);
         }
         self
     }
@@ -295,6 +437,10 @@ impl Form {
             };
         }
         self.cur = self.cur.min(self.fields.len() - 1);
+        if !self.visible(self.cur) {
+            let group = self.fields[self.cur].fold.clone();
+            self.set_open(&group, false);
+        }
         match std::mem::replace(&mut self.state, State::Browse) {
             State::Browse => self.browse_key(k),
             State::In(at) => self.list_key(k, at),
@@ -312,11 +458,29 @@ impl Form {
         let last = self.fields.len() - 1;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
-            KeyCode::Down | KeyCode::Char('j') if !ctrl => self.cur = (self.cur + 1).min(last),
-            KeyCode::Up | KeyCode::Char('k') if !ctrl => self.cur = self.cur.saturating_sub(1),
-            KeyCode::Home => self.cur = 0,
-            KeyCode::End | KeyCode::Char('G') => self.cur = last,
+            KeyCode::Down | KeyCode::Char('j') if !ctrl => self.cur = self.step(self.cur, true),
+            KeyCode::Up | KeyCode::Char('k') if !ctrl => self.cur = self.step(self.cur, false),
+            KeyCode::Home => {
+                self.cur = match self.visible(0) {
+                    true => 0,
+                    false => self.step(0, true),
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.cur = match self.visible(last) {
+                    true => last,
+                    false => self.step(last, false),
+                }
+            }
             KeyCode::Esc => return Fx::Leave,
+            // A group's header: open it, close it. Nothing is set by that.
+            KeyCode::Char(' ') | KeyCode::Enter
+                if matches!(self.fields[self.cur].value, Value::Fold(..)) =>
+            {
+                let key = self.fields[self.cur].key.clone();
+                let open = self.is_open(&key);
+                self.set_open(&key, !open);
+            }
             KeyCode::Char(' ') => {
                 return match self.fields[self.cur].value.clone() {
                     Value::Bool(b) => self.set(Value::Bool(!b)),
@@ -522,6 +686,8 @@ impl Form {
                 text.parse()
                     .map_err(|e| format!("not a duration ({e}): 10s, 5m, 24h, 30d"))?,
             ),
+            Value::Date(_) if text.is_empty() => Value::Date(String::new()),
+            Value::Date(_) => Value::Date(date(text)?),
             Value::List(l) => {
                 let Some(text) = element(text)? else {
                     return Ok(None);
@@ -563,7 +729,7 @@ impl Form {
                 Value::Pairs(p)
             }
             // (Never edited as a line.)
-            v @ (Value::Bool(_) | Value::Pick(..) | Value::Rows(..)) => v.clone(),
+            v @ (Value::Bool(_) | Value::Pick(..) | Value::Rows(..) | Value::Fold(..)) => v.clone(),
         }))
     }
 
@@ -592,6 +758,8 @@ impl Form {
                 let enter = match &f.value {
                     Value::Bool(_) => "toggle",
                     Value::Pick(..) => "next",
+                    Value::Fold(_, true) => "close the group",
+                    Value::Fold(_, false) => "open the group",
                     v if v.is_list() => "open the list",
                     _ => "edit",
                 };
@@ -602,18 +770,39 @@ impl Form {
 
     /// The fields as lines, and which line the cursor is on.
     fn lines(&self, t: &Theme, width: usize) -> (Vec<Line<'static>>, usize) {
-        let lw = self
-            .fields
-            .iter()
-            .map(|f| f.label.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(width / 2);
-        let room = width.saturating_sub(lw + 5);
+        let is_group = |f: &Field| matches!(f.value, Value::Fold(..));
+        // (A field in a group is set in by two.)
+        let indent = |f: &Field| if f.fold.is_empty() { 0 } else { 2 };
+        // The labels' column: the fields outside the groups share one, each group's fields
+        // their own (so opening a group moves nothing above it).
+        let column = |group: &str| {
+            self.fields
+                .iter()
+                .filter(|f| !is_group(f) && f.fold == group)
+                .map(|f| f.label.chars().count() + indent(f))
+                .max()
+                .unwrap_or(0)
+                .min(width / 2)
+        };
+        let widest = |of: &dyn Fn(&Field) -> usize| {
+            self.fields
+                .iter()
+                .filter(|f| is_group(f))
+                .map(of)
+                .max()
+                .unwrap_or(0)
+        };
+        let gw = widest(&|f| f.label.chars().count()).min(width / 2);
+        let sw = widest(&|f| f.value.shown().chars().count());
         let sel = Style::new().bg(t.sel_bg);
         let mut out: Vec<Line<'static>> = Vec::new();
         let mut cursor = 0;
         for (i, f) in self.fields.iter().enumerate() {
+            if !self.visible(i) {
+                continue;
+            }
+            let lw = column(&f.fold);
+            let room = width.saturating_sub(lw + 5);
             let on = i == self.cur;
             let state = if on { &self.state } else { &State::Browse };
             if !f.head.is_empty() {
@@ -625,13 +814,41 @@ impl Form {
                     t.s(t.mag),
                 ));
             }
+            // A group's header: whether it is open, its name, what is set in it, a line
+            // about it.
+            if let Value::Fold(summary, open) = &f.value {
+                let about = width.saturating_sub(gw + sw + 8);
+                let mut line = Line::from(vec![
+                    Span::styled(if *open { " ▾ " } else { " ▸ " }, t.s(t.mag)),
+                    Span::styled(
+                        format!("{:<gw$}  ", widgets::trunc(&f.label, gw)),
+                        t.fg().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{summary:<sw$}  "),
+                        if summary.contains("default") {
+                            t.dim()
+                        } else {
+                            t.fg()
+                        },
+                    ),
+                    Span::styled(widgets::trunc(&f.help, about), t.dim()),
+                ]);
+                if on {
+                    line = line.style(sel);
+                    cursor = out.len();
+                }
+                out.push(line);
+                continue;
+            }
+            let label = format!("{}{}", " ".repeat(indent(f)), f.label);
             let mut spans = vec![
                 Span::styled(
                     if f.changed { " * " } else { "   " },
                     t.s(t.yellow).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{:<lw$}  ", widgets::trunc(&f.label, lw)),
+                    format!("{:<lw$}  ", widgets::trunc(&label, lw)),
                     if on { t.fg() } else { t.dim() },
                 ),
             ];
@@ -643,21 +860,31 @@ impl Form {
                 } => spans.extend(line.spans(t)),
                 _ => {
                     let shown = f.value.shown();
-                    spans.push(if shown.is_empty() {
-                        Span::styled(
+                    if shown.is_empty() {
+                        spans.push(Span::styled(
                             widgets::trunc(
-                                &if f.empty.is_empty() {
-                                    "(none)".to_string()
-                                } else {
-                                    format!("({})", f.empty)
+                                &match (&f.value, f.empty.is_empty()) {
+                                    (_, false) => format!("({})", f.empty),
+                                    (Value::Date(_), _) => "(not set)".to_string(),
+                                    (Value::Text(_), _) if f.optional => "(not set)".to_string(),
+                                    _ => "(none)".to_string(),
                                 },
                                 room,
                             ),
                             t.dim(),
-                        )
+                        ));
+                    } else if f.is_default {
+                        // What nobody set: the value, and quietly that it is the default.
+                        spans.push(Span::styled(
+                            widgets::trunc(&shown, room.saturating_sub(DEFAULT.len())),
+                            t.fg(),
+                        ));
+                        if room > DEFAULT.len() {
+                            spans.push(Span::styled(DEFAULT, t.dim()));
+                        }
                     } else {
-                        Span::styled(widgets::trunc(&shown, room), t.fg())
-                    });
+                        spans.push(Span::styled(widgets::trunc(&shown, room), t.fg()));
+                    }
                 }
             }
             let mut line = Line::from(spans);
@@ -774,6 +1001,9 @@ impl Form {
             Line::styled(
                 match &f.value {
                     Value::Pick(words, _) => format!("one of: {}", words.join(", ")),
+                    Value::Fold(_, true) => "a group of settings · Enter closes it".to_string(),
+                    Value::Fold(_, false) => "a group of settings · Enter opens it".to_string(),
+                    Value::Text(_) if f.optional => "text, or empty: not set".to_string(),
                     v => match f.range {
                         Some((min, max)) if max == i64::MAX => {
                             format!("{}, {min} or more", v.word())
@@ -791,6 +1021,45 @@ impl Form {
                 .into_iter()
                 .map(|l| Line::styled(l, t.fg())),
         );
+        // A group: what is in it, so it needn't be opened to know.
+        if matches!(f.value, Value::Fold(..)) {
+            let inside: Vec<&str> = self
+                .fields
+                .iter()
+                .filter(|x| x.fold == f.key)
+                .map(|x| x.label.as_str())
+                .collect();
+            out.push(Line::raw(""));
+            out.extend(
+                widgets::wrap(&format!("In it: {}.", inside.join(", ")), width.max(10))
+                    .into_iter()
+                    .map(|l| Line::styled(l, t.dim())),
+            );
+        }
+        // What it is when nobody sets it: the file holds only what differs.
+        let none = matches!(&f.value, Value::Text(s) | Value::Date(s) if s.is_empty());
+        let said = match (f.is_default, f.default.is_empty()) {
+            (true, false) => Some(format!(
+                "This is the default ({}): the file doesn't say it.",
+                f.default
+            )),
+            (true, true) if none && f.optional => {
+                Some("Not set, which is the default: the file doesn't say it.".to_string())
+            }
+            (false, false) => Some(format!("The default is {}.", f.default)),
+            (false, true) if f.optional && !none => {
+                Some("Emptied, it is not set again (the default).".to_string())
+            }
+            _ => None,
+        };
+        if let Some(said) = said {
+            out.push(Line::raw(""));
+            out.extend(
+                widgets::wrap(&said, width.max(10))
+                    .into_iter()
+                    .map(|l| Line::styled(l, t.dim())),
+            );
+        }
         if f.changed {
             out.push(Line::raw(""));
             out.push(Line::styled("* changed here, not saved yet", t.s(t.yellow)));
@@ -1129,6 +1398,256 @@ mod tests {
         let mut newer = form();
         newer.fields.remove(0);
         assert_eq!(newer.at(&f).field().unwrap().key, "targets.show");
+    }
+
+    /// Two fields in the open, then two groups: thresholds (two numbers) and an item's
+    /// dates and words.
+    fn grouped() -> Form {
+        let mut mem = Field::new("thresholds.mem", "Memory", Value::Float(90.0))
+            .help("Memory used, in percent, from which it counts as high (90).")
+            .within("@group:Thresholds");
+        mem.is_default = true;
+        mem.default = "90".into();
+        let mut hold =
+            Field::new("item.hold", "Why held", Value::Text(String::new())).within("@group:Item");
+        hold.optional = true;
+        hold.is_default = true;
+        let mut ssh =
+            Field::new("ssh", "ssh", Value::Text("admin@192.0.2.10".into())).head("Who it is");
+        ssh.optional = true;
+        Form::new(
+            "myserver · server",
+            vec![
+                ssh,
+                Field::new(
+                    "services",
+                    "Services",
+                    Value::List(vec!["app.service".into()]),
+                ),
+                Field::group(
+                    "@group:Thresholds",
+                    "Thresholds",
+                    "When memory, load or temperature is high.",
+                    "1 set",
+                )
+                .head("More settings · Enter opens a group"),
+                mem,
+                Field::new("thresholds.load", "Load per core", Value::Float(1.5))
+                    .within("@group:Thresholds"),
+                Field::group(
+                    "@group:Item",
+                    "Tracked item",
+                    "What is kept at a deliberate version.",
+                    "all defaults",
+                ),
+                Field::new("item.review_by", "Review by", Value::Date(String::new()))
+                    .within("@group:Item"),
+                hold,
+            ],
+        )
+    }
+
+    fn cur(f: &Form) -> &str {
+        f.field().map_or("", |x| x.key.as_str())
+    }
+
+    #[test]
+    fn a_group_folds_its_fields_and_the_cursor_goes_past_them() {
+        let mut f = grouped();
+        assert!(!f.is_open("@group:Thresholds") && !f.is_open("@group:Item"));
+        // Closed: only the header rows are there, and j/k go from one to the next.
+        let s = drawn(&f, 158, 16);
+        assert!(s.contains("▸ Thresholds") && s.contains("1 set"), "{s}");
+        assert!(
+            s.contains("▸ Tracked item") && s.contains("all defaults"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("Load per core") && !s.contains("Review by"),
+            "{s}"
+        );
+        f.key(&key(KeyCode::Char('j')));
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "@group:Thresholds");
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "@group:Item");
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "@group:Item", "nothing shown is below it");
+        f.key(&key(KeyCode::End));
+        assert_eq!(cur(&f), "@group:Item");
+        f.key(&key(KeyCode::Char('k')));
+        assert_eq!(cur(&f), "@group:Thresholds");
+        // Enter opens it (nothing is set by that), and its fields are below its header.
+        assert_eq!(f.hints()[0], ("Enter", "open the group"));
+        assert_eq!(f.key(&key(KeyCode::Enter)), Fx::None);
+        assert!(f.is_open("@group:Thresholds") && !f.captures());
+        assert_eq!(f.hints()[0], ("Enter", "close the group"));
+        let s = drawn(&f, 158, 16);
+        assert!(
+            s.contains("▾ Thresholds") && s.contains("Load per core"),
+            "{s}"
+        );
+        assert!(!s.contains("Review by"), "{s}");
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "thresholds.mem");
+        f.key(&key(KeyCode::Char('j')));
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "@group:Item");
+        // Space closes and opens too.
+        f.key(&key(KeyCode::Char('k')));
+        f.key(&key(KeyCode::Char('k')));
+        f.key(&key(KeyCode::Char('k')));
+        assert_eq!(f.key(&key(KeyCode::Char(' '))), Fx::None);
+        assert!(!f.is_open("@group:Thresholds"));
+        f.key(&key(KeyCode::Char('j')));
+        assert_eq!(cur(&f), "@group:Item");
+        f.key(&key(KeyCode::Char(' ')));
+        f.key(&key(KeyCode::End));
+        assert_eq!(cur(&f), "item.hold");
+        f.key(&key(KeyCode::Home));
+        assert_eq!(cur(&f), "ssh");
+        // Going to a field by its key opens the group it is in.
+        assert!(f.go("thresholds.load"));
+        assert!(f.is_open("@group:Thresholds"));
+        assert_eq!(cur(&f), "thresholds.load");
+        // Closing the group the cursor is in leaves the cursor on its header.
+        f.set_open("@group:Thresholds", false);
+        assert_eq!(cur(&f), "@group:Thresholds");
+        // The header in words: what the group is for and what is in it.
+        let words: Vec<String> = f
+            .detail(&Theme::truecolor(), 60)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert!(words.contains(&"a group of settings · Enter opens it".to_string()));
+        assert!(
+            words.contains(&"In it: Memory, Load per core.".to_string()),
+            "{words:?}"
+        );
+        // A form without groups is as it was.
+        let mut plain = form();
+        plain.key(&key(KeyCode::End));
+        assert_eq!(plain.cur, 7);
+        plain.key(&key(KeyCode::Home));
+        assert_eq!(plain.cur, 0);
+    }
+
+    #[test]
+    fn a_group_opens_by_itself_on_a_problem_or_a_change_and_stays_as_it_was_left() {
+        // A problem in it when the form is made: open.
+        let mut fields = grouped().fields;
+        fields[4].problem = Some("load: must be more than 0".into());
+        let f = Form::new("x", fields.clone());
+        assert!(f.is_open("@group:Thresholds") && !f.is_open("@group:Item"));
+        // (Whatever its owner said of the header: the form decides.)
+        fields[4].problem = None;
+        fields[5].value = Value::Fold("all defaults".into(), true);
+        assert!(!Form::new("x", fields).is_open("@group:Item"));
+        // Made again after a change in a group that was closed: it opens.
+        let old = grouped();
+        let mut fields = grouped().fields;
+        fields[7].changed = true;
+        let f = Form::new("x", fields.clone()).at(&old);
+        assert!(f.is_open("@group:Item") && !f.is_open("@group:Thresholds"));
+        // Closed by hand with the change still in it: it stays closed (nothing new in it),
+        // and one opened by hand stays open though nothing in it needs seeing.
+        let mut left = f.clone();
+        left.set_open("@group:Item", false);
+        left.set_open("@group:Thresholds", true);
+        let again = Form::new("x", fields).at(&left);
+        assert!(!again.is_open("@group:Item") && again.is_open("@group:Thresholds"));
+        // The cursor's field went into hiding: the cursor is on its group's header.
+        let mut old = grouped();
+        old.go("item.hold");
+        let mut closed = grouped();
+        closed.cur = 7;
+        closed.set_open("@group:Item", false);
+        assert_eq!(cur(&closed), "@group:Item");
+        assert_eq!(cur(&grouped().at(&old)), "item.hold");
+    }
+
+    #[test]
+    fn a_date_and_a_fraction_are_checked_in_place_and_empty_is_unset() {
+        let mut f = grouped();
+        f.go("item.review_by");
+        for (text, why) in [
+            ("tomorrow", "`tomorrow` isn't a date: YYYY-MM-DD"),
+            ("2027-02-30", "`2027-02-30` isn't a date"),
+            ("27-3-1", "`27-3-1` isn't a date"),
+        ] {
+            f.key(&key(KeyCode::Enter));
+            f.paste(text);
+            assert_eq!(f.key(&key(KeyCode::Enter)), Fx::None, "{text}");
+            assert!(f.editing(), "still being typed");
+            assert!(drawn(&f, 158, 20).contains(why), "{text}");
+            f.key(&key(KeyCode::Esc));
+            assert_eq!(f.fields[6].value, Value::Date(String::new()));
+        }
+        f.key(&key(KeyCode::Enter));
+        f.paste("2027-03-31");
+        assert_eq!(
+            f.key(&key(KeyCode::Enter)),
+            Fx::Set("item.review_by".into(), Value::Date("2027-03-31".into()))
+        );
+        // Emptied: no date again.
+        f.key(&key(KeyCode::Enter));
+        for _ in 0..10 {
+            f.key(&key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            f.key(&key(KeyCode::Enter)),
+            Fx::Set("item.review_by".into(), Value::Date(String::new()))
+        );
+        assert!(drawn(&f, 158, 20).contains("Review by  (not set)"));
+        assert_eq!(date("2028-02-29"), Ok("2028-02-29".to_string()));
+        // A number with a fraction.
+        f.go("thresholds.load");
+        f.key(&key(KeyCode::Enter));
+        f.paste("x");
+        assert_eq!(f.key(&key(KeyCode::Enter)), Fx::None);
+        assert!(drawn(&f, 158, 20).contains("! `1.5x` isn't a number"));
+        f.key(&key(KeyCode::Backspace));
+        f.key(&key(KeyCode::Backspace));
+        f.paste("25");
+        assert_eq!(
+            f.key(&key(KeyCode::Enter)),
+            Fx::Set("thresholds.load".into(), Value::Float(1.25))
+        );
+        // What nobody set says so beside it, and in words; what was set says its default.
+        let s = drawn(&f, 158, 20);
+        assert!(s.contains("Memory         90  (default)"), "{s}");
+        assert!(!s.contains("1.25  (default)"), "{s}");
+        f.go("thresholds.mem");
+        let s = drawn(&f, 158, 20);
+        assert!(
+            s.contains("This is the default (90): the file doesn't say it."),
+            "{s}"
+        );
+        f.fields[3].is_default = false;
+        assert!(drawn(&f, 158, 20).contains("The default is 90."));
+        // An optional text: empty is not set, and the panel says what emptying means.
+        f.go("item.hold");
+        let s = drawn(&f, 158, 20);
+        assert!(s.contains("Why held   (not set)"), "{s}");
+        assert!(s.contains("text, or empty: not set"), "{s}");
+        assert!(s.contains("Not set, which is the default"), "{s}");
+        f.go("ssh");
+        assert!(drawn(&f, 158, 20).contains("Emptied, it is not set again (the default)."));
+    }
+
+    #[test]
+    fn the_form_with_groups_at_158_columns() {
+        let mut f = grouped();
+        f.fields[4].changed = true;
+        f.go("thresholds.load");
+        insta::assert_snapshot!(drawn(&f, 158, 20));
+    }
+
+    #[test]
+    fn the_form_with_groups_at_80_columns() {
+        let mut f = grouped();
+        f.go("item.review_by");
+        insta::assert_snapshot!(drawn(&f, 80, 24));
     }
 
     #[test]

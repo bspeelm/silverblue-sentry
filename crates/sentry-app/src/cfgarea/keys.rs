@@ -667,7 +667,7 @@ impl ConfigArea {
         let lines = vec![
             l("1–6       its screens          Tab/S-Tab, h/l  next/prev screen"),
             l("j/k ↑↓    move                 Enter  open · edit · toggle"),
-            l("Space     tick a staged change, toggle a yes/no"),
+            l("Space     tick a staged change, toggle a yes/no, open or close a group"),
             l("u         take the staged change here back"),
             l("s         the save box: what will be written, then Enter writes it"),
             l("e         the file in $EDITOR   r  read the files again"),
@@ -840,7 +840,18 @@ impl ConfigArea {
                 };
                 if on(&["agent"]) {
                     Screen::Agent
-                } else if on(&["review", "maintenance", "ui"]) {
+                } else if on(&[
+                    "review",
+                    "maintenance",
+                    "ui",
+                    "cache",
+                    "audit",
+                    "flatpak",
+                    "jobs",
+                    "cleanup",
+                    "recorder",
+                    "baseline",
+                ]) {
                     Screen::Machine
                 } else {
                     Screen::Window

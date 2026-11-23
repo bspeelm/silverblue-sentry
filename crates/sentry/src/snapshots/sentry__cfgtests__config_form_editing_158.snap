@@ -8,8 +8,10 @@ expression: screen(&mut a)
 
 ┌ Agent ──────────────────────────────────────────────────────────────────────────────┐┌ Command ────────────────────────────────────────────────────────────┐
 │  The agent sentry asks                                                              ││ text                                                                │
-│    Kind     claude-code                                                             ││                                                                     │
+│    Kind     claude-code  (default)                                                  ││                                                                     │
 │    Command  /opt/▏claude                                                            ││ The program that starts it: a name on PATH or a path (claude).      │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ This is the default (claude): the file doesn't say it.              │
 │                                                                                     ││                                                                     │
 │                                                                                     ││ Status                                                              │
 │                                                                                     ││ command   claude                                                    │
@@ -18,8 +20,6 @@ expression: screen(&mut a)
 │                                                                                     ││                                                                     │
 │                                                                                     ││ Other agents, API connections and locally deployed models are not   │
 │                                                                                     ││ supported yet.                                                      │
-│                                                                                     ││                                                                     │
-│                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
 │                                                                                     ││                                                                     │
