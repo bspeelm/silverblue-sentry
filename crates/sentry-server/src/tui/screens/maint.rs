@@ -87,8 +87,32 @@ pub fn every_rec(v: &View) -> Vec<Rec> {
         &v.sh.later,
         v.now.to_zoned(jiff::tz::TimeZone::UTC).date(),
         audit_same,
+        |i| audit_expected(v, i),
         Action::Security,
     )
+}
+
+/// One of the security audit's items that was marked expected here (its row's key in the
+/// server's baseline), or that is about a finding that was: no row for it.
+fn audit_expected(v: &View, i: &sentry_core::secaudit::Item) -> bool {
+    use sentry_core::baseline::glob;
+    let key = sentry_core::maint::rec::audit_key(&i.id);
+    if v.sh.baseline.findings.iter().any(|g| glob(g, &key)) {
+        return true;
+    }
+    let last = i.id.rsplit(':').next().unwrap_or("");
+    let about = match i.id.split(':').nth(1).unwrap_or("") {
+        "os" => "srv:updates".to_string(),
+        "reboot" => "srv:reboot-required".to_string(),
+        "ctr" => format!("srv:docker-sock:{last}"),
+        "watch" => "srv:crowdsec:".to_string(),
+        _ => return false,
+    };
+    report(v).is_some_and(|r| {
+        r.findings
+            .iter()
+            .any(|f| f.expected && f.id.starts_with(&about))
+    })
 }
 
 fn own_recs(v: &View) -> Vec<Rec> {
@@ -480,13 +504,16 @@ fn row_verbs(v: &View) -> Verbs {
                 }
             }
             Action::Audit => only("audit"),
-            Action::Security(id) => only(
-                if v.sh.sec.iter().any(|i| &i.id == id && i.question.is_some()) {
-                    "answer"
-                } else {
-                    "fix"
-                },
-            ),
+            Action::Security(id) => Verbs {
+                dismiss: Some(Dismiss::Expected),
+                ..only(
+                    if v.sh.sec.iter().any(|i| &i.id == id && i.question.is_some()) {
+                        "answer"
+                    } else {
+                        "fix"
+                    },
+                )
+            },
             Action::Run(_) => match r.item.as_deref() {
                 Some(id) => item(id, "start"),
                 None => only("start"),
@@ -1069,6 +1096,13 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Effect::Toast("auditing the server…".into()),
         ],
         ('\n', Action::Security(id)) => vec![Effect::SecItem(id.clone())],
+        ('x', Action::Security(_)) => dismiss(
+            v,
+            "Mark it expected",
+            &r.title,
+            maintlist::AUDIT_EXPECTED,
+            Own::expected(r.key.clone(), true),
+        ),
         ('\n', Action::Task(id)) => task_enter(v, id),
         ('d', Action::Task(id)) => vec![Effect::TaskDone(id.clone())],
         ('m', Action::Task(id)) => task_manual(v, id),

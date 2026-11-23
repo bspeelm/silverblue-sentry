@@ -3449,6 +3449,82 @@ fn the_security_audits_items_are_recommendations_and_join_the_rows_there_are() {
     key(&mut a, KeyCode::Esc);
     typed(&mut a, "/Have you ever restored");
     assert!(bar(&mut a).contains("Enter  answer"), "{}", bar(&mut a));
+    // x marks an audit's row expected, as a finding's: it leaves, Records › Later has it.
+    key(&mut a, KeyCode::Esc);
+    typed(&mut a, "/accepts ssh logins");
+    assert!(bar(&mut a).contains("x  expected"), "{}", bar(&mut a));
+    key(&mut a, KeyCode::Char('x'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Mark it expected") && s.contains("still says it"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(!s.contains("myserver accepts ssh logins"), "{s}");
+    assert!(
+        a.slot()
+            .shared
+            .baseline
+            .findings
+            .iter()
+            .any(|f| f == "audit:sec:ssh-password:srv:myserver")
+    );
+    // Taken back, its row is there again.
+    a.apply(
+        vec![Own::expected(
+            "audit:sec:ssh-password:srv:myserver".into(),
+            false,
+        )],
+        Instant::now(),
+    );
+    assert!(screen(&mut a).contains("myserver accepts ssh logins"));
+    // A session on it that finds nothing to change: its row is marked expected by itself,
+    // with Claude's reason in the log.
+    typed(&mut a, "/accepts ssh logins");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.consent_text().is_some());
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "Only keys can log in from outside.\n```sentry-verdict\nstatus = \"expected\"\n\
+         summary = \"passwords are refused from outside\"\n```",
+    );
+    a.slot_mut().apply_close_for_test();
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(!s.contains("myserver accepts ssh logins"), "{s}");
+    assert!(
+        a.slot()
+            .shared
+            .log
+            .iter()
+            .any(|e| e.head.kind == "expected"
+                && e.body.contains("passwords are refused from outside")),
+        "{:?}",
+        a.slot().shared.log.first()
+    );
+    a.apply(
+        vec![Own::expected(
+            "audit:sec:ssh-password:srv:myserver".into(),
+            false,
+        )],
+        Instant::now(),
+    );
+    // An item about a finding that is expected (the runner's socket: the baseline's
+    // srv:docker-sock:*) has no row of its own either.
+    let mut ctr = item(
+        "ctr",
+        State::Worth,
+        "The container runner holds the Docker socket",
+    );
+    ctr.id = "sec:ctr:srv:myserver:runner".into();
+    a.slot_mut().shared.sec.push(ctr);
+    assert!(
+        !screen(&mut a).contains("runner holds the Docker socket"),
+        "{}",
+        screen(&mut a)
+    );
 }
 
 #[test]

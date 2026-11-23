@@ -105,20 +105,25 @@ pub fn finish<A: Act>(mut rules: Vec<Rec<A>>, t: &Tail) -> Vec<Rec<A>> {
 
 /// The key of the row for one of the security audit's items.
 pub fn audit_key(id: &str) -> String {
-    format!("audit:{id}")
+    format!("{AUDIT_ROW}{id}")
 }
+
+/// What the key of a security audit item's row starts with.
+pub const AUDIT_ROW: &str = "audit:";
 
 /// The security audit's items this target lists (`items`), among its own rows. `same` says
 /// which row here is already about an item's subject (updates waiting, a reboot, a
 /// finding): that row stays, the one with the action, and takes the audit's plain why and
 /// its urgency; the item gets no row of its own. The rest become rows (`act`: what Enter
-/// does, from the item's id), put off like any other, ranked with the others.
+/// does, from the item's id), put off like any other, ranked with the others; one the
+/// target says is `expected` (marked so itself, or about a finding that is) gets no row.
 pub fn with_audit<A>(
     mut recs: Vec<Rec<A>>,
     items: &[crate::secaudit::Item],
     snooze: &std::collections::BTreeMap<String, jiff::civil::Date>,
     today: jiff::civil::Date,
     same: impl Fn(&crate::secaudit::Item, &[Rec<A>]) -> Option<usize>,
+    expected: impl Fn(&crate::secaudit::Item) -> bool,
     act: impl Fn(String) -> A,
 ) -> Vec<Rec<A>> {
     use crate::secaudit::State;
@@ -138,7 +143,7 @@ pub fn with_audit<A>(
             continue;
         }
         let key = audit_key(&i.id);
-        if snooze.get(&key).is_some_and(|d| *d > today) {
+        if snooze.get(&key).is_some_and(|d| *d > today) || expected(i) {
             continue;
         }
         recs.push(Rec {

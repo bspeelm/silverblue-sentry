@@ -837,6 +837,55 @@ fn dashboard_rows_jump_to_tabs() {
     assert!(s.contains("What   "), "a finding's details: {s}");
 }
 
+/// `x` on one of the security audit's rows marks it expected, as on a finding: the row
+/// leaves, and the baseline has its id (Records › Later takes it back).
+#[test]
+fn an_audits_row_can_be_marked_expected() {
+    use sentry_core::secaudit::{Group, Item, State};
+    let mut a = App::for_test(Config::default(), store(), ScreenId::Maint);
+    a.slot_mut().shared.sec = vec![Item {
+        id: "sec:disk-crypt:local".into(),
+        group: Group::Logins,
+        state: State::Worth,
+        rank: 0,
+        title: "This machine's disk is not encrypted".into(),
+        why: "Whoever takes it reads it.".into(),
+        fix: String::new(),
+        targets: vec!["local".into()],
+        evidence: Vec::new(),
+        brief: String::new(),
+        question: None,
+    }];
+    let screen = |a: &mut App| render_to_string(a, 158, 41);
+    for c in "/disk is not".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(
+        s.contains("disk is not encrypted") && s.contains("x  expected"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('x'));
+    let s = screen(&mut a);
+    assert!(
+        s.contains("Mark it expected") && s.contains("still says it"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('y'));
+    key(&mut a, KeyCode::Esc);
+    let s = screen(&mut a);
+    assert!(!s.contains("disk is not encrypted"), "{s}");
+    assert!(
+        a.slot()
+            .shared
+            .baseline
+            .findings
+            .iter()
+            .any(|f| f == "audit:sec:disk-crypt:local")
+    );
+}
+
 #[test]
 fn maintenance_keys_and_views() {
     let mut d = store();

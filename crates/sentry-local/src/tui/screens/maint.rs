@@ -14,7 +14,7 @@ use crate::audit::Finding;
 use crate::maint::Level;
 use crate::maint::local::{self, Action as Do, Inputs, Rec, RunInfo};
 use crate::maint::tasks::{Do as TaskDo, Task};
-use crate::tui::app::{Effect, Modal, RunSpec};
+use crate::tui::app::{BaselineEdit, Effect, Modal, RunSpec};
 use crate::tui::data::Fetch;
 use crate::tui::keys::Action;
 use crate::tui::maintlist::{self, Dismiss, Verbs};
@@ -169,6 +169,10 @@ pub fn verbs(v: &View, r: &Rec) -> Verbs {
             like: true,
             ..base
         },
+        Do::Security(_) => Verbs {
+            dismiss: Some(Dismiss::Expected),
+            ..base
+        },
         Do::Run(wf) | Do::OpenPlan(wf) => Verbs {
             plan: true,
             planned: v.sh.plans.contains_key(wf),
@@ -320,8 +324,29 @@ pub fn recs_all(v: &View) -> Vec<Rec> {
         &v.sh.later,
         jiff::Zoned::now().date(),
         audit_same,
+        |i| audit_expected(v, i),
         Do::Security,
     )
+}
+
+/// One of the security audit's items that was marked expected here (its row's key in
+/// the baseline), or that is about a finding that was: no row for it.
+fn audit_expected(v: &View, i: &sentry_core::secaudit::Item) -> bool {
+    use crate::baseline::glob;
+    let key = crate::maint::rec::audit_key(&i.id);
+    if v.d.baseline.findings.iter().any(|g| glob(g, &key)) {
+        return true;
+    }
+    let about = match i.id.split(':').nth(1).unwrap_or("") {
+        "listen-wide" => "listener:",
+        "firewall" => "firewall",
+        _ => return false,
+    };
+    v.d.reports.get().and_then(|r| r.last()).is_some_and(|r| {
+        r.report.findings.iter().any(|f| {
+            f.id.starts_with(about) && crate::audit::findings::is_expected(f, &v.d.baseline)
+        })
+    })
 }
 
 /// Which row here is already about the subject of one of the security audit's items: the
@@ -647,6 +672,18 @@ impl Maint {
                         )),
                     })]
                 }),
+                Do::Security(_) => vec![Effect::Confirm(Modal {
+                    title: "Mark it expected".into(),
+                    color: t.yellow,
+                    lines: vec![
+                        Line::styled(r.title.clone(), t.fg()),
+                        Line::styled(maintlist::AUDIT_EXPECTED, t.dim()),
+                    ],
+                    yes: Some((
+                        "yes".into(),
+                        vec![Effect::Baseline(BaselineEdit::Finding(r.key.clone()))],
+                    )),
+                })],
                 _ => vec![Effect::Toast(maintlist::NOTHING_TO_DISMISS.into())],
             },
             Action::Char('B') => match &r.action {

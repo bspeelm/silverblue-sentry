@@ -305,14 +305,18 @@ pub fn apply_question(a: &Apply) -> String {
              retired and what does its job now\"`. That changes nothing on the host: sentry \
              notes it in its own watch.toml (I can take it back in Records) and no longer \
              looks for the thing. Marking a finding expected is something else: it hides \
-             that one finding and leaves the thing watched; say so and send no plan only \
-             when the finding is fine as it is and the thing should stay watched. After the \
+             that one finding and leaves the thing watched. Only when the finding is fine \
+             as it is and the thing should stay watched, send no plan: say why and end with \
+             a ```sentry-verdict block with status = \"expected\" and the reason as its \
+             `summary`; sentry marks it expected for me. After the \
              plan, sentry audits again and tells you whether the finding is gone; it isn't \
              done while the audit still reports it."
         }
         (Some(_), _) => {
-            " If the finding is fine as it is, say so and send no plan: I'll mark it \
-             expected. Use sentry's known fix when it fits. After the plan, sentry audits again \
+            " If the finding is fine as it is, send no plan: say why and end with a \
+             ```sentry-verdict block with status = \"expected\" and the reason as its \
+             `summary`; sentry marks it expected for me, so it leaves my list (I can take \
+             that back in Records). Use sentry's known fix when it fits. After the plan, sentry audits again \
              and tells you whether the finding is gone; it isn't done while the audit still \
              reports it."
         }
@@ -321,6 +325,15 @@ pub fn apply_question(a: &Apply) -> String {
              step when your fix is done. Leave the workflow's later steps to it (they have their \
              own confirms and log). If the system already is the way the step checks for, say \
              so and send no plan."
+        }
+        // One of the security audit's items.
+        _ if a.key.starts_with(crate::maint::rec::AUDIT_ROW) => {
+            " If it is fine as it is and should stay that way, send no plan: say why in a \
+             few lines and end with a ```sentry-verdict block with status = \"expected\" \
+             and the reason as its `summary`; sentry marks it expected for me, so it leaves \
+             my list (I can take that back in Records). When you answer done, with a plan \
+             or without, sentry runs the security audit again by itself and the item \
+             follows what it finds."
         }
         _ => "",
     };
@@ -365,7 +378,12 @@ pub fn apply_question(a: &Apply) -> String {
         )
     };
     format!(
-        "Do this for me. If nothing needs changing, say so and send no plan. Run every check \
+        "Do this for me. If nothing needs changing, send no plan: say why in a few lines and \
+         end with a ```sentry-verdict fenced TOML block, `status = \"done\"` when it already \
+         is as it should be or `status = \"wait\"` (with `again = \"30d\"`) when it should be \
+         looked at again later, and the reason as its one-line `summary`. Every session ends \
+         with a verdict: it is what updates my list, so never leave a conclusion in words \
+         alone. Run every check \
          yourself first (read files with the Read tool); never ask me to run or paste anything. \
          {how} answer with a short \
          assessment (what you found, anything in the task that no longer fits) and ONE plan, \

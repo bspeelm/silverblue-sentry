@@ -219,6 +219,10 @@ impl Upkeep for ServerTarget {
         ))
     }
 
+    fn expect(&self, key: &str) -> Vec<Effect> {
+        vec![Own::expected(key.to_string(), true)]
+    }
+
     fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String> {
         let name = &self.remote.name.clone();
         match row.kind {

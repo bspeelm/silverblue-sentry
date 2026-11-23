@@ -1,7 +1,7 @@
 //! Screens: each owns its UI state (cursor, sort, focus) and renders from the shared
 //! `DataStore`. They return `Effect`s instead of doing I/O.
 
-mod audit;
+pub(crate) mod audit;
 mod cleanup;
 mod containers;
 mod dashboard;

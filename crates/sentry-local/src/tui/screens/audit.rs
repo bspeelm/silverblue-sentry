@@ -57,16 +57,21 @@ pub fn audit_run() -> Effect {
     })
 }
 
-/// `b`: mark the finding expected, or un-mark it if it already is.
-pub fn expected_toggle(v: &View, f: &Finding) -> Effect {
-    let edit = if !f.listeners.is_empty() {
+/// What marking a finding expected writes to the baseline: its listeners, or its id.
+pub fn edit_for(f: &Finding) -> BaselineEdit {
+    if !f.listeners.is_empty() {
         BaselineEdit::Listeners(f.listeners.clone())
     } else {
         match f.id.strip_prefix("listener:") {
             Some(k) => BaselineEdit::Listener(k.to_string()),
             None => BaselineEdit::Finding(f.id.clone()),
         }
-    };
+    }
+}
+
+/// `b`: mark the finding expected, or un-mark it if it already is.
+pub fn expected_toggle(v: &View, f: &Finding) -> Effect {
+    let edit = edit_for(f);
     if is_expected(f, &v.d.baseline) {
         Effect::Unbaseline(edit)
     } else {
