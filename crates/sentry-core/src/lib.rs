@@ -7,6 +7,7 @@ pub mod apply;
 pub mod auto;
 pub mod baseline;
 pub mod cache;
+pub mod cfg;
 pub mod claude;
 pub mod collectors;
 pub mod config;

@@ -1,8 +1,9 @@
 //! `sentry-network init <ssh-host>`: read what the router reports (read-only: `ubus`, `uci
-//! show firewall`, the DHCP leases) and draft `network_config.yaml` from it: its ports as a
-//! note, the firewall's zones and port forwards as what's expected, and every device holding
-//! a lease as a device still to be named. The draft is pure ([`draft`]); nothing is written on
-//! the router.
+//! show firewall`, the DHCP leases) and draft a network's entry for `network_config.yaml`
+//! from it: the firewall's zones and port forwards as what's expected, and every device
+//! holding a lease as a device still to be named; its board and ports as notes. The draft is
+//! pure and typed ([`draft`]: the entry and its notes); `cfg` writes it. Nothing is written
+//! on the router.
 
 use crate::collect::clients::{Lease, leases};
 use crate::collect::ifaces::{self, Ifaces};
@@ -11,6 +12,7 @@ use crate::collect::{CollectError, sections};
 use crate::config;
 use crate::rates;
 use crate::remote::Router;
+use sentry_core::cfg::{Draft, Note, Saved, Seg, path_string};
 
 /// What the router reported.
 #[derive(Debug, Clone, Default)]
@@ -44,26 +46,16 @@ pub fn parse(text: &str) -> Result<Facts, String> {
     Ok(f)
 }
 
-/// A YAML scalar: bare when it's plainly safe, else double-quoted.
-fn y(s: &str) -> String {
-    let plain = !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_.-/".contains(c))
-        && !s.starts_with('-')
-        && s.parse::<f64>().is_err()
-        && !matches!(
-            s.to_ascii_lowercase().as_str(),
-            "true" | "false" | "yes" | "no" | "on" | "off" | "null" | "~"
-        );
-    if plain {
-        s.to_string()
-    } else {
-        serde_json::Value::String(s.to_string()).to_string()
-    }
+/// The path of one of the entry's settings: `networks.<name>.<field>`.
+fn at(name: &str, field: &str) -> String {
+    format!(
+        "{}.{field}",
+        path_string(&[Seg::Key("networks".into()), Seg::Key(name.into())])
+    )
 }
 
 /// The firewall's port forwards as `expect.forwards` entries; what can't be one, as notes.
-fn forwards(fw: &[Section]) -> (Vec<String>, Vec<String>) {
+fn forwards(fw: &[Section]) -> (Vec<config::Forward>, Vec<String>) {
     let (mut out, mut notes) = (Vec::new(), Vec::new());
     for s in fw.iter().filter(|s| s.kind == "redirect") {
         let name = s.one("name").unwrap_or(&s.name);
@@ -85,52 +77,32 @@ fn forwards(fw: &[Section]) -> (Vec<String>, Vec<String>) {
             .map(|p| p.replace(':', "-"))
             .and_then(|p| p.parse::<config::Ports>().ok());
         match (port, s.one("dest_ip")) {
-            (Some(port), Some(to)) => {
-                let port = match port.to_string() {
-                    p if port.from == port.to => p,
-                    p => format!("\"{p}\""),
-                };
-                out.push(format!(
-                    "{{ name: {}, proto: {proto}, port: {port}, to: {} }}",
-                    y(name),
-                    y(to)
-                ));
-            }
+            (Some(port), Some(to)) => out.push(config::Forward {
+                name: name.to_string(),
+                proto,
+                port,
+                to: to.to_string(),
+            }),
             _ => notes.push(format!("forward {name}: no port or no address to go to")),
         }
     }
     (out, notes)
 }
 
-/// The draft of the whole file, for a router that isn't configured yet.
-pub fn draft(name: &str, ssh: &str, f: &Facts, today: &str) -> String {
+/// The entry for a router that isn't configured yet, and notes on what it was drafted from
+/// (what the drafted text's comments used to say), each at the setting it is about.
+pub fn draft(name: &str, ssh: &str, f: &Facts) -> Draft<config::Network> {
     let i = &f.ifaces;
     let b = &i.board;
-    let mut o = String::new();
-    let mut line = |s: String| {
-        o.push_str(&s);
-        o.push('\n');
-    };
-    line(format!(
-        "# sentry-network configuration, drafted by `sentry-network init` on {today} from what the"
-    ));
-    line(
-        "# router reports. Check it, name your devices, then run `sentry-network lint`. sentry never"
-            .into(),
-    );
-    line(
-        "# rewrites this file. Every key: assets/network_config.example.yaml in sentry's source."
-            .into(),
-    );
-    line(String::new());
-    line("networks:".into());
-    line(format!("  {}:", y(name)));
-    line(format!(
-        "    # {} · {} {} · {}",
-        b.model, b.distribution, b.version, b.target
-    ));
-    line(format!("    router: {{ ssh: {}, kind: openwrt }}", y(ssh)));
-    line(String::new());
+    let mut n = config::Network::default();
+    let mut notes = vec![Note::on(
+        &at(name, "router"),
+        format!(
+            "{} · {} {} · {}",
+            b.model, b.distribution, b.version, b.target
+        ),
+    )];
+    n.router.ssh = Some(ssh.to_string());
     let ports: Vec<String> = i
         .rows()
         .iter()
@@ -147,15 +119,16 @@ pub fn draft(name: &str, ssh: &str, f: &Facts, today: &str) -> String {
         })
         .collect();
     if !ports.is_empty() {
-        line("    # Its ports and radios now:".into());
-        for chunk in ports.chunks(4) {
-            line(format!("    #   {}", chunk.join(" · ")));
-        }
-        line(String::new());
+        notes.push(Note::on(
+            &at(name, "router"),
+            format!("its ports and radios now: {}", ports.join(" · ")),
+        ));
     }
-    line("    # What the firewall looks like now, taken as what's expected.".into());
-    line("    expect:".into());
-    let zones: Vec<(String, Vec<String>)> = f
+    notes.push(Note::on(
+        &at(name, "expect"),
+        "what the firewall looks like now, taken as what's expected.",
+    ));
+    n.expect.zones = f
         .firewall
         .iter()
         .filter(|s| s.kind == "zone")
@@ -165,100 +138,87 @@ pub fn draft(name: &str, ssh: &str, f: &Facts, today: &str) -> String {
             Some((s.one("name")?.to_string(), ifs)).filter(|(_, ifs)| !ifs.is_empty())
         })
         .collect();
-    if zones.is_empty() {
-        line("      zones: {}".into());
-    } else {
-        line("      # Each zone and the interfaces in it.".into());
-        line("      zones:".into());
-        for (zone, ifs) in &zones {
-            let ifs: Vec<String> = ifs.iter().map(|x| y(x)).collect();
-            line(format!("        {}: [{}]", y(zone), ifs.join(", ")));
-        }
+    let (fwd, not_taken) = forwards(&f.firewall);
+    n.expect.forwards = fwd;
+    for x in not_taken {
+        notes.push(Note::on(
+            &at(name, "expect.forwards"),
+            format!("not taken: {x}"),
+        ));
     }
-    let (fwd, notes) = forwards(&f.firewall);
-    if fwd.is_empty() {
-        line("      forwards: []".into());
-    } else {
-        line("      forwards:".into());
-        for x in &fwd {
-            line(format!("        - {x}"));
-        }
-    }
-    for n in &notes {
-        line(format!("      # not taken: {n}"));
-    }
-    line("      # What may listen on the router itself, proto:port@zone (tcp:22@lan).".into());
-    line("      listeners: []".into());
-    line(String::new());
     // Known by MAC; one with a private (randomised) MAC by the hostname it gives.
-    let mut entries: Vec<String> = Vec::new();
     let mut nameless = 0;
     let mut seen = std::collections::HashSet::new();
     for l in &f.leases {
         let private = config::local_mac(&l.mac);
-        match (&l.hostname, private) {
-            (Some(h), true) => {
-                if seen.insert(h.clone()) {
-                    entries.push(format!(
-                        "- {{ hostname: {}, private_mac: true }}   # {}",
-                        y(h),
-                        l.addr
-                    ));
-                }
+        let device = match (&l.hostname, private) {
+            (Some(h), true) if seen.insert(h.clone()) => config::Device {
+                hostname: Some(h.clone()),
+                private_mac: true,
+                ..Default::default()
+            },
+            (None, true) => {
+                nameless += 1;
+                continue;
             }
-            (None, true) => nameless += 1,
-            (h, false) => {
-                if seen.insert(l.mac.clone()) {
-                    let host = h
-                        .as_ref()
-                        .map_or(String::new(), |h| format!(", hostname: {}", y(h)));
-                    entries.push(format!("- {{ mac: \"{}\"{host} }}   # {}", l.mac, l.addr));
-                }
-            }
-        }
+            (h, false) if seen.insert(l.mac.clone()) => config::Device {
+                mac: Some(l.mac.clone()),
+                hostname: h.clone(),
+                ..Default::default()
+            },
+            _ => continue,
+        };
+        notes.push(Note::on(
+            &format!("{}[{}]", at(name, "devices"), n.devices.len()),
+            format!("holds {} now", l.addr),
+        ));
+        n.devices.push(device);
     }
-    line(
-        "    # Every device holding a lease now. Give the ones you know a `name:` and delete the"
-            .into(),
-    );
-    line(
-        "    # rest. `private_mac`: its MAC is locally administered, as a phone's private address"
-            .into(),
-    );
-    line(
-        "    # is, so it's known by its hostname (give `mac:` instead if its MAC never changes)."
-            .into(),
-    );
-    if entries.is_empty() {
-        line("    devices: []".into());
-    } else {
-        line("    devices:".into());
-        for e in &entries {
-            line(format!("      {e}"));
-        }
-    }
+    notes.push(Note::on(
+        &at(name, "devices"),
+        "every device holding a lease now. Give the ones you know a `name:` and delete the \
+         rest. `private_mac`: its MAC is locally administered, as a phone's private address \
+         is, so it's known by its hostname (give `mac:` instead if its MAC never changes).",
+    ));
     if nameless > 0 {
-        line(format!(
-            "    # (not listed: {nameless} with a private MAC and no hostname)"
+        notes.push(Note::on(
+            &at(name, "devices"),
+            format!("not listed: {nameless} with a private MAC and no hostname"),
         ));
     }
-    line(String::new());
-    line("    thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }".into());
-    line(String::new());
-    line("    # Config backups are encrypted on this machine. Put a public recipient here".into());
-    line("    # (an age1… key; `sentry-network backup key <file>` makes one) to have them.".into());
-    line("    backup: { recipients: [], keep: 12 }".into());
-    line(String::new());
-    line("    maintenance:".into());
-    line("      items:".into());
-    line("        - { id: firmware, kind: firmware }".into());
-    line("        - { id: packages, kind: packages }".into());
-    line("        - { id: backup,   kind: backup }".into());
-    line("      cadence: []".into());
-    line(String::new());
-    line("    notes: []".into());
-    line("    claude: { share_wan_address: false }".into());
-    o
+    notes.push(Note::on(
+        &at(name, "backup.recipients"),
+        "config backups are encrypted on this machine. Put a public recipient here (an age1… \
+         key; `sentry-network backup key <file>` makes one) to have them.",
+    ));
+    n.maintenance.items = [
+        ("firmware", config::ItemKind::Firmware),
+        ("packages", config::ItemKind::Packages),
+        ("backup", config::ItemKind::Backup),
+    ]
+    .into_iter()
+    .map(|(id, kind)| config::Item {
+        id: id.into(),
+        kind,
+    })
+    .collect();
+    Draft { entry: n, notes }
+}
+
+/// Add `entry` as `name` to the file at `path` (made when it isn't there), through `cfg`: the
+/// whole file is written again from what it says, a copy of it before kept. A name the file
+/// has, or a file that doesn't parse, writes nothing.
+pub fn write(path: &std::path::Path, name: &str, entry: &config::Network) -> Result<Saved, String> {
+    sentry_core::cfg::update::<config::NetworkFile>(path, |f| {
+        if f.networks.contains_key(name) {
+            return Err(format!(
+                "{} already has `{name}`: not touching it (--name adds it under another name).",
+                path.display()
+            ));
+        }
+        f.networks.insert(name.to_string(), entry.clone());
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -359,13 +319,113 @@ not a lease
         );
     }
 
+    /// What the text draft (before the typed one) wrote for the same facts, word for word.
+    const OLD_HOME: &str = r#"# sentry-network configuration, drafted by `sentry-network init` on 2026-11-20 from what the
+# router reports. Check it, name your devices, then run `sentry-network lint`. sentry never
+# rewrites this file. Every key: assets/network_config.example.yaml in sentry's source.
+
+networks:
+  home:
+    # Example Router AX · OpenWrt 25.12.3 · mediatek/filogic
+    router: { ssh: myrouter, kind: openwrt }
+
+    # Its ports and radios now:
+    #   eth1 (wan) 1G · lan1 (lan) 1G · lan2 (lan) 100M · lan3 (lan) no link
+    #   lan4 (dmz) 1G · phy0-ap0 (lan) · phy1-ap0 (lan)
+
+    # What the firewall looks like now, taken as what's expected.
+    expect:
+      # Each zone and the interfaces in it.
+      zones:
+        lan: [lan]
+        wan: [wan, wan6]
+        dmz: [dmz]
+      forwards:
+        - { name: web-https, proto: tcp, port: 443, to: 203.0.113.10 }
+        - { name: "game it's", proto: any, port: "8000-8010", to: 192.0.2.20 }
+      # not taken: forward half: no port or no address to go to
+      # What may listen on the router itself, proto:port@zone (tcp:22@lan).
+      listeners: []
+
+    # Every device holding a lease now. Give the ones you know a `name:` and delete the
+    # rest. `private_mac`: its MAC is locally administered, as a phone's private address
+    # is, so it's known by its hostname (give `mac:` instead if its MAC never changes).
+    devices:
+      - { mac: "00:00:5e:00:53:10", hostname: nas }   # 192.0.2.10
+      - { mac: "00:00:5e:00:53:11" }   # 192.0.2.11
+      - { hostname: my-phone, private_mac: true }   # 192.0.2.20
+    # (not listed: 1 with a private MAC and no hostname)
+
+    thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }
+
+    # Config backups are encrypted on this machine. Put a public recipient here
+    # (an age1… key; `sentry-network backup key <file>` makes one) to have them.
+    backup: { recipients: [], keep: 12 }
+
+    maintenance:
+      items:
+        - { id: firmware, kind: firmware }
+        - { id: packages, kind: packages }
+        - { id: backup,   kind: backup }
+      cadence: []
+
+    notes: []
+    claude: { share_wan_address: false }
+"#;
+
+    const OLD_LAB: &str = r#"# sentry-network configuration, drafted by `sentry-network init` on 2026-11-20 from what the
+# router reports. Check it, name your devices, then run `sentry-network lint`. sentry never
+# rewrites this file. Every key: assets/network_config.example.yaml in sentry's source.
+
+networks:
+  "lab net":
+    router: { ssh: "root@192.0.2.1", kind: openwrt }
+
+    # What the firewall looks like now, taken as what's expected.
+    expect:
+      zones: {}
+      forwards: []
+      # What may listen on the router itself, proto:port@zone (tcp:22@lan).
+      listeners: []
+
+    # Every device holding a lease now. Give the ones you know a `name:` and delete the
+    # rest. `private_mac`: its MAC is locally administered, as a phone's private address
+    # is, so it's known by its hostname (give `mac:` instead if its MAC never changes).
+    devices: []
+
+    thresholds: { load: 2.0, mem_pct: 85, cert_days: 21, backup_age: 30d }
+
+    # Config backups are encrypted on this machine. Put a public recipient here
+    # (an age1… key; `sentry-network backup key <file>` makes one) to have them.
+    backup: { recipients: [], keep: 12 }
+
+    maintenance:
+      items:
+        - { id: firmware, kind: firmware }
+        - { id: packages, kind: packages }
+        - { id: backup,   kind: backup }
+      cadence: []
+
+    notes: []
+    claude: { share_wan_address: false }
+"#;
+
+    fn written(name: &str, d: &Draft<config::Network>) -> String {
+        let file = config::NetworkFile {
+            networks: [(name.to_string(), d.entry.clone())].into(),
+        };
+        sentry_core::cfg::render(&file).unwrap_or_else(|e| panic!("{e}"))
+    }
+
     #[test]
     fn the_draft_is_a_config_that_parses_and_lints_clean() {
         let f = facts();
-        let text = draft("home", "myrouter", &f, "2026-11-20");
+        let d = draft("home", "myrouter", &f);
+        let text = written("home", &d);
         let (file, warnings) = config::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         assert!(warnings.is_empty(), "{warnings:?}");
         let n = &file.networks["home"];
+        assert_eq!(n, &d.entry);
         assert!(
             config::lint("home", n).is_empty(),
             "{:?}",
@@ -405,13 +465,11 @@ not a lease
                 ),
             ]
         );
+        let notes = d.note_lines();
+        let has = |s: &str| notes.iter().any(|n| n.contains(s));
         assert!(
-            text.contains("# not taken: forward half: no port or no address"),
-            "{text}"
-        );
-        assert!(
-            !text.contains("name: off"),
-            "a disabled forward isn't expected"
+            has("networks.home.expect.forwards: not taken: forward half: no port or no address"),
+            "{notes:#?}"
         );
         // The leases, unnamed: by MAC, or by hostname when the MAC is a private one.
         assert!(n.devices.iter().all(|d| d.name.is_none()));
@@ -424,27 +482,96 @@ not a lease
             .filter_map(|d| d.hostname.as_deref())
             .collect();
         assert_eq!(private, ["my-phone"], "once, though it holds two leases");
-        assert!(text.contains("(not listed: 1 with a private MAC and no hostname)"));
-        // The ports are a note: the file has no key for them.
+        assert!(has(
+            "networks.home.devices: not listed: 1 with a private MAC and no hostname"
+        ));
         assert!(
-            text.contains(
-                "#   eth1 (wan) 1G · lan1 (lan) 1G · lan2 (lan) 100M · lan3 (lan) no link"
-            )
+            has("networks.home.devices[2]: holds 192.0.2.20 now"),
+            "{notes:#?}"
         );
-        assert!(text.contains("# Example Router AX · OpenWrt 25.12.3 · mediatek/filogic"));
+        // The ports and the board are notes: the file has no key for them.
+        assert!(has(
+            "networks.home.router: its ports and radios now: eth1 (wan) 1G · lan1 (lan) 1G · lan2 (lan) 100M · lan3 (lan) no link"
+        ));
+        assert!(has(
+            "networks.home.router: Example Router AX · OpenWrt 25.12.3 · mediatek/filogic"
+        ));
         assert_eq!(n.maintenance.items.len(), 3);
+        insta::assert_snapshot!(format!("{text}\n{}", notes.join("\n")));
+    }
+
+    /// The typed draft proposes exactly what the text draft did: the same zones, forwards,
+    /// devices and items.
+    #[test]
+    fn the_typed_draft_is_what_the_text_draft_was() {
+        let d = draft("home", "myrouter", &facts());
+        let (old, _) = config::parse(OLD_HOME).unwrap();
+        assert_eq!(old.networks["home"], d.entry);
+        let f = parse("@@board\n{\"model\": \"X\"}\n@@firewall\n@@leases\n").unwrap();
+        let d = draft("lab net", "root@192.0.2.1", &f);
+        let (old, _) = config::parse(OLD_LAB).unwrap();
+        assert_eq!(old.networks["lab net"], d.entry);
     }
 
     #[test]
     fn a_router_with_nothing_set_up_still_drafts_a_valid_file() {
         let f = parse("@@board\n{\"model\": \"X\"}\n@@firewall\n@@leases\n").unwrap();
-        let text = draft("lab net", "root@192.0.2.1", &f, "2026-11-20");
+        let d = draft("lab net", "root@192.0.2.1", &f);
+        let text = written("lab net", &d);
         let (file, _) = config::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
         let n = &file.networks["lab net"];
         assert_eq!(n.ssh_target("x"), "root@192.0.2.1");
         assert!(n.expect.zones.is_empty() && n.devices.is_empty());
-        assert_eq!(y("on"), "\"on\"");
-        assert_eq!(y("443"), "\"443\"");
-        assert_eq!(y("web-1"), "web-1");
+        // Names a YAML file has to quote come back as they were.
+        let mut odd = d.entry.clone();
+        odd.expect.forwards.push(config::Forward {
+            name: "on".into(),
+            proto: "tcp".into(),
+            port: "443".parse().unwrap(),
+            to: "192.0.2.5".into(),
+        });
+        odd.devices.push(config::Device {
+            hostname: Some("443".into()),
+            private_mac: true,
+            ..Default::default()
+        });
+        let file = config::NetworkFile {
+            networks: [("lab net".to_string(), odd.clone())].into(),
+        };
+        let text = sentry_core::cfg::render(&file).unwrap();
+        assert_eq!(config::parse(&text).unwrap().0.networks["lab net"], odd);
+    }
+
+    /// A second network is added to a file that has one (the old init could only write a
+    /// whole new file); a name that's there is refused.
+    #[test]
+    fn a_network_is_added_beside_the_ones_there() {
+        let dir = sentry_core::paths::config_dir().join("init-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("network_config.yaml");
+        let d = draft("home", "myrouter", &facts());
+        assert_eq!(write(&p, "home", &d.entry).unwrap().backup, None);
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            write(&p, "home", &d.entry)
+                .unwrap_err()
+                .contains("already has `home`")
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        let saved = write(&p, "lab", &d.entry).unwrap();
+        assert!(
+            saved.backup.is_some() && !saved.handwritten,
+            "sentry wrote it"
+        );
+        let (f, w) = config::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(w.is_empty());
+        assert_eq!(f.networks.keys().collect::<Vec<_>>(), ["home", "lab"]);
+        for (n, net) in &f.networks {
+            assert!(
+                config::lint(n, net).is_empty(),
+                "{:?}",
+                config::lint(n, net)
+            );
+        }
     }
 }

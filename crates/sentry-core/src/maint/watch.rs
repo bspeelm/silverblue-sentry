@@ -1,9 +1,9 @@
 //! What sentry stopped watching: `watch.toml` beside a target's records. A target's config
 //! lists what must be there (a server's timers and services, a network's forwards); the
-//! user writes that file and sentry never rewrites it. When one of those things is retired
-//! on purpose, the expectation itself is what's out of date, and this file is where sentry
-//! says so: an entry here is applied over the config wherever it is read (the collectors'
-//! expectations, the audit), so the thing is no longer looked for.
+//! user says what's in that file and sentry changes it only when asked to. When one of those
+//! things is retired on purpose, the expectation itself is what's out of date, and this file
+//! is where sentry says so: an entry here is applied over the config wherever it is read
+//! (the collectors' expectations, the audit), so the thing is no longer looked for.
 //!
 //! This is not `baseline.toml`: marking a finding expected hides that one finding and
 //! leaves the thing watched; an entry here removes the expectation. Records › Later lists

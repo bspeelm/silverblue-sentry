@@ -23,9 +23,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Look at a router (read-only) and write a starter network_config.yaml from what it
-    /// reports: its ports, the firewall's zones and port forwards, and every device holding
-    /// a lease, still to be named. Never touches a file that's already there.
+    /// Look at a router (read-only) and add the network to network_config.yaml from what it
+    /// reports: the firewall's zones and port forwards, and every device holding a lease,
+    /// still to be named (its board and ports as notes). A network the file has already is
+    /// left alone; the file is written again from what it says, a copy of it before kept.
     Init {
         /// What ssh connects to: an alias from ~/.ssh/config or root@host.
         ssh: String,

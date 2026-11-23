@@ -1,12 +1,15 @@
 //! `sentry-server init <ssh-host>`: look around a server (read-only) and draft its entry for
 //! server_config.yaml. Discovery and drafting are separate so the draft is testable.
 
-use std::fmt::Write as _;
-
 use serde::Deserialize;
 
+use std::path::Path;
+
+use super::config::{Compose, DiskRule, Server, ServerFile, TimerRule};
 use super::remote::{Remote, SrvError, SudoMode};
+use sentry_core::cfg::{Draft, Note, Saved, Seg, path_string};
 use sentry_core::collectors::{disk, net};
+use sentry_core::config::Dur;
 use sentry_core::exec::sh_quote;
 
 /// Vendor services worth watching when they run (admin-written units are always proposed).
@@ -235,22 +238,28 @@ pub fn max_age(period_s: u64) -> String {
     }
 }
 
-/// The YAML entry for one server, with comments saying where each part came from.
-pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
-    let mut y = String::new();
+/// The path of one of the entry's settings: `servers.<name>.<field>`.
+fn at(name: &str, field: &str) -> String {
+    format!(
+        "{}.{field}",
+        path_string(&[Seg::Key("servers".into()), Seg::Key(name.into())])
+    )
+}
+
+/// The entry for one server, and notes saying where each part came from (what the drafted
+/// text's comments used to say), each at the setting it is about.
+pub fn draft(name: &str, ssh: &str, f: &Facts) -> Draft<Server> {
+    let mut s = Server::default();
+    let mut notes = vec![
+        Note::whole(format!(
+            "Drafted by `sentry-server init` from {ssh} ({}).",
+            f.os
+        )),
+        Note::whole("Review every part: it's a starting point, not a verdict."),
+    ];
     let has = |t: &str| f.tools.iter().any(|x| x == t);
-    let _ = writeln!(
-        y,
-        "  # Drafted by `sentry-server init` from {} ({}).",
-        ssh, f.os
-    );
-    let _ = writeln!(
-        y,
-        "  # Review every part: it's a starting point, not a verdict."
-    );
-    let _ = writeln!(y, "  {name}:");
     if ssh != name {
-        let _ = writeln!(y, "    ssh: {ssh}");
+        s.ssh = Some(ssh.to_string());
     }
 
     let mut sudo: Vec<&str> = Vec::new();
@@ -282,41 +291,35 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
     sudo.extend(["journalctl", "ss -tulpn"]);
     match f.sudo {
         Some(SudoMode::NoPasswd) => {
-            let _ = writeln!(
-                y,
-                "    # Read-only commands run as `sudo -n` (sudo works without a password here)."
-            );
-            let _ = writeln!(y, "    sudo:");
-            for s in &sudo {
-                let _ = writeln!(y, "      - {s}");
-            }
+            s.sudo = sudo.iter().map(|x| x.to_string()).collect();
+            notes.push(Note::on(
+                &at(name, "sudo"),
+                "read-only commands run as `sudo -n` (sudo works without a password here).",
+            ));
         }
-        _ => {
-            let _ = writeln!(
-                y,
-                "    # sudo needs a password here, so nothing runs as root while monitoring.\n    \
-                 # Root-only panels (docker, SMART, system journal) say what's missing."
-            );
-            let _ = writeln!(y, "    sudo: []");
-        }
+        _ => notes.push(Note::on(
+            &at(name, "sudo"),
+            "sudo asks for a password here: the allowlist is empty, so nothing runs as root \
+             while monitoring. Root-only panels (docker, SMART, system journal) say what's \
+             missing; `I` reads them once with your password.",
+        )),
     }
 
-    let real: Vec<&(String, String)> = f
+    s.disks = f
         .mounts
         .iter()
         .filter(|(t, fs)| {
             ["ext4", "ext3", "xfs", "btrfs", "zfs", "f2fs"].contains(&fs.as_str())
                 && !t.starts_with("/boot")
         })
+        .map(|(t, _)| DiskRule {
+            mount: t.clone(),
+            warn: Server::default_warn(),
+            crit: Server::default_crit(),
+        })
         .collect();
-    if !real.is_empty() {
-        let _ = writeln!(y, "    disks:");
-        for (t, _) in real {
-            let _ = writeln!(y, "      - mount: {t}");
-        }
-    }
-    if has("smartctl") && !f.disks.is_empty() {
-        let _ = writeln!(y, "    smart: [{}]", f.disks.join(", "));
+    if has("smartctl") {
+        s.smart = f.disks.clone();
     }
 
     let timer_bases: Vec<&str> = f
@@ -342,12 +345,12 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
     services.extend(notable);
     services.sort();
     if !services.is_empty() {
-        let _ = writeln!(
-            y,
-            "    # Running services: the ones installed by hand, plus well-known daemons."
-        );
-        let _ = writeln!(y, "    services: [{}]", services.join(", "));
+        notes.push(Note::on(
+            &at(name, "services"),
+            "the running services installed by hand, plus well-known daemons.",
+        ));
     }
+    s.services = services;
 
     let timers: Vec<&TimerFact> = f
         .timers
@@ -355,37 +358,40 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
         .filter(|t| f.admin_units.contains(&t.unit))
         .collect();
     if !timers.is_empty() {
-        let _ = writeln!(
-            y,
-            "    # Timers installed by hand; max_age is one period plus slack."
-        );
-        let _ = writeln!(y, "    timers:");
-        for t in timers {
-            match t.period_s {
-                Some(p) => {
-                    let _ = writeln!(y, "      - {{unit: {}, max_age: {}}}", t.unit, max_age(p));
-                }
-                None => {
-                    let _ = writeln!(
-                        y,
-                        "      # - {{unit: {}, max_age: ?}}  (no last/next run to measure)",
-                        t.unit
-                    );
-                }
-            }
+        notes.push(Note::on(
+            &at(name, "timers"),
+            "timers installed by hand; max_age is one period plus slack.",
+        ));
+    }
+    for t in timers {
+        match t.period_s.and_then(|p| max_age(p).parse::<Dur>().ok()) {
+            Some(max_age) => s.timers.push(TimerRule {
+                unit: t.unit.clone(),
+                max_age,
+            }),
+            None => notes.push(Note::on(
+                &at(name, "timers"),
+                format!(
+                    "not taken: {} (no last/next run to measure its max_age by)",
+                    t.unit
+                ),
+            )),
         }
     }
 
-    if !f.compose.is_empty() {
-        let _ = writeln!(y, "    compose:");
-        for (n, file) in &f.compose {
-            let _ = writeln!(y, "      - {{name: {n}, file: {file}}}");
-        }
-    } else if has("docker") && f.sudo != Some(SudoMode::NoPasswd) {
-        let _ = writeln!(
-            y,
-            "    # compose: [{{name: …, file: …}}]  (couldn't list projects without sudo)"
-        );
+    s.compose = f
+        .compose
+        .iter()
+        .map(|(n, file)| Compose {
+            name: n.clone(),
+            file: file.clone(),
+        })
+        .collect();
+    if s.compose.is_empty() && has("docker") && f.sudo != Some(SudoMode::NoPasswd) {
+        notes.push(Note::on(
+            &at(name, "compose"),
+            "couldn't list the compose projects without sudo: add them as {name, file}.",
+        ));
     }
 
     let mut ports: Vec<(u32, String)> = Vec::new();
@@ -407,17 +413,34 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> String {
     ports.sort();
     loopback.sort();
     loopback.dedup();
-    if !ports.is_empty() || !loopback.is_empty() {
-        let _ = writeln!(
-            y,
-            "    # Everything listening now. Remove what you didn't expect: it becomes a finding."
-        );
-        let _ = writeln!(y, "    listeners:");
-        for e in ports.iter().map(|(_, e)| e.as_str()).chain(loopback) {
-            let _ = writeln!(y, "      - \"{e}\"");
-        }
+    s.listeners = ports
+        .into_iter()
+        .map(|(_, e)| e)
+        .chain(loopback.into_iter().map(str::to_string))
+        .collect();
+    if !s.listeners.is_empty() {
+        notes.push(Note::on(
+            &at(name, "listeners"),
+            "everything listening now. Remove what you didn't expect: it becomes a finding.",
+        ));
     }
-    y
+    Draft { entry: s, notes }
+}
+
+/// Add `entry` as `name` to the file at `path` (made when it isn't there), through `cfg`: the
+/// whole file is written again from what it says, a copy of it before kept. A name the file
+/// has, or a file that doesn't parse, writes nothing.
+pub fn write(path: &Path, name: &str, entry: &Server) -> Result<Saved, String> {
+    sentry_core::cfg::update::<ServerFile>(path, |f| {
+        if f.servers.contains_key(name) {
+            return Err(format!(
+                "{} already has `{name}`; not touching it. Use --name to add it under another name.",
+                path.display()
+            ));
+        }
+        f.servers.insert(name.to_string(), entry.clone());
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -470,14 +493,15 @@ mod tests {
         assert_eq!(max_age(3600), "2h");
     }
 
-    #[test]
-    fn draft_is_valid_config() {
-        let f = Facts {
+    /// The fixture's server, with sudo as given.
+    fn facts(sudo: Option<SudoMode>) -> Facts {
+        Facts {
             os: "Debian GNU/Linux 12 (bookworm)".into(),
             admin_units: vec![
                 "app.service".into(),
                 "backup.service".into(),
                 "backup.timer".into(),
+                "app-sync.timer".into(),
             ],
             running: vec![
                 "app.service".into(),
@@ -485,9 +509,13 @@ mod tests {
                 "dbus.service".into(),
             ],
             timers: parse_timers(&fx("list-timers.json")).unwrap(),
-            sudo: Some(SudoMode::NoPasswd),
+            sudo,
             tools: vec!["docker".into(), "smartctl".into()],
-            compose: parse_compose_ls(&fx("compose-ls.json")).unwrap(),
+            compose: if sudo == Some(SudoMode::NoPasswd) {
+                parse_compose_ls(&fx("compose-ls.json")).unwrap()
+            } else {
+                vec![]
+            },
             mounts: vec![
                 ("/".into(), "ext4".into()),
                 ("/boot/efi".into(), "vfat".into()),
@@ -495,14 +523,31 @@ mod tests {
             ],
             disks: vec!["/dev/sda".into()],
             listeners: net::parse_listen(&fx("ss-tuln.txt")),
+        }
+    }
+
+    fn written(name: &str, d: &Draft<Server>) -> String {
+        let file = super::super::config::ServerFile {
+            servers: [(name.to_string(), d.entry.clone())].into(),
         };
-        let d = draft("myserver", "admin@myserver.example", &f);
-        let (file, warnings) = super::super::config::parse(&format!("servers:\n{d}")).expect(&d);
+        sentry_core::cfg::render(&file).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn draft_is_valid_config() {
+        let d = draft(
+            "myserver",
+            "admin@myserver.example",
+            &facts(Some(SudoMode::NoPasswd)),
+        );
+        let text = written("myserver", &d);
+        let (file, warnings) = super::super::config::parse(&text).expect(&text);
         assert!(warnings.is_empty(), "{warnings:?}");
         let s = &file.servers["myserver"];
+        assert_eq!(s, &d.entry);
         assert_eq!(s.ssh.as_deref(), Some("admin@myserver.example"));
-        assert_eq!(s.services, ["app.service", "docker.service"], "{d}");
-        assert_eq!(s.timers.len(), 1, "only admin timers: {d}");
+        assert_eq!(s.services, ["app.service", "docker.service"], "{text}");
+        assert_eq!(s.timers.len(), 2, "only admin timers: {text}");
         assert_eq!(s.timers[0].max_age.to_string(), "27h");
         assert_eq!(
             s.disks.iter().map(|d| d.mount.as_str()).collect::<Vec<_>>(),
@@ -514,5 +559,171 @@ mod tests {
         assert!(!s.listeners.contains(&"*:68/*".to_string()), "DHCP client");
         assert!(s.listeners.contains(&"127.0.0.1:*/*".to_string()));
         assert!(super::super::config::lint("myserver", s).is_empty());
+        insta::assert_snapshot!(format!("{text}\n{}", d.note_lines().join("\n")));
+    }
+
+    #[test]
+    fn without_sudo_the_notes_say_what_couldnt_be_drafted() {
+        let mut f = facts(None);
+        f.timers.retain(|t| t.unit != "app-sync.timer");
+        f.timers.push(TimerFact {
+            unit: "app-sync.timer".into(),
+            period_s: None,
+        });
+        let d = draft("my.server", "my.server", &f);
+        assert!(d.entry.sudo.is_empty() && d.entry.ssh.is_none() && d.entry.compose.is_empty());
+        let notes = d.note_lines();
+        let has = |s: &str| notes.iter().any(|n| n.contains(s));
+        assert!(
+            has(
+                "· servers.\"my.server\".sudo: sudo asks for a password here: the allowlist is empty"
+            ),
+            "{notes:#?}"
+        );
+        assert!(
+            has("servers.\"my.server\".timers: not taken: app-sync.timer"),
+            "{notes:#?}"
+        );
+        assert!(
+            has("servers.\"my.server\".compose: couldn't list the compose projects"),
+            "{notes:#?}"
+        );
+        let text = written("my.server", &d);
+        let (file, _) = super::super::config::parse(&text).unwrap();
+        assert_eq!(file.servers["my.server"], d.entry);
+    }
+
+    /// What the text draft (before the typed one) wrote for the same facts, word for word.
+    const OLD_NOPASSWD: &str = r#"servers:
+  # Drafted by `sentry-server init` from admin@myserver.example (Debian GNU/Linux 12 (bookworm)).
+  # Review every part: it's a starting point, not a verdict.
+  myserver:
+    ssh: admin@myserver.example
+    # Read-only commands run as `sudo -n` (sudo works without a password here).
+    sudo:
+      - docker ps
+      - docker inspect
+      - docker logs
+      - docker compose ls
+      - docker stats
+      - smartctl
+      - journalctl
+      - ss -tulpn
+    disks:
+      - mount: /
+      - mount: /srv/data
+    smart: [/dev/sda]
+    # Running services: the ones installed by hand, plus well-known daemons.
+    services: [app.service, docker.service]
+    # Timers installed by hand; max_age is one period plus slack.
+    timers:
+      - {unit: backup.timer, max_age: 27h}
+      - {unit: app-sync.timer, max_age: 15m}
+    compose:
+      - {name: stack, file: /home/admin/stack/compose.yaml}
+    # Everything listening now. Remove what you didn't expect: it becomes a finding.
+    listeners:
+      - "*:22/*"
+      - "*:443/*"
+      - "127.0.0.1:*/*"
+"#;
+
+    const OLD_PASSWORD: &str = r#"servers:
+  # Drafted by `sentry-server init` from my.server (Debian GNU/Linux 12 (bookworm)).
+  # Review every part: it's a starting point, not a verdict.
+  my.server:
+    # sudo needs a password here, so nothing runs as root while monitoring.
+    # Root-only panels (docker, SMART, system journal) say what's missing.
+    sudo: []
+    disks:
+      - mount: /
+      - mount: /srv/data
+    smart: [/dev/sda]
+    # Running services: the ones installed by hand, plus well-known daemons.
+    services: [app.service, docker.service]
+    # Timers installed by hand; max_age is one period plus slack.
+    timers:
+      - {unit: backup.timer, max_age: 27h}
+      # - {unit: app-sync.timer, max_age: ?}  (no last/next run to measure)
+    # compose: [{name: …, file: …}]  (couldn't list projects without sudo)
+    # Everything listening now. Remove what you didn't expect: it becomes a finding.
+    listeners:
+      - "*:22/*"
+      - "*:443/*"
+      - "127.0.0.1:*/*"
+"#;
+
+    /// The typed draft proposes exactly what the text draft did: the same services, timers,
+    /// disks, compose projects, sudo entries and listeners.
+    #[test]
+    fn the_typed_draft_is_what_the_text_draft_was() {
+        let ok = draft(
+            "myserver",
+            "admin@myserver.example",
+            &facts(Some(SudoMode::NoPasswd)),
+        );
+        let (old, _) = super::super::config::parse(OLD_NOPASSWD).unwrap();
+        assert_eq!(old.servers["myserver"], ok.entry);
+        let mut f = facts(None);
+        f.timers.retain(|t| t.unit != "app-sync.timer");
+        f.timers.push(TimerFact {
+            unit: "app-sync.timer".into(),
+            period_s: None,
+        });
+        let pw = draft("my.server", "my.server", &f);
+        let (old, _) = super::super::config::parse(OLD_PASSWORD).unwrap();
+        assert_eq!(old.servers["my.server"], pw.entry);
+    }
+
+    #[test]
+    fn written_into_a_file_by_hand_it_keeps_a_copy_and_says_so() {
+        let dir = sentry_core::paths::config_dir().join("init-write");
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("server_config.yaml");
+        let d = draft(
+            "myserver",
+            "admin@myserver.example",
+            &facts(Some(SudoMode::NoPasswd)),
+        );
+        // No file yet: made, nothing kept.
+        let saved = write(&p, "myserver", &d.entry).unwrap();
+        assert_eq!((saved.backup, saved.handwritten), (None, false));
+        let (f, _) = super::super::config::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(f.servers["myserver"], d.entry);
+        assert!(super::super::config::lint("myserver", &f.servers["myserver"]).is_empty());
+        // The same name again: refused, the file as it was.
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            write(&p, "myserver", &d.entry)
+                .unwrap_err()
+                .contains("already has `myserver`")
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        // A file written by hand: the entry is added to what it says, the copy keeps the rest.
+        let hand = "# mine\nservers:\n  other:\n    ssh: o   # a note\n    sudoo: [x]\n";
+        std::fs::write(&p, hand).unwrap();
+        let saved = write(&p, "myserver", &d.entry).unwrap();
+        assert!(saved.handwritten);
+        assert_eq!(saved.dropped.len(), 1, "{:?}", saved.dropped);
+        let b = saved.backup.clone().expect("a copy");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), hand);
+        let lines = saved.lines();
+        assert!(
+            lines[0].starts_with("kept a copy of the file before: "),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains("comments and layout were not kept"),
+            "{lines:?}"
+        );
+        assert!(lines[2].contains("servers.other.sudoo"), "{lines:?}");
+        let (f, w) = super::super::config::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(w.is_empty());
+        assert_eq!(f.servers.len(), 2);
+        assert_eq!(f.servers["other"].ssh.as_deref(), Some("o"));
+        // A file that doesn't parse: nothing written.
+        std::fs::write(&p, "servers: [\n").unwrap();
+        assert!(write(&p, "x", &d.entry).is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "servers: [\n");
     }
 }

@@ -1,0 +1,71 @@
+---
+source: crates/sentry-network/src/config.rs
+expression: text
+---
+# sentry's configuration: the networks sentry watches through their routers.
+# Written by sentry: change it in the Config tab or with `sentry config`. Editing it
+# in $EDITOR is fine, but comments are not kept: the next save writes it again
+# from what it says, keeping the file before beside it (network_config.yaml.bak-<time>).
+
+networks:
+  home:
+    router:
+      ssh: root@192.0.2.1
+    expect:
+      zones:
+        lan:
+          - lan
+        wan:
+          - wan
+          - wan6
+        "yes": []
+      forwards:
+        - name: web
+          proto: udp
+          port: 443
+          to: "192.0.2.10"
+        - name: game it's
+          port: 8000-8010
+          to: 2001:db8::10
+      listeners:
+        - tcp:22@lan
+      services:
+        - odhcpd
+    devices:
+      - name: "1.10"
+        mac: 02:00:5e:00:53:01
+        hostname: nas
+        leave_alone: true
+        private_mac: true
+      - hostname: "*phone"
+    thresholds:
+      load: 3.5
+      mem_pct: 70.0
+      cert_days: 7
+      backup_age: 7d
+    backup:
+      recipients:
+        - age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq
+      keep: 3
+    maintenance:
+      items:
+        - id: firmware
+          kind: firmware
+        - id: pkgs
+          kind: packages
+        - id: backup
+          kind: backup
+      cadence:
+        - workflow: config-backup
+          every: 30d
+    notes:
+      - ~/notes/network.md
+    claude:
+      share_wan_address: true
+    guard:
+      window: 60
+  lab-2: {}
+  "no":
+    expect:
+      zones:
+        lan: []

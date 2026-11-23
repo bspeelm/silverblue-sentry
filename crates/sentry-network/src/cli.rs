@@ -438,8 +438,9 @@ pub fn check(name: Option<&str>) -> u8 {
     u8::from(bad > 0)
 }
 
-/// `init <ssh-host> [--name N]`: draft network_config.yaml from what the router reports.
-/// Never touches a file that's there.
+/// `init <ssh-host> [--name N]`: draft a network's entry from what the router reports and add
+/// it to network_config.yaml (made when it isn't there). A name the file has already is left
+/// alone: the draft is printed instead.
 pub fn init(ssh: &str, name: Option<&str>) -> u8 {
     let name = name.unwrap_or("home");
     let probe = Network {
@@ -457,37 +458,35 @@ pub fn init(ssh: &str, name: Option<&str>) -> u8 {
             return 1;
         }
     };
-    let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
-    let text = init::draft(name, ssh, &facts, &today);
-    // Only what parses back is worth keeping.
-    if let Err(e) = config::parse(&text) {
-        eprintln!("sentry-network init: the draft doesn't parse ({e}); here it is:\n");
-        println!("{text}");
-        return 1;
-    }
+    let d = init::draft(name, ssh, &facts);
+    let devices = d.entry.devices.len();
+    let one = config::NetworkFile {
+        networks: [(name.to_string(), d.entry.clone())].into(),
+    };
+    let draft_text = match sentry_core::cfg::render(&one) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("sentry-network init: {e}");
+            return 1;
+        }
+    };
+    let notes = d.note_lines();
     let p = config::path();
-    if p.exists() {
-        println!("{text}");
-        eprintln!(
-            "{} is already there: not touching it. That's the draft, above.",
-            p.display()
-        );
-        return 1;
-    }
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    match sentry_core::paths::write_atomic(&p, text.as_bytes()) {
-        Ok(()) => {
+    match init::write(&p, name, &d.entry) {
+        Ok(saved) => {
             println!(
-                "wrote {} ({} devices holding a lease, to name): check it, then `sentry-network lint`",
-                p.display(),
-                config::parse(&text).map_or(0, |(f, _)| f.networks[name].devices.len())
+                "added `{name}` to {} ({devices} devices holding a lease, to name): check it, \
+                 then `sentry-network lint {name}`",
+                p.display()
             );
+            notes.iter().for_each(|n| println!("{n}"));
+            saved.lines().iter().for_each(|l| println!("{l}"));
             0
         }
         Err(e) => {
-            eprintln!("{}: {e}", p.display());
+            println!("{draft_text}");
+            notes.iter().for_each(|n| println!("{n}"));
+            eprintln!("{e} That's the draft, above.");
             1
         }
     }

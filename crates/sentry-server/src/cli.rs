@@ -52,65 +52,40 @@ pub fn init(ssh: &str, name: Option<&str>, write: bool) -> u8 {
             return 1;
         }
     };
-    let entry = init::draft(name, ssh, &facts);
+    let d = init::draft(name, ssh, &facts);
+    let one = config::ServerFile {
+        servers: [(name.to_string(), d.entry.clone())].into(),
+    };
+    let notes = d.note_lines();
     if !write {
-        println!("servers:\n{entry}");
+        match sentry_core::cfg::render(&one) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("sentry-server init: {e}");
+                return 1;
+            }
+        }
+        notes.iter().for_each(|n| println!("{n}"));
         eprintln!(
-            "\nThat's a draft. Save it with --write (adds it to {} without touching what's there).",
+            "\nThat's a draft. Save it with --write (adds `{name}` to {}; a copy of the file before is kept).",
             config::path().display()
         );
         return 0;
     }
     let p = config::path();
-    let current = std::fs::read_to_string(&p).ok();
-    let text = match &current {
-        None => format!(
-            "# sentry-server configuration. See assets/server_config.example.yaml for every key.\n\
-             servers:\n{entry}"
-        ),
-        Some(t) => {
-            let (f, _) = match config::parse(t) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!(
-                        "{}: {e}\nnot touching it; the draft:\n\n{entry}",
-                        p.display()
-                    );
-                    return 1;
-                }
-            };
-            if f.servers.contains_key(name) {
-                eprintln!(
-                    "{} already has `{name}`; not touching it. Use --name to add it under another name.",
-                    p.display()
-                );
-                return 1;
-            }
-            let sep = if t.ends_with('\n') { "" } else { "\n" };
-            format!("{t}{sep}{entry}")
-        }
-    };
-    // Only write what parses back with the new server in it.
-    match config::parse(&text) {
-        Ok((f, _)) if f.servers.contains_key(name) => {}
-        _ => {
-            eprintln!(
-                "couldn't add the entry to {} safely (is `servers:` the last section?). The draft:\n\n{entry}",
-                p.display()
-            );
-            return 1;
-        }
-    }
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    match sentry_core::paths::write_atomic(&p, text.as_bytes()) {
-        Ok(()) => {
+    match init::write(&p, name, &d.entry) {
+        Ok(saved) => {
             println!("added `{name}` to {}", p.display());
+            notes.iter().for_each(|n| println!("{n}"));
+            saved.lines().iter().for_each(|l| println!("{l}"));
+            println!("check it: `sentry-server lint {name}`");
             0
         }
         Err(e) => {
-            eprintln!("{}: {e}", p.display());
+            eprintln!("{e}");
+            if let Ok(text) = sentry_core::cfg::render(&one) {
+                eprintln!("not written; the draft:\n\n{text}");
+            }
             1
         }
     }

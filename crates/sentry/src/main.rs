@@ -3,6 +3,7 @@
 //! `sentry-network` (symlinks to it), or as `sentry server …` / `sentry network …`, it is
 //! that command.
 
+mod cfgcmd;
 mod network;
 mod secaudit;
 mod server;
@@ -91,6 +92,12 @@ enum Command {
     /// `audit security [--json] [--outside]`: the security audit across every target;
     /// `audit security answers [<key> yes|no]`: what it asked you.
     Audit {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The config files: `check` (what's wrong in them, offline), `show [app|servers|networks]`
+    /// (each as sentry writes it), `explain [<path>]` (what a setting is).
+    Config {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -205,6 +212,7 @@ fn main() -> ExitCode {
             ))
         }
         Some(Command::Audit { args }) => secaudit::main(&args),
+        Some(Command::Config { args }) => cfgcmd::main(&args),
         Some(Command::Status { short }) => {
             println!("{}", status::line(short));
             ExitCode::SUCCESS

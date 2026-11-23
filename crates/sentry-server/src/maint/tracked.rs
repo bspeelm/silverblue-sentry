@@ -1,7 +1,7 @@
 //! Items sentry-server tracks for you: `servers/<name>/items.toml`, written when you track
 //! something discovery found (`t` on Maintenance), and what you chose to ignore. Merged with
-//! `maintenance.items` from server_config.yaml, which wins on the same id; sentry-server
-//! never rewrites the YAML. What a review changes about a YAML item is kept here instead and
+//! `maintenance.items` from server_config.yaml, which wins on the same id; a review never
+//! rewrites the YAML. What a review changes about a YAML item is kept here instead and
 //! applied over it: `untracked` (ids not tracked after all) and `[set.<id>]` (its risk, hold,
 //! constraint or source). Edit this file freely.
 

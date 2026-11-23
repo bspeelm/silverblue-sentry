@@ -1,0 +1,166 @@
+---
+source: crates/sentry-server/src/config.rs
+expression: "serde_json::to_string_pretty(&f).unwrap()"
+---
+{
+  "servers": {
+    "myserver": {
+      "ssh": "admin@myserver.example",
+      "sudo": [
+        "docker ps",
+        "docker inspect",
+        "docker logs",
+        "docker compose ls",
+        "docker stats",
+        "smartctl",
+        "fail2ban-client status",
+        "journalctl",
+        "ss -tulpn"
+      ],
+      "disks": [
+        {
+          "mount": "/",
+          "warn": 85,
+          "crit": 95
+        },
+        {
+          "mount": "/srv/data",
+          "warn": 90,
+          "crit": 97
+        }
+      ],
+      "smart": [
+        "/dev/sda",
+        "/dev/sdb"
+      ],
+      "services": [
+        "app.service",
+        "docker.service",
+        "ssh.service"
+      ],
+      "timers": [
+        {
+          "unit": "backup.timer",
+          "max_age": "26h"
+        }
+      ],
+      "compose": [
+        {
+          "name": "stack",
+          "file": "/home/admin/stack/compose.yaml"
+        }
+      ],
+      "containers": {
+        "ignore": [],
+        "restart_window": "1d"
+      },
+      "listeners": [
+        "*:22/*",
+        "*:80/*",
+        "*:443/*",
+        "127.0.0.1:*/*"
+      ],
+      "findings": [],
+      "thresholds": {
+        "mem": 90.0,
+        "load_per_core": 2.0,
+        "cpu_temp": 85.0,
+        "gpu_temp": 83.0
+      },
+      "actions": [
+        {
+          "id": "app-reload",
+          "title": "Reload the app's configuration",
+          "run": "systemctl reload app.service",
+          "sudo": true,
+          "risky": false,
+          "undo": "none needed"
+        }
+      ],
+      "maintenance": {
+        "notes": [
+          "~/notes/myserver-runbook.md"
+        ],
+        "items": [
+          {
+            "id": "web",
+            "image": {
+              "service": "web",
+              "compose": null,
+              "container": null
+            },
+            "apt": [],
+            "version_cmd": null,
+            "unit": null,
+            "source": "github:example/web",
+            "tag": null,
+            "risk": "medium",
+            "hold": "1.5 migrates the database one way; wait for 1.5.2",
+            "constraint": null,
+            "review_by": "2027-01-15",
+            "eol": null,
+            "workflow": "compose-bump",
+            "retire": null
+          },
+          {
+            "id": "engine",
+            "image": null,
+            "apt": [
+              "engine-pkg",
+              "engine-cli"
+            ],
+            "version_cmd": null,
+            "unit": null,
+            "source": null,
+            "tag": null,
+            "risk": "high",
+            "hold": "an engine update restarts every container",
+            "constraint": null,
+            "review_by": null,
+            "eol": "docker-engine",
+            "workflow": null,
+            "retire": null
+          },
+          {
+            "id": "app",
+            "image": null,
+            "apt": [],
+            "version_cmd": "/opt/app/bin/app --version",
+            "unit": "app.service",
+            "source": "github:example/app",
+            "tag": null,
+            "risk": "medium",
+            "hold": null,
+            "constraint": null,
+            "review_by": null,
+            "eol": null,
+            "workflow": null,
+            "retire": null
+          },
+          {
+            "id": "legacy",
+            "image": null,
+            "apt": [],
+            "version_cmd": null,
+            "unit": "legacy.service",
+            "source": null,
+            "tag": null,
+            "risk": "medium",
+            "hold": null,
+            "constraint": null,
+            "review_by": null,
+            "eol": null,
+            "workflow": null,
+            "retire": {
+              "replaced_by": "app.service",
+              "workflow": "retire-service"
+            }
+          }
+        ],
+        "cadence": {
+          "apt-maintenance": "30d"
+        }
+      }
+    }
+  }
+}

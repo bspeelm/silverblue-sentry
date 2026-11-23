@@ -1,6 +1,6 @@
 //! The names you gave devices on the Security screen: `networks/<name>/names.toml`, sentry's
-//! own file beside the baseline. `network_config.yaml` is yours and sentry never writes it,
-//! so a name given in the window lands here and is merged with the config's `devices`
+//! own file beside the baseline. `network_config.yaml` is what you said (written only when you
+//! save it: `init`, `sentry config`), so a name given in the window lands here and is merged with the config's `devices`
 //! wherever clients are shown or judged (`Router::new`): a device named here is known, by
 //! that name, exactly as one the config names.
 

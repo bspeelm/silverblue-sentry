@@ -1,7 +1,9 @@
 //! `~/.config/sentry/network_config.yaml`: the networks sentry knows, each through its router,
-//! and what is expected on each. The user writes it (`sentry-network init` drafts it once);
-//! sentry never rewrites it, so comments survive. What sentry records itself (what's marked
-//! expected, which clients were seen) goes under `networks/<name>/` beside it.
+//! and what is expected on each. What you said: written only through core's `cfg`
+//! (`sentry-network init` adds a network, `sentry config`), which keeps the file before beside
+//! it; a hand-edited file's comments are not kept on the next save. What sentry records
+//! itself (what's marked expected, which clients were seen, names given in the window) goes
+//! under `networks/<name>/` beside it.
 //!
 //! The whole shape is read from the start, so the file doesn't change as the Clients, Network
 //! and Maintenance screens arrive: `expect`, `devices`, `backup`, `maintenance`, `notes` and
@@ -12,10 +14,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use sentry_core::cfg::{ConfigFile, Field, FileId, Kind};
 use sentry_core::config::Dur;
-use sentry_core::paths;
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct NetworkFile {
     pub networks: BTreeMap<String, Network>,
@@ -290,8 +292,316 @@ impl Network {
 }
 
 pub fn path() -> PathBuf {
-    paths::config_dir().join("network_config.yaml")
+    FileId::Networks.path()
 }
+
+impl ConfigFile for NetworkFile {
+    const FILE: FileId = FileId::Networks;
+    const FIELDS: &'static [Field] = FIELDS;
+    fn parse(text: &str) -> Result<(Self, Vec<String>), String> {
+        parse(text)
+    }
+}
+
+const fn f(
+    path: &'static str,
+    label: &'static str,
+    kind: Kind,
+    essential: bool,
+    help: &'static str,
+) -> Field {
+    Field {
+        path,
+        label,
+        help,
+        kind,
+        essential,
+    }
+}
+
+/// Every setting of network_config.yaml (`sentry config explain`; the forms).
+pub const FIELDS: &[Field] = &[
+    f(
+        "networks",
+        "Networks",
+        Kind::Map,
+        true,
+        "Each entry is one network, seen through its router over ssh, by its name (one word: it names a directory and `net:<name>`).",
+    ),
+    f(
+        "networks.*.router",
+        "Router",
+        Kind::Section,
+        true,
+        "The router the network is seen through.",
+    ),
+    f(
+        "networks.*.router.ssh",
+        "Router ssh",
+        Kind::Text,
+        true,
+        "What `ssh` connects to (an alias from ~/.ssh/config, or root@host); the login is root, with a key. Default: the network's name.",
+    ),
+    f(
+        "networks.*.router.kind",
+        "Router kind",
+        Kind::Choice(&["openwrt"]),
+        false,
+        "The router's system. Only OpenWrt is known.",
+    ),
+    f(
+        "networks.*.expect",
+        "Expected",
+        Kind::Section,
+        true,
+        "What the firewall and the listeners should look like (the audit compares).",
+    ),
+    f(
+        "networks.*.expect.zones",
+        "Zones",
+        Kind::Map,
+        true,
+        "Each firewall zone and the interfaces in it, as `uci show firewall` names them.",
+    ),
+    f(
+        "networks.*.expect.zones.*",
+        "Zone's interfaces",
+        Kind::List,
+        true,
+        "The interfaces in that zone.",
+    ),
+    f(
+        "networks.*.expect.forwards",
+        "Port forwards",
+        Kind::Records,
+        true,
+        "The port forwards that should exist (and no others).",
+    ),
+    f(
+        "networks.*.expect.forwards[].name",
+        "Name",
+        Kind::Text,
+        true,
+        "The forward's name, as the firewall has it.",
+    ),
+    f(
+        "networks.*.expect.forwards[].proto",
+        "Protocol",
+        Kind::Choice(&["tcp", "udp", "any"]),
+        true,
+        "`tcp`, `udp` or `any` (tcp).",
+    ),
+    f(
+        "networks.*.expect.forwards[].port",
+        "Port",
+        Kind::Text,
+        true,
+        "The port on the WAN side, or a range (`8000-8010`).",
+    ),
+    f(
+        "networks.*.expect.forwards[].to",
+        "To",
+        Kind::Text,
+        true,
+        "The address it goes to.",
+    ),
+    f(
+        "networks.*.expect.listeners",
+        "Listeners",
+        Kind::List,
+        false,
+        "What may listen on the router, `proto:port@zone` (`tcp:22@lan`).",
+    ),
+    f(
+        "networks.*.expect.services",
+        "Services",
+        Kind::List,
+        false,
+        "Services that must be running, besides dnsmasq, dropbear and uhttpd (watched wherever they are installed): names as `ubus call service list` has them.",
+    ),
+    f(
+        "networks.*.devices",
+        "Devices",
+        Kind::Records,
+        true,
+        "The devices you know: everything else that takes a lease is new.",
+    ),
+    f(
+        "networks.*.devices[].name",
+        "Name",
+        Kind::Text,
+        true,
+        "What to call it.",
+    ),
+    f(
+        "networks.*.devices[].mac",
+        "MAC",
+        Kind::Text,
+        false,
+        "Its MAC address (02:00:5e:00:53:01).",
+    ),
+    f(
+        "networks.*.devices[].hostname",
+        "Hostname",
+        Kind::Text,
+        false,
+        "The hostname it gives: how a device with a private MAC is known.",
+    ),
+    f(
+        "networks.*.devices[].leave_alone",
+        "Leave alone",
+        Kind::Bool,
+        false,
+        "Nothing sentry or Claude does may touch it (told to Claude by name).",
+    ),
+    f(
+        "networks.*.devices[].private_mac",
+        "Private MAC",
+        Kind::Bool,
+        false,
+        "It uses a private (randomised) MAC: known by `hostname` instead.",
+    ),
+    f(
+        "networks.*.thresholds",
+        "Thresholds",
+        Kind::Section,
+        false,
+        "When the Dashboard and the audit call something high, soon or old.",
+    ),
+    f(
+        "networks.*.thresholds.load",
+        "Load",
+        Kind::Number,
+        false,
+        "The 1-minute load that counts as high (2.0).",
+    ),
+    f(
+        "networks.*.thresholds.mem_pct",
+        "Memory",
+        Kind::Number,
+        false,
+        "Memory in use, percent (85).",
+    ),
+    f(
+        "networks.*.thresholds.cert_days",
+        "Certificate days",
+        Kind::Number,
+        false,
+        "The web interface's certificate: days left that count as soon (21).",
+    ),
+    f(
+        "networks.*.thresholds.backup_age",
+        "Backup age",
+        Kind::Duration,
+        false,
+        "A config backup older than this is due (30d).",
+    ),
+    f(
+        "networks.*.backup",
+        "Backups",
+        Kind::Section,
+        true,
+        "Encrypted config backups (`sentry-network backup`, the config-backup workflow).",
+    ),
+    f(
+        "networks.*.backup.recipients",
+        "Backup recipients",
+        Kind::List,
+        true,
+        "Who can decrypt a backup: age recipients (`age1…`), or files holding one a line. sentry never has the secret key; `sentry-network backup key <file>` makes one. Until one is set, no backup is made.",
+    ),
+    f(
+        "networks.*.backup.keep",
+        "Backups kept",
+        Kind::Number,
+        false,
+        "How many of the newest backups are kept, plus each month's first for a year (12).",
+    ),
+    f(
+        "networks.*.maintenance",
+        "Maintenance",
+        Kind::Section,
+        false,
+        "What is kept up to date, and how often a routine workflow runs.",
+    ),
+    f(
+        "networks.*.maintenance.items",
+        "Items",
+        Kind::Records,
+        false,
+        "The router's firmware, its packages, its config backup.",
+    ),
+    f(
+        "networks.*.maintenance.items[].id",
+        "Id",
+        Kind::Text,
+        false,
+        "A short name for it, unique on this network.",
+    ),
+    f(
+        "networks.*.maintenance.items[].kind",
+        "Kind",
+        Kind::Choice(&["firmware", "packages", "backup"]),
+        false,
+        "firmware, packages or backup.",
+    ),
+    f(
+        "networks.*.maintenance.cadence",
+        "How often",
+        Kind::Records,
+        true,
+        "How often a routine workflow should run.",
+    ),
+    f(
+        "networks.*.maintenance.cadence[].workflow",
+        "Workflow",
+        Kind::Text,
+        true,
+        "The workflow (`config-backup`, `package-update`).",
+    ),
+    f(
+        "networks.*.maintenance.cadence[].every",
+        "Every",
+        Kind::Duration,
+        true,
+        "Recommended when it last ran longer ago than this.",
+    ),
+    f(
+        "networks.*.notes",
+        "Notes",
+        Kind::List,
+        true,
+        "Local files Claude may read when planning or reviewing (runbooks, notes).",
+    ),
+    f(
+        "networks.*.claude",
+        "Claude",
+        Kind::Section,
+        true,
+        "What Claude may see.",
+    ),
+    f(
+        "networks.*.claude.share_wan_address",
+        "Share the WAN address",
+        Kind::Bool,
+        true,
+        "Claude may see the WAN address (off: it is scrubbed from what's sent).",
+    ),
+    f(
+        "networks.*.guard",
+        "Guard",
+        Kind::Section,
+        false,
+        "The guard around a change to the configs the network is reached through.",
+    ),
+    f(
+        "networks.*.guard.window",
+        "Guard window",
+        Kind::Number,
+        false,
+        "Seconds the router waits for the change to be confirmed before it takes it back by itself (300; 5–3600).",
+    ),
+];
 
 /// Parse the file's text; unknown keys come back as warnings.
 pub fn parse(text: &str) -> Result<(NetworkFile, Vec<String>), String> {
@@ -496,6 +806,165 @@ mod tests {
 
     const EXAMPLE: &str = include_str!("../../../assets/network_config.example.yaml");
 
+    /// Every field at something other than its default, with names and values a YAML file has
+    /// to quote.
+    pub(crate) fn full() -> NetworkFile {
+        let n = Network {
+            router: RouterCfg {
+                ssh: Some("root@192.0.2.1".into()),
+                kind: RouterKind::Openwrt,
+            },
+            expect: Expect {
+                zones: [
+                    ("lan".to_string(), vec!["lan".to_string()]),
+                    (
+                        "wan".to_string(),
+                        vec!["wan".to_string(), "wan6".to_string()],
+                    ),
+                    ("yes".to_string(), vec![]),
+                ]
+                .into(),
+                forwards: vec![
+                    Forward {
+                        name: "web".into(),
+                        proto: "udp".into(),
+                        port: Ports { from: 443, to: 443 },
+                        to: "192.0.2.10".into(),
+                    },
+                    Forward {
+                        name: "game it's".into(),
+                        proto: "tcp".into(),
+                        port: Ports {
+                            from: 8000,
+                            to: 8010,
+                        },
+                        to: "2001:db8::10".into(),
+                    },
+                ],
+                listeners: vec!["tcp:22@lan".into()],
+                services: vec!["odhcpd".into()],
+            },
+            devices: vec![
+                Device {
+                    name: Some("1.10".into()),
+                    mac: Some("02:00:5e:00:53:01".into()),
+                    hostname: Some("nas".into()),
+                    leave_alone: true,
+                    private_mac: true,
+                },
+                Device {
+                    hostname: Some("*phone".into()),
+                    ..Default::default()
+                },
+            ],
+            thresholds: Thresholds {
+                load: 3.5,
+                mem_pct: 70.0,
+                cert_days: 7,
+                backup_age: Dur::secs(7 * 86400),
+            },
+            backup: Backup {
+                recipients: vec![
+                    "age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq".into(),
+                ],
+                keep: 3,
+            },
+            maintenance: Maintenance {
+                items: vec![
+                    Item {
+                        id: "firmware".into(),
+                        kind: ItemKind::Firmware,
+                    },
+                    Item {
+                        id: "pkgs".into(),
+                        kind: ItemKind::Packages,
+                    },
+                    Item {
+                        id: "backup".into(),
+                        kind: ItemKind::Backup,
+                    },
+                ],
+                cadence: vec![Cadence {
+                    workflow: "config-backup".into(),
+                    every: Dur::secs(30 * 86400),
+                }],
+            },
+            notes: vec!["~/notes/network.md".into()],
+            claude: ClaudeCfg {
+                share_wan_address: true,
+            },
+            guard: GuardCfg { window: 60 },
+        };
+        NetworkFile {
+            networks: [
+                ("home".to_string(), n),
+                ("lab-2".to_string(), Network::default()),
+                (
+                    "no".to_string(),
+                    Network {
+                        expect: Expect {
+                            zones: [("lan".to_string(), vec![])].into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        }
+    }
+
+    fn round_trip(f: &NetworkFile) -> String {
+        let text = sentry_core::cfg::render(f).unwrap_or_else(|e| panic!("{e}"));
+        let (back, w) = parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert!(w.is_empty(), "{w:?}\n{text}");
+        assert_eq!(&back, f, "{text}");
+        text
+    }
+
+    #[test]
+    fn what_sentry_writes_reads_back_as_what_it_was() {
+        round_trip(&NetworkFile::default());
+        let (example, _) = parse(EXAMPLE).unwrap();
+        let text = round_trip(&example);
+        let (back, _) = parse(&text).unwrap();
+        for (n, net) in &back.networks {
+            assert!(lint(n, net).is_empty(), "{:?}", lint(n, net));
+        }
+        insta::assert_snapshot!("example_rendered", text);
+        let text = round_trip(&full());
+        insta::assert_snapshot!("full_rendered", text);
+    }
+
+    #[test]
+    fn every_setting_has_its_field() {
+        let tree = sentry_core::cfg::Value::of(&full()).unwrap();
+        assert_eq!(
+            sentry_core::cfg::fields::uncovered(FIELDS, &tree),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            sentry_core::cfg::fields::unused(FIELDS, &tree),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn every_diff_applies() {
+        let (example, _) = parse(EXAMPLE).unwrap();
+        for (a, b) in [
+            (NetworkFile::default(), full()),
+            (full(), example.clone()),
+            (example, NetworkFile::default()),
+        ] {
+            let mut x = a.clone();
+            for c in sentry_core::cfg::diff(&a, &b).unwrap() {
+                sentry_core::cfg::apply(&mut x, &c).unwrap_or_else(|e| panic!("{e}"));
+            }
+            assert_eq!(x, b);
+        }
+    }
+
     #[test]
     fn example_parses_whole_and_lints_clean() {
         let (f, warnings) = parse(EXAMPLE).unwrap();
@@ -547,6 +1016,14 @@ mod tests {
         assert_eq!(n.maintenance.cadence[1].every, Dur::secs(60 * 86400));
         assert_eq!(n.notes, ["~/notes/network.md"]);
         assert!(!n.claude.share_wan_address);
+    }
+
+    /// What the sample parses to, fixed before sentry could write the file: rendering it must
+    /// never change what a file a user wrote by hand means.
+    #[test]
+    fn the_example_parses_to_what_it_always_did() {
+        let (f, _) = parse(EXAMPLE).unwrap();
+        insta::assert_snapshot!(serde_json::to_string_pretty(&f).unwrap());
     }
 
     #[test]

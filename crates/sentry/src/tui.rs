@@ -25,10 +25,10 @@ const LOCAL: &str = "local";
 /// What the window opens: the targets' names as `[targets]` spells them (`local`,
 /// `srv:<name>`, `net:<name>`), in the strip's order, which of them has the window first, and
 /// what to say once it's up.
-struct Plan {
+pub(crate) struct Plan {
     targets: Vec<String>,
     focus: usize,
-    warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 /// `server`: `sentry-server [name]` was called (the name, if given). The servers come from
@@ -47,7 +47,7 @@ fn plan(
 }
 
 /// The same with the networks: this machine first, then the servers, then the networks.
-fn plan_all(
+pub(crate) fn plan_all(
     cfg: &Config,
     file: Option<&servers::ServerFile>,
     nets: Option<&networks::NetworkFile>,
@@ -103,41 +103,26 @@ pub fn run(open: Open) -> u8 {
         Open::Server(_) => "sentry-server",
         Open::Network(_) => "sentry-network",
     };
-    let (cfg, mut warnings) = Config::load();
-    let file = match servers::load() {
-        Ok((f, w)) => {
-            w.iter().for_each(|w| eprintln!("{w}"));
-            Some(f)
-        }
-        // `sentry-server` needs the file; without one there are just no servers.
-        Err(e) if matches!(open, Open::Server(_)) => {
+    // Every file read and checked offline: what's wrong is the window's to show
+    // (`Win.config_problems`), and its first is said once the window is up.
+    let crate::cfgcmd::Files {
+        app: cfg,
+        servers: file,
+        servers_err,
+        networks: nets,
+        networks_err,
+        problems,
+        ..
+    } = crate::cfgcmd::read();
+    // `sentry-server` needs its file, `sentry-network` its own; for `sentry` a file that
+    // isn't there just means there are none.
+    match (open, &servers_err, &networks_err) {
+        (Open::Server(_), Some(e), _) | (Open::Network(_), _, Some(e)) => {
             eprintln!("{e}");
             return 1;
         }
-        Err(e) => {
-            if servers::path().exists() {
-                warnings.push(e);
-            }
-            None
-        }
-    };
-    let nets = match networks::load() {
-        Ok((f, w)) => {
-            w.iter().for_each(|w| eprintln!("{w}"));
-            Some(f)
-        }
-        // `sentry-network` needs the file; without one there are just no networks.
-        Err(e) if matches!(open, Open::Network(_)) => {
-            eprintln!("{e}");
-            return 1;
-        }
-        Err(e) => {
-            if networks::path().exists() {
-                warnings.push(e);
-            }
-            None
-        }
-    };
+        _ => {}
+    }
     let plan = match plan_all(&cfg, file.as_ref(), nets.as_ref(), open) {
         Ok(p) => p,
         Err(e) => {
@@ -148,7 +133,6 @@ pub fn run(open: Open) -> u8 {
     if plan.targets.iter().any(|t| t == LOCAL) {
         crate::init_logging();
     }
-    warnings.extend(plan.warnings.iter().cloned());
     let r = sentry_core::tui::run_ui(|tx| {
         let mut app: Option<sentry_app::App> = None;
         for t in &plan.targets {
@@ -189,10 +173,12 @@ pub fn run(open: Open) -> u8 {
         app.focus_at_start(plan.focus);
         // The security audit is the window's: every target's facts, read side by side.
         app.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
-        // What's wrong in a config file, said once the TUI is up (ahead of a `[keys]` warning).
-        if let Some(w) = warnings.into_iter().next() {
+        // What's wrong in the config files, said once the TUI is up (ahead of a `[keys]`
+        // warning, which is among them): the first, how many, and where to see them all.
+        if let Some(w) = sentry_app::cfgarea::toast(&problems) {
             app.warn_at_start(w);
         }
+        app.win.config_problems = problems.clone();
         app
     });
     match r {

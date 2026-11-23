@@ -92,6 +92,9 @@ pub struct Win {
     pub(crate) outbox: std::collections::VecDeque<(TargetId, crate::system::Parcel)>,
     /// The security audit: one for every target (`crate::secaudit`).
     pub sec: crate::secaudit::Sec,
+    /// What is wrong in the config files, found offline when the window started (every
+    /// file's lint, unknown keys, files that don't parse): what the Config area shows.
+    pub config_problems: Vec<crate::cfgarea::Problem>,
 }
 
 impl Win {
@@ -161,6 +164,7 @@ impl App {
                 system: Vec::new(),
                 outbox: Default::default(),
                 sec: Default::default(),
+                config_problems: Vec::new(),
             },
             tx,
             seq: Arc::new(AtomicU64::new(0)),

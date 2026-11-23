@@ -227,12 +227,13 @@ Lint (`sentry workflow lint`) checks for unknown fields, duplicate ids, undefine
 `sentry-server` is the same program under a second name (`sentry server …` is the same thing), for a server you reach with `ssh`: a Debian or Ubuntu box running systemd services, timers and docker compose. It follows the same rules as `sentry`:
 - **Nothing is installed on the server.** It runs read-only commands through one multiplexed ssh connection while you have it open. That connection closes by itself 15 s after the last command.
 - **Nothing changes without your key**: a confirm box showing the exact command, a workflow's confirm step, or the plan you approve in an apply session.
-- **The server is described in one file you write,** `~/.config/sentry/server_config.yaml` ([sample](assets/server_config.example.yaml)). sentry-server never rewrites it.
+- **The server is described in one file,** `~/.config/sentry/server_config.yaml` ([sample](assets/server_config.example.yaml)): yours to edit, and sentry writes it only when you add something (`init --write`), from what it says, keeping the file before as `server_config.yaml.bak-<time>` (the newest 5). Comments you wrote in it are not kept.
 
 **Setting up a server:**
 
 ```sh
-sentry-server init myserver --write   # look around (read-only) and draft its entry
+sentry-server init myserver           # look around (read-only) and print its entry, with notes
+sentry-server init myserver --write   # the same, added to the file (a name that's there is refused)
 $EDITOR ~/.config/sentry/server_config.yaml
 sentry-server lint                     # the file, and that what it names exists there
 sentry-server check                    # connection, sudo, tools, and each sudo entry
@@ -296,7 +297,7 @@ Headless: `sentry-server audit`, `record [server]` (metrics every 10 s into the 
 `sentry-network` is the same program under a third name (`sentry network …` is the same thing), for the router of a network you run: OpenWrt, reached with `ssh` as root (a GL.iNet GL-MT6000 on OpenWrt 25.12 is what it was built against). The same rules hold: nothing is installed on the router and nothing runs there between two looks; sentry looks, compares with what you said to expect, and tells you. Built so far: the Dashboard, who is on the network, the firewall and what listens, an audit with its findings on Maintenance, the firmware and the packages against what's released, encrypted config backups, its workflows (`config-backup`, `package-update`, `guarded-change`; `firmware-upgrade` as a draft), Claude through a gateway, and History. It changes the router only through its workflows and the guard (below), and Claude reads it only through a gateway that hides what is private.
 
 ```sh
-sentry-network init myrouter     # look at the router (read-only) and write a starter network_config.yaml
+sentry-network init myrouter     # look at the router (read-only) and add it to network_config.yaml
 sentry-network lint              # the file, checked without contacting the router
 sentry-network check             # reachable as root? the release and board, the ports, the uplink, the tools
 sentry-network audit             # what needs attention, written to a report
@@ -304,7 +305,7 @@ sentry-network backup            # back the config up, encrypted to backup.recip
 sentry-network                   # the TUI (or: sentry-network home)
 ```
 
-**The network is described in one file you write,** `~/.config/sentry/network_config.yaml` ([sample](assets/network_config.example.yaml)): the router's ssh name, what the firewall should look like (zones, port forwards, what may listen), the devices you know (by MAC, or by hostname for one with a private MAC), thresholds, who can decrypt a config backup, and what maintenance to keep up. `init` drafts it from what the router reports, with every device holding a lease listed for you to name, and never touches a file that is already there. sentry never rewrites it. `notes` are the files Claude may read; `claude: { share_wan_address: true }` leaves the uplink's address in what it is shown; `guard: { window: 300 }` is how long the router waits before it takes an unconfirmed change back.
+**The network is described in one file you write,** `~/.config/sentry/network_config.yaml` ([sample](assets/network_config.example.yaml)): the router's ssh name, what the firewall should look like (zones, port forwards, what may listen), the devices you know (by MAC, or by hostname for one with a private MAC), thresholds, who can decrypt a config backup, and what maintenance to keep up. `init` adds a network to it (the file is made when it isn't there; `--name lab` for a second network) from what the router reports, with every device holding a lease listed for you to name, and prints its board, ports and anything it couldn't take as notes; a name the file has already is left alone. When sentry writes the file it writes it whole from what it says, keeping the file before as `network_config.yaml.bak-<time>` (the newest 5): comments you wrote in it are not kept. `notes` are the files Claude may read; `claude: { share_wan_address: true }` leaves the uplink's address in what it is shown; `guard: { window: 300 }` is how long the router waits before it takes an unconfirmed change back.
 
 Once a network is configured, `sentry` shows it in the target strip after the servers (`F3`, `}`, or `:net home`); `sentry-network [name]` opens the same window on it. Nothing is read from a router until its target first has the window.
 
@@ -420,7 +421,9 @@ outside = "ssh vps 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} 
 - `[keys]`: rebinds, for example `quit = "Q"`, `"screen.history" = "F9"` or `"target.next" = "C-n"`.
 - `[targets] show = ["local", "srv:myserver", "net:home"]`: which targets the window opens, in the strip's order (default: this machine, then every server, then every network).
 
-Sentry never writes `config.toml`. What you decide in the TUI goes to machine-written files next to it:
+`sentry config check` lists what's wrong in all three files without contacting any host (the window checks the same at start and says how many problems there are), `sentry config show [app|servers|networks]` prints each as sentry would write it, and `sentry config explain [<path>]` says what a setting is (`sentry config explain servers.myserver.timers`), or lists them all.
+
+What you decide in the TUI goes to machine-written files next to it:
 - `baseline.toml`: listeners and findings marked expected.
 - `tasks.toml`: tasks taken from reviews, and the cadences changed with `e` (or turned off with `x`).
 
@@ -433,6 +436,7 @@ Sentry never writes `config.toml`. What you decide in the TUI goes to machine-wr
 - `docs/spec.md`: the build spec.
 - `docs/spec-addendum.md`: binding amendments made after probing the real machine.
 - `docs/design/m3-m7.md`: design for the audit, jobs, workflows and recorder.
+- `docs/design/config.md`: design for `sentry config` (one writer of the config files, a setup flow and a Config tab).
 - `docs/design/sentry-tui.dc.html`: the visual target.
 
 ## License
