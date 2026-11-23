@@ -1,0 +1,48 @@
+---
+source: crates/sentry-server/src/init.rs
+expression: "format!(\"{text}\\n{}\", d.note_lines().join(\"\\n\"))"
+---
+# sentry's configuration: the servers sentry watches over ssh.
+# Written by sentry: change it in the Config tab or with `sentry config`. Editing it
+# in $EDITOR is fine, but comments are not kept: the next save writes it again
+# from what it says, keeping the file before beside it (server_config.yaml.bak-<time>).
+
+servers:
+  myserver:
+    ssh: admin@myserver.example
+    sudo:
+      - docker ps
+      - docker inspect
+      - docker logs
+      - docker compose ls
+      - docker stats
+      - smartctl
+      - journalctl
+      - ss -tulpn
+    disks:
+      - mount: /
+      - mount: /srv/data
+    smart:
+      - /dev/sda
+    services:
+      - app.service
+      - docker.service
+    timers:
+      - unit: backup.timer
+        max_age: 27h
+      - unit: app-sync.timer
+        max_age: 15m
+    compose:
+      - name: stack
+        file: /home/admin/stack/compose.yaml
+    listeners:
+      - "*:22/*"
+      - "*:443/*"
+      - 127.0.0.1:*/*
+
+· Drafted by `sentry-server init` from admin@myserver.example (Debian GNU/Linux 12 (bookworm)).
+· Review every part: it's a starting point, not a verdict.
+· servers.myserver.sudo: read-only commands run as `sudo -n` (sudo works without a password here).
+· servers.myserver.services: the running services installed by hand, plus well-known daemons.
+· servers.myserver.timers: timers installed by hand; max_age is one period plus slack.
+· servers.myserver.listeners: everything listening now. Remove what you didn't expect: it becomes a finding.

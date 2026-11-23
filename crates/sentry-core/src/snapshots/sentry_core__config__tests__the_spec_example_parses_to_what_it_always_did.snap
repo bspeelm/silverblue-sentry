@@ -1,0 +1,95 @@
+---
+source: crates/sentry-core/src/config.rs
+expression: "serde_json::to_string_pretty(&c).unwrap()"
+---
+{
+  "ui": {
+    "dashboard_hz": 1.0,
+    "processes_hz": 2.0,
+    "terminal": null
+  },
+  "cache": {
+    "update_check_max_age": "1d"
+  },
+  "audit": {
+    "retention_months": 12,
+    "stale_container_days": 30,
+    "cache_warn_mb": 2048,
+    "outside": null
+  },
+  "flatpak": {
+    "flag_filesystems": [
+      "host",
+      "home",
+      "host-os"
+    ],
+    "flag_talk_names": [
+      "org.freedesktop.Flatpak"
+    ],
+    "trusted_origins": [
+      "flathub",
+      "fedora"
+    ]
+  },
+  "jobs": {
+    "audit": {
+      "suggested_every": "30d"
+    },
+    "cleanup-flatpak": {
+      "suggested_every": "30d"
+    },
+    "cleanup-ostree": {
+      "suggested_every": "30d"
+    },
+    "cleanup-podman": {
+      "suggested_every": "30d"
+    },
+    "update-check": {
+      "suggested_every": "7d"
+    }
+  },
+  "cleanup": {
+    "cache": {
+      "delete_dirs": []
+    }
+  },
+  "recorder": {
+    "interval": "10s",
+    "retention_hours": 72,
+    "max_mb": 50,
+    "alerts": [
+      "cpu>90%:5m",
+      "disk_free<5%",
+      "new_listener"
+    ]
+  },
+  "baseline": {
+    "listeners": [
+      "127.0.0.1:631/cupsd"
+    ],
+    "findings": []
+  },
+  "keys": {},
+  "retention": {
+    "log_months": 12,
+    "log_keep": 20,
+    "runs_per_workflow": 10,
+    "done_months": 12,
+    "reviews": 10,
+    "reports": 100
+  },
+  "maintenance": {
+    "notes": []
+  },
+  "review": {
+    "at_start": true,
+    "after_run": true
+  },
+  "targets": {
+    "show": null
+  },
+  "agent": {
+    "kind": "claude-code",
+    "command": "claude"
+  }
+}

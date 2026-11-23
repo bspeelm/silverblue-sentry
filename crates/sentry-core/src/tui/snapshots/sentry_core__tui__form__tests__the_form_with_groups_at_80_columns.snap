@@ -1,0 +1,28 @@
+---
+source: crates/sentry-core/src/tui/form.rs
+expression: "drawn(&f, 80, 24)"
+---
+┌ myserver · server ───────────────────────────────────────────────────────────┐
+│  Who it is                                                                   │
+│    ssh       admin@192.0.2.10                                                │
+│    Services  app.service                                                     │
+│                                                                              │
+│  More settings · Enter opens a group                                         │
+│  ▸ Thresholds    1 set         When memory, load or temperature is high.     │
+│  ▾ Tracked item  all defaults  What is kept at a deliberate version.         │
+│      Review by  (not set)                                                    │
+│      Why held   (not set)                                                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Review by ───────────────────────────────────────────────────────────────────┐
+│ date (YYYY-MM-DD), or empty: not set                                         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

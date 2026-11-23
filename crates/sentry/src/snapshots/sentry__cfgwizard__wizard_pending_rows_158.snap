@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: s
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config*    nothing is written before the save box                     ● 4 not saved   Mon 26 Oct 12:00
+ 1 Overview 4*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ myserver · Timers ────────────────────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ server_config.yaml · servers.myserver.timers                                      │
+│  ● myserver         server                                            ││                                                                                   │
+│  + add a system…                                                      ││ before  unit = backup.timer, max_age = 26h                                        │
+│                                                                       ││ after   unit = backup.timer, max_age = 30h                                        │
+│                                                                       ││                                                                                   │
+│                                                                       ││ Proposed by Claude.                                                               │
+│                                                                       ││ Its reason: it runs daily: 26h leaves little slack                                │
+│                                                                       ││                                                                                   │
+│                                                                       ││ Timers whose last run must be recent and successful.                              │
+│                                                                       ││                                                                                   │
+│                                                                       ││ In the next save · Space leaves it out · u takes it back                          │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · 4 changes ──────────────────────────────────────────────────┐│                                                                                   │
+│  [x] this machine  Review at start  off                               ││                                                                                   │
+│  [x] myserver  Timers  backup.timer · max_age 26h → 30h  (Claude)     ││                                                                                   │
+│  [x] this machine  Review after a run  on → off  (Claude)             ││                                                                                   │
+│  [x] myserver  Services  + web.service  (Claude)                      ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  open   Space  tick   x  remove   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

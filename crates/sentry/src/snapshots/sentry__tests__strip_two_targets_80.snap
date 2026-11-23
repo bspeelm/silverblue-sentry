@@ -2,4 +2,4 @@
 source: crates/sentry/src/tests.rs
 expression: "top(&mut a, 80)"
 ---
- sentry   F1 silverblue 44.1   F2 myserver            ○ idle   Mon 26 Oct 12:00
+ sentry   F1 silverblue 44.1   F2 myserver   F3 config                   ○ idle

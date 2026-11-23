@@ -25,3 +25,4 @@ testing = ["sentry-core/testing"]
 
 [dev-dependencies]
 sentry-core = { workspace = true, features = ["testing"] }
+insta.workspace = true

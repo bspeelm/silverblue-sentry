@@ -63,6 +63,11 @@ pub struct Chat {
     /// sentry carries out the changing commands the user allows (a session on this machine;
     /// a chat only explains, and hands them to a session).
     pub acts: bool,
+    /// It can't be carried on in Claude Code (the Config tab's wizard: outside sentry it
+    /// would have tools it must not have).
+    pub stays_here: bool,
+    /// The brief is shown whole before it is sent (Tab, where the owner takes it).
+    pub brief_open: bool,
 }
 
 /// A file's contents, hashed (0: it doesn't exist).
@@ -98,6 +103,8 @@ impl Chat {
             tools: Default::default(),
             requests: Vec::new(),
             acts: false,
+            stays_here: false,
+            brief_open: false,
             grants: Vec::new(),
             watched: Vec::new(),
             pending: false,
@@ -409,7 +416,7 @@ pub fn draw(f: &mut Frame, area: Rect, t: &Theme, c: &Chat) {
     let w = log.width as usize;
     let mut lines = entry_lines(c, t, w, false, &|_| Vec::new());
     if c.pending {
-        lines.extend(brief_lines(c, t, w, false));
+        lines.extend(brief_lines(c, t, w, c.brief_open));
     }
     if c.running() {
         let s = c.started.map_or(0, |s| s.elapsed().as_secs());
@@ -610,6 +617,20 @@ pub fn shown_input(input: &str, width: usize) -> String {
 
 /// The key line: letters act only while the input line is empty (otherwise they're typed).
 pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
+    if c.pending && c.stays_here {
+        return vec![
+            ("Enter", "send"),
+            (
+                "Tab",
+                if c.brief_open {
+                    "fold what is sent"
+                } else {
+                    "all that is sent"
+                },
+            ),
+            ("Esc", "cancel"),
+        ];
+    }
     if c.pending {
         return vec![("Enter", "send"), ("Esc", "cancel")];
     }
@@ -628,7 +649,7 @@ pub fn keys(c: &Chat) -> Vec<(&'static str, &'static str)> {
     if idle && !c.requests.is_empty() {
         k.push(("g", "grant files"));
     }
-    if idle && c.session.is_some() {
+    if idle && c.session.is_some() && !c.stays_here {
         k.push(("C", "continue in Claude Code"));
     }
     k.push((

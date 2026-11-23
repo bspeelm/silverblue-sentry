@@ -1,0 +1,24 @@
+---
+source: crates/sentry-core/src/tui/form.rs
+expression: "drawn(&f, 158, 20)"
+---
+┌ Window · 1 changed ─────────────────────────────────────────────────────────────────┐┌ Shown, in order ────────────────────────────────────────────────────┐
+│  Agent                                                                              ││ list                                                                │
+│  * Command          claude                                                          ││                                                                     │
+│    Review at start  [x] yes                                                         ││ The targets shown, in the strip's order.                            │
+│    Kind             claude-code                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Records                                                                            ││                                                                     │
+│    Log (months)     12                                                              ││                                                                     │
+│      ! retention: log_months must be at least 1                                     ││                                                                     │
+│    Interval         10s                                                             ││                                                                     │
+│    Shown, in order  local, srv:myserver                                             ││                                                                     │
+│                      1  local                                                       ││                                                                     │
+│                      2  net:hom▏e                                                   ││                                                                     │
+│                      3  srv:myserver                                                ││                                                                     │
+│    Keys             quit = Q                                                        ││                                                                     │
+│    Timers           2 entries                                                       ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘

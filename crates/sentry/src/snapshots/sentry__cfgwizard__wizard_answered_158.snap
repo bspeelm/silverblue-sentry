@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config*    nothing is written before the save box                     ● 4 not saved   Mon 26 Oct 12:00
+ 1 Overview 4*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+   ┌ Claude · setup helper ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │ you    What would you do next here?                                                                                                                  │
+   │ claude The backup timer has no slack, and web.service isn't watched.                                                                                 │
+   │                                                                                                                                                      │
+   │        proposed: myserver · Timers · backup.timer · max_age 26h → 30h                                                                                │
+   │        proposed: this machine · Review after a run · on → off                                                                                        │
+   │        proposed: myserver · Services · + web.service                                                                                                 │
+   │        dropped: set servers.myserver.nope · no such setting (`sentry config explain` lists them)                                                     │
+   │        dropped: set servers.myserver.timers[0].max_age · bad number in "soon"                                                                        │
+   │        dropped: set agent.command · which program sentry starts as its agent is yours alone to say                                                   │
+   │        dropped: set agent.kind · which program sentry starts as its agent is yours alone to say                                                      │
+   │        dropped: set review.at_start · you changed this yourself                                                                                      │
+   │        dropped: add servers · adding a system goes through discovery: `+ add a system` in the Overview                                               │
+   │        dropped: remove servers.myserver · removing a system is yours: x on it in the Overview                                                        │
+   │        3 changes are in Pending, ticked and marked (Claude): Space on one in the Overview unticks it · s saves · nothing is written before that      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │                                                                                                                                                      │
+   │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+   │ › ▏                                                                                                                                                  │
+   │  Enter  follow-up   Esc  close   ↑↓ PgUp/Dn  scroll                                                                                                  │
+   └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  follow-up   Esc  close   ↑↓ PgUp/Dn  scroll

@@ -2,9 +2,11 @@
 //! what a host is to it, [`app`] the window, [`slot`] one target with everything that belongs
 //! to it and the flows written once for all of them, [`shared`] a target's records, [`effect`]
 //! what keys and boxes ask for, [`run`] a workflow run as the app sees it; [`remote`] is the
-//! pieces of a host reached over ssh, used by sentry-server and by whatever else is one.
+//! pieces of a host reached over ssh, used by sentry-server and by whatever else is one;
+//! [`cfgarea`] what the window knows of its config files.
 
 pub mod app;
+pub mod cfgarea;
 pub mod effect;
 pub mod remote;
 #[cfg(any(test, feature = "testing"))]

@@ -2,7 +2,9 @@ use super::*;
 
 impl Slot {
     pub(crate) fn start(&mut self, w: &mut Win, now: Instant) {
-        let cfg = (!w.offline).then(|| sentry_core::config::Config::load().0);
+        // (`config.toml` as the window has it now: read at start, and again when the
+        // Config area saves it.)
+        let cfg = (!w.offline).then(|| w.cfg.clone());
         if cfg.is_some() {
             // Before a target moves old files of its own: they may hold what these do now.
             self.shared.later = sentry_core::maint::later::load(&self.scope);
@@ -829,6 +831,8 @@ impl Slot {
                 Some(n) => self.wf_start(w, n, now),
                 None => self.enter(w, ScreenId::Upgrade, now),
             },
+            // The Config tab is the window's, whatever a target calls its screens.
+            (Some(crate::app::CONFIG_WORD), None) => w.target_cmd = Some(c.to_string()),
             // A screen, by sentry's names (and the ones the tabs had).
             (Some(name), None) => match self.target.ident().screens.from_name(name) {
                 Some(id) => self.enter(w, id, now),

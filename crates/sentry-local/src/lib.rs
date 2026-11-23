@@ -5,6 +5,7 @@
 pub use sentry_core::{apply, baseline, cache, claude, config, exec, finding, fmt, paths};
 
 pub mod audit;
+pub mod cfgkind;
 pub mod checks;
 pub mod collectors;
 pub mod jobs;

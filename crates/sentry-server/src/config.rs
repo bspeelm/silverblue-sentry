@@ -1,7 +1,8 @@
 //! `~/.config/sentry/server_config.yaml`: the servers `sentry-server` knows and what "healthy"
-//! means for each. The user writes it; sentry-server never rewrites it, so comments survive.
-//! Whatever sentry-server records itself (findings marked expected) goes in
-//! `servers/<name>.baseline.toml` next to it.
+//! means for each. What you said: written only through core's `cfg` (`sentry-server init
+//! --write`, `sentry config`), which keeps the file before beside it; a hand-edited file's
+//! comments are not kept on the next save. Whatever sentry-server records itself (findings
+//! marked expected) goes in `servers/<name>/baseline.toml` beside it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,16 +10,16 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use sentry_core::cfg::{ConfigFile, Field, FileId, Kind};
 use sentry_core::config::Dur;
-use sentry_core::paths;
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerFile {
     pub servers: BTreeMap<String, Server>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Server {
     /// What `ssh` connects to (an alias from `~/.ssh/config`, or `user@host`). Default: the
@@ -155,6 +156,17 @@ fn crit_pct() -> u8 {
     95
 }
 
+impl Server {
+    /// A disk's `warn` when the file doesn't say.
+    pub fn default_warn() -> u8 {
+        warn_pct()
+    }
+    /// A disk's `crit` when the file doesn't say.
+    pub fn default_crit() -> u8 {
+        crit_pct()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TimerRule {
     pub unit: String,
@@ -169,7 +181,7 @@ pub struct Compose {
     pub file: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Containers {
     /// Container names (globs) that may be stopped.
@@ -187,7 +199,7 @@ impl Default for Containers {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Thresholds {
     /// Memory used, percent.
@@ -233,6 +245,413 @@ const WRITE_WORDS: &[&str] = &[
     "update", "edit", "set", "enable", "disable", "mask", "reload",
 ];
 
+const fn f(
+    path: &'static str,
+    label: &'static str,
+    kind: Kind,
+    common: bool,
+    help: &'static str,
+) -> Field {
+    Field {
+        path,
+        label,
+        help,
+        kind,
+        common,
+    }
+}
+
+const RISKS: &[&str] = &["low", "medium", "high"];
+
+/// Every setting of server_config.yaml (`sentry config explain`; the forms).
+pub const FIELDS: &[Field] = &[
+    f(
+        "servers",
+        "Servers",
+        Kind::Map,
+        true,
+        "Each entry is one server sentry watches over ssh, by its name.",
+    ),
+    f(
+        "servers.*.ssh",
+        "ssh",
+        Kind::Text,
+        true,
+        "What `ssh` connects to (an alias from ~/.ssh/config, or user@host). Default: the server's name. Key-based login is required.",
+    ),
+    f(
+        "servers.*.sudo",
+        "sudo allowlist",
+        Kind::List,
+        true,
+        "Read-only commands run as `sudo -n …`, as argv prefixes (`docker ps` allows `docker ps -a`, not `docker rm`). Nothing else ever gets sudo while monitoring; write commands are refused here.",
+    ),
+    f(
+        "servers.*.disks",
+        "Disks",
+        Kind::Records,
+        true,
+        "Filesystems to watch, percent used.",
+    ),
+    f(
+        "servers.*.disks[].mount",
+        "Mount",
+        Kind::Text,
+        true,
+        "The mount point (an absolute path).",
+    ),
+    f(
+        "servers.*.disks[].warn",
+        "Warn at",
+        Kind::Number,
+        true,
+        "Percent used from which it is a warning (85).",
+    ),
+    f(
+        "servers.*.disks[].crit",
+        "Critical at",
+        Kind::Number,
+        true,
+        "Percent used from which it is critical (95).",
+    ),
+    f(
+        "servers.*.smart",
+        "SMART",
+        Kind::List,
+        true,
+        "Devices for SMART health (/dev/sda), read with `smartctl -n standby` so sleeping disks stay asleep.",
+    ),
+    f(
+        "servers.*.services",
+        "Services",
+        Kind::List,
+        true,
+        "Units that must be active.",
+    ),
+    f(
+        "servers.*.timers",
+        "Timers",
+        Kind::Records,
+        true,
+        "Timers whose last run must be recent and successful.",
+    ),
+    f(
+        "servers.*.timers[].unit",
+        "Unit",
+        Kind::Text,
+        true,
+        "The timer (`backup.timer`).",
+    ),
+    f(
+        "servers.*.timers[].max_age",
+        "Max age",
+        Kind::Duration,
+        true,
+        "The last successful run must be newer than this.",
+    ),
+    f(
+        "servers.*.compose",
+        "Compose projects",
+        Kind::Records,
+        true,
+        "Docker compose projects: status, health, pull/up from Containers.",
+    ),
+    f(
+        "servers.*.compose[].name",
+        "Name",
+        Kind::Text,
+        true,
+        "The project's name.",
+    ),
+    f(
+        "servers.*.compose[].file",
+        "File",
+        Kind::Text,
+        true,
+        "The compose file on the server (an absolute path).",
+    ),
+    f(
+        "servers.*.containers",
+        "Containers",
+        Kind::Section,
+        false,
+        "How containers are judged.",
+    ),
+    f(
+        "servers.*.containers.ignore",
+        "May be stopped",
+        Kind::List,
+        false,
+        "Container names (globs) that may be stopped.",
+    ),
+    f(
+        "servers.*.containers.restart_window",
+        "Restart window",
+        Kind::Duration,
+        false,
+        "A container started more recently than this counts as restarted (24h).",
+    ),
+    f(
+        "servers.*.listeners",
+        "Listeners",
+        Kind::List,
+        true,
+        "Expected listening sockets, `addr:port/process` with `*` globs (`*:443/*`). Anything else listening is a finding.",
+    ),
+    f(
+        "servers.*.findings",
+        "Expected findings",
+        Kind::List,
+        false,
+        "Finding ids that are expected here (globs allowed).",
+    ),
+    f(
+        "servers.*.thresholds",
+        "Thresholds",
+        Kind::Section,
+        false,
+        "When the Dashboard and the audit call something high.",
+    ),
+    f(
+        "servers.*.thresholds.mem",
+        "Memory",
+        Kind::Number,
+        false,
+        "Memory used, in percent, from which it counts as high (90).",
+    ),
+    f(
+        "servers.*.thresholds.load_per_core",
+        "Load per core",
+        Kind::Number,
+        false,
+        "The 1-minute load divided by the number of cores, from which it counts as high (2.0).",
+    ),
+    f(
+        "servers.*.thresholds.cpu_temp",
+        "CPU temperature",
+        Kind::Number,
+        false,
+        "The CPU temperature in °C from which it counts as high (85).",
+    ),
+    f(
+        "servers.*.thresholds.gpu_temp",
+        "GPU temperature",
+        Kind::Number,
+        false,
+        "The GPU temperature in °C from which it counts as high (83).",
+    ),
+    f(
+        "servers.*.actions",
+        "Actions",
+        Kind::Records,
+        false,
+        "Your own maintenance commands, offered behind a confirm box.",
+    ),
+    f(
+        "servers.*.actions[].id",
+        "Id",
+        Kind::Text,
+        false,
+        "A short name for it, unique on this server.",
+    ),
+    f(
+        "servers.*.actions[].title",
+        "Title",
+        Kind::Text,
+        false,
+        "What it is called in the window.",
+    ),
+    f(
+        "servers.*.actions[].run",
+        "Command",
+        Kind::Text,
+        false,
+        "Shell command run on the server.",
+    ),
+    f(
+        "servers.*.actions[].sudo",
+        "With sudo",
+        Kind::Bool,
+        false,
+        "Run it with sudo.",
+    ),
+    f(
+        "servers.*.actions[].risky",
+        "Risky",
+        Kind::Bool,
+        false,
+        "Destructive or hard to undo: shown in red.",
+    ),
+    f(
+        "servers.*.actions[].undo",
+        "Undo",
+        Kind::Text,
+        false,
+        "How to undo it, in words: said in its confirm box. Empty: nothing is said.",
+    ),
+    f(
+        "servers.*.maintenance",
+        "Maintenance",
+        Kind::Section,
+        true,
+        "What's pinned or held deliberately, and when to look at it again (Maintenance).",
+    ),
+    f(
+        "servers.*.maintenance.notes",
+        "Notes",
+        Kind::List,
+        true,
+        "Local files Claude may read when planning or reviewing (runbooks, notes).",
+    ),
+    f(
+        "servers.*.maintenance.items",
+        "Items",
+        Kind::Records,
+        true,
+        "Things kept at a deliberate version: an image, held packages, or an app on the host.",
+    ),
+    f(
+        "servers.*.maintenance.items[].id",
+        "Id",
+        Kind::Text,
+        true,
+        "A short name for it, unique on this server.",
+    ),
+    f(
+        "servers.*.maintenance.items[].image",
+        "Image",
+        Kind::Section,
+        false,
+        "A container image: its pin from the compose file, what runs from `docker inspect`.",
+    ),
+    f(
+        "servers.*.maintenance.items[].image.service",
+        "Compose service",
+        Kind::Text,
+        false,
+        "A compose service (its pin is read from the compose file).",
+    ),
+    f(
+        "servers.*.maintenance.items[].image.compose",
+        "Compose project",
+        Kind::Text,
+        false,
+        "The compose project it belongs to (default: the first under compose:).",
+    ),
+    f(
+        "servers.*.maintenance.items[].image.container",
+        "Container",
+        Kind::Text,
+        false,
+        "A container not run by compose.",
+    ),
+    f(
+        "servers.*.maintenance.items[].apt",
+        "Packages",
+        Kind::List,
+        false,
+        "Debian packages: installed (and held) vs the candidate apt offers.",
+    ),
+    f(
+        "servers.*.maintenance.items[].version_cmd",
+        "Version command",
+        Kind::Text,
+        false,
+        "An app on the host: a command printing its version, run as the login user.",
+    ),
+    f(
+        "servers.*.maintenance.items[].unit",
+        "Unit",
+        Kind::Text,
+        false,
+        "Its systemd unit, for a host app (what `retire` stops).",
+    ),
+    f(
+        "servers.*.maintenance.items[].source",
+        "Source",
+        Kind::Text,
+        true,
+        "Where newer versions come from: `github:owner/repo`, `docker:repo` (Docker Hub), `ghcr:owner/image`. Packages use apt's candidate.",
+    ),
+    f(
+        "servers.*.maintenance.items[].tag",
+        "Tags",
+        Kind::Text,
+        false,
+        "Which upstream tags count, as a glob (`*-alpine`); default: plain version numbers.",
+    ),
+    f(
+        "servers.*.maintenance.items[].risk",
+        "Risk",
+        Kind::Choice(RISKS),
+        true,
+        "How risky a change to it is: low (routine), medium (have a rollback ready), high (back up first, in a window). `tier:` and green/amber/red are still read.",
+    ),
+    f(
+        "servers.*.maintenance.items[].hold",
+        "Why held",
+        Kind::Text,
+        false,
+        "Why it's held where it is, in a sentence: shown on Maintenance and told to Claude.",
+    ),
+    f(
+        "servers.*.maintenance.items[].constraint",
+        "Constraint",
+        Kind::Text,
+        false,
+        "What limits the choice of version (`needs the 550 driver series`): told to Claude when it plans.",
+    ),
+    f(
+        "servers.*.maintenance.items[].review_by",
+        "Review by",
+        Kind::Date,
+        false,
+        "Look at it again by this date (YYYY-MM-DD); Maintenance flags it once the date has passed. Empty: no date.",
+    ),
+    f(
+        "servers.*.maintenance.items[].eol",
+        "End of life",
+        Kind::Text,
+        false,
+        "The endoflife.date product (`docker-engine`, `debian`); the series is told from what runs. `product/cycle` is still read.",
+    ),
+    f(
+        "servers.*.maintenance.items[].workflow",
+        "Workflow",
+        Kind::Text,
+        true,
+        "The workflow that applies a change to it.",
+    ),
+    f(
+        "servers.*.maintenance.items[].retire",
+        "Retire",
+        Kind::Section,
+        false,
+        "Planned to be removed.",
+    ),
+    f(
+        "servers.*.maintenance.items[].retire.replaced_by",
+        "Replaced by",
+        Kind::Text,
+        false,
+        "What takes its place, in words (another item, a product).",
+    ),
+    f(
+        "servers.*.maintenance.items[].retire.workflow",
+        "Retire workflow",
+        Kind::Text,
+        false,
+        "The workflow that retires it, one of this server's.",
+    ),
+    f(
+        "servers.*.maintenance.cadence",
+        "How often",
+        Kind::Map,
+        true,
+        "How often a routine workflow should run (`apt-maintenance: 30d`): recommended when the maintenance log says it last ran longer ago than that.",
+    ),
+];
+
 impl Server {
     /// The ssh destination.
     pub fn ssh_target<'a>(&'a self, name: &'a str) -> &'a str {
@@ -253,7 +672,15 @@ impl Server {
 }
 
 pub fn path() -> PathBuf {
-    paths::config_dir().join("server_config.yaml")
+    FileId::Servers.path()
+}
+
+impl ConfigFile for ServerFile {
+    const FILE: FileId = FileId::Servers;
+    const FIELDS: &'static [Field] = FIELDS;
+    fn parse(text: &str) -> Result<(Self, Vec<String>), String> {
+        parse(text)
+    }
 }
 
 /// Parse the file's text; unknown keys come back as warnings.
@@ -419,6 +846,162 @@ mod tests {
 
     const EXAMPLE: &str = include_str!("../../../assets/server_config.example.yaml");
 
+    /// Every field at something other than its default, with names and values a YAML file has
+    /// to quote.
+    pub(crate) fn full() -> ServerFile {
+        let item = MaintItem {
+            id: "web".into(),
+            image: Some(ImageRef {
+                service: Some("web".into()),
+                compose: Some("stack".into()),
+                container: Some("yes".into()),
+            }),
+            apt: vec!["engine-pkg".into(), "1.10".into()],
+            version_cmd: Some("/opt/app/bin/app --version: \"x\"".into()),
+            unit: Some("app.service".into()),
+            source: Some("github:example/web".into()),
+            tag: Some("*-alpine".into()),
+            risk: Risk::High,
+            hold: Some("1.5 migrates the database one way; wait for 1.5.2 # not a comment".into()),
+            constraint: Some(":needs the old api".into()),
+            review_by: Some(jiff::civil::date(2027, 1, 15)),
+            eol: Some("docker-engine".into()),
+            workflow: Some("compose-bump".into()),
+            retire: Some(Retire {
+                replaced_by: Some("app.service".into()),
+                workflow: Some("retire-service".into()),
+            }),
+        };
+        let server = Server {
+            ssh: Some("admin@myserver.example".into()),
+            sudo: vec!["docker ps".into(), "no".into()],
+            disks: vec![
+                DiskRule {
+                    mount: "/".into(),
+                    warn: 70,
+                    crit: 80,
+                },
+                DiskRule {
+                    mount: "/srv/data".into(),
+                    warn: 85,
+                    crit: 95,
+                },
+            ],
+            smart: vec!["/dev/sda".into()],
+            services: vec!["app.service".into(), "null".into()],
+            timers: vec![TimerRule {
+                unit: "backup.timer".into(),
+                max_age: Dur::hours(26),
+            }],
+            compose: vec![Compose {
+                name: "stack".into(),
+                file: "/home/admin/stack/compose.yaml".into(),
+            }],
+            containers: Containers {
+                ignore: vec!["*-old".into()],
+                restart_window: Dur::secs(600),
+            },
+            listeners: vec!["*:443/*".into(), "127.0.0.1:*/*".into(), "[::1]:*/*".into()],
+            findings: vec!["srv:timer:*".into()],
+            thresholds: Thresholds {
+                mem: 80.5,
+                load_per_core: 1.0,
+                cpu_temp: 70.0,
+                gpu_temp: 75.0,
+            },
+            actions: vec![CustomAction {
+                id: "app-reload".into(),
+                title: "Reload: the app's configuration".into(),
+                run: "systemctl reload app.service && echo '{done}'".into(),
+                sudo: true,
+                risky: true,
+                undo: Some("none needed".into()),
+            }],
+            maintenance: Maintenance {
+                notes: vec!["~/notes/myserver runbook.md".into()],
+                items: vec![
+                    item,
+                    MaintItem {
+                        id: "bare".into(),
+                        ..Default::default()
+                    },
+                ],
+                cadence: [("apt-maintenance".to_string(), Dur::secs(30 * 86400))].into(),
+            },
+        };
+        ServerFile {
+            servers: [
+                ("my.server-1".to_string(), server),
+                ("empty".to_string(), Server::default()),
+                (
+                    "on".to_string(),
+                    Server {
+                        sudo: vec![],
+                        maintenance: Maintenance {
+                            items: vec![],
+                            cadence: Default::default(),
+                            notes: vec!["*".into()],
+                        },
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        }
+    }
+
+    fn round_trip(f: &ServerFile) -> String {
+        let text = sentry_core::cfg::render(f).unwrap_or_else(|e| panic!("{e}"));
+        let (back, w) = parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert!(w.is_empty(), "{w:?}\n{text}");
+        assert_eq!(&back, f, "{text}");
+        text
+    }
+
+    #[test]
+    fn what_sentry_writes_reads_back_as_what_it_was() {
+        round_trip(&ServerFile::default());
+        let (example, _) = parse(EXAMPLE).unwrap();
+        let text = round_trip(&example);
+        // As clean as before.
+        let (back, _) = parse(&text).unwrap();
+        for (n, s) in &back.servers {
+            assert!(lint(n, s).is_empty(), "{:?}", lint(n, s));
+        }
+        insta::assert_snapshot!("example_rendered", text);
+        let text = round_trip(&full());
+        insta::assert_snapshot!("full_rendered", text);
+    }
+
+    #[test]
+    fn every_setting_has_its_field() {
+        let tree = sentry_core::cfg::Value::of(&full()).unwrap();
+        assert_eq!(
+            sentry_core::cfg::fields::uncovered(FIELDS, &tree),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            sentry_core::cfg::fields::unused(FIELDS, &tree),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn every_diff_applies() {
+        let (example, _) = parse(EXAMPLE).unwrap();
+        for (a, b) in [
+            (ServerFile::default(), full()),
+            (full(), example.clone()),
+            (example, ServerFile::default()),
+        ] {
+            let mut x = a.clone();
+            for c in sentry_core::cfg::diff(&a, &b).unwrap() {
+                sentry_core::cfg::apply(&mut x, &c).unwrap_or_else(|e| panic!("{e}"));
+            }
+            assert_eq!(x, b);
+        }
+    }
+
     #[test]
     fn example_parses_and_lints_clean() {
         let (f, warnings) = parse(EXAMPLE).unwrap();
@@ -433,6 +1016,14 @@ mod tests {
             Some(Duration::from_secs(26 * 3600))
         );
         assert_eq!(s.containers.restart_window, Dur::hours(24));
+    }
+
+    /// What the sample parses to, fixed before sentry could write the file: rendering it must
+    /// never change what a file a user wrote by hand means.
+    #[test]
+    fn the_example_parses_to_what_it_always_did() {
+        let (f, _) = parse(EXAMPLE).unwrap();
+        insta::assert_snapshot!(serde_json::to_string_pretty(&f).unwrap());
     }
 
     #[test]

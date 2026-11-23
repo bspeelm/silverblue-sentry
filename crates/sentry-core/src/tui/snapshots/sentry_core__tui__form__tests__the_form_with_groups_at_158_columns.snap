@@ -1,0 +1,24 @@
+---
+source: crates/sentry-core/src/tui/form.rs
+expression: "drawn(&f, 158, 20)"
+---
+┌ myserver · server · 1 changed ──────────────────────────────────────────────────────┐┌ Load per core ──────────────────────────────────────────────────────┐
+│  Who it is                                                                          ││ number                                                              │
+│    ssh       admin@192.0.2.10                                                       ││                                                                     │
+│    Services  app.service                                                            ││                                                                     │
+│                                                                                     ││ * changed here, not saved yet                                       │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▾ Thresholds    1 set         When memory, load or temperature is high.            ││                                                                     │
+│      Memory         90  (default)                                                   ││                                                                     │
+│  *   Load per core  1.5                                                             ││                                                                     │
+│  ▸ Tracked item  all defaults  What is kept at a deliberate version.                ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘

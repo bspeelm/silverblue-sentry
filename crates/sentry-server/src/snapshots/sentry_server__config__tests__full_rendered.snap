@@ -1,0 +1,86 @@
+---
+source: crates/sentry-server/src/config.rs
+expression: text
+---
+# sentry's configuration: the servers sentry watches over ssh.
+# Written by sentry: change it in the Config tab or with `sentry config`. Editing it
+# in $EDITOR is fine, but comments are not kept: the next save writes it again
+# from what it says, keeping the file before beside it (server_config.yaml.bak-<time>).
+
+servers:
+  empty: {}
+  my.server-1:
+    ssh: admin@myserver.example
+    sudo:
+      - docker ps
+      - "no"
+    disks:
+      - mount: /
+        warn: 70
+        crit: 80
+      - mount: /srv/data
+    smart:
+      - /dev/sda
+    services:
+      - app.service
+      - "null"
+    timers:
+      - unit: backup.timer
+        max_age: 26h
+    compose:
+      - name: stack
+        file: /home/admin/stack/compose.yaml
+    containers:
+      ignore:
+        - "*-old"
+      restart_window: 10m
+    listeners:
+      - "*:443/*"
+      - 127.0.0.1:*/*
+      - "[::1]:*/*"
+    findings:
+      - srv:timer:*
+    thresholds:
+      mem: 80.5
+      load_per_core: 1.0
+      cpu_temp: 70.0
+      gpu_temp: 75.0
+    actions:
+      - id: app-reload
+        title: "Reload: the app's configuration"
+        run: systemctl reload app.service && echo '{done}'
+        sudo: true
+        risky: true
+        undo: none needed
+    maintenance:
+      notes:
+        - ~/notes/myserver runbook.md
+      items:
+        - id: web
+          image:
+            service: web
+            compose: stack
+            container: "yes"
+          apt:
+            - engine-pkg
+            - "1.10"
+          version_cmd: "/opt/app/bin/app --version: \"x\""
+          unit: app.service
+          source: github:example/web
+          tag: "*-alpine"
+          risk: high
+          hold: "1.5 migrates the database one way; wait for 1.5.2 # not a comment"
+          constraint: ":needs the old api"
+          review_by: "2027-01-15"
+          eol: docker-engine
+          workflow: compose-bump
+          retire:
+            replaced_by: app.service
+            workflow: retire-service
+        - id: bare
+      cadence:
+        apt-maintenance: 30d
+  "on":
+    maintenance:
+      notes:
+        - "*"

@@ -1,0 +1,55 @@
+---
+source: crates/sentry-network/src/init.rs
+expression: "format!(\"{text}\\n{}\", notes.join(\"\\n\"))"
+---
+# sentry's configuration: the networks sentry watches through their routers.
+# Written by sentry: change it in the Config tab or with `sentry config`. Editing it
+# in $EDITOR is fine, but comments are not kept: the next save writes it again
+# from what it says, keeping the file before beside it (network_config.yaml.bak-<time>).
+
+networks:
+  home:
+    router:
+      ssh: myrouter
+    expect:
+      zones:
+        dmz:
+          - dmz
+        lan:
+          - lan
+        wan:
+          - wan
+          - wan6
+      forwards:
+        - name: web-https
+          port: 443
+          to: "203.0.113.10"
+        - name: game it's
+          proto: any
+          port: 8000-8010
+          to: "192.0.2.20"
+    devices:
+      - mac: 00:00:5e:00:53:10
+        hostname: nas
+      - mac: 00:00:5e:00:53:11
+      - hostname: my-phone
+        private_mac: true
+    maintenance:
+      items:
+        - id: firmware
+          kind: firmware
+        - id: packages
+          kind: packages
+        - id: backup
+          kind: backup
+
+· networks.home.router: Example Router AX · OpenWrt 25.12.3 · mediatek/filogic
+· networks.home.router: its ports and radios now: eth1 (wan) 1G · lan1 (lan) 1G · lan2 (lan) 100M · lan3 (lan) no link · lan4 (dmz) 1G · phy0-ap0 (lan) · phy1-ap0 (lan)
+· networks.home.expect: what the firewall looks like now, taken as what's expected.
+· networks.home.expect.forwards: not taken: forward half: no port or no address to go to
+· networks.home.devices[0]: holds 192.0.2.10 now
+· networks.home.devices[1]: holds 192.0.2.11 now
+· networks.home.devices[2]: holds 192.0.2.20 now
+· networks.home.devices: every device holding a lease now. Give the ones you know a `name:` and delete the rest. `private_mac`: its MAC is locally administered, as a phone's private address is, so it's known by its hostname (give `mac:` instead if its MAC never changes).
+· networks.home.devices: not listed: 1 with a private MAC and no hostname
+· networks.home.backup.recipients: config backups are encrypted on this machine. Put a public recipient here (an age1… key; `sentry-network backup key <file>` makes one) to have them.

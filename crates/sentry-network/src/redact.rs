@@ -104,11 +104,34 @@ impl Salt {
         Ok(Self(bytes))
     }
 
+    /// The network's salt when it has one: read only, never made (`sentry config show`).
+    pub fn existing(scope: &str) -> Option<Self> {
+        std::fs::read_to_string(path(scope))
+            .ok()
+            .as_deref()
+            .and_then(unhex)
+            .map(Self)
+    }
+
     /// What stands in for a secret value: `redacted:1a2b3c4d`. The same value, the same tag.
     pub fn tag(&self, value: &str) -> String {
         let k0 = u64::from_le_bytes(self.0[..8].try_into().expect("8 bytes"));
         let k1 = u64::from_le_bytes(self.0[8..].try_into().expect("8 bytes"));
         format!("redacted:{:08x}", siphash24(k0, k1, value.as_bytes()) >> 32)
+    }
+}
+
+/// A network's devices as a human may see them printed (`sentry config show`): each MAC and
+/// hostname a tag of the network's salt (a MAC as sentry compares them, lowercase), the names
+/// you gave them as they are.
+pub fn tag_identities(n: &mut crate::config::Network, salt: &Salt) {
+    for d in &mut n.devices {
+        if let Some(m) = &mut d.mac {
+            *m = salt.tag(&crate::config::mac(m).unwrap_or_else(|| m.to_ascii_lowercase()));
+        }
+        if let Some(h) = &mut d.hostname {
+            *h = salt.tag(h);
+        }
     }
 }
 

@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 serde_ignored.workspace = true
+serde-saphyr.workspace = true
 jiff.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

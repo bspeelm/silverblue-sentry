@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgforms.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config        ○ nothing to save
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+┌ This machine ────────────────────────────────────────────────────────────────┐
+│    update-check        (7d)                                                  │
+│    cleanup-flatpak     (30d)                                                 │
+│    cleanup-podman      (30d)                                                 │
+│    cleanup-ostree      (30d)                                                 │
+│    cleanup-cache       (off)                                                 │
+│                                                                              │
+│  More settings · Enter opens a group                                         │
+│  ▸ Refresh rates  all defaults  How often this machine's live screens samp…  │
+│  ▸ Update checks  all defaults  How long a cached update check counts as f…  │
+│  ▸ Audit          all defaults  What the audit flags, how long reports sta…  │
+│  ▸ Flatpak rules  all defaults  Permissions and remotes the audit flags.     │
+│  ▸ Recorder       all defaults  `sentry record` and History: how often, ho…  │
+│  ▸ Cleanup        all defaults  The cache directories Cleanup may delete.    │
+│  ▸ Expected       all defaults  Listeners and findings taken as expected.    │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Expected ────────────────────────────────────────────────────────────────────┐
+│ a group of settings · Enter opens it                                         │
+│                                                                              │
+│ Listeners and findings taken as expected.                                    │
+│                                                                              │
+│ In it: Expected listeners, Expected findings.                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  open the group   Esc  back   s  save…   c  check   ?  help   q  quit

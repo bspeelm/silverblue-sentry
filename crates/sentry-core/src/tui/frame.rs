@@ -29,6 +29,16 @@ pub struct Areas {
 
 /// Lay the frame out and draw its two rules. None: the terminal is under 80×24, and says so.
 pub fn layout(f: &mut Frame, t: &Theme, banner: bool) -> Option<Areas> {
+    layout_ruled(f, t, banner, None)
+}
+
+/// The same, with the rule under the screen strip in `rule`'s colour (the Config area's).
+pub fn layout_ruled(
+    f: &mut Frame,
+    t: &Theme,
+    banner: bool,
+    accent: Option<Color>,
+) -> Option<Areas> {
     let area = f.area();
     if area.width < 80 || area.height < 24 {
         widgets::placeholder(
@@ -55,9 +65,9 @@ pub fn layout(f: &mut Frame, t: &Theme, banner: bool) -> Option<Areas> {
         Constraint::Length(1),
     ])
     .areas(area);
-    for r in [rule, keyrule] {
+    for (r, color) in [(rule, accent.unwrap_or(t.border)), (keyrule, t.border)] {
         f.render_widget(
-            Paragraph::new("─".repeat(r.width as usize)).style(t.s(t.border)),
+            Paragraph::new("─".repeat(r.width as usize)).style(t.s(color)),
             r,
         );
     }
@@ -98,6 +108,9 @@ pub struct TargetTab {
     pub mark: Mark,
     /// Auto mode is on for it.
     pub auto: bool,
+    /// Its colour when it is the one in view (None: the usual inverted tab). The Config
+    /// area's tab says so: it is not a target.
+    pub accent: Option<Color>,
 }
 
 /// The top bar: the program, what it watches and a few facts on the left; its state and
@@ -116,6 +129,8 @@ pub struct Top<'a> {
     /// (`focus` is the one in view). With one target there is no strip.
     pub targets: Vec<TargetTab>,
     pub focus: usize,
+    /// The chip's colour (None: cyan). The Config area's is its own.
+    pub accent: Option<Color>,
 }
 
 /// How the targets' names are written: in full, the others cut short, or the others as their
@@ -133,7 +148,7 @@ fn target_spans(t: &Theme, top: &Top, how: TargetNames) -> Vec<Span<'static>> {
     for (i, tab) in top.targets.iter().enumerate() {
         let on = i == top.focus;
         let (fg, kc, bg) = if on {
-            (t.ink, t.ink, Style::new().bg(t.fg))
+            (t.ink, t.ink, Style::new().bg(tab.accent.unwrap_or(t.fg)))
         } else {
             (t.fg, t.dim, Style::new())
         };
@@ -187,7 +202,7 @@ fn top_lines(t: &Theme, top: &Top, width: u16) -> (Line<'static>, Line<'static>)
             format!(" {} ", top.app),
             Style::new()
                 .fg(t.ink)
-                .bg(t.cyan)
+                .bg(top.accent.unwrap_or(t.cyan))
                 .add_modifier(Modifier::BOLD),
         )];
         if top.targets.len() > 1 {
@@ -266,9 +281,19 @@ enum Names {
     Keys,
 }
 
-fn names(tabs: &[Tab], width: usize) -> Names {
-    let full: usize = tabs.iter().map(|s| s.id.name().len() + 4).sum();
-    let short: usize = tabs.iter().map(|s| s.id.short().len() + 4).sum();
+/// One entry of a strip of screens, whoever's screens they are: its key, its name in full
+/// and short, a badge, a filter.
+pub struct TabItem {
+    pub key: String,
+    pub name: String,
+    pub short: String,
+    pub badge: Option<(String, Color)>,
+    pub filter: Option<String>,
+}
+
+fn names(tabs: &[TabItem], width: usize) -> Names {
+    let full: usize = tabs.iter().map(|s| s.name.len() + 4).sum();
+    let short: usize = tabs.iter().map(|s| s.short.len() + 4).sum();
     if full + 6 <= width {
         Names::Full
     } else if short + 6 <= width {
@@ -278,17 +303,41 @@ fn names(tabs: &[Tab], width: usize) -> Names {
     }
 }
 
+fn tab_items(tabs: &[Tab]) -> Vec<TabItem> {
+    tabs.iter()
+        .map(|tab| TabItem {
+            key: tab.id.key().to_string(),
+            name: tab.id.name().to_string(),
+            short: tab.id.short().to_string(),
+            badge: tab.badge.clone(),
+            filter: tab.filter.clone(),
+        })
+        .collect()
+}
+
 /// The screen strip: key, name, badge and filter each; the active one inverted.
 pub fn draw_tabs(f: &mut Frame, area: Rect, t: &Theme, tabs: &[Tab], active: ScreenId) {
+    let items = tab_items(tabs);
+    let at = tabs.iter().position(|tab| tab.id == active);
+    draw_tab_items(f, area, t, &items, at);
+}
+
+/// A strip of screens that aren't `ScreenId`s (the Config area's): `active` is which.
+pub fn draw_tab_items(
+    f: &mut Frame,
+    area: Rect,
+    t: &Theme,
+    tabs: &[TabItem],
+    active: Option<usize>,
+) {
     let how = names(tabs, area.width as usize);
     let mut spans = Vec::new();
-    for tab in tabs {
-        let id = tab.id;
-        let on = id == active;
+    for (i, tab) in tabs.iter().enumerate() {
+        let on = Some(i) == active;
         let name = match how {
-            _ if on => id.name(),
-            Names::Full => id.name(),
-            Names::Short => id.short(),
+            _ if on => tab.name.as_str(),
+            Names::Full => tab.name.as_str(),
+            Names::Short => tab.short.as_str(),
             Names::Keys => "",
         };
         let (fg, kc, bg) = if on {
@@ -301,7 +350,7 @@ pub fn draw_tabs(f: &mut Frame, area: Rect, t: &Theme, tabs: &[Tab], active: Scr
         } else {
             Style::new()
         };
-        spans.push(Span::styled(format!(" {}", id.key()), bg_style.fg(kc)));
+        spans.push(Span::styled(format!(" {}", tab.key), bg_style.fg(kc)));
         if !name.is_empty() {
             spans.push(Span::styled(format!(" {name}"), bg_style.fg(fg)));
         }
@@ -807,6 +856,33 @@ pub fn render_to_string(w: u16, h: u16, draw: impl FnOnce(&mut Frame)) -> String
     out
 }
 
+/// What is drawn at the row `y` in the colour `bg` as its background (tests: where an accent
+/// is, which plain text can't say).
+#[cfg(any(test, feature = "testing"))]
+pub fn text_on(w: u16, h: u16, y: u16, bg: Color, draw: impl FnOnce(&mut Frame)) -> String {
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(draw).unwrap();
+    let buf = term.backend().buffer().clone();
+    (0..w)
+        .filter(|x| buf[(*x, y)].bg == bg)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
+/// The same for a foreground colour.
+#[cfg(any(test, feature = "testing"))]
+pub fn text_in(w: u16, h: u16, y: u16, fg: Color, draw: impl FnOnce(&mut Frame)) -> String {
+    let backend = ratatui::backend::TestBackend::new(w, h);
+    let mut term = ratatui::Terminal::new(backend).unwrap();
+    term.draw(draw).unwrap();
+    let buf = term.backend().buffer().clone();
+    (0..w)
+        .filter(|x| buf[(*x, y)].fg == fg)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +897,7 @@ mod tests {
             clock: "Mon 16 Nov 20:46".into(),
             targets: Vec::new(),
             focus: 0,
+            accent: None,
         }
     }
 
@@ -900,6 +977,7 @@ mod tests {
             name: name.into(),
             mark,
             auto,
+            accent: None,
         };
         let mut two = top();
         two.targets = vec![
@@ -943,6 +1021,7 @@ mod tests {
             name: name.into(),
             mark,
             auto: false,
+            accent: None,
         };
         let mut many = top();
         many.focus = 1;
@@ -1003,9 +1082,9 @@ mod tests {
                 filter: (id == Proc).then(|| "ssh".to_string()),
             })
             .collect();
-        assert_eq!(names(&tabs, 158), Names::Full);
-        assert_eq!(names(&tabs, 80), Names::Short);
-        assert_eq!(names(&tabs, 60), Names::Keys);
+        assert_eq!(names(&tab_items(&tabs), 158), Names::Full);
+        assert_eq!(names(&tab_items(&tabs), 80), Names::Short);
+        assert_eq!(names(&tab_items(&tabs), 60), Names::Keys);
         let t = Theme::truecolor();
         let strip = |w: u16| {
             let s = render_to_string(w, 24, |f| {

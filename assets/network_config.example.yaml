@@ -4,9 +4,10 @@
 # installed on the router: sentry runs read-only commands through one multiplexed ssh
 # connection while you have it open.
 #
-# `sentry-network init <ssh-host>` drafts this file from what the router reports;
-# `sentry-network lint` checks it. sentry never rewrites this file. The names, addresses and
-# MACs below are placeholders (documentation ranges).
+# `sentry-network init <ssh-host>` adds a network from what the router reports;
+# `sentry-network lint` checks it. When sentry writes this file it writes it whole from what
+# it says, keeping the file before beside it: comments like these are not kept. The names,
+# addresses and MACs below are placeholders (documentation ranges).
 
 networks:
   home:

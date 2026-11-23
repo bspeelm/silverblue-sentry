@@ -13,7 +13,7 @@ use sentry_server::remote::Remote;
 const SERVER: &str = "myserver";
 
 /// This machine alone, as `sentry` is without a server.
-fn one() -> App {
+pub(crate) fn one() -> App {
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut a = App::new(
         tx,
@@ -29,7 +29,7 @@ fn one() -> App {
 }
 
 /// This machine (in view) and `myserver`, whose sudo doesn't ask.
-fn two() -> App {
+pub(crate) fn two() -> App {
     let mut a = one();
     let id = sentry_server::tui::id_of(SERVER);
     a.add(
@@ -43,32 +43,32 @@ fn two() -> App {
     a
 }
 
-fn key(a: &mut App, c: KeyCode) {
+pub(crate) fn key(a: &mut App, c: KeyCode) {
     a.on_event(
         Event::Key(KeyEvent::new(c, KeyModifiers::NONE)),
         Instant::now(),
     );
 }
 
-fn ctrl(a: &mut App, c: char) {
+pub(crate) fn ctrl(a: &mut App, c: char) {
     a.on_event(
         Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
         Instant::now(),
     );
 }
 
-fn typed(a: &mut App, text: &str) {
+pub(crate) fn typed(a: &mut App, text: &str) {
     for c in text.chars() {
         key(a, KeyCode::Char(c));
     }
 }
 
-fn screen(a: &mut App) -> String {
+pub(crate) fn screen(a: &mut App) -> String {
     render_to_string(a, 158, 41)
 }
 
 /// The top bar's row, without what changes from run to run (how long this machine is up).
-fn top(a: &mut App, w: u16) -> String {
+pub(crate) fn top(a: &mut App, w: u16) -> String {
     let s = render_to_string(a, w, 41);
     let row = s.lines().next().unwrap_or_default();
     match row.split_once("  up ") {
@@ -82,24 +82,32 @@ fn top(a: &mut App, w: u16) -> String {
 }
 
 #[test]
-fn one_target_has_no_strip() {
+fn one_target_has_a_strip_of_itself_and_the_config_tab() {
     let mut a = one();
     let row = top(&mut a, 158);
+    // The strip is always there: the Config tab is, whatever else the window has.
     assert!(
-        row.starts_with(" sentry   silverblue 44.1  kernel 7.2.8-200.fc44.x86_64"),
+        row.starts_with(" sentry   F1 silverblue 44.1   F2 config    kernel 7.2.8-200.fc44.x86_64"),
         "{row}"
     );
-    assert!(!row.contains("F1"), "{row}");
-    // The window's target keys do nothing here, and `:local` is where it already is.
-    key(&mut a, KeyCode::F(2));
-    key(&mut a, KeyCode::Char('}'));
-    assert_eq!(a.focus, 0);
+    // A place nobody has does nothing; `:local` is where it already is.
+    key(&mut a, KeyCode::F(3));
+    assert_eq!((a.focus, a.in_config), (0, false));
     typed(&mut a, ":local");
     key(&mut a, KeyCode::Enter);
-    assert_eq!((a.focus, a.toast_for_test()), (0, None));
+    assert_eq!((a.focus, a.in_config, a.toast_for_test()), (0, false, None));
     typed(&mut a, ":server my");
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.toast_for_test(), Some("unknown command :server my"));
+    // The tab's key and `}` give the Config area the window; `}` again goes round.
+    key(&mut a, KeyCode::F(2));
+    assert!(a.in_config);
+    key(&mut a, KeyCode::Char('}'));
+    assert_eq!((a.focus, a.in_config), (0, false));
+    key(&mut a, KeyCode::Char('{'));
+    assert!(a.in_config);
+    key(&mut a, KeyCode::F(1));
+    assert!(!a.in_config);
 }
 
 #[test]
@@ -128,15 +136,20 @@ fn the_strip_names_each_target_and_its_keys_give_it_the_window() {
     assert_eq!((a.focus, a.slot().screen), (0, ScreenId::Upgrade));
     key(&mut a, KeyCode::Char('5'));
     assert_eq!(a.slot().screen, ScreenId::Flat);
-    // } and { go round; a place nobody has does nothing.
+    // } and { go round the strip, the Config tab its last place; a place nobody has does
+    // nothing.
     key(&mut a, KeyCode::Char('}'));
     assert_eq!((a.focus, a.slot().screen), (1, ScreenId::Svc));
     key(&mut a, KeyCode::Char('}'));
-    assert_eq!(a.focus, 0);
+    assert!(a.in_config);
+    key(&mut a, KeyCode::Char('}'));
+    assert_eq!((a.focus, a.in_config), (0, false));
     key(&mut a, KeyCode::Char('{'));
-    assert_eq!(a.focus, 1);
+    assert!(a.in_config);
+    key(&mut a, KeyCode::Char('{'));
+    assert_eq!((a.focus, a.in_config), (1, false));
     key(&mut a, KeyCode::F(5));
-    assert_eq!(a.focus, 1);
+    assert_eq!((a.focus, a.in_config), (1, false));
     // By name: `:local`, `:server <the start of its name>`.
     typed(&mut a, ":local");
     key(&mut a, KeyCode::Enter);
@@ -268,7 +281,7 @@ const LOCAL: usize = 0;
 const SRV: usize = 1;
 
 /// This machine and a server of this name (each test its own: their runs are kept by name).
-fn two_with(server: &str, sudo_asks: bool) -> App {
+pub(crate) fn two_with(server: &str, sudo_asks: bool) -> App {
     let mut a = one();
     a.add(
         &sentry_server::tui::id_of(server),
@@ -297,7 +310,7 @@ fn local_wf(name: &str, steps: &str) -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// A workflow of the server's own (in its scratch directory), known to its slot.
-fn server_wf(a: &mut App, server: &str, name: &str, steps: &str) {
+pub(crate) fn server_wf(a: &mut App, server: &str, name: &str, steps: &str) {
     // A server's runs are kept by its name, in the one scratch root every test of this
     // process shares: two tests with one name would each find the other's run in progress
     // (or remove it). So a name is one test's, and taking it twice fails here, every time.
@@ -326,17 +339,17 @@ fn server_wf(a: &mut App, server: &str, name: &str, steps: &str) {
     );
 }
 
-fn step(id: &str, gate: &str, run: &str) -> String {
+pub(crate) fn step(id: &str, gate: &str, run: &str) -> String {
     format!("[[steps]]\nid = \"{id}\"\ntitle = \"{id}\"\nrun = \"{run}\"\ngate = \"{gate}\"\n")
 }
 
 /// Where the run in slot `i` stands: (its next step, whether one is running, done).
-fn run_at(a: &App, i: usize) -> (Next, bool, bool) {
+pub(crate) fn run_at(a: &App, i: usize) -> (Next, bool, bool) {
     let r = a.slots[i].run.as_ref().expect("a run");
     (r.next().clone(), r.live().is_some(), r.done())
 }
 
-fn begin(a: &mut App, i: usize, name: &str) {
+pub(crate) fn begin(a: &mut App, i: usize, name: &str) {
     a.apply_at(i, vec![Effect::StartWorkflow(name.to_string())]);
     assert!(a.slots[i].run.is_some(), "{name} started");
 }
@@ -877,7 +890,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// This machine (in view), `myserver`, and the network `home`.
-fn three() -> App {
+pub(crate) fn three() -> App {
     let mut a = two();
     a.add(
         &sentry_network::tui::id_of(NETWORK),
@@ -938,11 +951,14 @@ fn the_strip_has_a_network_as_its_third_target() {
         key(&mut a, KeyCode::Char(c));
         assert_eq!(a.slot().screen, id, "{c}");
     }
-    // } goes round all three.
+    // } goes round all three and the Config tab after them.
     key(&mut a, KeyCode::Char('}'));
-    assert_eq!(a.focus, 0);
+    assert!(a.in_config);
+    key(&mut a, KeyCode::Char('}'));
+    assert_eq!((a.focus, a.in_config), (0, false));
     key(&mut a, KeyCode::Char('{'));
-    assert_eq!(a.focus, 2);
+    key(&mut a, KeyCode::Char('{'));
+    assert_eq!((a.focus, a.in_config), (2, false));
     insta::assert_snapshot!("strip_three_targets_80", top(&mut a, 80));
 }
 

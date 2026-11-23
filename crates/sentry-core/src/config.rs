@@ -1,4 +1,5 @@
-//! `~/.config/sentry/config.toml` (spec §12). Sentry never writes this file.
+//! `~/.config/sentry/config.toml` (spec §12): this machine and the window. Written only
+//! through `cfg` (`sentry config`, the Config tab), which keeps the file before beside it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,9 +8,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::paths;
+use crate::cfg::{Field, Kind};
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub ui: Ui,
@@ -25,11 +26,55 @@ pub struct Config {
     pub maintenance: Maintenance,
     pub review: Review,
     pub targets: Targets,
+    pub agent: Agent,
+}
+
+/// The agent sentry asks (`[agent]`): which kind it is and the command that starts it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Agent {
+    pub kind: AgentKind,
+    /// The program: a name on PATH, or a path.
+    pub command: String,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            kind: AgentKind::default(),
+            command: "claude".into(),
+        }
+    }
+}
+
+/// The kinds of agent there are: Claude Code's CLI, so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum AgentKind {
+    #[default]
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+}
+
+impl AgentKind {
+    pub const WORDS: &'static [&'static str] = &["claude-code"];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "claude-code",
+        }
+    }
+
+    /// What it is called in a sentence.
+    pub fn name(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude Code",
+        }
+    }
 }
 
 /// Which targets the window opens (`[targets]`): this machine is `local`, a server
 /// `srv:<name>`. Left out: all of them, this machine first.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Targets {
     /// The targets shown, in the strip's order.
@@ -57,7 +102,7 @@ impl Targets {
 
 /// The reviews sentry starts by itself (both programs). Each is one Claude turn in the
 /// background; nothing changes until you apply what it proposes.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Review {
     /// At each start of the TUI: which tasks are due again because something changed.
@@ -77,7 +122,7 @@ impl Default for Review {
 
 /// How long maintenance records are kept (both programs). Pruned when the TUI starts and
 /// after each write; the newest few always stay.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Retention {
     /// Log entries older than this go (`LOG.md` follows), except the newest `log_keep`.
@@ -108,7 +153,7 @@ impl Default for Retention {
 }
 
 /// Maintenance on this machine.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Maintenance {
     /// Your own notes (Markdown files) Claude reads when it plans or reviews: upgrade
@@ -116,7 +161,7 @@ pub struct Maintenance {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Ui {
     pub dashboard_hz: f32,
@@ -135,7 +180,7 @@ impl Default for Ui {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CacheCfg {
     pub update_check_max_age: Dur,
@@ -149,7 +194,7 @@ impl Default for CacheCfg {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Audit {
     pub retention_months: u32,
@@ -173,7 +218,7 @@ impl Default for Audit {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct FlatpakCfg {
     pub flag_filesystems: Vec<String>,
@@ -192,26 +237,26 @@ impl Default for FlatpakCfg {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct JobCfg {
     /// `"30d"` or `"off"`; interpreted by the jobs module.
     pub suggested_every: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Cleanup {
     pub cache: CleanupCache,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CleanupCache {
     pub delete_dirs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Recorder {
     pub interval: Dur,
@@ -235,7 +280,7 @@ impl Default for Recorder {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BaselineCfg {
     pub listeners: Vec<String>,
@@ -311,6 +356,349 @@ impl Serialize for Dur {
     }
 }
 
+/// Builds a [`Field`] row.
+const fn f(
+    path: &'static str,
+    label: &'static str,
+    kind: Kind,
+    common: bool,
+    help: &'static str,
+) -> Field {
+    Field {
+        path,
+        label,
+        help,
+        kind,
+        common,
+    }
+}
+
+/// Every setting of config.toml (`sentry config explain`; the forms).
+pub const FIELDS: &[Field] = &[
+    f(
+        "ui",
+        "Window",
+        Kind::Section,
+        false,
+        "How often the live screens sample, and the terminal containers are entered in.",
+    ),
+    f(
+        "ui.dashboard_hz",
+        "Dashboard rate",
+        Kind::Number,
+        false,
+        "How many times a second the Dashboard samples, 0.1 to 10. 1 is plenty; more costs CPU.",
+    ),
+    f(
+        "ui.processes_hz",
+        "Processes rate",
+        Kind::Number,
+        false,
+        "How many times a second Processes samples, 0.1 to 10 (2).",
+    ),
+    f(
+        "ui.terminal",
+        "Terminal",
+        Kind::Text,
+        true,
+        "Terminal used to enter containers (`ghostty -e`); falls back to $TERMINAL, xdg-terminal-exec, ghostty, ptyxis.",
+    ),
+    f(
+        "cache",
+        "Cache",
+        Kind::Section,
+        false,
+        "How long slow checks are kept.",
+    ),
+    f(
+        "cache.update_check_max_age",
+        "Update check age",
+        Kind::Duration,
+        false,
+        "How old the cached update check may get before it is shown as old (24h); it is never refreshed by itself.",
+    ),
+    f(
+        "audit",
+        "Audit",
+        Kind::Section,
+        false,
+        "This machine's audit.",
+    ),
+    f(
+        "audit.retention_months",
+        "Reports kept (months)",
+        Kind::Number,
+        false,
+        "Audit reports older than this many months are deleted (12).",
+    ),
+    f(
+        "audit.stale_container_days",
+        "Stale container (days)",
+        Kind::Number,
+        false,
+        "A stopped container older than this many days is a finding, and Cleanup offers it (30).",
+    ),
+    f(
+        "audit.cache_warn_mb",
+        "Cache warning (MB)",
+        Kind::Number,
+        false,
+        "A cache in ~/.cache larger than this many MB is a finding (2048).",
+    ),
+    f(
+        "audit.outside",
+        "Check from outside",
+        Kind::Text,
+        false,
+        "The security audit's check from outside: a command of yours, run on this machine, given `{address}` (your uplink's public address) and `{ports}` (comma separated), that prints the ports it found open, one per line. None: nothing is checked from outside.",
+    ),
+    f(
+        "flatpak",
+        "Flatpak",
+        Kind::Section,
+        false,
+        "What the audit flags in Flatpak apps' permissions.",
+    ),
+    f(
+        "flatpak.flag_filesystems",
+        "Flagged filesystems",
+        Kind::List,
+        false,
+        "Filesystem permissions that are flagged (host, home, host-os).",
+    ),
+    f(
+        "flatpak.flag_talk_names",
+        "Flagged bus names",
+        Kind::List,
+        false,
+        "D-Bus names an app may talk to that are flagged (org.freedesktop.Flatpak lets an app run commands on the host).",
+    ),
+    f(
+        "flatpak.trusted_origins",
+        "Trusted remotes",
+        Kind::List,
+        false,
+        "Remotes not listed here count as unverified origins (flathub, fedora).",
+    ),
+    f(
+        "jobs",
+        "Jobs",
+        Kind::Map,
+        false,
+        "Per job (audit, update-check, cleanup-*): how often it is suggested.",
+    ),
+    f(
+        "jobs.*.suggested_every",
+        "Suggested every",
+        Kind::Text,
+        false,
+        "`30d`, or `off`: the job is recommended when it last ran longer ago than this.",
+    ),
+    f(
+        "cleanup",
+        "Cleanup",
+        Kind::Section,
+        false,
+        "What Cleanup may delete.",
+    ),
+    f(
+        "cleanup.cache",
+        "Cache cleanup",
+        Kind::Section,
+        false,
+        "Caches in ~/.cache Cleanup may delete.",
+    ),
+    f(
+        "cleanup.cache.delete_dirs",
+        "Cache dirs to delete",
+        Kind::List,
+        false,
+        "Opt-in: directories under ~/.cache Cleanup may delete (pip, yarn). Empty: it only reports.",
+    ),
+    f(
+        "recorder",
+        "Recorder",
+        Kind::Section,
+        false,
+        "`sentry record` and History.",
+    ),
+    f(
+        "recorder.interval",
+        "Interval",
+        Kind::Duration,
+        false,
+        "Time between two samples (10s).",
+    ),
+    f(
+        "recorder.retention_hours",
+        "Kept (hours)",
+        Kind::Number,
+        false,
+        "How many hours of history the ring holds (72).",
+    ),
+    f(
+        "recorder.max_mb",
+        "Size (MB)",
+        Kind::Number,
+        false,
+        "The ring file's size at most, in MB; it holds less history when that is too small for the hours asked (50).",
+    ),
+    f(
+        "recorder.alerts",
+        "Alerts",
+        Kind::List,
+        false,
+        "Desktop notifications while recording: `cpu>90%:5m`, `disk_free<5%`, `new_listener`.",
+    ),
+    f(
+        "baseline",
+        "Expected",
+        Kind::Section,
+        false,
+        "What the audit takes as expected, besides what you mark in the window.",
+    ),
+    f(
+        "baseline.listeners",
+        "Expected listeners",
+        Kind::List,
+        false,
+        "Listening sockets that are expected, `addr:port/process` (127.0.0.1:631/cupsd). Anything else listening is a finding.",
+    ),
+    f(
+        "baseline.findings",
+        "Expected findings",
+        Kind::List,
+        false,
+        "Audit finding ids to treat as expected, globs allowed (`flatpak:*`). What you mark with `x` in the window is kept apart, in baseline.toml.",
+    ),
+    f(
+        "keys",
+        "Keys",
+        Kind::Map,
+        true,
+        "Rebinds: `quit = \"Q\"`, `\"screen.history\" = \"F9\"`, `\"target.next\" = \"C-n\"`.",
+    ),
+    f(
+        "retention",
+        "Retention",
+        Kind::Section,
+        true,
+        "How long maintenance records are kept (every target). Pruned when the window starts and after each write; the newest few always stay.",
+    ),
+    f(
+        "retention.log_months",
+        "Log (months)",
+        Kind::Number,
+        true,
+        "Log entries older than this go (LOG.md follows), except the newest `log_keep` (12).",
+    ),
+    f(
+        "retention.log_keep",
+        "Log entries always kept",
+        Kind::Number,
+        true,
+        "The newest log entries kept whatever their age (20).",
+    ),
+    f(
+        "retention.runs_per_workflow",
+        "Runs per workflow",
+        Kind::Number,
+        true,
+        "Workflow run directories (state and step logs) kept per workflow; a run in progress always stays (10).",
+    ),
+    f(
+        "retention.done_months",
+        "Done plans (months)",
+        Kind::Number,
+        true,
+        "Applied or dropped plans (plans/done/) older than this go (12).",
+    ),
+    f(
+        "retention.reviews",
+        "Reviews kept",
+        Kind::Number,
+        true,
+        "Claude's reviews kept (10).",
+    ),
+    f(
+        "retention.reports",
+        "Reports kept",
+        Kind::Number,
+        true,
+        "Audit reports kept at most, besides audit.retention_months (100).",
+    ),
+    f(
+        "maintenance",
+        "Maintenance",
+        Kind::Section,
+        true,
+        "Maintenance on this machine.",
+    ),
+    f(
+        "maintenance.notes",
+        "Notes",
+        Kind::List,
+        true,
+        "Your own notes (Markdown files) Claude reads when it plans or reviews: upgrade runbooks, what broke last time. Read only, never sent anywhere but to Claude.",
+    ),
+    f(
+        "review",
+        "Reviews at start and after a run",
+        Kind::Section,
+        true,
+        "The reviews sentry starts by itself (every target). Each is one Claude turn in the background; nothing changes until you apply what it proposes.",
+    ),
+    f(
+        "review.at_start",
+        "Review at start",
+        Kind::Bool,
+        true,
+        "At each start of the window: which tasks are due again because something changed (on).",
+    ),
+    f(
+        "review.after_run",
+        "Review after a run",
+        Kind::Bool,
+        true,
+        "When a workflow run ends well: which tasks it did (on).",
+    ),
+    f(
+        "targets",
+        "Targets",
+        Kind::Section,
+        true,
+        "Which targets the window opens.",
+    ),
+    f(
+        "targets.show",
+        "Shown, in order",
+        Kind::List,
+        true,
+        "The targets shown, in the strip's order: `local`, `srv:<name>`, `net:<name>`. Left out: all of them, this machine first.",
+    ),
+    f(
+        "agent",
+        "Agent",
+        Kind::Section,
+        true,
+        "The agent sentry asks: explanations, plans, reviews, fixes. Claude Code's CLI is the only kind so far.",
+    ),
+    f(
+        "agent.kind",
+        "Kind",
+        Kind::Choice(AgentKind::WORDS),
+        true,
+        "Which kind of agent it is: `claude-code`, Claude Code's CLI with its own login. It is the only kind so far.",
+    ),
+    f(
+        "agent.command",
+        "Command",
+        Kind::Text,
+        true,
+        "The program that starts it: a name on PATH or a path (claude).",
+    ),
+];
+
 impl Config {
     /// Parse config text; unknown keys are returned as warnings rather than errors.
     pub fn parse(text: &str) -> anyhow::Result<(Self, Vec<String>)> {
@@ -326,7 +714,7 @@ impl Config {
 
     /// Load from disk. A missing file means defaults; a broken file means defaults plus a warning.
     pub fn load() -> (Self, Vec<String>) {
-        let path = paths::config_dir().join("config.toml");
+        let path = crate::cfg::FileId::App.path();
         match std::fs::read_to_string(&path) {
             Ok(text) => match Self::parse(&text) {
                 Ok(r) => r,
@@ -340,6 +728,14 @@ impl Config {
             },
             Err(_) => (Self::default(), Vec::new()),
         }
+    }
+}
+
+impl crate::cfg::ConfigFile for Config {
+    const FILE: crate::cfg::FileId = crate::cfg::FileId::App;
+    const FIELDS: &'static [crate::cfg::Field] = FIELDS;
+    fn parse(text: &str) -> Result<(Self, Vec<String>), String> {
+        Config::parse(text).map_err(|e| first_line(&e.to_string()).to_string())
     }
 }
 
@@ -426,6 +822,13 @@ notes = []
         );
         assert_eq!(c.cache.update_check_max_age, Dur::hours(24));
         assert_eq!(c.recorder.interval.to_string(), "10s");
+    }
+
+    /// What the spec's example parses to, fixed before sentry could write the file.
+    #[test]
+    fn the_spec_example_parses_to_what_it_always_did() {
+        let (c, _) = Config::parse(SPEC_EXAMPLE).unwrap();
+        insta::assert_snapshot!(serde_json::to_string_pretty(&c).unwrap());
     }
 
     #[test]

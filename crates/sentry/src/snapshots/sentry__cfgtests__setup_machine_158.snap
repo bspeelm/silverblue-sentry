@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config    nothing is written before the save box                                ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 Agent ›  2 This machine  › 3 Systems › 4 Review › 5 Upkeep › 6 Save
+ nothing is required here · Space toggles · Enter goes on
+┌ This machine ───────────────────────────────────────────────────────────────────────┐┌ Review at start ────────────────────────────────────────────────────┐
+│  Reviews sentry starts by itself                                                    ││ yes/no                                                              │
+│    Review at start     [x] yes  (default)                                           ││                                                                     │
+│    Review after a run  [x] yes  (default)                                           ││ At each start of the window: which tasks are due again because      │
+│                                                                                     ││ something changed (on).                                             │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ This is the default (yes): the file doesn't say it.                 │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ On this machine sentry watches the system as you use it (updates,   │
+│                                                                                     ││ containers, Flatpaks, what listens, what is filling up), audits it, │
+│                                                                                     ││ and walks you through its upkeep. It runs only while this window is │
+│                                                                                     ││ open: nothing is installed, no service, no timer.                   │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   Space  edit · toggle   A  wizard   ?  help   q  quit

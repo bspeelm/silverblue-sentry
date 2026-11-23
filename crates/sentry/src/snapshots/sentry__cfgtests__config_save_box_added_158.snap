@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config*    nothing is written before the save box                     ● 2 not saved   Mon 26 Oct 12:00
+ 1 Overview 2*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ home · network ───────────────────────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ What         router over ssh root@192.0.2.1 · 2 zones · 1 forward · 1 device · no │
+│  ○ box              server           to be added                      ││ backup recipient                                                                  │
+│  ● myserver         server                                            ││ Window       staged to be added: it gets its tab with the save                    │
+│  ○ home             network          to be added                      ││ File         network_config.yaml · not there yet: every setting at its default    │
+│  + add a system…                                                      ││                                                                                   │
+│                                                                       ││ Enter opens it · c checks its connection · x removes it                           │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                            ┌ Save configuration ──────────────────────────────────────────────────────────────────────────────┐                            │
+│                            │                                                                                                  │                            │
+│                            │   server_config.yaml    box: added                                                               │                            │
+│                            │   network_config.yaml   home: added  (a new file)                                                │                            │
+│                            │                                                                                                  │                            │
+│                            │   box · added, as drafted and reviewed                                                           │                            │
+│                            │   home · added, as drafted and reviewed                                                          │                            │
+│                            │                                                                                                  │                            │
+│                            │ What follows: box gets a tab (it starts when it first has the window) · home gets a tab (it      │                            │
+│                            │ starts when it first has the window)                                                             │                            │
+│                            │ Kept before saving: server_config.yaml.bak-<UTC time> (beside it, the newest 5)                  │                            │
+│                            │ ! server_config.yaml was written by hand: its comments and layout are not kept.                  │                            │
+│                            │                                                                                                  │                            │
+│                            │  Enter  save    Esc  back   nothing is written before Enter                                      │                            │
+│                            └──────────────────────────────────────────────────────────────────────────────────────────────────┘                            │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · 2 changes ──────────────────────────────────────────────────┐│                                                                                   │
+│  [x] home  added  a new system, as drafted and reviewed               ││                                                                                   │
+│  [x] box  added  a new system, as drafted and reviewed                ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  save   Esc  back   j/k  scroll

@@ -1,0 +1,118 @@
+---
+source: crates/sentry-network/src/config.rs
+expression: "serde_json::to_string_pretty(&f).unwrap()"
+---
+{
+  "networks": {
+    "home": {
+      "router": {
+        "ssh": "myrouter",
+        "kind": "openwrt"
+      },
+      "expect": {
+        "zones": {
+          "dmz": [
+            "dmz"
+          ],
+          "lan": [
+            "lan"
+          ],
+          "wan": [
+            "wan",
+            "wan6"
+          ]
+        },
+        "forwards": [
+          {
+            "name": "web",
+            "proto": "tcp",
+            "port": 443,
+            "to": "192.0.2.10"
+          },
+          {
+            "name": "game",
+            "proto": "udp",
+            "port": "8000-8010",
+            "to": "192.0.2.20"
+          }
+        ],
+        "listeners": [
+          "tcp:22@lan",
+          "tcp:443@lan",
+          "udp:53@lan"
+        ],
+        "services": [
+          "odhcpd"
+        ]
+      },
+      "devices": [
+        {
+          "name": "nas",
+          "mac": "02:00:5e:00:53:01",
+          "hostname": null,
+          "leave_alone": false,
+          "private_mac": false
+        },
+        {
+          "name": "panel",
+          "mac": "02:00:5e:00:53:02",
+          "hostname": null,
+          "leave_alone": true,
+          "private_mac": false
+        },
+        {
+          "name": "phone",
+          "mac": null,
+          "hostname": "my-phone",
+          "leave_alone": false,
+          "private_mac": true
+        }
+      ],
+      "thresholds": {
+        "load": 2.0,
+        "mem_pct": 85.0,
+        "cert_days": 21,
+        "backup_age": "30d"
+      },
+      "backup": {
+        "recipients": [],
+        "keep": 12
+      },
+      "maintenance": {
+        "items": [
+          {
+            "id": "firmware",
+            "kind": "firmware"
+          },
+          {
+            "id": "packages",
+            "kind": "packages"
+          },
+          {
+            "id": "backup",
+            "kind": "backup"
+          }
+        ],
+        "cadence": [
+          {
+            "workflow": "config-backup",
+            "every": "30d"
+          },
+          {
+            "workflow": "package-update",
+            "every": "60d"
+          }
+        ]
+      },
+      "notes": [
+        "~/notes/network.md"
+      ],
+      "claude": {
+        "share_wan_address": false
+      },
+      "guard": {
+        "window": 300
+      }
+    }
+  }
+}

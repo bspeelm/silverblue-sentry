@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config    nothing is written before the save box                  ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Hosts sentry could look at · 3 of 4 ticked ─────────────────────────────────────────┐┌ pi@192.0.2.30 ──────────────────────────────────────────────────────┐
+│  From your ssh config                                                               ││ A host you named.                                                   │
+│  [x] newbox                                                                         ││                                                                     │
+│  [ ] backup                                                                         ││ Enter: one box says what sentry reads on the 3, then it looks.      │
+│                                                                                     ││ Nothing was read anywhere to make this list: it is this machine's   │
+│  This machine's default gateway  likely your router                                 ││ own.                                                                │
+│  [x] root@192.0.2.1                                                                 ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Added by name                                                                      ││                                                                     │
+│  [x] pi@192.0.2.30                                                                  ││                                                                     │
+│                              ┌ Look at these hosts ─────────────────────────────────────────────────────────────────────────┐                              │
+│  Another                     │                                                                                              │                              │
+│      n  add one by name (an s│ sentry logs in to 3 hosts with your ssh key and reads:                                       │                              │
+│                              │   newbox  root@192.0.2.1  pi@192.0.2.30                                                      │                              │
+│                              │                                                                                              │                              │
+│                              │ its system and release; which services and timers run; its disks and mounts; what listens;   │                              │
+│                              │ its compose projects; whether sudo asks. On a router: its interfaces, its firewall's zones   │                              │
+│                              │ and forwards, its DHCP leases.                                                               │                              │
+│                              │                                                                                              │                              │
+│                              │ Nothing is changed on them. No password is asked for: a host that wants one is said to, and  │                              │
+│                              │ stays in the list.                                                                           │                              │
+│                              │ What each says becomes a draft, staged here: nothing is written before the save box.         │                              │
+│                              │                                                                                              │                              │
+│                              │  Enter  look    Esc  back                                                                    │                              │
+│                              └──────────────────────────────────────────────────────────────────────────────────────────────┘                              │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  look   Esc  back

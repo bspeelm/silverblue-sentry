@@ -2,7 +2,7 @@
 source: crates/sentry-server/src/tui/tests.rs
 expression: "render_to_string(&mut a, 80, 24)"
 ---
- sentry-server   myserver  up 14d 00:02          ● connected   Mon 26 Oct 12:00
+ sentry-server   F1 myserver   F2 config         ● connected   Mon 26 Oct 12:00
  1 Dashboard   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   0 Upgr
 ────────────────────────────────────────────────────────────────────────────────
 

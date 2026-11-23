@@ -2,7 +2,7 @@
 source: crates/sentry-network/src/tui/tests/threats.rs
 expression: s
 ---
- sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ sentry-network   F1 home   F2 config    OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                      ● connected   Mon 26 Oct 12:00
  1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 

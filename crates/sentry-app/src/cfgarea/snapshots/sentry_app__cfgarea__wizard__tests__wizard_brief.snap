@@ -1,0 +1,32 @@
+---
+source: crates/sentry-app/src/cfgarea/wizard.rs
+expression: brief(&f)
+---
+sentry's Config tab, as the window shows it now.
+
+Where the user is:
+  the setup flow, step 4 of 6: Review (screen: Servers)
+  in front: the review of the drafted server `myserver`
+  on the system: myserver (server)
+  on the setting: servers.myserver.timers (Timers): Timers whose last run must be recent.
+
+Systems configured:
+  this machine
+  myserver (server) · staged to be added, not saved yet
+
+Problems (1):
+  server_config.yaml · myserver: timer `x` should end in .timer
+
+Pending changes (2; staged, nothing is written before the user's save):
+  [x] myserver · Timers (servers.myserver.timers): + backup.timer · proposed by you
+  [ ] window · Keys (keys): quit = Q · by the user · unticked: not in the next save
+
+Drafted here by looking at a host, staged to be added:
+  myserver (server) · Debian 12
+    services (2): app.service, web.service
+    note: timers: timers installed by hand
+
+Not shown to you:
+  home: devices: 4 (1 named), not shown
+
+`sentry config probe` may look at: myserver.

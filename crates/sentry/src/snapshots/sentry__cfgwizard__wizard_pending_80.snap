@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config        ○ nothing to save
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+
+   ┌ Claude · setup helper ─────────────────────────────────────────────────┐
+   │        Sent to Claude through your Claude Code login (Anthropic) · 15  │
+   │          sentry's Config tab, as the window shows it now.              │
+   │          Where the user is:                                            │
+   │          screen: Overview                                              │
+   │          …                                                             │
+   │        The setup helper can run three commands, all reads: sentry      │
+   │        config explain, show-agent and probe (only hosts you ticked     │
+   │        here). It reads no file, has no web, and changes nothing: what  │
+   │        it proposes lands in Pending, ticked, and nothing is written    │
+   │        before your save.                                               │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │ ────────────────────────────────────────────────────────────────────── │
+   │ › ▏                                                                    │
+   │  Enter  send   Tab  all that is sent   Esc  cancel                     │
+   └────────────────────────────────────────────────────────────────────────┘
+
+────────────────────────────────────────────────────────────────────────────────
+ Enter  send   Tab  all that is sent   Esc  cancel

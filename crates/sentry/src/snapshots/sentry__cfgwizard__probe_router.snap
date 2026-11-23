@@ -1,0 +1,19 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: router
+---
+# home (network) · OpenWrt 25.12.5 · Example Router AX
+# What it says now, as a draft. Nothing is staged or changed by this.
+networks:
+  home:
+    router:
+      ssh: ‹hidden›
+    expect:
+      forwards:
+        - name: web
+          port: 443
+          to: ‹hidden›
+# devices: 1 (0 named), not shown
+# zones: 2 (3 interfaces), not shown
+# forwards: 1, where each goes is not shown
+# note · devices: every lease now, unnamed: give the ones you know a name

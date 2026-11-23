@@ -1,0 +1,5 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: "top(&mut a, 158)"
+---
+ sentry config   F1 myserver   F2 silverblue 44.1   F3 config    nothing is written before the save box                  ○ nothing to save   Mon 26 Oct 12:00

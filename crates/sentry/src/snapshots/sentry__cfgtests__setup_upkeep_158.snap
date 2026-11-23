@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config*    nothing is written before the save box                                   ● 3 not saved   Mon 26 Oct 12:00
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 Agent › 2 This machine › 3 Systems › 4 Review ›  5 Upkeep  › 6 Save
+ Enter accepts what is ticked and goes on · Space unticks
+┌ Routine upkeep · 3 of 3 ticked ─────────────────────────────────────────────────────┐┌ audit  every 30d ───────────────────────────────────────────────────┐
+│  this machine  its jobs have their cadences already                                 ││ snapshot + diff + findings. This machine's Upkeep (screen 3)        │
+│      audit  every 30d                                                               ││ changes how often.                                                  │
+│      update-check  every 7d                                                         ││                                                                     │
+│      cleanup-flatpak  every 30d                                                     ││ How often each routine workflow is recommended. Enter accepts what  │
+│      cleanup-podman  every 30d                                                      ││ is ticked; every system's Upkeep changes it later.                  │
+│      cleanup-ostree  every 30d                                                      ││                                                                     │
+│      cleanup-cache  off                                                             ││                                                                     │
+│                                                                                     ││                                                                     │
+│  newbox  server                                                                     ││                                                                     │
+│  [x] apt-maintenance  every 30d                                                     ││                                                                     │
+│      compose-update  when it is needed                                              ││                                                                     │
+│                                                                                     ││                                                                     │
+│  home  network                                                                      ││                                                                     │
+│  [x] config-backup  every 30d                                                       ││                                                                     │
+│      firmware-upgrade  when it is needed                                            ││                                                                     │
+│      guarded-change  when it is needed                                              ││                                                                     │
+│  [x] package-update  every 30d                                                      ││                                                                     │
+│      security-action  when it is needed                                             ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   Space  tick   a  all   /  filter   A  wizard   ?  help   q  quit

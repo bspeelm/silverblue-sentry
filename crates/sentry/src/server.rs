@@ -30,7 +30,8 @@ enum Command {
         /// Name for it in server_config.yaml (default: from the host).
         #[arg(long)]
         name: Option<String>,
-        /// Add the draft to server_config.yaml (never replaces an existing entry).
+        /// Add the draft to server_config.yaml (never replaces an existing entry; the file is
+        /// written again from what it says, a copy of it before kept beside it).
         #[arg(long)]
         write: bool,
     },

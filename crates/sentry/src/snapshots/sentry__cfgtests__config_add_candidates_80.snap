@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config        ○ nothing to save
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Hosts sentry could look at · 0 of 3 ticked ──────────────────────────────────┐
+│  From your ssh config                                                        │
+│  [ ] newbox                                                                  │
+│  [ ] backup                                                                  │
+│                                                                              │
+│  This machine's default gateway  likely your router                          │
+│  [ ] root@192.0.2.1                                                          │
+│                                                                              │
+│  Another                                                                     │
+│      n  add one by name (an ssh alias, or user@host)                         │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ newbox ──────────────────────────────────────────────────────────────────────┐
+│ A host of your ssh config. Tick it to have sentry look at it.                │
+│                                                                              │
+│ Tick the hosts sentry should look at; Enter with none ticked goes on with    │
+│ just what there is.                                                          │
+│ Nothing was read anywhere to make this list: it is this machine's own.       │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Space  tick   a  all   /  filter   n  by name   ?  help   q  quit

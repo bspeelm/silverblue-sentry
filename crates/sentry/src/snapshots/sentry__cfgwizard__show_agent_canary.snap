@@ -1,0 +1,73 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: text
+---
+# ── config.toml ──
+[audit]
+outside = "‹hidden›"
+
+[maintenance]
+notes = ["…/local.md"]
+
+# ── server_config.yaml ──
+servers:
+  myserver:
+    ssh: ‹hidden›
+    services:
+      - app.service
+    timers:
+      - unit: backup.timer
+        max_age: 26h
+    compose:
+      - name: stack
+        file: …/docker-compose.yml
+    listeners:
+      - ‹addr›:8443/app
+      - "*:22/sshd"
+    actions:
+      - id: rotate
+        title: Rotate
+        run: ‹hidden›
+    maintenance:
+      notes:
+        - …/runbook.md
+      items:
+        - id: app
+          version_cmd: ‹hidden›
+          source: github:example/app
+
+# ── network_config.yaml ──
+networks:
+  saltednet:
+    router:
+      ssh: ‹hidden›
+    expect:
+      zones:
+        lan:
+          - lan
+        wan:
+          - wan
+      forwards:
+        - name: web
+          port: 443
+          to: ‹hidden›
+        - name: bad
+          port: 80
+          to: ‹hidden›
+    devices:
+      - name: nas
+        mac: redacted:14b6d559
+        hostname: redacted:7a3acce1
+      - hostname: redacted:641029c0
+        private_mac: true
+    backup:
+      recipients:
+        - age1qqqq…
+        - …/backup.pub
+    notes:
+      - …/net.md
+# `rawnet` is left out: not saved yet: its devices can't be shown (its tags are made when the network is first saved and looked at in the window)
+# rawnet: devices: 1 (1 named), not shown
+# rawnet: zones: 1 (1 interfaces), not shown
+# rawnet: forwards: 1, where each goes is not shown
+# saltednet: forwards: 2, where each goes is not shown

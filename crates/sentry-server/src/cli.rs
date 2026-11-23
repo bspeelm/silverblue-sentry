@@ -1,10 +1,8 @@
 //! `sentry-server` subcommands that don't need the TUI. Each returns the process exit code.
 
-use std::time::Instant;
-
 use super::config::{self, Server};
 use super::init;
-use super::remote::{Remote, SrvError, SudoMode};
+use super::remote::{Remote, SrvError};
 use sentry_core::exec::sh_quote;
 
 fn load(name: Option<&str>) -> Result<(String, Server), String> {
@@ -52,65 +50,40 @@ pub fn init(ssh: &str, name: Option<&str>, write: bool) -> u8 {
             return 1;
         }
     };
-    let entry = init::draft(name, ssh, &facts);
+    let d = init::draft(name, ssh, &facts);
+    let one = config::ServerFile {
+        servers: [(name.to_string(), d.entry.clone())].into(),
+    };
+    let notes = d.note_lines();
     if !write {
-        println!("servers:\n{entry}");
+        match sentry_core::cfg::render(&one) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("sentry-server init: {e}");
+                return 1;
+            }
+        }
+        notes.iter().for_each(|n| println!("{n}"));
         eprintln!(
-            "\nThat's a draft. Save it with --write (adds it to {} without touching what's there).",
+            "\nThat's a draft. Save it with --write (adds `{name}` to {}; a copy of the file before is kept).",
             config::path().display()
         );
         return 0;
     }
     let p = config::path();
-    let current = std::fs::read_to_string(&p).ok();
-    let text = match &current {
-        None => format!(
-            "# sentry-server configuration. See assets/server_config.example.yaml for every key.\n\
-             servers:\n{entry}"
-        ),
-        Some(t) => {
-            let (f, _) = match config::parse(t) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!(
-                        "{}: {e}\nnot touching it; the draft:\n\n{entry}",
-                        p.display()
-                    );
-                    return 1;
-                }
-            };
-            if f.servers.contains_key(name) {
-                eprintln!(
-                    "{} already has `{name}`; not touching it. Use --name to add it under another name.",
-                    p.display()
-                );
-                return 1;
-            }
-            let sep = if t.ends_with('\n') { "" } else { "\n" };
-            format!("{t}{sep}{entry}")
-        }
-    };
-    // Only write what parses back with the new server in it.
-    match config::parse(&text) {
-        Ok((f, _)) if f.servers.contains_key(name) => {}
-        _ => {
-            eprintln!(
-                "couldn't add the entry to {} safely (is `servers:` the last section?). The draft:\n\n{entry}",
-                p.display()
-            );
-            return 1;
-        }
-    }
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    match sentry_core::paths::write_atomic(&p, text.as_bytes()) {
-        Ok(()) => {
+    match init::write(&p, name, &d.entry) {
+        Ok(saved) => {
             println!("added `{name}` to {}", p.display());
+            notes.iter().for_each(|n| println!("{n}"));
+            saved.lines().iter().for_each(|l| println!("{l}"));
+            println!("check it: `sentry-server lint {name}`");
             0
         }
         Err(e) => {
-            eprintln!("{}: {e}", p.display());
+            eprintln!("{e}");
+            if let Ok(text) = sentry_core::cfg::render(&one) {
+                eprintln!("not written; the draft:\n\n{text}");
+            }
             1
         }
     }
@@ -429,90 +402,16 @@ pub fn check(name: Option<&str>) -> u8 {
         }
     };
     let r = Remote::new(&n, &s);
-    let mut bad = 0;
-    let t = Instant::now();
-    match r.output(&r.sh(". /etc/os-release; echo \"$PRETTY_NAME · $(uname -r)\"")) {
-        Ok(o) => println!(
-            "✓ {n} ({}): {} · {} ms",
-            r.host,
-            o.trim(),
-            t.elapsed().as_millis()
-        ),
-        Err(e) => {
-            println!("✗ {n} ({}): {e}", r.host);
-            return 1;
-        }
+    // (The same lines the window's Config area shows for `c` on the server.)
+    let (lines, unreachable) = crate::cfgkind::check(&r, &s);
+    lines.iter().for_each(|l| println!("{}", l.line()));
+    if unreachable {
+        return 1;
     }
-    let t = Instant::now();
-    if r.cmd("true").output().is_ok() {
-        println!(
-            "✓ next command over the shared connection: {} ms",
-            t.elapsed().as_millis()
-        );
-    }
-    let mode = r.sudo_mode();
-    match &mode {
-        Ok(SudoMode::NoPasswd) => println!("✓ sudo -n: no password needed"),
-        Ok(SudoMode::Password) => println!(
-            "· sudo asks for a password: monitoring runs without root; maintenance hands you the terminal"
-        ),
-        Ok(SudoMode::Absent) => println!("· no sudo for this user"),
-        Ok(SudoMode::Root) => println!("✓ root login: nothing needs sudo"),
-        Err(e) => {
-            println!("✗ sudo: {e}");
-            bad += 1;
-        }
-    }
-    let tools = [
-        "systemctl",
-        "journalctl",
-        "findmnt",
-        "ss",
-        "apt-get",
-        "docker",
-        "smartctl",
-        "sensors",
-        "nvidia-smi",
-        "fail2ban-client",
-    ];
-    let script = tools
+    let mut bad = lines
         .iter()
-        .map(|t| format!("command -v {t} >/dev/null && echo {t}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    if let Ok(o) = r.output(&r.sh(&format!("{}{script}; true", init::SBIN))) {
-        let found: Vec<&str> = o.lines().collect();
-        let missing: Vec<&str> = tools
-            .iter()
-            .copied()
-            .filter(|t| !found.contains(t))
-            .collect();
-        println!("✓ tools: {}", found.join(" "));
-        if !missing.is_empty() {
-            println!(
-                "· not installed (their panels stay empty): {}",
-                missing.join(" ")
-            );
-        }
-    }
-    if mode == Ok(SudoMode::NoPasswd) {
-        for entry in &s.sudo {
-            // `sudo -l <cmd>` asks sudoers whether it may run, without running it.
-            let words: Vec<&str> = entry.split_whitespace().collect();
-            let ok = r
-                .cmd("sudo")
-                .args(["-n", "-l"])
-                .args(words.iter().copied())
-                .run()
-                .is_ok_and(|o| o.code == 0);
-            if ok {
-                println!("✓ sudo: {entry}");
-            } else {
-                println!("✗ sudo: {entry} (sudoers doesn't allow it, or it isn't installed)");
-                bad += 1;
-            }
-        }
-    }
+        .filter(|l| l.mark == sentry_app::cfgarea::kind::Mark::Bad)
+        .count();
     for p in config::lint(&n, &s) {
         println!("✗ {p}");
         bad += 1;

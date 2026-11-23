@@ -5026,7 +5026,7 @@ fn auto_is_off_until_its_key_and_says_so_while_on() {
     assert!(a.slot().auto && a.unlock_for_test().is_none());
     let s = screen(&mut a);
     let top = s.lines().next().unwrap();
-    assert!(top.contains("myserver · auto"), "{top}");
+    assert!(top.contains("F1 myserver auto"), "{top}");
     assert!(
         s.contains("▸ auto · routine steps and questions go by themselves")
             && s.contains("C-a turns it off"),

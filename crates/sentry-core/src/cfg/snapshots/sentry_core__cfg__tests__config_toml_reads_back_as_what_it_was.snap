@@ -1,0 +1,82 @@
+---
+source: crates/sentry-core/src/cfg/tests.rs
+expression: t
+---
+# sentry's configuration: this machine and the window.
+# Written by sentry: change it in the Config tab or with `sentry config`. Editing it
+# in $EDITOR is fine, but comments are not kept: the next save writes it again
+# from what it says, keeping the file before beside it (config.toml.bak-<time>).
+
+[ui]
+dashboard_hz = 0.5
+processes_hz = 4.0
+terminal = "ghostty -e"
+
+[cache]
+update_check_max_age = "90s"
+
+[audit]
+retention_months = 3
+stale_container_days = 7
+cache_warn_mb = 10
+outside = """ssh vps 'nc -zw2 {address} {ports}' # "quoted""""
+
+[flatpak]
+flag_filesystems = [
+    "yes",
+    "1.10",
+]
+flag_talk_names = []
+trusted_origins = [
+    "*flathub",
+    ":fedora",
+]
+
+[jobs.audit]
+suggested_every = "off"
+
+[jobs."cleanup.weird"]
+
+[cleanup.cache]
+delete_dirs = [
+    "pip",
+    "null",
+]
+
+[recorder]
+interval = "30s"
+retention_hours = 24
+max_mb = 20
+alerts = []
+
+[baseline]
+listeners = []
+findings = ["repo:rpmfusion-*"]
+
+[keys]
+quit = "Q"
+"screen.history" = "F9"
+
+[retention]
+log_months = 1
+log_keep = 2
+runs_per_workflow = 3
+done_months = 4
+reviews = 5
+reports = 6
+
+[maintenance]
+notes = ["~/notes/a b.md"]
+
+[review]
+at_start = false
+after_run = false
+
+[targets]
+show = [
+    "srv:my.server",
+    "local",
+]
+
+[agent]
+command = "/opt/my agents/claude"

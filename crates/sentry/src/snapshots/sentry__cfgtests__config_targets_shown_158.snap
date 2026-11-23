@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 home   F4 config    nothing is written before the save box        ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Targets in the strip · 3 of 3 ticked ───────────────────────────────────────────────┐┌ local ──────────────────────────────────────────────────────────────┐
+│  [x] local  this machine                                                            ││ Ticked: it has a tab in the strip. One left out keeps running out   │
+│  [x] srv:myserver  myserver                                                         ││ of view when the window has it open, and has no tab, no key and no  │
+│  [x] net:home  home                                                                 ││ `:` name until it is shown again.                                   │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Enter stages it (nothing is written before the save box). Their     │
+│                                                                                     ││ order is the field's own list: Enter on it, then J/K.               │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Space  tick   a  all   /  filter   Enter  stage it   Esc  back   A  wizard   ?  help   q  quit

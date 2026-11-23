@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgforms.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config    nothing is written before the save box                  ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ This machine ───────────────────────────────────────────────────────────────────────┐┌ Expected ───────────────────────────────────────────────────────────┐
+│  Reviews sentry starts by itself                                                    ││ a group of settings · Enter opens it                                │
+│    Review at start     [x] yes  (default)                                           ││                                                                     │
+│    Review after a run  [x] yes  (default)                                           ││ Listeners and findings taken as expected.                           │
+│                                                                                     ││                                                                     │
+│  Notes Claude may read                                                              ││ In it: Expected listeners, Expected findings.                       │
+│    Notes               (none)                                                       ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Containers                                                                         ││                                                                     │
+│    Terminal            ($TERMINAL, xdg-terminal-exec, ghostty, ptyxis)              ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Upkeep                                                                             ││                                                                     │
+│    quick-update        (not on a cadence)                                           ││                                                                     │
+│    release-rebase      (not on a cadence)                                           ││                                                                     │
+│    rpmfusion-migrate   (not on a cadence)                                           ││                                                                     │
+│    audit               (30d)                                                        ││                                                                     │
+│    update-check        (7d)                                                         ││                                                                     │
+│    cleanup-flatpak     (30d)                                                        ││                                                                     │
+│    cleanup-podman      (30d)                                                        ││                                                                     │
+│    cleanup-ostree      (30d)                                                        ││                                                                     │
+│    cleanup-cache       (off)                                                        ││                                                                     │
+│                                                                                     ││                                                                     │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▸ Refresh rates  all defaults  How often this machine's live screens sample.       ││                                                                     │
+│  ▸ Update checks  all defaults  How long a cached update check counts as fresh.     ││                                                                     │
+│  ▸ Audit          all defaults  What the audit flags, how long reports stay.        ││                                                                     │
+│  ▸ Flatpak rules  all defaults  Permissions and remotes the audit flags.            ││                                                                     │
+│  ▸ Recorder       all defaults  `sentry record` and History: how often, how much.   ││                                                                     │
+│  ▸ Cleanup        all defaults  The cache directories Cleanup may delete.           ││                                                                     │
+│  ▸ Expected       all defaults  Listeners and findings taken as expected.           ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  open the group   Esc  back   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

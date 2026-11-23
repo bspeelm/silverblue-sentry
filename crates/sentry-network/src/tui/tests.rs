@@ -137,7 +137,9 @@ fn dashboard_wide() {
     // The top bar: what it runs, the board, how long it's been up, and the connection.
     let top = s.lines().next().unwrap();
     assert!(
-        top.starts_with(" sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36"),
+        top.starts_with(
+            " sentry-network   F1 home   F2 config    OpenWrt 25.12.3  Example Router AX  up 15d 18:36"
+        ),
         "{top}"
     );
     assert!(top.contains("● connected"), "{top}");

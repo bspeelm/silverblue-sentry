@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 home   F4 config !    nothing is written before the save box            ! 1 problem   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers 1   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ myserver · server ──────────────────────────────────────────────────────────────────┐┌ Name ───────────────────────────────────────────────────────────────┐
+│  Who it is                                                                          ││ text                                                                │
+│    Name              myserver                                                       ││                                                                     │
+│    ssh               admin@192.0.2.10                                               ││ Its name in the window, in `[targets] show`, and of the folder its  │
+│    sudo allowlist    (nothing: monitoring runs without root)                        ││ records are kept in. A system that is saved keeps its name here:    │
+│                                                                                     ││ its log, plans and baseline are under it.                           │
+│  What must be running                                                               ││                                                                     │
+│    Services          app.service                                                    ││ ! timer `x` should end in .timer                                    │
+│    Timers            2 entries                                                      ││ c checks its connection (reads only)                                │
+│                                                                                     ││                                                                     │
+│  Disks                                                                              ││                                                                     │
+│    Disks             1 entry                                                        ││                                                                     │
+│    SMART             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Containers and what listens                                                        ││                                                                     │
+│    Compose projects  (none)                                                         ││                                                                     │
+│    Listeners         (none: everything listening is a finding)                      ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Kept at a deliberate version                                                       ││                                                                     │
+│    Items             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Notes Claude may read                                                              ││                                                                     │
+│    Notes             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Upkeep · the shared workflows                                                      ││                                                                     │
+│    apt-maintenance   (not on a cadence)                                             ││                                                                     │
+│    compose-update    (not on a cadence)                                             ││                                                                     │
+│                                                                                     ││                                                                     │
+│  More settings · Enter opens a group                                                ││                                                                     │
+│  ▸ Thresholds         all defaults  When memory, load or temperature is high.       ││                                                                     │
+│  ▸ Container rules    all defaults  Which may be stopped; what counts as restarte…  ││                                                                     │
+│  ▸ Expected findings  all defaults  Findings that are fine as they are here.        ││                                                                     │
+│  ▸ Custom actions     all defaults  Your own commands, behind a confirm box.        ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   Esc  back   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

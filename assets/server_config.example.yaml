@@ -4,8 +4,9 @@
 # installed on the server: sentry-server runs read-only commands through one multiplexed ssh
 # connection while you have it open, and maintenance only after you confirm it.
 #
-# `sentry-server init <ssh-host>` drafts this file from what it finds on the server;
-# `sentry-server lint` checks it. sentry-server never rewrites this file.
+# `sentry-server init <ssh-host>` drafts an entry from what it finds on the server (`--write`
+# adds it); `sentry-server lint` checks it. When sentry writes this file it writes it whole
+# from what it says, keeping the file before beside it: comments like these are not kept.
 
 servers:
   myserver:

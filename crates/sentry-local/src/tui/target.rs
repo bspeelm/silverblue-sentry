@@ -1080,6 +1080,13 @@ impl Target for LocalTarget {
         vec![crate::baseline::path(crate::maint::LOCAL)]
     }
 
+    /// `config.toml` was saved in the Config area: this machine's copy of it (the notes,
+    /// the terminal, the rates, what the audit takes as expected) is the new one.
+    fn configured(&mut self, cfg: &crate::config::Config) {
+        self.cfg = Arc::new(cfg.clone());
+        self.data.baseline = crate::baseline::Baseline::effective(&self.cfg);
+    }
+
     fn on_own(&mut self, fx: &effect::Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         if let Some(e) = fx.0.downcast_ref::<local::Effect>() {
             return self.on_local(e, sh, cx);
