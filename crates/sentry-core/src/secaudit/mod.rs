@@ -1412,6 +1412,8 @@ pub fn upgrade_in(logs: &[LogEntry]) -> Option<(Timestamp, String)> {
                 .iter()
                 .any(|k| w.contains(k))
         })
+        // (A run that found nothing to do upgraded nothing.)
+        .filter(|e| !e.body.contains(crate::workflows::NOT_NEEDED))
         .filter_map(|e| Some((e.head.ended.or(e.head.started)?, e)))
         .max_by_key(|(at, _)| *at)
         .map(|(at, e)| (at, e.head.workflow.clone()))

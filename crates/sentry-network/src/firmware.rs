@@ -410,6 +410,35 @@ fn release_parts(v: &str) -> Option<Vec<u64>> {
         .collect()
 }
 
+/// owut says there is nothing to upgrade to.
+pub fn nothing_newer(c: &Check) -> bool {
+    match (&c.from, &c.to) {
+        (Some(from), Some(to)) => {
+            c.verdict == Verdict::NoChanges || to.version == from.version && c.changes.is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn nothing_newer_words(runs: &str) -> String {
+    format!(
+        "There is nothing newer for the router: it runs {runs}, the newest release of its series."
+    )
+}
+
+/// What `plan` ends with: nothing newer and nothing else wrong is no failure (the run is
+/// done, nothing needed); anything else that stops it is.
+pub fn plan_exit(c: &Check, why: &[String]) -> u8 {
+    let only_newest = c.from.as_ref().is_some_and(|f| {
+        nothing_newer(c) && why.len() == 1 && why[0] == nothing_newer_words(&f.version)
+    });
+    if only_newest {
+        sentry_app::remote::workflow::NOTHING_NEEDED
+    } else {
+        3
+    }
+}
+
 pub fn stops(c: &Check, code: i32, installed: &str) -> Vec<String> {
     let mut why: Vec<String> = c.warnings.iter().map(Warn::said).collect();
     let (Some(from), Some(to)) = (&c.from, &c.to) else {
@@ -448,11 +477,8 @@ pub fn stops(c: &Check, code: i32, installed: &str) -> Vec<String> {
             from.version, to.version
         )),
     }
-    if c.verdict == Verdict::NoChanges || to.version == from.version && c.changes.is_empty() {
-        why.push(format!(
-            "There is nothing newer for the router: it runs {}, the newest release of its series.",
-            from.version
-        ));
+    if nothing_newer(c) {
+        why.push(nothing_newer_words(&from.version));
     }
     if code != 0 && why.is_empty() {
         why.push(format!("owut ended with exit {code} without saying why."));
@@ -1316,6 +1342,10 @@ pub fn plan(r: &Router, o: &mut Out) -> u8 {
     };
     let c = parse_check(&x.stdout);
     let why = stops(&c, x.code, &b.version);
+    if plan_exit(&c, &why) == sentry_app::remote::workflow::NOTHING_NEEDED {
+        (o.say)(format!("{} Nothing to do: nothing was changed.", why[0]));
+        return sentry_app::remote::workflow::NOTHING_NEEDED;
+    }
     if !why.is_empty() {
         (o.err)("STOPPED before anything was downloaded:".into());
         why.into_iter().for_each(|w| (o.err)(format!("  · {w}")));

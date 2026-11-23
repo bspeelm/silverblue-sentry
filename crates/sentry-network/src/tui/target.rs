@@ -96,6 +96,9 @@ impl Own {
     }
 }
 
+/// The workflows that change what the router runs: when one ends, the audit runs again.
+pub const CHANGES_RELEASE: &[&str] = &["firmware-upgrade", "package-update"];
+
 /// A fetch a screen wants while it's in view: when it's entered, then every `every` (None:
 /// at entry only).
 struct Poll {
@@ -707,6 +710,10 @@ impl Target for NetworkTarget {
             // A run ended: what it may have made (a backup) is read again.
             Why::Run | Why::Changed => {
                 self.fetch(Kind::Backup, cx);
+                // The release and the packages as they are now: the firmware and packages
+                // rows (and the Items panel) follow what the run did, wherever the user is.
+                self.fetch(Kind::Ifaces, cx);
+                self.fetch(Kind::Updates, cx);
                 // And what a Security action changed: the config, and who is blocked.
                 self.fetch(Kind::Uci, cx);
                 if !cx.offline {
@@ -1428,11 +1435,22 @@ impl Host for NetworkTarget {
     /// follows the run.
     fn step_ended(&mut self, run: &dyn WfRun, cx: &Cx) {
         self.fetch(Kind::Backup, cx);
+        // A run that changed the release or the packages: the audit says what stands now
+        // (its findings, and so the rows made of them), by itself.
+        if run.done() && CHANGES_RELEASE.contains(&run.wf().name.as_str()) {
+            self.fetch(Kind::Audit, cx);
+        }
         // A draft that just ran end to end, well: offered to be one no longer.
         use sentry_core::workflows::state::RunStatus;
         // (The file says whether it is a draft: the run's own copy may have been started
         // as one let through.)
-        if run.done() && run.run().state.status == RunStatus::Done && !cx.offline {
+        // (Not a run that found nothing to do: its steps never ran.)
+        let st = &run.run().state;
+        if run.done()
+            && st.status == RunStatus::Done
+            && !sentry_app::remote::workflow::ended_with_nothing(st)
+            && !cx.offline
+        {
             self.undraft = workflow::list_for(&self.router.scope)
                 .into_iter()
                 .find(|e| e.name == run.wf().name && e.wf.as_ref().is_ok_and(|w| w.draft))

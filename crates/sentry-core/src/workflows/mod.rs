@@ -166,6 +166,10 @@ pub fn dry_run_of(cmd: &str) -> Option<String> {
     }
 }
 
+/// The note on each step of a run that one of sentry's own steps found had nothing to do
+/// (the rest of the run not needed: `sentry_app::remote::workflow::NOTHING_NEEDED`).
+pub const NOT_NEEDED: &str = "not needed: there was nothing to do";
+
 /// A dry run that says there's nothing to do: `rpm-ostree upgrade --preview` exits 77 when
 /// no update is available. The step it stands for would change nothing.
 pub fn dry_nothing_to_do(dry: &str, code: i32) -> bool {

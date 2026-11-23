@@ -1771,4 +1771,12 @@ fn a_routers_firmware_upgrade_makes_the_audit_due_again() {
     st.status = RunStatus::Abandoned;
     let left = LogEntry::from_run("net:home", &wf, &st, std::path::Path::new("x"), None, None);
     assert_eq!(upgrade_in(&[left]), None);
+    // A run that found the router already on the newest release upgraded nothing.
+    st.status = RunStatus::Done;
+    for s in st.steps.iter_mut().skip(3) {
+        s.status = crate::workflows::state::StepStatus::Skipped;
+        s.note = Some(crate::workflows::NOT_NEEDED.into());
+    }
+    let nothing = LogEntry::from_run("net:home", &wf, &st, std::path::Path::new("x"), None, None);
+    assert_eq!(upgrade_in(&[nothing]), None);
 }

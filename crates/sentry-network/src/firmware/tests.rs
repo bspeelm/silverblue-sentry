@@ -109,6 +109,22 @@ fn only_a_patch_release_of_the_same_series_goes_on() {
     let none = "Version-from 25.12.6 a (kernel 1)\nVersion-to 25.12.6 a (kernel 1)\nAll packages are up-to-date\nThere are no changes, upgrade not necessary\n";
     let why = stops(&parse_check(none), 0, "25.12.6");
     assert!(why.iter().any(|w| w.contains("nothing newer")), "{why:?}");
+    // That alone is no failure: the run ends, nothing needed.
+    assert_eq!(
+        plan_exit(&parse_check(none), &why),
+        sentry_app::remote::workflow::NOTHING_NEEDED
+    );
+    // With anything else wrong it still stops (a reading that doesn't agree, a warning).
+    let off = stops(&parse_check(none), 0, "25.12.5");
+    assert_eq!(plan_exit(&parse_check(none), &off), 3);
+    let warned = none.replace("All packages", "WARNING: something new\nAll packages");
+    let w = stops(&parse_check(&warned), 0, "25.12.6");
+    assert_eq!(plan_exit(&parse_check(&warned), &w), 3);
+    assert_eq!(
+        plan_exit(&parse_check(ok), &[]),
+        3,
+        "(nothing stops it: plan goes on)"
+    );
     // No answer at all.
     assert!(!stops(&parse_check(""), 1, "25.12.5").is_empty());
     // owut not saying it's safe isn't a yes.
