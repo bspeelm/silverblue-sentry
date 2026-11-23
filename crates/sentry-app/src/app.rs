@@ -124,6 +124,14 @@ impl Win {
     }
 }
 
+/// What builds a target around the `Mail` its threads answer through.
+pub type Make = Box<dyn FnOnce(Mail) -> Box<dyn Target>>;
+
+/// Builds the target with this id (`local`, `srv:<name>`, `net:<name>`, as `[targets] show`
+/// spells them) from the config files in this directory as they are now. None: the files
+/// have no such target. The binary's: it alone knows every kind of target.
+pub type Maker = Box<dyn Fn(&str, &std::path::Path) -> Option<Make>>;
+
 pub struct App {
     pub slots: Vec<Slot>,
     /// The slot that has the keys and is drawn.
@@ -148,6 +156,8 @@ pub struct App {
     pub in_config: bool,
     /// The Config area's editor has the terminal.
     config_handed: bool,
+    /// How a target the files gained is built (`App::set_maker`).
+    maker: Option<Maker>,
 }
 
 impl App {
@@ -189,6 +199,7 @@ impl App {
             config: crate::cfgarea::ConfigArea::new(tx.clone()),
             in_config: false,
             config_handed: false,
+            maker: None,
             tx,
             seq: Arc::new(AtomicU64::new(0)),
             sweep: Default::default(),
@@ -219,6 +230,12 @@ impl App {
         self.slots.push(slot);
         self.win.n_targets = self.slots.len();
         self.slots.len() - 1
+    }
+
+    /// How a target that a save adds to the config files is built (the binary registers
+    /// what its own start uses).
+    pub fn set_maker(&mut self, maker: Maker) {
+        self.maker = Some(maker);
     }
 
     /// The slot in view.
@@ -433,6 +450,13 @@ impl App {
         self.in_config = true;
     }
 
+    /// Before the TUI is up, on a first run (no config file is there): the window opens on
+    /// the Config tab's setup flow.
+    pub fn setup_at_start(&mut self) {
+        self.in_config = true;
+        self.config.guide_at_start();
+    }
+
     /// The slots in the strip, in its order (one `[targets] show` hides isn't).
     fn visible(&self) -> Vec<usize> {
         (0..self.slots.len())
@@ -448,6 +472,16 @@ impl App {
                 title: self.slots[i].title().to_string(),
                 hidden: self.slots[i].hidden,
                 working: self.needs(i) == Needs::Working,
+                going: match self.slots[i].at_work() {
+                    true => {
+                        let mut g = self.slots[i].going();
+                        if g.is_empty() {
+                            g.push("something of its own is still running there".to_string());
+                        }
+                        g
+                    }
+                    false => Vec::new(),
+                },
             })
             .collect()
     }
@@ -458,6 +492,16 @@ impl App {
             Some(crate::cfgarea::Fx::Command(line)) => self.target_cmd(&line, now),
             Some(crate::cfgarea::Fx::Changed(files)) => self.config_changed(&files),
             None => {}
+        }
+        // The setup is done: the first system it added (else this machine) has the window.
+        if let Some(id) = self.config.leave_to.take() {
+            let to = self
+                .place(target_id(&id))
+                .filter(|i| !self.slots[*i].hidden)
+                .or_else(|| self.visible().first().copied());
+            if let Some(to) = to {
+                self.focus(to, now);
+            }
         }
         self.quit_asked();
     }
@@ -484,14 +528,168 @@ impl App {
     /// at start. A server's or a network's own file: its slot sees it when it next looks at
     /// its files (`Slot::look`, on focus).
     fn config_changed(&mut self, files: &[sentry_core::cfg::FileId]) {
-        if !files.contains(&sentry_core::cfg::FileId::App) {
-            return;
+        if files.contains(&sentry_core::cfg::FileId::App) {
+            // (What the file says: a change staged and not saved is nobody's yet.)
+            if let Some(cfg) = self.config.app_on_disk() {
+                self.configure(cfg);
+            }
         }
-        // (What the file says: a change staged and not saved is nobody's yet.)
-        let Some(cfg) = self.config.app_on_disk() else {
+        self.sync_targets(files);
+        self.config.targets = self.in_window();
+    }
+
+    /// The targets follow the config files at once, by id: one the files gained gets a slot
+    /// (asleep until it first has the window, as at start), one they lost is closed (unless
+    /// it is at work: the save box refuses that before writing, so this is a file edited
+    /// outside), and one whose file changed looks at it again (`Why::Edited`).
+    fn sync_targets(&mut self, files: &[sentry_core::cfg::FileId]) {
+        let (added, gone) = self.config.targets_changed();
+        let dir = self.config.dir();
+        let mut fresh: Vec<TargetId> = Vec::new();
+        for id in &added {
+            if self.place(target_id(id)).is_some() {
+                continue;
+            }
+            let Some(make) = self.maker.as_ref().and_then(|m| m(id, &dir)) else {
+                continue;
+            };
+            let i = self.add(target_id(id), make);
+            self.with_one(i, |s, w| s.pickup(w));
+            fresh.push(target_id(id).to_string());
+        }
+        for id in &gone {
+            let Some(i) = self.place(target_id(id)) else {
+                continue;
+            };
+            if self.slots[i].at_work() {
+                let say = format!(
+                    "{} is no longer in its file, but it is at work: its tab stays until \
+                     the next start",
+                    self.slots[i].title()
+                );
+                self.win.toast(&say);
+            } else {
+                self.close(i);
+            }
+        }
+        if !added.is_empty() || !gone.is_empty() {
+            // A new one takes the place it would have at the next start (this machine, the
+            // servers, the networks, as the files have them); `[targets] show` then orders
+            // and hides as it says.
+            if !fresh.is_empty() {
+                let order = self.config.targets_on_disk();
+                self.reorder(|id| order.iter().position(|t| t == show_id(id)));
+            }
+            let targets = self.win.cfg.targets.clone();
+            self.retarget(&targets);
+        }
+        // An entry that changed: its target reads its own file again.
+        for i in 0..self.slots.len() {
+            let id = self.slots[i].mail.id().clone();
+            if fresh.contains(&id) || !files.contains(&crate::cfgarea::ConfigArea::file_of(&id)) {
+                continue;
+            }
+            // One that never had the window holds its entry as it was when the window
+            // opened, and reads nothing until it starts: it is built again from the file.
+            if !id.is_empty()
+                && self.slots[i].is_asleep()
+                && !self.slots[i].at_work()
+                && let Some(make) = self.maker.as_ref().and_then(|m| m(show_id(&id), &dir))
+            {
+                self.rebuild(i, make);
+                continue;
+            }
+            self.with(i, |s, w| s.look(w));
+        }
+    }
+
+    /// Slot `i`, which never had the window, built again around its entry as the files say
+    /// it now: in its place, hidden or not as it was, asleep as it was.
+    fn rebuild(&mut self, i: usize, make: Make) {
+        let id = self.slots[i].mail.id().clone();
+        let hidden = self.slots[i].hidden;
+        self.add(&id, make);
+        let Some(mut new) = self.slots.pop() else {
             return;
         };
-        self.configure(cfg);
+        new.hidden = hidden;
+        let mut old = std::mem::replace(&mut self.slots[i], new);
+        old.shutdown();
+        self.win.n_targets = self.slots.len();
+        self.with_one(i, |s, w| s.pickup(w));
+    }
+
+    /// The slots sorted by `place` (None: after the others, as they were). By id: the slot
+    /// in view and the one whose command has the terminal stay the ones they were.
+    fn reorder(&mut self, place: impl Fn(&str) -> Option<usize>) {
+        let focus_id = self.slots[self.focus].mail.id().clone();
+        let handed_id = self.handed.map(|i| self.slots[i].mail.id().clone());
+        let mut order: Vec<usize> = (0..self.slots.len()).collect();
+        order.sort_by_key(|i| (place(self.slots[*i].mail.id()).unwrap_or(usize::MAX), *i));
+        if order.iter().enumerate().any(|(to, from)| to != *from) {
+            let mut old: Vec<Option<Slot>> = std::mem::take(&mut self.slots)
+                .into_iter()
+                .map(Some)
+                .collect();
+            self.slots = order.iter().filter_map(|i| old[*i].take()).collect();
+        }
+        self.focus = self.place(&focus_id).unwrap_or(0);
+        self.handed = handed_id.and_then(|id| self.place(&id));
+    }
+
+    /// Close slot `i`: its target leaves the window. Everything that names a slot goes by
+    /// id, so the slot in view and the one whose command has the terminal stay the ones
+    /// they were; what was addressed to the closed one is dropped. The last slot is never
+    /// closed (the window always has a target).
+    fn close(&mut self, i: usize) {
+        if self.slots.len() <= 1 || i >= self.slots.len() {
+            return;
+        }
+        let id = self.slots[i].mail.id().clone();
+        let now = self.win.at;
+        // The slot in view goes: another gets the window first (its keymap and input line).
+        let moved = i == self.focus;
+        if moved {
+            let to = self
+                .visible()
+                .into_iter()
+                .find(|j| *j != i)
+                .or_else(|| (0..self.slots.len()).find(|j| *j != i))
+                .unwrap_or(0);
+            self.slots[i].park(&mut self.win);
+            self.slots[to].park(&mut self.win);
+            self.focus = to;
+            self.win.modal = None;
+        }
+        let focus_id = self.slots[self.focus].mail.id().clone();
+        let handed_id = self
+            .handed
+            .filter(|h| *h != i)
+            .map(|h| self.slots[h].mail.id().clone());
+        let mut slot = self.slots.remove(i);
+        slot.shutdown();
+        self.focus = self.place(&focus_id).unwrap_or(0);
+        self.handed = handed_id.and_then(|h| self.place(&h));
+        self.win.n_targets = self.slots.len();
+        // What was on its way to it, and what the security audit kept for it.
+        self.win.outbox.retain(|(to, _)| *to != id);
+        let sec = &mut self.win.sec;
+        sec.asked.retain(|a| a.slot != id);
+        sec.again.retain(|a| a.slot != id);
+        if sec.pending.as_ref().is_some_and(|(_, who)| *who == id) {
+            sec.pending = None;
+        }
+        let name = crate::secaudit::name(&id).to_string();
+        sec.changes.retain(|c| c.target != name);
+        sec.rev += 1;
+        // What is kept by place is asked again.
+        self.surveyed = None;
+        self.survey();
+        if moved && !self.in_config {
+            let to = self.focus;
+            self.with(to, |s, w| s.shown(w, now));
+        }
+        self.win.dirty = true;
     }
 
     /// `config.toml` is `cfg` from now: `[keys]` (every slot's keymap), `[review]`,
@@ -665,7 +863,10 @@ impl App {
         self.config.targets = self.in_window();
         self.config.load(&mut self.win);
         if self.in_config {
-            self.config.enter(&mut self.win, self.config.screen);
+            match self.config.guide {
+                Some(_) => self.config.guide_show(&mut self.win),
+                None => self.config.enter(&mut self.win, self.config.screen),
+            }
         }
         for i in 0..self.slots.len() {
             self.with(i, |s, w| {
@@ -787,7 +988,10 @@ impl App {
             }
             Event::Paste(text) if self.in_config => self.config.on_paste(&mut self.win, &text),
             Event::Paste(text) => self.with(self.focus, |s, w| s.on_paste(w, &text)),
-            Event::Config(data) => self.config.on_data(&mut self.win, data),
+            Event::Config(data) => {
+                self.config.targets = self.in_window();
+                self.config.on_data(&mut self.win, data)
+            }
             Event::Resize => self.win.dirty = true,
             Event::Signal => self.win.quit = true,
             // Whatever is in view, it lands in its own slot.
@@ -894,6 +1098,11 @@ pub const CONFIG_WORD: &str = "config";
 /// A target's id as `[targets] show` spells it: this machine's (the empty one) is `local`.
 fn show_id(id: &str) -> &str {
     if id.is_empty() { "local" } else { id }
+}
+
+/// The other way: a target's own id for what `[targets] show` calls it.
+fn target_id(show: &str) -> &str {
+    if show == "local" { "" } else { show }
 }
 
 /// How often the targets are surveyed while several are open.

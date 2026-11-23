@@ -21,6 +21,7 @@ pub mod reportview;
 pub mod reviewview;
 pub mod stepview;
 pub mod theme;
+pub mod ticklist;
 pub mod wflist;
 pub mod widgets;
 // The screens both programs show the same way.

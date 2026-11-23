@@ -4,11 +4,15 @@
 
 use std::path::Path;
 
-use sentry_app::cfgarea::kind::{self, DocAny, Entry, Item, Kind, Loaded, Section};
+use sentry_app::cfgarea::kind::{self, DocAny, Entry, Item, Kind, Loaded, Section, Upkeep, WfRow};
 use sentry_app::cfgarea::{AGENT, MACHINE, Problem, Screen, WINDOW};
-use sentry_core::cfg::{ConfigFile, Field, FileId};
+use sentry_core::cfg::{ConfigFile, Field, FileId, Value};
 use sentry_core::config::Config;
 use sentry_core::tui::keys::Keymap;
+
+use crate::jobs::JobId;
+use crate::workflows as local;
+use crate::workflows;
 
 pub struct AppKind;
 
@@ -73,6 +77,7 @@ impl Kind for AppKind {
                 }),
                 target: Some("local".into()),
                 screen: Screen::Machine,
+                ssh: None,
             },
             Entry {
                 name: AGENT.into(),
@@ -82,6 +87,7 @@ impl Kind for AppKind {
                 }),
                 target: None,
                 screen: Screen::Agent,
+                ssh: None,
             },
             Entry {
                 name: WINDOW.into(),
@@ -102,6 +108,7 @@ impl Kind for AppKind {
                 }),
                 target: None,
                 screen: Screen::Window,
+                ssh: None,
             },
         ]
     }
@@ -170,6 +177,107 @@ impl Kind for AppKind {
             None => Vec::new(),
         }
     }
+
+    /// This machine's upkeep: its workflows (they run when there is something for them to
+    /// do: no cadence), then its jobs, each due as `[jobs]` says or by its own default.
+    /// There is one set of workflows here, nobody else's to share.
+    fn upkeep(&self, d: &dyn DocAny, entry: &str, disk: bool) -> Upkeep {
+        if entry != MACHINE {
+            return Upkeep::default();
+        }
+        let cfg = kind::typed::<Config>(d);
+        let entries: Vec<workflows::Entry> = match disk {
+            true => local::list(),
+            false => local::SEEDS
+                .iter()
+                .map(|(n, text)| {
+                    let wf = workflows::parse(text);
+                    workflows::Entry {
+                        name: n.to_string(),
+                        path: local::dir().join(format!("{n}.toml")),
+                        issues: wf.as_ref().map(local::lint).unwrap_or_default(),
+                        wf,
+                    }
+                })
+                .collect(),
+        };
+        let mut rows: Vec<WfRow> = entries
+            .into_iter()
+            .map(|e| WfRow {
+                title: e
+                    .wf
+                    .as_ref()
+                    .map(|w| w.description.clone())
+                    .unwrap_or_default(),
+                what: "workflow",
+                own: false,
+                draft: e.wf.as_ref().is_ok_and(|w| w.draft),
+                problems: match &e.wf {
+                    Err(why) => vec![format!("it doesn't parse: {why}")],
+                    Ok(_) => e.errors().map(|i| i.msg.clone()).collect(),
+                },
+                every: String::new(),
+                default: String::new(),
+                suggest: None,
+                path: Some(e.path.clone()),
+                name: e.name,
+            })
+            .collect();
+        // (update-apply has no cadence: updates go through quick-update.)
+        rows.extend(
+            JobId::ALL
+                .into_iter()
+                .filter(|j| j.default_every().is_some())
+                .map(|j| WfRow {
+                    name: j.name().to_string(),
+                    title: format!("{}.", j.description()),
+                    what: "job",
+                    own: false,
+                    draft: false,
+                    problems: Vec::new(),
+                    every: cfg
+                        .and_then(|c| c.jobs.get(j.name())?.suggested_every.clone())
+                        .unwrap_or_default(),
+                    default: j.default_every().unwrap_or_default().to_string(),
+                    suggest: None,
+                    path: None,
+                }),
+        );
+        Upkeep {
+            rows,
+            shared: local::dir(),
+            own: None,
+            has_own: false,
+        }
+    }
+
+    /// A job's cadence is `[jobs] <name>.suggested_every`: the whole table is staged (a
+    /// job the file doesn't name has no entry to set a field in). Nothing typed: the job's
+    /// own default again. A workflow of this machine's has no cadence.
+    fn cadence(
+        &self,
+        d: &dyn DocAny,
+        entry: &str,
+        workflow: &str,
+        every: Option<&str>,
+    ) -> Option<(String, Option<Value>)> {
+        if entry != MACHINE {
+            return None;
+        }
+        JobId::from_name(workflow)?.default_every()?;
+        let mut jobs = kind::typed::<Config>(d)?.jobs.clone();
+        match every {
+            Some(e) => {
+                jobs.entry(workflow.to_string())
+                    .or_default()
+                    .suggested_every = Some(e.to_string())
+            }
+            None => {
+                jobs.remove(workflow);
+            }
+        }
+        Some(("jobs".to_string(), Value::of(&jobs).ok()))
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +307,68 @@ mod tests {
         {
             assert!(seen.contains(&f.path), "{} is in no form", f.path);
         }
+    }
+
+    #[test]
+    fn this_machines_upkeep_is_its_workflows_and_its_jobs() {
+        let k = AppKind;
+        let dir = std::env::temp_dir().join(format!("sentry-appkind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[jobs]\nupdate-check.suggested_every = \"3d\"\n").unwrap();
+        let (doc, _) = k.load(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let up = k.upkeep(doc.as_ref(), MACHINE, false);
+        let rows: Vec<(&str, &str, &str, &str)> = up
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.what,
+                    r.every.as_str(),
+                    r.default.as_str(),
+                )
+            })
+            .collect();
+        assert!(
+            rows.contains(&("quick-update", "workflow", "", "")),
+            "{rows:?}"
+        );
+        assert!(rows.contains(&("audit", "job", "", "30d")), "{rows:?}");
+        assert!(
+            rows.contains(&("update-check", "job", "3d", "7d")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.contains(&("cleanup-cache", "job", "", "off")),
+            "{rows:?}"
+        );
+        assert!(!rows.iter().any(|r| r.0 == "update-apply"), "{rows:?}");
+        // No set per system here.
+        assert_eq!((up.own.clone(), up.has_own), (None, false));
+        assert!(k.upkeep(doc.as_ref(), AGENT, false).rows.is_empty());
+        // A job's cadence is staged in `[jobs]`; a workflow has none to set.
+        let (path, to) = k
+            .cadence(doc.as_ref(), MACHINE, "audit", Some("14d"))
+            .unwrap();
+        assert_eq!(path, "jobs");
+        assert_eq!(
+            to.unwrap().to_string(),
+            "{audit: {suggested_every: \"14d\"}, update-check: {suggested_every: \"3d\"}}"
+        );
+        let (_, to) = k
+            .cadence(doc.as_ref(), MACHINE, "update-check", None)
+            .unwrap();
+        assert_eq!(to.unwrap().to_string(), "{}");
+        assert_eq!(
+            k.cadence(doc.as_ref(), MACHINE, "quick-update", Some("7d")),
+            None
+        );
+        assert_eq!(
+            k.cadence(doc.as_ref(), MACHINE, "update-apply", Some("7d")),
+            None
+        );
     }
 
     #[test]

@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config    nothing is written before the save box                                ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup   1 Agent  › 2 This machine › 3 Systems › 4 Review › 5 Upkeep › 6 Save
+ Enter goes on without an agent · Space edits its command, r looks again
+┌ Agent ──────────────────────────────────────────────────────────────────────────────┐┌ Kind ───────────────────────────────────────────────────────────────┐
+│  The agent sentry asks                                                              ││ one of: claude-code                                                 │
+│    Kind     claude-code                                                             ││                                                                     │
+│    Command  claude                                                                  ││ Which kind of agent it is: `claude-code`, Claude Code's CLI with    │
+│                                                                                     ││ its own login. It is the only kind so far.                          │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Status                                                              │
+│                                                                                     ││ command   claude                                                    │
+│                                                                                     ││ found     not looked up                                             │
+│                                                                                     ││ test      t tests it: one turn, no tools                            │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Other agents, API connections and locally deployed models are not   │
+│                                                                                     ││ supported yet.                                                      │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Without an agent sentry still watches, audits, runs your workflows  │
+│                                                                                     ││ and keeps the log. It won't offer what an agent does: fixes for     │
+│                                                                                     ││ findings, plans, reviews, the security audit's reading, help in     │
+│                                                                                     ││ this setup.                                                         │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   Space  edit · toggle   t  test it   ?  help   q  quit

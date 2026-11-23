@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverblue 44.1   F2 config*                  ● 3 not saved
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 › 2 › 3 › 4 ›  5 Upkeep  › 6
+ Enter accepts what is ticked and goes on · Space unticks
+┌ Routine upkeep · 3 of 3 ticked ──────────────────────────────────────────────┐
+│  this machine  its jobs have their cadences already                          │
+│      audit  every 30d                                                        │
+│      update-check  every 7d                                                  │
+│      cleanup-flatpak  every 30d                                              │
+│      cleanup-podman  every 30d                                               │
+│      cleanup-ostree  every 30d                                               │
+│      cleanup-cache  off                                                      │
+│                                                                              │
+│  newbox  server                                                              │
+│  [x] apt-maintenance  every 30d                                              │
+│      compose-update  when it is needed                                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ audit  every 30d ────────────────────────────────────────────────────────────┐
+│ snapshot + diff + findings. This machine's Upkeep (screen 3) changes how     │
+│ often.                                                                       │
+│                                                                              │
+│ How often each routine workflow is recommended. Enter accepts what is        │
+│ ticked; every system's Upkeep changes it later.                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   ?  help   q  quit

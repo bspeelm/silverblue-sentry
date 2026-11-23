@@ -4,7 +4,10 @@
 #   live_guard_foreign_staged, live_guard_arm_unverified, live_guard_race,
 #   live_guard_reboot, live_guard_stale_leftover, live_router_session, live_package_update,
 #   live_router_security, live_security_block, live_security_forward, live_security_ssh_keys_only,
-#   live_firmware_upgrade, live_security_filter, live_security_takeover
+#   live_firmware_upgrade, live_security_filter, live_security_takeover,
+#   live_setup (the window's own: a first run with no config at all; the setup flow finds
+#   the router among the ssh hosts, looks at it for real, drafts it as a network, and
+#   saves; then its tab reads. Reads only.)
 # Everything that changes a router is developed and proven against this, never a real one.
 #
 #   scripts/live-router.sh up                 start it, print how to run its tests
@@ -67,7 +70,7 @@ die() {
   exit 1
 }
 
-TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade live_security_filter live_security_takeover"
+TESTS="live_router_policy live_guard_foreign_staged live_guard_arm_unverified live_guard_keeps live_guard_reverts live_guard_wifi_asks live_guard_race live_guard_reboot live_guard_stale_leftover live_router_session live_package_update live_router_security live_security_block live_security_forward live_security_ssh_keys_only live_firmware_upgrade live_security_filter live_security_takeover live_setup"
 
 ctr() {
   "${P[@]}" ps -a --filter "label=$LABEL=1" --format '{{.Names}}' | head -n1
@@ -345,6 +348,11 @@ scratch() {
     live_guard_reverts | live_guard_wifi_asks) window=8 ;;
   esac
   rm -rf "$x"
+  # live_setup: a first run. No config file at all: the setup flow writes them.
+  if [[ $t == live_setup ]]; then
+    mkdir -p "$x/config" "$x/data" "$x/cache"
+    return
+  fi
   mkdir -p "$x/config/sentry" "$x/data" "$x/cache"
   cat >"$x/config/sentry/network_config.yaml" <<EOF
 networks:
@@ -370,6 +378,16 @@ env_of() {
   local dir=$1 t=$2 x="$1/xdg/$2"
   printf 'SENTRY_SSH_CONFIG=%q SENTRY_ROUTER_SCRATCH=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' \
     "$dir/ssh_config" "$NET" "$x/config" "$x/data" "$x/cache"
+  # live_setup: the host the setup flow is to find and add, and what it is.
+  [[ $t != live_setup ]] || printf ' SENTRY_SETUP_HOST=%q SENTRY_SETUP_KIND=network' "$ALIAS"
+}
+
+# The crate a test is in: the window's own are the binary's.
+pkg_of() {
+  case "$1" in
+    live_setup) echo sentry ;;
+    *) echo sentry-network ;;
+  esac
 }
 
 up() {
@@ -444,9 +462,10 @@ run_tests() {
     scratch "$dir" "$t"
     echo "=== $t"
     env "SENTRY_SSH_CONFIG=$dir/ssh_config" "SENTRY_ROUTER_SCRATCH=$NET" \
+      "SENTRY_SETUP_HOST=$ALIAS" SENTRY_SETUP_KIND=network \
       "XDG_CONFIG_HOME=$dir/xdg/$t/config" "XDG_DATA_HOME=$dir/xdg/$t/data" \
       "XDG_CACHE_HOME=$dir/xdg/$t/cache" \
-      cargo test -q -p sentry-network "$t" -- --ignored --nocapture --test-threads=1 </dev/null || rc=$?
+      cargo test -q -p "$(pkg_of "$t")" "$t" -- --ignored --nocapture --test-threads=1 </dev/null || rc=$?
     [[ $rc -eq 0 ]] && echo "=== $t: ok" || {
       echo "=== $t: FAILED (exit $rc)"
       return "$rc"

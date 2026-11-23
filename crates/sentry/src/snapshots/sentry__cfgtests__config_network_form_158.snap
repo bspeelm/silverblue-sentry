@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 home   F4 config    nothing is written before the save box        ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ home · network ─────────────────────────────────────────────────────────────────────┐┌ Name ───────────────────────────────────────────────────────────────┐
+│  Who it is                                                                          ││ text                                                                │
+│    Name                   home                                                      ││                                                                     │
+│    Router ssh             myrouter                                                  ││ Its name in the window, in `[targets] show`, and of the folder its  │
+│                                                                                     ││ records are kept in. A system that is saved keeps its name here:    │
+│  What its firewall should look like                                                 ││ its log, plans and baseline are under it.                           │
+│    Zones                  lan = lan, wan = wan wan6                                 ││                                                                     │
+│    Port forwards          1 entry                                                   ││ c checks its connection (reads only)                                │
+│                                                                                     ││                                                                     │
+│  The devices you know                                                               ││                                                                     │
+│    Devices                2 entries                                                 ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Config backups                                                                     ││                                                                     │
+│    Backup recipients      (none: no backup is made)                                 ││                                                                     │
+│    Backups kept           12                                                        ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Claude                                                                             ││                                                                     │
+│    Notes                  (none)                                                    ││                                                                     │
+│    Share the WAN address  [ ] no                                                    ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Upkeep · the shared workflows                                                      ││                                                                     │
+│    config-backup          (not on a cadence)                                        ││                                                                     │
+│    firmware-upgrade       (not on a cadence)                                        ││                                                                     │
+│    guarded-change         (not on a cadence)                                        ││                                                                     │
+│    package-update         (not on a cadence)                                        ││                                                                     │
+│    security-action        (not on a cadence)                                        ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   Esc  back   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

@@ -1,10 +1,8 @@
 //! `sentry-server` subcommands that don't need the TUI. Each returns the process exit code.
 
-use std::time::Instant;
-
 use super::config::{self, Server};
 use super::init;
-use super::remote::{Remote, SrvError, SudoMode};
+use super::remote::{Remote, SrvError};
 use sentry_core::exec::sh_quote;
 
 fn load(name: Option<&str>) -> Result<(String, Server), String> {
@@ -404,90 +402,16 @@ pub fn check(name: Option<&str>) -> u8 {
         }
     };
     let r = Remote::new(&n, &s);
-    let mut bad = 0;
-    let t = Instant::now();
-    match r.output(&r.sh(". /etc/os-release; echo \"$PRETTY_NAME · $(uname -r)\"")) {
-        Ok(o) => println!(
-            "✓ {n} ({}): {} · {} ms",
-            r.host,
-            o.trim(),
-            t.elapsed().as_millis()
-        ),
-        Err(e) => {
-            println!("✗ {n} ({}): {e}", r.host);
-            return 1;
-        }
+    // (The same lines the window's Config area shows for `c` on the server.)
+    let (lines, unreachable) = crate::cfgkind::check(&r, &s);
+    lines.iter().for_each(|l| println!("{}", l.line()));
+    if unreachable {
+        return 1;
     }
-    let t = Instant::now();
-    if r.cmd("true").output().is_ok() {
-        println!(
-            "✓ next command over the shared connection: {} ms",
-            t.elapsed().as_millis()
-        );
-    }
-    let mode = r.sudo_mode();
-    match &mode {
-        Ok(SudoMode::NoPasswd) => println!("✓ sudo -n: no password needed"),
-        Ok(SudoMode::Password) => println!(
-            "· sudo asks for a password: monitoring runs without root; maintenance hands you the terminal"
-        ),
-        Ok(SudoMode::Absent) => println!("· no sudo for this user"),
-        Ok(SudoMode::Root) => println!("✓ root login: nothing needs sudo"),
-        Err(e) => {
-            println!("✗ sudo: {e}");
-            bad += 1;
-        }
-    }
-    let tools = [
-        "systemctl",
-        "journalctl",
-        "findmnt",
-        "ss",
-        "apt-get",
-        "docker",
-        "smartctl",
-        "sensors",
-        "nvidia-smi",
-        "fail2ban-client",
-    ];
-    let script = tools
+    let mut bad = lines
         .iter()
-        .map(|t| format!("command -v {t} >/dev/null && echo {t}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    if let Ok(o) = r.output(&r.sh(&format!("{}{script}; true", init::SBIN))) {
-        let found: Vec<&str> = o.lines().collect();
-        let missing: Vec<&str> = tools
-            .iter()
-            .copied()
-            .filter(|t| !found.contains(t))
-            .collect();
-        println!("✓ tools: {}", found.join(" "));
-        if !missing.is_empty() {
-            println!(
-                "· not installed (their panels stay empty): {}",
-                missing.join(" ")
-            );
-        }
-    }
-    if mode == Ok(SudoMode::NoPasswd) {
-        for entry in &s.sudo {
-            // `sudo -l <cmd>` asks sudoers whether it may run, without running it.
-            let words: Vec<&str> = entry.split_whitespace().collect();
-            let ok = r
-                .cmd("sudo")
-                .args(["-n", "-l"])
-                .args(words.iter().copied())
-                .run()
-                .is_ok_and(|o| o.code == 0);
-            if ok {
-                println!("✓ sudo: {entry}");
-            } else {
-                println!("✗ sudo: {entry} (sudoers doesn't allow it, or it isn't installed)");
-                bad += 1;
-            }
-        }
-    }
+        .filter(|l| l.mark == sentry_app::cfgarea::kind::Mark::Bad)
+        .count();
     for p in config::lint(&n, &s) {
         println!("✗ {p}");
         bad += 1;

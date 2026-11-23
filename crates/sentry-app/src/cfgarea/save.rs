@@ -4,9 +4,19 @@
 
 use sentry_core::cfg::{self, FileId, Value};
 
+use sentry_core::tui::widgets;
+
 use super::kind::what_changed;
-use super::{ConfigArea, Fx, Pending, SaveBox, count};
+use super::systems::entry_path;
+use super::{ConfigArea, Fx, Pending, SaveBox, Step, count};
 use crate::app::Win;
+
+/// What a staged change does to a system as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Whole {
+    Added,
+    Removed,
+}
 
 /// The longest a file's scope line gets before it is summed up.
 const SCOPE_MAX: usize = 70;
@@ -25,7 +35,49 @@ impl ConfigArea {
                         .collect::<Vec<_>>(),
                 )
             })
-            .filter(|(_, c)| !c.is_empty())
+            // (The setup's last step writes `config.toml` whatever is staged for it.)
+            .filter(|(f, c)| {
+                !c.is_empty()
+                    || (*f == FileId::App
+                        && self.write_app
+                        && !self.doc(FileId::App).is_some_and(|d| d.there()))
+            })
+            .collect()
+    }
+
+    /// The system a change adds or removes as a whole, and its target.
+    pub(crate) fn whole(&self, p: &Pending) -> Option<(Whole, String, String)> {
+        let c = &p.change;
+        let k = self.kind(c.file)?;
+        let name = k.entry_of(&c.path);
+        if entry_path(c.file, &name)? != c.path {
+            return None;
+        }
+        let what = match (&c.from, &c.to) {
+            (None, Some(_)) => Whole::Added,
+            (Some(_), None) => Whole::Removed,
+            _ => return None,
+        };
+        let target = match c.file {
+            FileId::Servers => format!("srv:{name}"),
+            FileId::Networks => format!("net:{name}"),
+            FileId::App => return None,
+        };
+        Some((what, name, target))
+    }
+
+    /// The systems a save would remove that are at work now: each with what is running
+    /// there. A save that would close one is refused before anything is written.
+    pub(crate) fn busy_removals(&self) -> Vec<(String, Vec<String>)> {
+        self.pending
+            .iter()
+            .filter(|p| p.change.on)
+            .filter_map(|p| self.whole(p))
+            .filter(|(what, _, _)| *what == Whole::Removed)
+            .filter_map(|(_, name, target)| {
+                let t = self.targets.iter().find(|t| t.id == target)?;
+                (!t.going.is_empty()).then(|| (name, t.going.clone()))
+            })
             .collect()
     }
 
@@ -47,11 +99,19 @@ impl ConfigArea {
     fn scope(&self, changes: &[&Pending]) -> String {
         let mut by_entry: Vec<(String, Vec<String>)> = Vec::new();
         for p in changes {
-            let (entry, label) = self.named(p);
+            let (entry, mut label) = self.named(p);
+            match self.whole(p) {
+                Some((Whole::Added, _, _)) => label = "added".to_string(),
+                Some((Whole::Removed, _, _)) => label = "removed".to_string(),
+                None => {}
+            }
             match by_entry.iter_mut().find(|(e, _)| *e == entry) {
                 Some((_, labels)) => labels.push(label),
                 None => by_entry.push((entry, vec![label])),
             }
+        }
+        if changes.is_empty() {
+            return "every setting at its default".to_string();
         }
         let full = by_entry
             .iter()
@@ -145,7 +205,25 @@ impl ConfigArea {
                 (FileId::App, _) => say("the rest of config.toml is read at the next start".into()),
                 (_, _) => {
                     let (entry, _) = self.named(p);
-                    say(format!("{entry} reads its settings again"));
+                    match self.whole(p) {
+                        Some((Whole::Added, name, _)) => say(format!(
+                            "{name} gets a tab (it starts when it first has the window)"
+                        )),
+                        Some((Whole::Removed, name, target)) => {
+                            match self.targets.iter().any(|t| t.id == target) {
+                                true => say(format!("{name}'s tab closes")),
+                                false => say(format!("{name} is no longer configured")),
+                            }
+                        }
+                        None if self.targets.iter().any(|t| {
+                            Self::file_of(&t.id) == c.file
+                                && t.id.split_once(':').is_some_and(|(_, n)| n == entry)
+                        }) =>
+                        {
+                            say(format!("{entry} reads its settings again"))
+                        }
+                        None => {}
+                    }
                 }
             }
         }
@@ -188,8 +266,15 @@ impl ConfigArea {
         for p in &all {
             let (entry, label) = self.named(p);
             out.push(format!(
-                "  {entry} · {label}: {}{}",
-                what_changed(p.change.from.as_ref(), p.change.to.as_ref()),
+                "  {entry} · {}{}",
+                match self.whole(p) {
+                    Some((Whole::Added, _, _)) => "added, as drafted and reviewed".to_string(),
+                    Some((Whole::Removed, _, _)) => "removed from the file".to_string(),
+                    None => format!(
+                        "{label}: {}",
+                        what_changed(p.change.from.as_ref(), p.change.to.as_ref())
+                    ),
+                },
                 match p.change.by {
                     cfg::By::You => "",
                     cfg::By::Agent => "  (Claude)",
@@ -197,7 +282,25 @@ impl ConfigArea {
             ));
         }
         out.push(String::new());
-        out.push(format!("What follows: {}", self.follows(&all).join(" · ")));
+        let follows = self.follows(&all);
+        out.push(match follows.is_empty() {
+            true => "What follows: nothing in the window changes.".to_string(),
+            false => format!("What follows: {}", follows.join(" · ")),
+        });
+        // A removed system's records are nobody's to touch here.
+        for (what, name, target) in all.iter().filter_map(|p| self.whole(p)) {
+            if what != Whole::Removed {
+                continue;
+            }
+            let dirs: Vec<String> = Self::records_of(&target)
+                .iter()
+                .map(|d| widgets::short_home(d))
+                .collect();
+            out.push(format!(
+                "{name}'s records (its log, plans, baseline, runs) stay on disk, untouched: {}",
+                dirs.join(" and ")
+            ));
+        }
         out.push(match kept.len() {
             0 => "Kept before saving: nothing (there was no file).".to_string(),
             _ => format!(
@@ -229,6 +332,28 @@ impl ConfigArea {
     /// `s`: the files are looked at once more, then the box says what Enter will write.
     pub(crate) fn open_save(&mut self, w: &mut Win) -> Option<Fx> {
         let changed = self.look(w);
+        // A system that is at work isn't closed under what it is doing: said before
+        // anything is written.
+        let busy = self.busy_removals();
+        if !busy.is_empty() {
+            let mut lines = Vec::new();
+            for (name, going) in &busy {
+                lines.push(format!("! {name} is to be removed, and it is at work now:"));
+                lines.extend(going.iter().map(|g| format!("  {g}")));
+            }
+            lines.push(String::new());
+            lines.push(
+                "Nothing is saved. Let it finish (or stop it) on its tab first, or take the \
+                 removal back (u on it, in the Overview)."
+                    .to_string(),
+            );
+            self.save = Some(SaveBox {
+                lines,
+                scroll: 0,
+                refused: true,
+            });
+            return (!changed.is_empty()).then_some(Fx::Changed(changed));
+        }
         if self.to_save().is_empty() {
             w.toast(if self.pending.is_empty() {
                 "nothing to save"
@@ -239,6 +364,7 @@ impl ConfigArea {
             self.save = Some(SaveBox {
                 lines: self.save_lines(),
                 scroll: 0,
+                refused: false,
             });
         }
         (!changed.is_empty()).then_some(Fx::Changed(changed))
@@ -247,6 +373,11 @@ impl ConfigArea {
     /// Enter in the save box: each file is written through `cfg` (the copy first), then
     /// read again; what was saved is no longer staged.
     pub(crate) fn do_save(&mut self, w: &mut Win) -> Option<Fx> {
+        // What it was refused for may still hold: the box says so again.
+        if self.save.as_ref().is_some_and(|b| b.refused) || !self.busy_removals().is_empty() {
+            w.toast("nothing saved: a system to be removed is at work");
+            return self.open_save(w);
+        }
         // A file that changed while the box was open is not written over: the box says
         // what the save is now.
         if !self.look(w).is_empty() {
@@ -257,6 +388,7 @@ impl ConfigArea {
                     self.save = Some(SaveBox {
                         lines: self.save_lines(),
                         scroll: 0,
+                        refused: false,
                     })
                 }
             }
@@ -265,6 +397,16 @@ impl ConfigArea {
         let files: Vec<FileId> = self.to_save().into_iter().map(|(f, _)| f).collect();
         let (mut saved, mut said) = (Vec::new(), Vec::new());
         let mut failed = None;
+        // The systems this save adds, as the window will name them.
+        let adds: Vec<(FileId, String)> = self
+            .pending
+            .iter()
+            .filter(|p| p.change.on)
+            .filter_map(|p| match self.whole(p) {
+                Some((Whole::Added, _, target)) => Some((p.change.file, target)),
+                _ => None,
+            })
+            .collect();
         for id in files {
             let Some(d) = self.doc_mut(id) else {
                 continue;
@@ -306,12 +448,23 @@ impl ConfigArea {
                 self.save = (!self.to_save().is_empty()).then(|| SaveBox {
                     lines: self.save_lines(),
                     scroll: 0,
+                    refused: false,
                 });
             }
             None => {
                 self.save = None;
                 w.toast(&format!("saved {}", said.join(", ")));
             }
+        }
+        self.added = adds
+            .into_iter()
+            .filter(|(f, _)| saved.contains(f))
+            .map(|(_, t)| t)
+            .collect();
+        // What was drafted and is saved now is a system like any other.
+        self.live_drafts();
+        if self.save.is_none() && self.guide == Some(Step::Save) {
+            self.guide_done();
         }
         (!saved.is_empty()).then_some(Fx::Changed(saved))
     }

@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config*    nothing is written before the save box                                   ● 3 not saved   Mon 26 Oct 12:00
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 Agent › 2 This machine › 3 Systems › 4 Review › 5 Upkeep ›  6 Save
+ Enter opens the save box: nothing is written before its Enter
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ this machine · silverblue 44.1 ───────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ What         reviews at start off, after a run on · no notes files                │
+│  ○ newbox           server           to be added                      ││ Window       a tab (silverblue 44.1)                                              │
+│  ○ home             network          to be added                      ││ File         config.toml · not there yet: every setting at its default            │
+│  + add a system…                                                      ││                                                                                   │
+│                                                                       ││ Enter opens it · e opens config.toml in $EDITOR                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                            ┌ Save configuration ──────────────────────────────────────────────────────────────────────────────┐                            │
+│                            │                                                                                                  │                            │
+│                            │   config.toml           this machine: Review at start  (a new file)                              │                            │
+│                            │   server_config.yaml    newbox: added  (a new file)                                              │                            │
+│                            │   network_config.yaml   home: added  (a new file)                                                │                            │
+│                            │                                                                                                  │                            │
+│                            │   this machine · Review at start: off                                                            │                            │
+│                            │   newbox · added, as drafted and reviewed                                                        │                            │
+│                            │   home · added, as drafted and reviewed                                                          │                            │
+│                            │                                                                                                  │                            │
+│                            │ What follows: reviews at start and after a run follow it from now · newbox gets a tab (it starts │                            │
+│                            │ when it first has the window) · home gets a tab (it starts when it first has the window)         │                            │
+│                            │ Kept before saving: nothing (there was no file).                                                 │                            │
+│                            │                                                                                                  │                            │
+│                            │  Enter  save    Esc  back   nothing is written before Enter                                      │                            │
+│                            └──────────────────────────────────────────────────────────────────────────────────────────────────┘                            │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · 3 changes ──────────────────────────────────────────────────┐│                                                                                   │
+│  [x] this machine  Review at start  off                               ││                                                                                   │
+│  [x] newbox  added  a new system, as drafted and reviewed             ││                                                                                   │
+│  [x] home  added  a new system, as drafted and reviewed               ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  save   Esc  back   j/k  scroll

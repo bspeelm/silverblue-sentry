@@ -235,6 +235,76 @@ Part 2 (the area):
   `claude::set_command` forgets that command's cached answer, and the Agent screen's own
   lookup (`claude::find`) never uses the cache.
 
+Part 3 (systems):
+- **`Kind`** gained, each with a default: `blank(list)` (a new record), `choices(path)` (a
+  tracked item's workflow), `action(path)`/`act(path, arg)` (a field's own key: a network's
+  backup recipients make a key), `check(doc, entry) -> Option<Checker>` (a closure the area
+  runs on a worker, since a document can't cross threads), `probe(ssh, name) -> Probe`,
+  `upkeep(doc, entry, disk) -> Upkeep` and `cadence(doc, entry, workflow, every)` (the
+  setting to stage and its whole value). `Entry` gained `ssh`, `DocAny` gained `on_disk()`.
+- **Which kind a host is** is decided in the binary (`crates/sentry/src/tui.rs` `probe`): one
+  cheap read (`ubus` there, or os-release `ID=openwrt`) then `NetworksKind.probe` or
+  `ServersKind.probe`, each `init::discover` + `init::draft`. `sentry-app` has only the
+  `Prober` it is handed (`ConfigArea::set_prober`), the refusal's words (`discover::refusal`)
+  and the list of hosts ticked and confirmed (`ConfigArea::hosts_asked`): what part 4's
+  `probe` gateway is to check.
+- **Renaming** a saved system is refused in its form, saying why (its log, plans, baseline and
+  runs are under `servers/<name>/`; nothing in the window moves or deletes records) and to use
+  the file. A system only staged (drafted, not saved) has no records and is renamed freely:
+  its staged add moves to the new key.
+- **A drafted system is one staged change** (`servers.<name>`, `from` nothing, `By::You`):
+  every later edit of it (the review's ticks, its ssh, its cadence, a form's field) is folded
+  into that change's value (`ConfigArea::stage`), so undoing it undoes all of it and no change
+  can outlive the entry it is in.
+- **A list of records is staged whole** at its own path, like every list (part 2's rule): a
+  row's form sets one field in the list's value. `n` adds what `Kind::blank` gives and opens
+  it; `x` removes. The form widget hands these to its owner (`Fx::Add`, `Fx::Remove`).
+- **Essential flags changed**: a network's `devices[].mac`, `hostname`, `leave_alone`,
+  `private_mac` and `backup.keep`; a server's `maintenance.items` with `id`, `source`, `risk`,
+  `workflow` (so the item form's workflow is a pick among that server's workflows). A system's
+  `maintenance.cadence` stays essential but is shown as its Upkeep section, not as a field.
+- **Upkeep is the last group of the system's form**, a field per workflow whose value is how
+  often it is due (a duration, `off`, or empty). `off` and empty are the same for a server
+  and a network (a workflow that isn't in the cadence isn't on a clock); for this machine's
+  jobs empty is the job's own default and `off` is off. This machine's workflows have no
+  cadence (they run when something waits) and say so; its jobs are listed beside them.
+- **"Its own copy"** (`o`) is a box of its own, never part of the save box (`upkeep::copy_set`
+  copies every `*.toml` of the shared set, writes over nothing). A system that already has
+  its own set, and this machine (one set, nobody's to share), open the file at once.
+- **The tick-list** is core `tui/ticklist.rs` (`TickList`, `Row`, headings, notes, a state per
+  row, Space / `a` / `/`, `draw_panels` with the owner's lines under the selected row's). It
+  is used for the hosts to look at, the review of a draft, the setup's routine upkeep and
+  which targets the strip shows (Space on that field: the order stays the list's own, `J`/`K`).
+  The network's family filter keeps its `Menu`: its rows carry the device's own state and
+  warnings and its tests are of that widget, so moving it was not a clean swap.
+- **The setup's keys**: Enter goes on, `b` or Backspace goes back, Esc leaves (asked once). In
+  a step that is a form (Agent, This machine) Space edits or toggles the field under the
+  cursor, since Enter is the flow's. On Agent, Enter first tests the agent when it is there
+  and untested, and `n` goes on without one. The screens' own keys (digits, Tab) do nothing
+  while the flow is on: the rail is the way round.
+- **Leaving the setup** (Esc, then Enter in its box) writes `config.toml` when there is none:
+  as it is on disk, every setting at its default, nothing staged in it. That is the one write
+  outside the save box, said in the box that asks; what is staged stays staged. `:setup`
+  picks the flow up at the step it was left. The last step's save box has `config.toml` in it
+  whatever is staged (`write_app`), so finishing always ends a first run.
+- **Following a save** (`App::sync_targets`): ids the files gained are built by the registered
+  `Maker` (`App::set_maker`: the binary's `tui::make`, the function its own start uses),
+  added asleep, and put where they would be at the next start (the files' order, then
+  `[targets] show`'s); ids they lost are closed (`App::close`) unless at work; a slot whose entry's
+  file changed looks at its files (`Why::Edited`), and one that never had the window is built
+  again from the file as it is now. What was added or lost is told by comparing the files on
+  disk with what they said before (`ConfigArea::targets_changed`), so a window that never had
+  a target (left out by `[targets] show` at start) doesn't lose anything by a save.
+- **A system staged for removal** leaves the Overview's systems at once and is a row under
+  Pending (`u` there takes it back). The save box refuses while it is at work, before
+  anything is written.
+- **`live_setup`** is one test in the binary's crate (`crates/sentry/src/cfgtests.rs`), run by
+  both scripts with `SENTRY_SETUP_HOST` / `SENTRY_SETUP_KIND`: the prober, the makers and all
+  three kinds only meet there.
+- **`sentry-server` / `sentry-network` without any config file** open the window on the setup
+  (the same first-run condition as `sentry`). With another file there and none of their own
+  they still say to run `init`, as the commands without a window do.
+
 ## Order of work (one PR at a time)
 
 1. **One writer**: `core/cfg` (`render`, `save` + backups, `diff`/`apply`), `Serialize` clean-up,

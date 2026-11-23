@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use super::collect::{self, CollectError, ifaces, probe};
+use super::collect::{self, CollectError, probe};
 use super::config::{self, Network};
 use super::init;
 use super::rates;
@@ -134,22 +134,6 @@ pub fn audit(name: Option<&str>) -> u8 {
     }
 }
 
-/// The commands the network target uses, now or soon: which are there is worth knowing
-/// before anything depends on them.
-const TOOLS: &[&str] = &[
-    "ubus",
-    "uci",
-    "ip",
-    "netstat",
-    "nft",
-    "iw",
-    "logread",
-    "apk",
-    "sysupgrade",
-    "hexdump",
-    "brctl",
-];
-
 /// `check [name]`: is the router reachable, as root, and what was found there.
 pub fn check(name: Option<&str>) -> u8 {
     let (n, cfg) = match load(name) {
@@ -161,56 +145,22 @@ pub fn check(name: Option<&str>) -> u8 {
     };
     let r = Router::new(&n, &cfg);
     println!("{n} (ssh {})", r.host);
-    let mut bad = 0;
+    // (The same lines the window's Config area shows for `c` on the network.)
+    let first = crate::cfgkind::check(&r);
+    first.lines.iter().for_each(|l| println!("{}", l.line()));
+    if first.unreachable {
+        return 1;
+    }
+    let mut bad = first
+        .lines
+        .iter()
+        .filter(|l| l.mark == sentry_app::cfgarea::kind::Mark::Bad)
+        .count();
+    let ifs = first.ifaces;
     let mut no = |what: String| {
         println!("✗ {what}");
         bad += 1;
     };
-    let t = Instant::now();
-    let uid = match r.output(&r.sh("id -u")) {
-        Ok(u) => u.trim().to_string(),
-        Err(e) => {
-            println!("✗ not reachable: {e}");
-            return 1;
-        }
-    };
-    let first = t.elapsed().as_millis();
-    let t = Instant::now();
-    let _ = r.output(&r.sh("true"));
-    let again = t.elapsed().as_millis();
-    if uid == "0" {
-        println!("✓ reachable as root ({first} ms, then {again} ms on the shared connection)");
-    } else {
-        no(format!(
-            "the login is uid {uid}, not root: a router's login is root (there is no sudo)"
-        ));
-    }
-    let tools = format!(
-        "for b in {}; do command -v $b >/dev/null && echo \"+$b\" || echo \"-$b\"; done",
-        TOOLS.join(" ")
-    );
-    if let Ok(out) = r.output(&r.sh(&tools)) {
-        let (have, miss): (Vec<&str>, Vec<&str>) = out.lines().partition(|l| l.starts_with('+'));
-        let strip = |v: Vec<&str>| v.iter().map(|l| &l[1..]).collect::<Vec<_>>().join(" ");
-        if miss.is_empty() {
-            println!("✓ tools: {}", strip(have));
-        } else {
-            println!("· tools: {} (missing: {})", strip(have), strip(miss));
-        }
-    }
-    let t = Instant::now();
-    let ifs = ifaces::collect(&r);
-    let took = t.elapsed().as_millis();
-    match &ifs {
-        Ok(i) => {
-            let b = &i.board;
-            println!(
-                "✓ {} {} ({}) · {} · {} · kernel {} ({took} ms)",
-                b.distribution, b.version, b.revision, b.model, b.target, b.kernel
-            );
-        }
-        Err(e) => no(format!("interfaces: {e}")),
-    }
     let t = Instant::now();
     match probe::collect(&r) {
         Ok(p) => {
@@ -227,7 +177,7 @@ pub fn check(name: Option<&str>) -> u8 {
         }
         Err(e) => no(format!("probe: {e}")),
     }
-    if let Ok(i) = &ifs {
+    if let Some(i) = &ifs {
         let rows = i.rows();
         let said: Vec<String> = rows
             .iter()

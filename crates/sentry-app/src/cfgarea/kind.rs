@@ -36,6 +36,8 @@ pub trait DocAny {
     fn rebase(&mut self, changes: &[Change]) -> Result<cfg::Rebased, String>;
     /// Write it (`cfg::Doc::save`): the backup's path, when the file was there.
     fn save(&mut self) -> io::Result<Option<PathBuf>>;
+    /// The same file with nothing staged in it: what is on disk.
+    fn on_disk(&self) -> Box<dyn DocAny>;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -81,6 +83,13 @@ impl<T: ConfigFile + 'static> DocAny for Doc<T> {
     fn save(&mut self) -> io::Result<Option<PathBuf>> {
         Doc::save(self)
     }
+    fn on_disk(&self) -> Box<dyn DocAny> {
+        let mut d = self.clone();
+        if let Ok(b) = Doc::base(self) {
+            d.now = b;
+        }
+        Box::new(d)
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -117,6 +126,8 @@ pub struct Entry {
     pub target: Option<String>,
     /// The area's screen that has it.
     pub screen: Screen,
+    /// What ssh connects to for it (a server, a network's router).
+    pub ssh: Option<String>,
 }
 
 /// One setting in a form: where it is, and what the form says about it beyond its table.
@@ -174,11 +185,208 @@ pub trait Kind {
     fn explain(&self, path: &str) -> Option<&'static str> {
         cfg::fields::find(self.fields(), path).map(|f| f.help)
     }
-    // For the next part (servers' and networks' forms, discovery, upkeep), each with a
-    // default so the kinds there are keep compiling:
-    //   fn probe(&self, ssh: &str) -> Probe            (on a worker: `init::discover`)
-    //   fn check(&self, d: &dyn DocAny, entry: &str) -> Vec<CheckLine>
-    //   fn upkeep(&self, d: &dyn DocAny, entry: &str) -> Vec<WfRow>
+    /// A new record for the list at `list` (`servers.myserver.timers`), as `n` adds it.
+    fn blank(&self, _list: &str) -> Option<Value> {
+        None
+    }
+    /// What the setting at `path` is one of, when that is only known here (a tracked
+    /// item's workflow: that server's workflows). `disk`: files may be read.
+    fn choices(&self, _d: &dyn DocAny, _path: &str, _disk: bool) -> Option<Vec<String>> {
+        None
+    }
+    /// Something a field can do besides being typed (`K` on it): a network's backup
+    /// recipients make a key.
+    fn action(&self, _path: &str) -> Option<FieldAction> {
+        None
+    }
+    /// Do it with what was typed: the element to add to the field's list, or why not.
+    fn act(&self, _path: &str, _arg: &str) -> Result<String, String> {
+        Err("nothing to do here".into())
+    }
+    /// The connection checks of one entry (`c`): what runs them, on a worker thread. Reads
+    /// only. None: this kind has no host to check.
+    fn check(&self, _d: &dyn DocAny, _entry: &str) -> Option<Checker> {
+        None
+    }
+    /// Look at the host behind `ssh` (on a worker thread, reads only) and draft its entry
+    /// under `name`. Which kind a host is, is the binary's to tell: it asks the right one.
+    fn probe(&self, ssh: &str, _name: &str) -> Probe {
+        Probe::Failed(Refused {
+            ssh: ssh.to_string(),
+            why: "this kind of config has no hosts".into(),
+            todo: String::new(),
+        })
+    }
+    /// An entry's workflows and how often each is due. `disk`: its folders may be read
+    /// (else: the seeded set as shipped).
+    fn upkeep(&self, _d: &dyn DocAny, _entry: &str, _disk: bool) -> Upkeep {
+        Upkeep::default()
+    }
+    /// The change that makes `workflow` due every `every` for this entry (None: not on a
+    /// cadence; `off` where the kind has it): the setting to stage and its whole value.
+    fn cadence(
+        &self,
+        _d: &dyn DocAny,
+        _entry: &str,
+        _workflow: &str,
+        _every: Option<&str>,
+    ) -> Option<(String, Option<Value>)> {
+        None
+    }
+}
+
+/// How a check line reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Ok,
+    Note,
+    Bad,
+}
+
+/// One line of a connection check: `✓ reachable · 41 ms`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckLine {
+    pub mark: Mark,
+    pub text: String,
+}
+
+impl CheckLine {
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self {
+            mark: Mark::Ok,
+            text: text.into(),
+        }
+    }
+    pub fn note(text: impl Into<String>) -> Self {
+        Self {
+            mark: Mark::Note,
+            text: text.into(),
+        }
+    }
+    pub fn bad(text: impl Into<String>) -> Self {
+        Self {
+            mark: Mark::Bad,
+            text: text.into(),
+        }
+    }
+
+    /// As a terminal prints it.
+    pub fn line(&self) -> String {
+        let mark = match self.mark {
+            Mark::Ok => "✓",
+            Mark::Note => "·",
+            Mark::Bad => "✗",
+        };
+        format!("{mark} {}", self.text)
+    }
+}
+
+/// What runs an entry's connection checks (on a worker thread).
+pub type Checker = Box<dyn FnOnce() -> Vec<CheckLine> + Send>;
+
+/// Something a field's key does: what it is called and what it asks for first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAction {
+    /// The key bar's word for it (`make a key`).
+    pub label: &'static str,
+    /// What the line typed is (`Where the secret key is written`).
+    pub prompt: String,
+    /// What the line starts as.
+    pub start: String,
+    /// What is said when it is done.
+    pub done: &'static str,
+}
+
+/// What looking at a host came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Probe {
+    Drafted(Drafted),
+    Failed(Refused),
+}
+
+/// An entry drafted from what a host said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drafted {
+    pub file: FileId,
+    /// `server`, `network`.
+    pub kind: &'static str,
+    /// The name it was drafted under (the area picks another when it is taken).
+    pub name: String,
+    pub ssh: String,
+    /// The entry, as its file holds one.
+    pub entry: Value,
+    /// What the draft says about itself; a note's path is within the entry (`timers`).
+    pub notes: Vec<cfg::Note>,
+    /// What the host is, in a few words (its system).
+    pub what: String,
+}
+
+/// A host that couldn't be looked at: why, and what to do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub ssh: String,
+    pub why: String,
+    pub todo: String,
+}
+
+/// One workflow (or routine job) of a system, and how often it is due.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WfRow {
+    pub name: String,
+    /// What it is for, in a line.
+    pub title: String,
+    /// `workflow`, `job`.
+    pub what: &'static str,
+    /// It is the system's own copy (not the shared set's).
+    pub own: bool,
+    pub draft: bool,
+    /// What its lint says.
+    pub problems: Vec<String>,
+    /// How often it is due as the file says: `30d`, `off`, or nothing (not on a cadence).
+    pub every: String,
+    /// What applies when the file says nothing (a job's own default).
+    pub default: String,
+    /// What the setup flow proposes for a system just added (None: nothing).
+    pub suggest: Option<&'static str>,
+    /// Its file, where it has one.
+    pub path: Option<PathBuf>,
+}
+
+/// A system's upkeep: its workflows, and where they come from.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Upkeep {
+    pub rows: Vec<WfRow>,
+    /// The folder of the set its kind of device shares.
+    pub shared: PathBuf,
+    /// The folder of its own set, which replaces the shared one when it holds any (None:
+    /// this kind has no set per system).
+    pub own: Option<PathBuf>,
+    /// It follows its own set now.
+    pub has_own: bool,
+}
+
+/// What a draft's notes say of `path` within its entry.
+pub fn note_on<'a>(notes: &'a [cfg::Note], path: &str) -> Option<&'a str> {
+    notes
+        .iter()
+        .find(|n| n.path.as_deref() == Some(path))
+        .map(|n| n.text.as_str())
+}
+
+/// A draft's notes with their paths within the entry (`servers.<name>.timers` → `timers`).
+pub fn notes_within(notes: Vec<cfg::Note>, entry_path: &str) -> Vec<cfg::Note> {
+    notes
+        .into_iter()
+        .map(|mut n| {
+            n.path = n.path.map(|p| {
+                p.strip_prefix(entry_path)
+                    .and_then(|r| r.strip_prefix('.'))
+                    .unwrap_or(&p)
+                    .to_string()
+            });
+            n
+        })
+        .collect()
 }
 
 /// Set the setting at `path` to `to` (None: take it away) on what is to be: the change that
@@ -233,6 +441,11 @@ pub fn to_form(kind: cfg::Kind, v: Option<&Value>) -> Option<form::Value> {
             _ => Vec::new(),
         }),
         (cfg::Kind::Map, v) => form::Value::Pairs(match v {
+            // Named lists of words (a zone's interfaces): `name = a b`.
+            Some(Value::Map(m)) if !m.is_empty() && m.iter().all(|(_, v)| words(v).is_some()) => m
+                .iter()
+                .map(|(k, v)| (k.clone(), words(v).unwrap_or_default()))
+                .collect(),
             Some(Value::Map(m)) => {
                 if m.iter().any(|(_, v)| !matches!(v, Value::Str(_))) {
                     return None;
@@ -265,6 +478,45 @@ pub fn to_form(kind: cfg::Kind, v: Option<&Value>) -> Option<form::Value> {
         }
         _ => return None,
     })
+}
+
+/// A list of words on one line (`lan guest`); None: not a list of words.
+fn words(v: &Value) -> Option<String> {
+    match v {
+        Value::List(l) => l
+            .iter()
+            .map(|x| match x {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|w| w.join(" ")),
+        _ => None,
+    }
+}
+
+/// Named entries as named lists of words: what `name = a b` means where the setting is
+/// one (a zone's interfaces).
+pub fn lists_of(v: Value) -> Value {
+    match v {
+        Value::Map(m) => Value::Map(
+            m.into_iter()
+                .map(|(k, v)| {
+                    let v = match v {
+                        Value::Str(s) => Value::List(
+                            s.split([' ', ','])
+                                .filter(|w| !w.is_empty())
+                                .map(|w| Value::Str(w.to_string()))
+                                .collect(),
+                        ),
+                        v => v,
+                    };
+                    (k, v)
+                })
+                .collect(),
+        ),
+        v => v,
+    }
 }
 
 /// A form's value as the file holds it. `nullable`: the setting may be left unset, which is

@@ -1,0 +1,16 @@
+---
+source: crates/sentry-core/src/tui/ticklist.rs
+expression: s
+---
+┌ Hosts · 1 of 3 ticked ────────────────────────────────────┐┌ myserver ─────────────────────────────────────┐
+│  From ~/.ssh/config                                       ││ An ssh host of yours.                         │
+│  [x] myserver                                             ││                                               │
+│  [ ] other  user@192.0.2.7                                ││ Enter reads what is ticked                    │
+│                                                           ││                                               │
+│  On this network  the default gateway                     ││                                               │
+│  [ ] 192.0.2.1  likely your router  reading…              ││                                               │
+│      n adds one by name                                   ││                                               │
+│                                                           ││                                               │
+│                                                           ││                                               │
+│                                                           ││                                               │
+└───────────────────────────────────────────────────────────┘└───────────────────────────────────────────────┘

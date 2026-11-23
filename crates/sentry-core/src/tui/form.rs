@@ -5,8 +5,9 @@
 //!
 //! Keys: `j`/`k` move; Enter edits a value in a line editor ([`LineEdit`]), toggles a yes/no,
 //! takes the next of a choice, or goes into a list; Space toggles and cycles; in a list `n`
-//! adds, `x` removes, Enter edits the element, `J`/`K` move it; Esc leaves the editor, then
-//! the list, then the form ([`Fx::Leave`]).
+//! adds, `x` removes, Enter edits the element, `J`/`K` move it (a record's row is its owner's
+//! to open, add and remove: [`Fx::Open`], [`Fx::Add`], [`Fx::Remove`]); Esc leaves the
+//! editor, then the list, then the form ([`Fx::Leave`]).
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -197,6 +198,10 @@ pub enum Fx {
     Set(String, Value),
     /// Enter on a record's row: (the field's key, which row).
     Open(String, usize),
+    /// `n` in a list of records: its owner adds one (the field's key).
+    Add(String),
+    /// `x` on a record's row: its owner takes it away (the field's key, which row).
+    Remove(String, usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,9 +225,32 @@ impl Form {
         }
     }
 
+    /// The cursor on the field with this key, if the form has it.
+    pub fn go(&mut self, key: &str) -> bool {
+        match self.fields.iter().position(|f| f.key == key) {
+            Some(i) => {
+                self.cur = i;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Which element of the selected field's list the cursor is on, while the list is open.
+    pub fn element(&self) -> Option<usize> {
+        match self.state {
+            State::In(i) => Some(i),
+            _ => None,
+        }
+    }
+
     /// The same place in a form made again from newer values (after a change was taken).
     pub fn at(mut self, old: &Form) -> Self {
-        self.cur = old.cur.min(self.fields.len().saturating_sub(1));
+        self.cur = old
+            .field()
+            .and_then(|f| self.fields.iter().position(|x| x.key == f.key))
+            .unwrap_or(old.cur)
+            .min(self.fields.len().saturating_sub(1));
         if let State::In(i) = old.state {
             let n = self.fields.get(self.cur).map_or(0, |f| f.value.len());
             self.state = State::In(i.min(n.saturating_sub(1)));
@@ -324,11 +352,8 @@ impl Form {
                             note: None,
                         };
                     }
-                    v if v.is_list() => {
-                        if v.len() > 0 {
-                            self.state = State::In(0);
-                        }
-                    }
+                    // Records: the list opens even when it is empty (`n` adds the first).
+                    v if v.is_list() => self.state = State::In(0),
                     v => {
                         self.state = State::Edit {
                             line: LineEdit::new(&v.shown()),
@@ -356,6 +381,8 @@ impl Form {
             }
             KeyCode::Up | KeyCode::Char('k') => self.state = State::In(at.saturating_sub(1)),
             KeyCode::Enter if rows && n > 0 => return Fx::Open(key, at),
+            KeyCode::Char('n') if rows => return Fx::Add(key),
+            KeyCode::Char('x') if rows && n > 0 => return Fx::Remove(key, at),
             KeyCode::Enter if n > 0 => {
                 self.state = State::Edit {
                     line: LineEdit::new(&self.fields[self.cur].value.elem(at)),
@@ -547,9 +574,13 @@ impl Form {
         };
         match &self.state {
             State::Edit { .. } => vec![("Enter", "set"), ("Esc", "leave it"), ("←→", "move")],
-            State::In(_) if matches!(f.value, Value::Rows(..)) => {
-                vec![("Enter", "open"), ("j/k", "move"), ("Esc", "back")]
-            }
+            State::In(_) if matches!(f.value, Value::Rows(..)) => vec![
+                ("Enter", "open"),
+                ("n", "add"),
+                ("x", "remove"),
+                ("j/k", "move"),
+                ("Esc", "back"),
+            ],
             State::In(_) => vec![
                 ("Enter", "edit"),
                 ("n", "add"),
@@ -1061,11 +1092,43 @@ mod tests {
         f.key(&key(KeyCode::Char('j')));
         f.key(&key(KeyCode::Enter));
         f.key(&key(KeyCode::Char('j')));
-        assert_eq!(f.key(&key(KeyCode::Char('x'))), Fx::None);
         assert_eq!(
             f.key(&key(KeyCode::Enter)),
             Fx::Open("servers.myserver.timers".into(), 1)
         );
+        // So are adding one and taking one away: the form doesn't know what a record is.
+        assert_eq!(
+            f.key(&key(KeyCode::Char('n'))),
+            Fx::Add("servers.myserver.timers".into())
+        );
+        assert_eq!(
+            f.key(&key(KeyCode::Char('x'))),
+            Fx::Remove("servers.myserver.timers".into(), 1)
+        );
+        // An empty list of records opens too: `n` adds its first.
+        let mut f = Form::new(
+            "x",
+            vec![Field::new(
+                "servers.myserver.disks",
+                "Disks",
+                Value::Rows(vec!["mount".into()], vec![]),
+            )],
+        );
+        f.key(&key(KeyCode::Enter));
+        assert!(f.captures());
+        assert_eq!(f.key(&key(KeyCode::Enter)), Fx::None);
+        assert_eq!(f.key(&key(KeyCode::Char('x'))), Fx::None);
+        assert_eq!(
+            f.key(&key(KeyCode::Char('n'))),
+            Fx::Add("servers.myserver.disks".into())
+        );
+        // The cursor goes to a field by its key, and a form made again keeps it there.
+        let mut f = form();
+        assert!(f.go("targets.show") && !f.go("nope"));
+        assert_eq!(f.field().unwrap().key, "targets.show");
+        let mut newer = form();
+        newer.fields.remove(0);
+        assert_eq!(newer.at(&f).field().unwrap().key, "targets.show");
     }
 
     #[test]

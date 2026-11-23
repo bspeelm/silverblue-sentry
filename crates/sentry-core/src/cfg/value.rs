@@ -59,6 +59,42 @@ impl Value {
         })
     }
 
+    /// Put `to` at `path` (None: take what is there away), whatever was there: a map's entry
+    /// is made when it isn't there, a list's element must be (or be the next one). Fails,
+    /// changing nothing, when the path leads nowhere.
+    pub fn set(&mut self, path: &[Seg], to: Option<Value>) -> Result<(), String> {
+        let Some((last, parent)) = path.split_last() else {
+            return match to {
+                Some(v) => {
+                    *self = v;
+                    Ok(())
+                }
+                None => Err("nothing to take away".into()),
+            };
+        };
+        let nowhere = || format!("{}: there's no such setting", path_string(path));
+        match (last, self.at_mut(parent).ok_or_else(nowhere)?) {
+            (Seg::Key(k), Value::Map(m)) => match (m.iter().position(|(x, _)| x == k), to) {
+                (Some(i), Some(v)) => m[i].1 = v,
+                (Some(i), None) => {
+                    m.remove(i);
+                }
+                (None, Some(v)) => m.push((k.clone(), v)),
+                (None, None) => {}
+            },
+            (Seg::Index(i), Value::List(l)) => match to {
+                Some(v) if *i < l.len() => l[*i] = v,
+                Some(v) if *i == l.len() => l.push(v),
+                None if *i < l.len() => {
+                    l.remove(*i);
+                }
+                _ => return Err(nowhere()),
+            },
+            _ => return Err(nowhere()),
+        }
+        Ok(())
+    }
+
     /// Every leaf's path: a scalar, a null, an empty list or map.
     pub fn leaves(&self) -> Vec<Vec<Seg>> {
         fn walk(v: &Value, at: &mut Vec<Seg>, out: &mut Vec<Vec<Seg>>) {
@@ -373,5 +409,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["z", "a", "m.a", "m.b"]
         );
+    }
+
+    #[test]
+    fn a_value_is_put_at_a_path_whatever_was_there() {
+        let v = |json: &str| -> Value { serde_json::from_str(json).unwrap() };
+        let mut t = v(r#"{"a": {"l": ["x", "y"]}, "n": 1}"#);
+        let p = |s: &str| parse_path(s).unwrap();
+        t.set(&p("n"), Some(v("2"))).unwrap();
+        t.set(&p("a.l[1]"), Some(v("\"z\""))).unwrap();
+        t.set(&p("a.l[2]"), Some(v("\"w\""))).unwrap();
+        t.set(&p("a.new"), Some(v("true"))).unwrap();
+        assert_eq!(
+            t,
+            v(r#"{"a": {"l": ["x", "z", "w"], "new": true}, "n": 2}"#)
+        );
+        // Taken away: a map's entry, a list's element.
+        t.set(&p("a.new"), None).unwrap();
+        t.set(&p("a.l[0]"), None).unwrap();
+        t.set(&p("gone"), None).unwrap();
+        assert_eq!(t, v(r#"{"a": {"l": ["z", "w"]}, "n": 2}"#));
+        // A path that leads nowhere changes nothing.
+        let before = t.clone();
+        assert!(t.set(&p("a.l[5]"), Some(v("1"))).is_err());
+        assert!(t.set(&p("nope.x"), Some(v("1"))).is_err());
+        assert!(t.set(&p("n.x"), Some(v("1"))).is_err());
+        assert_eq!(t, before);
     }
 }

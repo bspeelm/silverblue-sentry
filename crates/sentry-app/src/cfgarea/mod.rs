@@ -11,10 +11,14 @@
 //! a conflict ([`ConfigArea::look`]).
 
 pub mod agent;
+pub mod discover;
 mod draw;
+pub mod guide;
 mod keys;
 pub mod kind;
 mod save;
+pub mod systems;
+pub mod upkeep;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -28,6 +32,7 @@ use sentry_core::tui::lineedit::LineEdit;
 
 use crate::app::{Event, Win};
 pub use draw::accent;
+pub use guide::Step;
 pub use kind::{DocAny, Entry, Item, Kind, Section};
 
 /// One thing wrong in a config file.
@@ -253,7 +258,66 @@ pub struct InWindow {
     pub hidden: bool,
     /// It is at work now (a run, a session, a step for another target).
     pub working: bool,
+    /// What closing it now would cut short, a line each (nothing: it can be closed).
+    pub going: Vec<String>,
 }
+
+/// What is in front of the screen in view: a page of the add flow or of the setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    None,
+    /// The hosts sentry could look at.
+    Add,
+    /// What a drafted system proposes to watch, then its name.
+    Review,
+    /// The setup's routine upkeep.
+    Routine,
+    /// Which targets the strip shows.
+    Shown,
+}
+
+/// A box of the area's own that asks before something is done.
+pub struct Ask {
+    pub title: String,
+    pub lines: Vec<String>,
+    /// What Enter is called.
+    pub enter: &'static str,
+    pub(crate) yes: Yes,
+}
+
+/// What Enter in such a box does.
+pub(crate) enum Yes {
+    /// Look at these hosts.
+    Probe(Vec<String>),
+    /// Copy the shared set of workflows into a system's own folder, then open one.
+    OwnCopy {
+        shared: PathBuf,
+        own: PathBuf,
+        open: Option<PathBuf>,
+    },
+    /// Leave the setup flow.
+    LeaveGuide,
+}
+
+/// A line typed in a box of the area's own.
+pub struct Prompt {
+    pub title: String,
+    pub label: String,
+    pub help: String,
+    pub line: LineEdit,
+    pub(crate) then: Then,
+}
+
+/// What the line typed is for.
+pub(crate) enum Then {
+    /// A host to look at, by name.
+    AddHost,
+    /// A field's own action (a network's backup key): the field, what is said after.
+    Act { path: String, done: &'static str },
+}
+
+/// A field's action, as a test gives it (nothing is written offline).
+pub type Act = Box<dyn Fn(&str, &str) -> Result<String, String>>;
 
 /// What the area asks of the app when a key or an event is done.
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +333,8 @@ pub enum Fx {
 pub struct SaveBox {
     pub lines: Vec<String>,
     scroll: usize,
+    /// It says why nothing can be saved now: Enter writes nothing.
+    pub refused: bool,
 }
 
 /// The Config area: the three files side by side, what is staged, and its screens.
@@ -279,6 +345,47 @@ pub struct ConfigArea {
     /// Everything wrong in the files as they are to be (`Win.config_problems` is a copy).
     pub problems: Vec<Problem>,
     pub screen: Screen,
+    /// The page in front of the screen (the add flow's, the setup's).
+    pub page: Page,
+    /// The setup flow: the step in view.
+    pub guide: Option<Step>,
+    /// The step the setup flow was left at (`:setup` picks it up there).
+    guide_left: Option<Step>,
+    /// The hosts sentry could look at, and where each stands.
+    pub add: Option<discover::Add>,
+    /// The systems drafted here and staged to be added.
+    pub drafts: Vec<discover::DraftInfo>,
+    /// The review of one of them.
+    pub review: Option<discover::Review>,
+    /// The setup's routine upkeep, to tick.
+    pub routine: Option<sentry_core::tui::ticklist::TickList>,
+    /// Which targets the strip shows, to tick.
+    pub shown: Option<sentry_core::tui::ticklist::TickList>,
+    /// A record's form, in front of its system's.
+    pub row: Option<systems::RowEdit>,
+    /// What the connection checks said, per system.
+    pub checks: Vec<systems::Checked>,
+    /// A box that asks first.
+    pub ask: Option<Ask>,
+    /// A line typed in a box.
+    pub prompt: Option<Prompt>,
+    /// What looks at a host (the binary's).
+    prober: Option<discover::Prober>,
+    /// The hosts looked at here, as ticked and confirmed.
+    asked: Vec<String>,
+    /// A field's action as a test gives it.
+    act: Option<Act>,
+    /// The save writes `config.toml` whatever is staged for it (the setup's last step,
+    /// when there is none yet).
+    write_app: bool,
+    /// The targets the last save added, as `[targets] show` spells them.
+    pub(crate) added: Vec<String>,
+    /// The target that gets the window next (the setup is done): the app's to do.
+    pub(crate) leave_to: Option<String>,
+    /// The targets the files on disk had when last compared (`targets_changed`).
+    known: Vec<String>,
+    /// Files may be read and worker threads started (not a test's window).
+    pub(crate) disk: bool,
     /// Overview's cursor: over the systems, the add row, then the pending changes.
     cur: usize,
     /// Servers' and Networks' cursors.
@@ -309,6 +416,26 @@ impl ConfigArea {
             pending: Vec::new(),
             problems: Vec::new(),
             screen: Screen::Overview,
+            page: Page::None,
+            guide: None,
+            guide_left: None,
+            add: None,
+            drafts: Vec::new(),
+            review: None,
+            routine: None,
+            shown: None,
+            row: None,
+            checks: Vec::new(),
+            ask: None,
+            prompt: None,
+            prober: None,
+            asked: Vec::new(),
+            act: None,
+            write_app: false,
+            added: Vec::new(),
+            leave_to: None,
+            known: Vec::new(),
+            disk: true,
             cur: 0,
             list: [0; 2],
             open: false,
@@ -330,6 +457,33 @@ impl ConfigArea {
         self.loaded = false;
     }
 
+    /// What looks at a host and drafts its entry (the binary registers it).
+    pub fn set_prober(&mut self, p: discover::Prober) {
+        self.prober = Some(p);
+    }
+
+    /// Tests: what a field's action does instead of the kind's own (nothing is written).
+    pub fn set_act(&mut self, act: Act) {
+        self.act = Some(act);
+    }
+
+    /// Tests: the setting the cursor of the form in view is on (a record's, in its form).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn field_for_test(&self) -> Option<String> {
+        match &self.row {
+            Some(r) => r.form.field().map(|f| f.key.clone()),
+            None => self.field_path(),
+        }
+    }
+
+    /// The directory the config files are in.
+    pub fn dir(&self) -> PathBuf {
+        match &self.dir {
+            Some(d) => d.clone(),
+            None => sentry_core::paths::config_dir(),
+        }
+    }
+
     /// Read the files from this directory instead of the config dir, now.
     pub fn set_dir(&mut self, w: &mut Win, dir: &Path) {
         self.dir = Some(dir.to_path_buf());
@@ -344,7 +498,7 @@ impl ConfigArea {
         }
     }
 
-    fn read(&self, k: &dyn Kind) -> File {
+    pub(crate) fn read(&self, k: &dyn Kind) -> File {
         let path = self.path(k.id());
         match k.load(&path) {
             Ok((doc, warnings)) => File {
@@ -372,18 +526,20 @@ impl ConfigArea {
     /// Read every file (again): at start, and whenever all of it is wanted fresh. What is
     /// staged is made again on what was read (`restage`).
     pub fn load(&mut self, w: &mut Win) {
+        self.disk = !w.offline;
         self.files = self.kinds.iter().map(|k| self.read(k.as_ref())).collect();
         self.loaded = true;
+        self.known = self.targets_on_disk();
         self.restage();
         self.lint(w);
         self.form = self.build_form();
     }
 
-    fn at(&self, id: FileId) -> Option<usize> {
+    pub(crate) fn at(&self, id: FileId) -> Option<usize> {
         self.kinds.iter().position(|k| k.id() == id)
     }
 
-    fn kind(&self, id: FileId) -> Option<&dyn Kind> {
+    pub(crate) fn kind(&self, id: FileId) -> Option<&dyn Kind> {
         self.at(id).map(|i| self.kinds[i].as_ref())
     }
 
@@ -435,6 +591,51 @@ impl ConfigArea {
             .collect()
     }
 
+    /// The targets the files on disk say there are (nothing staged), as `[targets] show`
+    /// spells them.
+    pub fn targets_on_disk(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (k, f) in self.kinds.iter().zip(&self.files) {
+            let Some(d) = f.doc.as_deref() else {
+                continue;
+            };
+            out.extend(
+                k.entries(d.on_disk().as_ref())
+                    .into_iter()
+                    .filter_map(|e| e.target),
+            );
+        }
+        out
+    }
+
+    /// What the files on disk say now against when this was last asked: the targets that
+    /// are new, and the ones that are gone.
+    pub(crate) fn targets_changed(&mut self) -> (Vec<String>, Vec<String>) {
+        let now = self.targets_on_disk();
+        let added = now
+            .iter()
+            .filter(|t| !self.known.contains(t))
+            .cloned()
+            .collect();
+        let gone = self
+            .known
+            .iter()
+            .filter(|t| !now.contains(t))
+            .cloned()
+            .collect();
+        self.known = now;
+        (added, gone)
+    }
+
+    /// The file a target is configured in.
+    pub(crate) fn file_of(target: &str) -> FileId {
+        match target.split_once(':') {
+            Some(("srv", _)) => FileId::Servers,
+            Some(("net", _)) => FileId::Networks,
+            _ => FileId::App,
+        }
+    }
+
     /// Every target there is, as `[targets] show` spells them.
     fn all_targets(&self) -> Vec<String> {
         self.systems()
@@ -467,7 +668,7 @@ impl ConfigArea {
 
     /// What is to be, made again from what was read: every ticked change in the order it
     /// was staged. One that can't be made any more is a conflict, unticked, with why.
-    fn restage(&mut self) {
+    pub(crate) fn restage(&mut self) {
         for f in &mut self.files {
             if let Some(d) = f.doc.as_mut() {
                 d.reset();
@@ -498,6 +699,24 @@ impl ConfigArea {
     /// Refused (the type wouldn't read it): nothing is staged.
     pub fn stage(&mut self, path: &str, to: Option<Value>, by: By) -> Result<(), String> {
         let file = FileId::of_path(path);
+        // A setting of an entry that is itself staged as new: that one change holds it.
+        let segs = parse_path(path)?;
+        if segs.len() > 2
+            && discover::is_entry(&segs[..2])
+            && let Some(i) = self.pending.iter().position(|p| {
+                p.change.on
+                    && p.change.from.is_none()
+                    && parse_path(&p.change.path).is_ok_and(|s| s == segs[..2])
+            })
+        {
+            let mut entry = self.pending[i].change.to.clone().unwrap_or(Value::Null);
+            entry.set(&segs[2..], to)?;
+            let (entry_path, by) = (
+                self.pending[i].change.path.clone(),
+                self.pending[i].change.by,
+            );
+            return self.stage(&entry_path, Some(entry), by);
+        }
         let before = self.pending.clone();
         match self.pending.iter().position(|p| p.change.path == path) {
             Some(i) => {
@@ -622,8 +841,10 @@ impl ConfigArea {
 
     /// Switch screens: its form is made, and what it looks up once is looked up.
     pub fn enter(&mut self, w: &mut Win, s: Screen) {
+        self.disk = !w.offline;
         self.screen = s;
         self.open = false;
+        self.row = None;
         self.form = self.build_form();
         if s == Screen::Agent {
             self.agent_find(w, false);
@@ -631,27 +852,103 @@ impl ConfigArea {
         w.dirty = true;
     }
 
+    /// Space on Window's "shown" field: every target there is, the ones the strip shows
+    /// ticked. (Their order is the list's own: Enter on the field, `J`/`K`.)
+    pub(crate) fn open_shown(&mut self) {
+        use sentry_core::tui::ticklist::{Row, TickList};
+        let show = self.app().and_then(|c| c.targets.show.clone());
+        let rows = self
+            .systems()
+            .into_iter()
+            .filter_map(|(_, e)| {
+                let id = e.target?;
+                let on = show.as_ref().is_none_or(|s| s.contains(&id));
+                Some(
+                    Row::tick(&id, &id, on)
+                        .note(match e.kind == e.name {
+                            true => e.kind,
+                            false => &e.name,
+                        })
+                        .detail(
+                            "Ticked: it has a tab in the strip. One left out keeps running \
+                             out of view when the window has it open, and has no tab, no key \
+                             and no `:` name until it is shown again.",
+                        ),
+                )
+            })
+            .collect();
+        self.shown = Some(TickList::new("Targets in the strip", rows));
+        self.page = Page::Shown;
+    }
+
+    /// Enter on that list: what is ticked is what the strip shows, in the order it had.
+    pub(crate) fn shown_accept(&mut self, w: &mut Win) {
+        let Some(list) = self.shown.as_ref() else {
+            return;
+        };
+        let all: Vec<String> = list.rows.iter().map(|r| r.key.clone()).collect();
+        let ticked: Vec<String> = list.ticked().iter().map(|r| r.key.clone()).collect();
+        if ticked.is_empty() {
+            return w.toast("the strip shows at least one target");
+        }
+        let before = self.app().and_then(|c| c.targets.show.clone());
+        // Those shown already keep their places; the ones ticked now come after them.
+        let mut to: Vec<String> = before
+            .iter()
+            .flatten()
+            .filter(|t| ticked.contains(t))
+            .cloned()
+            .collect();
+        let new: Vec<String> = ticked.iter().filter(|t| !to.contains(t)).cloned().collect();
+        to.extend(new);
+        // Every one of them, in the order they come anyway: nothing needs saying.
+        let value = match to == all {
+            true => Value::Null,
+            false => Value::List(to.into_iter().map(Value::Str).collect()),
+        };
+        self.page = Page::None;
+        self.shown = None;
+        if let Err(why) = self.stage("targets.show", Some(value), By::You) {
+            w.toast(&format!("not staged: {why}"));
+        }
+        self.refresh_forms(w);
+    }
+
     /// The setting the selected field of the form in view is.
-    fn field_path(&self) -> Option<String> {
+    pub(crate) fn field_path(&self) -> Option<String> {
         self.form.as_ref()?.field().map(|f| f.key.clone())
     }
 
     /// The form of the screen in view, from the file as it is to be.
-    fn build_form(&self) -> Option<Form> {
+    pub(crate) fn build_form(&self) -> Option<Form> {
         let entry = match self.screen {
             Screen::Agent => AGENT,
             Screen::Machine => MACHINE,
             Screen::Window => WINDOW,
-            _ => return None,
+            // A server's or a network's, while it is open.
+            Screen::Servers | Screen::Networks => {
+                let (file, e) = self.open_system()?;
+                return self.system_form(file, &e);
+            }
+            Screen::Overview => return None,
         };
         let kind = self.kind(FileId::App)?;
         let doc = self.doc(FileId::App)?;
-        let fields = self.form_fields(kind, doc, &kind.sections(doc, entry));
+        let mut sections = kind.sections(doc, entry);
+        // The setup's step on this machine: the two toggles, nothing else.
+        let step = self.guide == Some(Step::Machine) && self.screen == Screen::Machine;
+        if step {
+            sections.truncate(1);
+        }
+        let mut fields = self.form_fields(kind, doc, &sections);
+        if self.screen == Screen::Machine && !step {
+            fields.extend(self.upkeep_fields(kind, doc, entry));
+        }
         Some(Form::new(self.screen.name(), fields))
     }
 
     /// The form's fields for these sections: each item by its table entry and its value.
-    fn form_fields(
+    pub(crate) fn form_fields(
         &self,
         kind: &dyn Kind,
         doc: &dyn DocAny,
@@ -668,14 +965,21 @@ impl ConfigArea {
                 let Some(spec) = cfg::fields::find(kind.fields(), &item.path) else {
                     continue;
                 };
-                let Some(value) = kind::to_form(spec.kind, tree.at(&segs)) else {
-                    continue;
+                let value = match spec.kind {
+                    cfg::Kind::Records => self.rows_of(kind, &item.path, tree.at(&segs)),
+                    k => match kind::to_form(k, tree.at(&segs)) {
+                        Some(v) => v,
+                        None => continue,
+                    },
                 };
                 let mut f = form::Field::new(&item.path, spec.label, value)
                     .help(spec.help)
                     .empty(&item.empty);
                 f.head = head.take().unwrap_or_default();
                 f.changed = self.pending.iter().any(|p| p.change.path == item.path);
+                if let Some(a) = kind.action(&item.path) {
+                    f.help = format!("{} K: {}.", f.help, a.label);
+                }
                 f.problem = self
                     .problems
                     .iter()
@@ -703,12 +1007,33 @@ impl ConfigArea {
     }
 
     /// A form's change: staged, or refused in place with why.
-    fn form_set(&mut self, w: &mut Win, path: &str, v: &form::Value) {
+    pub(crate) fn form_set(&mut self, w: &mut Win, path: &str, v: &form::Value) {
+        // A record's field, in its own form.
+        if self.row.is_some() {
+            return self.row_set(w, path, v);
+        }
+        // The system's name, a workflow's cadence: not plain settings.
+        if let Some(done) = self.special_set(w, path, v) {
+            self.refresh_forms(w);
+            if let (Err(why), Some(f)) = (done, self.form.as_mut()) {
+                f.refuse(path, &why);
+            }
+            return;
+        }
         let nullable = self
             .doc(FileId::of_path(path))
             .zip(parse_path(path).ok())
             .is_some_and(|(d, segs)| matches!(d.defaults().at(&segs), Some(Value::Null) | None));
-        let staged = self.stage(path, Some(kind::from_form(v, nullable)), By::You);
+        let mut to = kind::from_form(v, nullable);
+        // Named lists of words (a zone's interfaces) are typed `name = a b`.
+        let file = FileId::of_path(path);
+        if self.kind(file).is_some_and(|k| {
+            cfg::fields::find(k.fields(), &format!("{path}.x"))
+                .is_some_and(|f| f.kind == cfg::Kind::List && f.path.ends_with(".*"))
+        }) {
+            to = kind::lists_of(to);
+        }
+        let staged = self.stage(path, Some(to), By::You);
         self.lint(w);
         let fresh = self.build_form();
         self.form = match (fresh, self.form.take()) {
@@ -739,7 +1064,20 @@ impl ConfigArea {
 
     /// A text is being typed: a character is never a key of the window's.
     pub fn takes_text(&self) -> bool {
-        self.cmd.is_some() || self.form.as_ref().is_some_and(|f| f.editing())
+        self.cmd.is_some()
+            || self.prompt.is_some()
+            || self.form.as_ref().is_some_and(|f| f.editing())
+            || self.row.as_ref().is_some_and(|r| r.form.editing())
+            || match self.page {
+                Page::Add => self.add.as_ref().is_some_and(|a| a.list.typing()),
+                Page::Review => self
+                    .review
+                    .as_ref()
+                    .is_some_and(|r| r.list.typing() || r.form.editing()),
+                Page::Routine => self.routine.as_ref().is_some_and(|l| l.typing()),
+                Page::Shown => self.shown.as_ref().is_some_and(|l| l.typing()),
+                Page::None => false,
+            }
     }
 
     /// The editor is wanted (the app hands the terminal over).
@@ -779,8 +1117,27 @@ impl ConfigArea {
 
     /// Something a worker of the area's sent.
     pub(crate) fn on_data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
-        if let Ok(m) = data.downcast::<agent::Msg>() {
-            self.agent.on_msg(*m);
+        let data = match data.downcast::<agent::Msg>() {
+            Ok(m) => {
+                self.agent.on_msg(*m);
+                w.dirty = true;
+                return;
+            }
+            Err(d) => d,
+        };
+        let data = match data.downcast::<discover::Msg>() {
+            Ok(m) => {
+                match *m {
+                    discover::Msg::Candidates(found) => self.on_candidates(found),
+                    discover::Msg::Probed(ssh, probe) => self.on_probed(w, &ssh, probe),
+                }
+                w.dirty = true;
+                return;
+            }
+            Err(d) => d,
+        };
+        if let Ok(done) = data.downcast::<systems::ChecksDone>() {
+            self.checks_done(*done);
             w.dirty = true;
         }
     }
@@ -808,7 +1165,7 @@ impl ConfigArea {
     }
 
     /// `t`: one turn, no tools, on a worker.
-    fn agent_test(&mut self, w: &mut Win) {
+    pub(crate) fn agent_test(&mut self, w: &mut Win) {
         let cmd = self.agent.command.clone();
         if self.agent.testing {
             return w.toast("still asking");

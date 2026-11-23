@@ -22,6 +22,14 @@ pub struct Files {
     pub problems: Vec<Problem>,
 }
 
+impl Files {
+    /// A first run: none of the three files is there. The window then opens on the setup
+    /// flow; any one of them there, and it never does by itself.
+    pub fn first_run(&self) -> bool {
+        cfg::FILES.iter().all(|f| self.missing.contains(f))
+    }
+}
+
 /// Read the three files and lint them, offline: unknown keys, a file that doesn't parse, each
 /// server's and network's `lint`, `[keys]`, `[targets] show`. Reads no host.
 pub fn read() -> Files {
@@ -29,6 +37,34 @@ pub fn read() -> Files {
         (Config::load(), FileId::App.path().exists()),
         (servers::load(), servers::path().exists()),
         (networks::load(), networks::path().exists()),
+    )
+}
+
+/// Tests: the same from the files in a directory of their own.
+#[cfg(test)]
+pub fn read_in(dir: &std::path::Path) -> Files {
+    let text = |f: FileId| std::fs::read_to_string(dir.join(f.name())).ok();
+    let there = |f: FileId| dir.join(f.name()).exists();
+    let none = |f: FileId| format!("no {}", f.name());
+    assemble(
+        (
+            text(FileId::App)
+                .and_then(|t| Config::parse(&t).ok())
+                .unwrap_or_default(),
+            there(FileId::App),
+        ),
+        (
+            text(FileId::Servers)
+                .ok_or_else(|| none(FileId::Servers))
+                .and_then(|t| servers::parse(&t)),
+            there(FileId::Servers),
+        ),
+        (
+            text(FileId::Networks)
+                .ok_or_else(|| none(FileId::Networks))
+                .and_then(|t| networks::parse(&t)),
+            there(FileId::Networks),
+        ),
     )
 }
 

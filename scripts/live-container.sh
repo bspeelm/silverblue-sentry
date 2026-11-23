@@ -8,6 +8,9 @@
 #   password  live_password_step, live_inventory, live_claude_reads, live_sudo_stop,
 #             live_auto_series, live_reaudit
 #             (sudo asks; the tests type the password into the TUI's own prompt)
+#   both      live_setup (a first run: fresh scratch XDG dirs with no config at all, the
+#             window opens on the setup flow, the container is found among the ssh hosts,
+#             looked at for real, reviewed and saved; then its tab reads)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
 #   scripts/live-container.sh test [nopasswd|password]  run that variant's tests against it
@@ -44,8 +47,8 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets live_reaudit" ;;
-    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series live_reaudit" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets live_reaudit live_setup" ;;
+    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series live_reaudit live_setup" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
@@ -53,7 +56,7 @@ tests_of() {
 # The crate a test is in: the window's own (several targets) are the binary's.
 pkg_of() {
   case "$1" in
-    live_two_targets) echo sentry ;;
+    live_two_targets | live_setup) echo sentry ;;
     *) echo sentry-server ;;
   esac
 }
@@ -169,6 +172,11 @@ scratch() {
       - name: stack
         file: /srv/stack/compose.yaml"
   rm -rf "$x"
+  # live_setup: a first run. No config file at all: the setup flow writes them.
+  if [[ $t == live_setup ]]; then
+    mkdir -p "$x/config" "$x/data" "$x/cache"
+    return
+  fi
   mkdir -p "$x/config/sentry/server-workflows" "$x/data" "$x/cache"
   cat >"$x/config/sentry/server_config.yaml" <<EOF
 servers:
@@ -274,6 +282,8 @@ env_of() {
     "$dir/ssh_config" "$SERVER" "$x/config" "$x/data" "$x/cache"
   # The file that holds the container's sudo password (never the password itself).
   [[ ! -f "$dir/password" ]] || printf ' SENTRY_SERVER_SCRATCH_PASSWORD=%q' "$dir/password"
+  # live_setup: the host the setup flow is to find and add, and what it is.
+  [[ $t != live_setup ]] || printf ' SENTRY_SETUP_HOST=%q SENTRY_SETUP_KIND=server' "$SERVER"
 }
 
 up() {
@@ -359,6 +369,7 @@ run_tests() {
       cargo test -q -p "$(pkg_of "$t")" "$t" -- --ignored --nocapture --test-threads=1)
     # The tests type the password into the TUI's prompt: no terminal is involved.
     [[ $mode != password ]] || cmd=(env "SENTRY_SERVER_SCRATCH_PASSWORD=$dir/password" "${cmd[@]}")
+    [[ $t != live_setup ]] || cmd=(env "SENTRY_SETUP_HOST=$SERVER" SENTRY_SETUP_KIND=server "${cmd[@]}")
     "${cmd[@]}" </dev/null || rc=$?
     [[ $rc -eq 0 ]] && echo "=== $t: ok" || { echo "=== $t: FAILED (exit $rc)"; return "$rc"; }
   done

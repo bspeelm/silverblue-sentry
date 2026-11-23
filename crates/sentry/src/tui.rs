@@ -4,6 +4,11 @@
 //! [name]` on that server, `sentry-network [name]` on that network. A target costs nothing
 //! until it first has the window.
 
+use std::path::Path;
+
+use sentry_app::cfgarea::Kind as _;
+use sentry_app::cfgarea::kind::Probe;
+use sentry_core::cfg::FileId;
 use sentry_core::config::Config;
 use sentry_network::config as networks;
 use sentry_network::remote::Router;
@@ -111,15 +116,100 @@ pub fn kinds() -> Vec<Box<dyn sentry_app::cfgarea::Kind>> {
     ]
 }
 
-/// `sentry`, `sentry-server [name]` or `sentry-network [name]`: the TUI. Returns the exit code.
-pub fn run(open: Open) -> u8 {
-    let prog = match open {
-        Open::Local | Open::Config => "sentry",
-        Open::Server(_) => "sentry-server",
-        Open::Network(_) => "sentry-network",
+/// What tells an OpenWrt router from anything else, in one read: `ubus` is there, or its
+/// os-release says so.
+const IDENTIFY: &str = "command -v ubus >/dev/null 2>&1 && echo ubus; \
+     . /etc/os-release 2>/dev/null; echo \"id=$ID\"; true";
+
+/// Look at the host behind `ssh` and draft its entry: the one function that decides what
+/// a host is. It logs in with your key (`BatchMode`: nothing is ever asked), reads, and
+/// changes nothing. An OpenWrt router is drafted as a network, anything else as a server; a
+/// host that can't be looked at comes back with why and what to do. Honours
+/// `SENTRY_SSH_CONFIG`, as every ssh sentry runs does. (The window calls it on a worker for
+/// each host ticked and confirmed; it takes nothing from the window, so a command line can
+/// call it too.)
+pub fn probe(ssh: &str) -> Probe {
+    let host = sentry_app::remote::host(ssh);
+    let said = match sentry_core::exec::Cmd::ssh(host, "sh")
+        .args(["-c", IDENTIFY])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return Probe::Failed(sentry_app::cfgarea::discover::refusal(ssh, &e.to_string()));
+        }
     };
+    let name = sentry_app::cfgarea::discover::name_from(ssh);
+    match said.lines().any(|l| l == "ubus" || l == "id=openwrt") {
+        true => sentry_network::cfgkind::NetworksKind.probe(ssh, "home"),
+        false => sentry_server::cfgkind::ServersKind.probe(ssh, &name),
+    }
+}
+
+/// What builds one target of the window around the `Mail` its threads answer through.
+type Make = sentry_app::app::Make;
+
+/// The target `id` (`local`, `srv:<name>`, `net:<name>`) from the configs as given. None:
+/// they have no such target.
+fn make_with(
+    id: &str,
+    cfg: &Config,
+    file: Option<&servers::ServerFile>,
+    nets: Option<&networks::NetworkFile>,
+) -> Option<Make> {
+    Some(match id.split_once(':') {
+        Some(("srv", name)) => {
+            let s = file?.servers.get(name)?;
+            Box::new(sentry_server::tui::target(Remote::new(name, s)))
+        }
+        Some(("net", name)) => {
+            let n = nets?.networks.get(name)?;
+            Box::new(sentry_network::tui::target(Router::new(name, n)))
+        }
+        _ => Box::new(sentry_local::tui::target(cfg.clone())),
+    })
+}
+
+/// The target `id` from the config files in `dir` as they are now: what the window calls
+/// when a save adds a system (`App::set_maker`).
+pub fn make(id: &str, dir: &Path) -> Option<Make> {
+    let text = |f: FileId| std::fs::read_to_string(dir.join(f.name())).ok();
+    let cfg = text(FileId::App)
+        .and_then(|t| Config::parse(&t).ok())
+        .map_or_else(Config::default, |(c, _)| c);
+    let file = text(FileId::Servers).and_then(|t| servers::parse(&t).ok());
+    let nets = text(FileId::Networks).and_then(|t| networks::parse(&t).ok());
+    make_with(
+        id,
+        &cfg,
+        file.as_ref().map(|(f, _)| f),
+        nets.as_ref().map(|(f, _)| f),
+    )
+}
+
+/// The window about to open: the config files as read, which targets it has and which has
+/// it first, and whether this is a first run.
+pub(crate) struct Opening {
+    open: Open<'static>,
+    /// None of the three config files is there: the window opens on the setup flow.
+    pub(crate) first: bool,
+    plan: Plan,
+    cfg: Config,
+    file: Option<servers::ServerFile>,
+    nets: Option<networks::NetworkFile>,
+    problems: Vec<sentry_app::cfgarea::Problem>,
+}
+
+/// Read the config files and plan the window `open` asks for. Err: what to say instead
+/// (`sentry-server` with other files there but none of its own, a name nobody has).
+pub(crate) fn opening(open: Open) -> Result<Opening, String> {
     // Every file read and checked offline: what's wrong is the window's to show
     // (`Win.config_problems`), and its first is said once the window is up.
+    let files = crate::cfgcmd::read();
+    // A first run (no config file at all): whichever name it was called by, the window
+    // opens on the Config area's setup flow.
+    let first = files.first_run();
+    let open = if first { Open::Config } else { open };
     let crate::cfgcmd::Files {
         app: cfg,
         servers: file,
@@ -128,54 +218,44 @@ pub fn run(open: Open) -> u8 {
         networks_err,
         problems,
         ..
-    } = crate::cfgcmd::read();
+    } = files;
     // `sentry-server` needs its file, `sentry-network` its own; for `sentry` a file that
     // isn't there just means there are none.
     match (open, &servers_err, &networks_err) {
-        (Open::Server(_), Some(e), _) | (Open::Network(_), _, Some(e)) => {
-            eprintln!("{e}");
-            return 1;
-        }
+        (Open::Server(_), Some(e), _) | (Open::Network(_), _, Some(e)) => return Err(e.clone()),
         _ => {}
     }
-    let plan = match plan_all(&cfg, file.as_ref(), nets.as_ref(), open) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{e}");
-            return 1;
-        }
-    };
-    if plan.targets.iter().any(|t| t == LOCAL) {
-        crate::init_logging();
-    }
-    let r = sentry_core::tui::run_ui(|tx| {
+    let plan = plan_all(&cfg, file.as_ref(), nets.as_ref(), open)?;
+    Ok(Opening {
+        // (Which target has the window is in the plan: only the kind of opening is kept.)
+        open: match open {
+            Open::Local => Open::Local,
+            Open::Config => Open::Config,
+            Open::Server(_) => Open::Server(None),
+            Open::Network(_) => Open::Network(None),
+        },
+        first,
+        plan,
+        cfg,
+        file,
+        nets,
+        problems,
+    })
+}
+
+impl Opening {
+    /// The window: its targets, its Config area, and what a save there needs to be
+    /// followed at once.
+    pub(crate) fn app(&self, tx: std::sync::mpsc::Sender<sentry_app::Event>) -> sentry_app::App {
         let mut app: Option<sentry_app::App> = None;
-        for t in &plan.targets {
-            // What builds the target around the `Mail` its threads answer through.
-            type Make = Box<dyn FnOnce(sentry_app::target::Mail) -> Box<dyn sentry_app::Target>>;
-            let (id, make): (&str, Make) = match t.split_once(':') {
-                Some(("srv", name)) => {
-                    let Some(s) = file.as_ref().and_then(|f| f.servers.get(name)) else {
-                        continue;
-                    };
-                    (
-                        t,
-                        Box::new(sentry_server::tui::target(Remote::new(name, s))),
-                    )
-                }
-                Some(("net", name)) => {
-                    let Some(n) = nets.as_ref().and_then(|f| f.networks.get(name)) else {
-                        continue;
-                    };
-                    (
-                        t,
-                        Box::new(sentry_network::tui::target(Router::new(name, n))),
-                    )
-                }
-                _ => (
-                    sentry_local::tui::ID,
-                    Box::new(sentry_local::tui::target(cfg.clone())),
-                ),
+        for t in &self.plan.targets {
+            let Some(make) = make_with(t, &self.cfg, self.file.as_ref(), self.nets.as_ref()) else {
+                continue;
+            };
+            let id = if t == LOCAL {
+                sentry_local::tui::ID
+            } else {
+                t.as_str()
             };
             match app.as_mut() {
                 Some(a) => {
@@ -185,25 +265,50 @@ pub fn run(open: Open) -> u8 {
             }
         }
         let mut app = app.expect("a target");
-        app.focus_at_start(plan.focus);
+        app.focus_at_start(self.plan.focus);
         // The Config area: each kind of config describes itself, as the targets do.
         for k in kinds() {
             app.config.register(k);
         }
-        if open == Open::Config {
+        // What a save in the Config area needs to follow at once: how a host is looked at
+        // and drafted, and how a target the files gained is built.
+        app.config.set_prober(std::sync::Arc::new(probe));
+        app.set_maker(Box::new(make));
+        if self.first {
+            app.setup_at_start();
+        } else if self.open == Open::Config {
             app.config_at_start();
         }
         // The security audit is the window's: every target's facts, read side by side.
         app.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
         // What's wrong in the config files, said once the TUI is up (ahead of a `[keys]`
         // warning, which is among them): the first, how many, and where to see them all.
-        if let Some(w) = sentry_app::cfgarea::toast(&problems) {
+        if let Some(w) = sentry_app::cfgarea::toast(&self.problems) {
             app.warn_at_start(w);
         }
-        app.win.config_problems = problems.clone();
+        app.win.config_problems = self.problems.clone();
         app
-    });
-    match r {
+    }
+}
+
+/// `sentry`, `sentry-server [name]` or `sentry-network [name]`: the TUI. Returns the exit code.
+pub fn run(open: Open) -> u8 {
+    let prog = match open {
+        Open::Local | Open::Config => "sentry",
+        Open::Server(_) => "sentry-server",
+        Open::Network(_) => "sentry-network",
+    };
+    let opening = match opening(open) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    if opening.plan.targets.iter().any(|t| t == LOCAL) {
+        crate::init_logging();
+    }
+    match sentry_core::tui::run_ui(|tx| opening.app(tx)) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{prog}: {e:#}");

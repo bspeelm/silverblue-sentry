@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config*    nothing is written before the save box                                   ● 3 not saved   Mon 26 Oct 12:00
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 Agent › 2 This machine › 3 Systems ›  4 Review  › 5 Upkeep › 6 Save
+ everything ticked is watched · Space unticks · Enter goes on to its name
+┌ newbox · what sentry would watch · 8 of 8 ticked ───────────────────────────────────┐┌ docker ps ──────────────────────────────────────────────────────────┐
+│  newbox · a server over ssh newbox  Debian GNU/Linux 12 (bookworm)                  ││ Review every part: it's a starting point, not a verdict.            │
+│                                                                                     ││ Unticked, it is left out of what sentry watches on newbox.          │
+│  sudo allowlist                                                                     ││                                                                     │
+│  [x] docker ps                                                                      ││ System 1 of 2: what is ticked is what sentry watches there. Nothing │
+│                                                                                     ││ is written before the save box.                                     │
+│  Disks                                                                              ││                                                                     │
+│  [x] / · 85 · 95                                                                    ││                                                                     │
+│  [x] /srv · 85 · 95                                                                 ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Services  admin-written units, and the well-known ones that run                    ││                                                                     │
+│  [x] app.service                                                                    ││                                                                     │
+│  [x] docker.service                                                                 ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Timers                                                                             ││                                                                     │
+│  [x] backup.timer · 26h                                                             ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Listeners  everything listening now. Remove what you didn't expect: it becomes a…  ││                                                                     │
+│  [x] *:22/sshd                                                                      ││                                                                     │
+│  [x] *:443/*                                                                        ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   Space  tick   a  all   /  filter   ?  help   q  quit

@@ -11,10 +11,12 @@ use sentry_core::tui::form;
 use sentry_core::tui::frame;
 use sentry_core::tui::modal;
 use sentry_core::tui::theme::Theme;
+use sentry_core::tui::ticklist;
 use sentry_core::tui::widgets::{self, chip};
 
-use super::kind::{plain, what_changed};
-use super::{ConfigArea, Entry, Problem, Screen, count};
+use super::kind::{Mark, plain, what_changed};
+use super::save::Whole;
+use super::{ConfigArea, Entry, Page, Problem, Screen, Step, count};
 use crate::app::Win;
 
 /// The area's colour: where magenta is, you are in Config.
@@ -90,22 +92,141 @@ impl ConfigArea {
             &tabs,
             Screen::ALL.iter().position(|s| *s == self.screen),
         );
-        let body = areas.body;
-        match self.screen {
-            Screen::Overview => self.draw_overview(f, body, &t),
-            Screen::Servers | Screen::Networks => self.draw_list(f, body, &t),
-            Screen::Agent | Screen::Machine | Screen::Window => match &self.form {
+        // The setup's rail over the content: the steps, and what Enter does on this one.
+        let body = match self.guide {
+            Some(_) if areas.body.height > 6 => {
+                let [rail, line, body] = Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Fill(1),
+                ])
+                .areas(areas.body);
+                self.draw_rail(f, rail, &t);
+                f.render_widget(
+                    Paragraph::new(Line::styled(
+                        format!(
+                            " {}",
+                            widgets::trunc(&self.guide_line(), line.width as usize - 2)
+                        ),
+                        t.dim(),
+                    )),
+                    line,
+                );
+                body
+            }
+            _ => areas.body,
+        };
+        let panel_w = |body: Rect| {
+            let width = if body.width >= 100 {
+                body.width as usize * 45 / 100
+            } else {
+                body.width as usize
+            };
+            width.saturating_sub(4).max(20)
+        };
+        let wrapped = |text: &str, body: Rect| -> Vec<Line<'static>> {
+            widgets::wrap(text, panel_w(body))
+                .into_iter()
+                .map(|l| Line::styled(l, t.fg()))
+                .collect()
+        };
+        match (self.page, self.screen) {
+            (Page::Add, _) => {
+                if let Some(add) = &self.add {
+                    let extra = self.add_lines(&t, w.offline);
+                    ticklist::draw_panels(f, body, &t, &add.list, &extra);
+                }
+            }
+            (Page::Review, _) => match &self.review {
+                Some(r) if r.naming => form::draw_panels(
+                    f,
+                    body,
+                    &t,
+                    &r.form,
+                    &[Line::styled(
+                        "Space edits the field under the cursor · Enter accepts both",
+                        t.dim(),
+                    )],
+                ),
+                Some(r) => {
+                    let n = self.drafts.len();
+                    let extra = vec![Line::styled(
+                        format!(
+                            "System {} of {n}: what is ticked is what sentry watches there. \
+                             Nothing is written before the save box.",
+                            r.at + 1
+                        ),
+                        t.dim(),
+                    )];
+                    ticklist::draw_panels(f, body, &t, &r.list, &extra);
+                }
+                None => widgets::placeholder(
+                    f,
+                    body,
+                    &t,
+                    &[
+                        ("no system was added", t.fg()),
+                        ("there is nothing to review: just this machine", t.dim()),
+                    ],
+                ),
+            },
+            (Page::Routine, _) => {
+                if let Some(l) = &self.routine {
+                    let extra = vec![Line::styled(
+                        "How often each routine workflow is recommended. Enter accepts what is \
+                         ticked; every system's Upkeep changes it later.",
+                        t.dim(),
+                    )];
+                    ticklist::draw_panels(f, body, &t, l, &extra);
+                }
+            }
+            (Page::Shown, _) => {
+                if let Some(l) = &self.shown {
+                    let extra = vec![Line::styled(
+                        "Enter stages it (nothing is written before the save box). Their \
+                         order is the field's own list: Enter on it, then J/K.",
+                        t.dim(),
+                    )];
+                    ticklist::draw_panels(f, body, &t, l, &extra);
+                }
+            }
+            (Page::None, _) if self.row.is_some() => {
+                if let Some(r) = &self.row {
+                    form::draw_panels(
+                        f,
+                        body,
+                        &t,
+                        &r.form,
+                        &[Line::styled(
+                            "One entry of the list: each field is staged as it is set · Esc back",
+                            t.dim(),
+                        )],
+                    );
+                }
+            }
+            (Page::None, Screen::Overview) => self.draw_overview(f, body, &t),
+            (Page::None, Screen::Servers | Screen::Networks) => match (&self.form, self.open) {
+                (Some(form), true) => {
+                    let extra = self
+                        .open_system()
+                        .map(|(file, e)| self.system_extra(&t, file, &e, panel_w(body)))
+                        .unwrap_or_default();
+                    form::draw_panels(f, body, &t, form, &extra);
+                }
+                _ => self.draw_list(f, body, &t),
+            },
+            (Page::None, Screen::Agent | Screen::Machine | Screen::Window) => match &self.form {
                 Some(form) => {
-                    let extra = match self.screen {
-                        Screen::Agent => {
-                            let width = if body.width >= 100 {
-                                body.width as usize * 45 / 100
-                            } else {
-                                body.width as usize
-                            };
-                            self.agent
-                                .lines(&t, w.offline, width.saturating_sub(4).max(20))
+                    let extra = match (self.screen, self.guide) {
+                        (Screen::Agent, g) => {
+                            let mut l = self.agent.lines(&t, w.offline, panel_w(body));
+                            if g == Some(Step::Agent) {
+                                l.push(Line::raw(""));
+                                l.extend(wrapped(super::guide::WITHOUT_AGENT, body));
+                            }
+                            l
                         }
+                        (Screen::Machine, Some(Step::Machine)) => wrapped(super::guide::HERE, body),
                         _ => Vec::new(),
                     };
                     form::draw_panels(f, body, &t, form, &extra);
@@ -148,6 +269,10 @@ impl ConfigArea {
             widgets::dim_backdrop(f.buffer_mut(), body);
             self.draw_save(f, body, &t);
         }
+        if self.ask.is_some() || self.prompt.is_some() {
+            widgets::dim_backdrop(f.buffer_mut(), body);
+            self.draw_box(f, body, &t);
+        }
         if let Some(m) = &w.modal {
             widgets::dim_backdrop(f.buffer_mut(), body);
             modal::draw(f, body, &t, m);
@@ -184,6 +309,7 @@ impl ConfigArea {
         };
         let note = match (problems, here) {
             (0, Some(x)) if x.hidden => "hidden".to_string(),
+            (0, None) if self.staged_add(file, &e.name).is_some() => "to be added".to_string(),
             (0, None) => "not in the window".to_string(),
             (0, _) => String::new(),
             (n, _) => count(n, "problem"),
@@ -209,7 +335,21 @@ impl ConfigArea {
             (None, true) => ("[x]", t.green),
             (None, false) => ("[ ]", t.dim),
         };
-        let what = what_changed(p.change.from.as_ref(), p.change.to.as_ref());
+        // A system added or removed as a whole says so, not what is in it.
+        let (label, what) = match self.whole(p) {
+            Some((Whole::Added, _, _)) => (
+                "added".to_string(),
+                "a new system, as drafted and reviewed".to_string(),
+            ),
+            Some((Whole::Removed, _, _)) => (
+                "removed".to_string(),
+                "its records stay on disk".to_string(),
+            ),
+            None => (
+                label,
+                what_changed(p.change.from.as_ref(), p.change.to.as_ref()),
+            ),
+        };
         let by = match p.change.by {
             By::You => "",
             By::Agent => "  (Claude)",
@@ -249,7 +389,7 @@ impl ConfigArea {
             .iter()
             .map(|(file, e)| self.system_row(t, *file, e, inner.width as usize))
             .collect();
-        lines.push(Line::styled(" + add a system…", t.dim()));
+        lines.push(Line::styled(" + add a system…", t.s(t.mag)));
         for (i, l) in lines.iter_mut().enumerate() {
             if i == self.cur {
                 *l = std::mem::take(l).style(sel);
@@ -316,20 +456,24 @@ impl ConfigArea {
                 "Add a system".to_string(),
                 String::new(),
                 widgets::wrap(
-                    "Adding a server or a network from here comes with the next part: what \
-                     sentry finds (your ssh hosts, the gateway), ticked, then read, then \
-                     reviewed section by section.",
+                    "A server, or a network through its OpenWrt router. Enter lists the hosts \
+                     sentry could look at: the ones in your ssh config, this machine's \
+                     default gateway, or one you name. You tick, one box says what is read, \
+                     and what each host says becomes a draft you review.",
                     width.max(20),
                 )
                 .into_iter()
                 .map(|l| Line::styled(l, t.fg()))
                 .chain([
                     Line::raw(""),
-                    Line::styled("Until then:", t.dim()),
-                    Line::styled("  sentry-server init <ssh-host>", t.fg()),
-                    Line::styled("  sentry-network init <ssh-host>", t.fg()),
                     Line::styled(
-                        "draft an entry from what the host says (reads only).",
+                        "Nothing is read anywhere before you tick, and nothing is ever",
+                        t.dim(),
+                    ),
+                    Line::styled("changed on a host by looking at it.", t.dim()),
+                    Line::raw(""),
+                    Line::styled(
+                        "On the command line: sentry-server init · sentry-network init",
                         t.dim(),
                     ),
                 ])
@@ -363,7 +507,14 @@ impl ConfigArea {
                 }
                 Some(x) if x.working => format!("a tab ({}), at work now", x.title),
                 Some(x) => format!("a tab ({})", x.title),
-                None => "not in the window (it opens with the next start)".into(),
+                None if self
+                    .pending
+                    .iter()
+                    .any(|p| p.change.from.is_none() && self.named(p).0 == e.name) =>
+                {
+                    "staged to be added: it gets its tab with the save".into()
+                }
+                None => "not in the window".into(),
             },
         ));
         let doc = self.doc(file);
@@ -398,12 +549,141 @@ impl ConfigArea {
                 ));
             }
         }
+        out.extend(self.check_lines(t, file, &e.name, width));
         out.push(Line::raw(""));
         out.push(Line::styled(
-            format!("Enter opens it · e opens {} in $EDITOR", file.name()),
+            match file {
+                FileId::App => format!("Enter opens it · e opens {} in $EDITOR", file.name()),
+                _ => "Enter opens it · c checks its connection · x removes it".to_string(),
+            },
             t.dim(),
         ));
         out
+    }
+
+    /// What a system's connection checks said, as lines.
+    fn check_lines(
+        &self,
+        t: &Theme,
+        file: FileId,
+        entry: &str,
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        let Some(c) = self.checks_of(file, entry) else {
+            return Vec::new();
+        };
+        let mut out = vec![
+            Line::raw(""),
+            Line::styled("Connection".to_string(), t.s(t.mag)),
+        ];
+        if c.running {
+            out.push(Line::styled(
+                "checking… (reads only: reachable, sudo, tools)",
+                t.dim(),
+            ));
+        }
+        for l in &c.lines {
+            let style = match l.mark {
+                Mark::Ok => t.s(t.green),
+                Mark::Note => t.fg(),
+                Mark::Bad => t.s(t.red),
+            };
+            for (i, part) in widgets::wrap(&l.line(), width.saturating_sub(2).max(20))
+                .into_iter()
+                .enumerate()
+            {
+                out.push(Line::styled(
+                    if i == 0 { part } else { format!("  {part}") },
+                    style,
+                ));
+            }
+        }
+        out
+    }
+
+    /// What a system's form says beside its fields: what is wrong in it, its checks.
+    fn system_extra(&self, t: &Theme, file: FileId, e: &Entry, width: usize) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for p in self.problems_of(file, Some(&e.name)) {
+            for (i, l) in widgets::wrap(&p.text, width.saturating_sub(2).max(20))
+                .into_iter()
+                .enumerate()
+            {
+                out.push(Line::styled(
+                    format!("{} {l}", if i == 0 { "!" } else { " " }),
+                    t.s(t.yellow),
+                ));
+            }
+        }
+        out.extend(self.check_lines(t, file, &e.name, width));
+        if self.checks_of(file, &e.name).is_none() {
+            out.push(Line::styled(
+                "c checks its connection (reads only)",
+                t.dim(),
+            ));
+        }
+        out
+    }
+
+    /// A box of the area's own: one that asks before something is done, or a line typed.
+    fn draw_box(&self, f: &mut Frame, body: Rect, t: &Theme) {
+        let w = 96u16.min(body.width.saturating_sub(2));
+        let text_w = w.saturating_sub(4).max(10) as usize;
+        let (title, text, keys): (&str, Vec<Line>, Vec<Span>) = match (&self.ask, &self.prompt) {
+            (Some(a), _) => {
+                let mut lines = Vec::new();
+                for l in &a.lines {
+                    if l.starts_with("  ") {
+                        lines.push(Line::styled(widgets::trunc(l, text_w), t.fg()));
+                        continue;
+                    }
+                    let wrapped = widgets::wrap(l, text_w);
+                    if wrapped.is_empty() {
+                        lines.push(Line::raw(""));
+                    }
+                    lines.extend(wrapped.into_iter().map(|p| Line::styled(p, t.fg())));
+                }
+                let mut keys = chip(t, "Enter", a.enter, accent(t));
+                keys.push(Span::raw("   "));
+                keys.extend(chip(t, "Esc", "back", t.dim));
+                (a.title.as_str(), lines, keys)
+            }
+            (None, Some(p)) => {
+                let mut lines: Vec<Line> = widgets::wrap(&p.help, text_w)
+                    .into_iter()
+                    .map(|l| Line::styled(l, t.dim()))
+                    .collect();
+                lines.push(Line::raw(""));
+                let mut spans = vec![Span::styled(format!("{}  ", p.label), t.dim())];
+                spans.extend(p.line.spans(t));
+                lines.push(Line::from(spans));
+                let mut keys = chip(t, "Enter", "do it", accent(t));
+                keys.push(Span::raw("   "));
+                keys.extend(chip(t, "Esc", "leave it", t.dim));
+                (p.title.as_str(), lines, keys)
+            }
+            (None, None) => return,
+        };
+        let room = body.height.saturating_sub(6) as usize;
+        let h = (text.len().min(room) as u16) + 5;
+        let rect = widgets::centered(body, w, h);
+        let inner = widgets::overlay(f, rect, t, title, accent(t));
+        let [area, _, bar] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        let area = Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        };
+        f.render_widget(
+            Paragraph::new(text.into_iter().take(room).collect::<Vec<_>>()),
+            area,
+        );
+        f.render_widget(Paragraph::new(Line::from(keys)), bar);
     }
 
     /// What the Overview says of the selected staged change: before → after.
@@ -509,8 +789,8 @@ impl ConfigArea {
                 t,
                 &[
                     (none, t.dim()),
-                    ("adding one here comes with the next part", t.dim()),
-                    (&format!("until then: {init}"), t.fg()),
+                    ("Enter looks for one to add", t.fg()),
+                    (&format!("on the command line: {init}"), t.dim()),
                 ],
             );
         } else {
@@ -541,54 +821,15 @@ impl ConfigArea {
         let inner = widgets::inner(&block, right);
         f.render_widget(block, right);
         let width = inner.width as usize;
-        let mut lines = Vec::new();
-        if self.open {
-            // Its essential settings, to read: the forms come with the next part.
-            if let (Some(k), Some(d)) = (self.kind(file), self.doc(file)) {
-                let fields = self.form_fields(k, d, &k.sections(d, &e.name));
-                let lw = fields
-                    .iter()
-                    .map(|x| x.label.chars().count())
-                    .max()
-                    .unwrap_or(0);
-                for x in fields {
-                    if !x.head.is_empty() {
-                        if !lines.is_empty() {
-                            lines.push(Line::raw(""));
-                        }
-                        lines.push(Line::styled(x.head.clone(), t.s(t.mag)));
-                    }
-                    let shown = x.value.shown();
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{:<lw$}  ", x.label), t.dim()),
-                        if shown.is_empty() {
-                            Span::styled("(none)", t.dim())
-                        } else {
-                            Span::styled(
-                                widgets::trunc(&shown, width.saturating_sub(lw + 2)),
-                                t.fg(),
-                            )
-                        },
-                    ]));
-                }
-            }
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(FORMS_LATER, t.s(t.yellow)));
-            lines.push(Line::styled(
-                format!("e opens {} in $EDITOR · Enter shows less", file.name()),
-                t.dim(),
-            ));
-        } else {
-            lines.extend(self.system_lines(t, file, e, width));
-            lines.pop();
-            lines.push(Line::styled(
-                format!(
-                    "Enter shows its settings · e opens {} in $EDITOR",
-                    file.name()
-                ),
-                t.dim(),
-            ));
-        }
+        let mut lines = self.system_lines(t, file, e, width);
+        lines.pop();
+        lines.push(Line::styled(
+            format!(
+                "Enter opens its settings · c checks its connection · x removes it · e opens {}",
+                file.name()
+            ),
+            t.dim(),
+        ));
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
@@ -640,8 +881,14 @@ impl ConfigArea {
             Paragraph::new(lines.into_iter().skip(off).take(room).collect::<Vec<_>>()),
             text,
         );
-        let mut spans = chip(t, "Enter", "save", accent(t));
-        spans.push(Span::raw("   "));
+        let mut spans = match b.refused {
+            true => Vec::new(),
+            false => {
+                let mut s = chip(t, "Enter", "save", accent(t));
+                s.push(Span::raw("   "));
+                s
+            }
+        };
         spans.extend(chip(t, "Esc", "back", t.dim));
         if over {
             spans.push(Span::raw("   "));
@@ -654,9 +901,6 @@ impl ConfigArea {
         f.render_widget(Paragraph::new(Line::from(spans)), keys);
     }
 }
-
-/// What a server's or a network's settings say until their forms exist.
-pub(crate) const FORMS_LATER: &str = "Forms for servers and networks come with the next part.";
 
 /// Left and right of the body: side by side where there is room, else one over the other.
 fn split(body: Rect) -> (Rect, Rect) {

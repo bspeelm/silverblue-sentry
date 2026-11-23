@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 home   F4 config    nothing is written before the save box        ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ myserver · server ──────────────────────────────────────────────────────────────────┐┌ apt-maintenance ────────────────────────────────────────────────────┐
+│  Who it is                                                                          ││ text                                                                │
+│    Name              myserver                                                       ││                                                                     │
+│    ssh               admin@192.0.2.10                                               ││ Debian/Ubuntu: refresh package lists, upgrade, reboot if needed,    │
+│    sudo allowlist    (nothing: monitoring runs without root)                        ││ check everything came back. From the set every system of its kind   │
+│                                                                                     ││ shares. How often it is due: a duration (7d, 30d), `off`, or empty  │
+│  What must be running                                                               ││ for not on a cadence. Its steps are edited in $EDITOR (e).          │
+│    Services          app.service                                                    ││                                                                     │
+│    Timers            1 entry                                                        ││ c checks its connection (reads only)                                │
+│                                                                                     ││                                                                     │
+│  Disks                                                                              ││                                                                     │
+│    Disks             (none)                                                         ││                                                                     │
+│    SMART             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Containers and what listens                                                        ││                                                                     │
+│    Compose projects  (none)                                                         ││                                                                     │
+│    Listeners         (none: everything listening is a finding)                      ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Kept at a deliberate version                                                       ││                                                                     │
+│    Items             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Notes Claude may read                                                              ││                                                                     │
+│    Notes             (none)                                                         ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Upkeep · the shared workflows                                                      ││                                                                     │
+│    apt-maintenance   (not on a cadence)                                             ││                                                                     │
+│    compose-update    (not on a cadence)                                             ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   Esc  back   o  its own copy   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

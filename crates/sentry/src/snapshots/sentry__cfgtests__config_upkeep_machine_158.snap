@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 home   F4 config*    nothing is written before the save box           ● 1 not saved   Mon 26 Oct 12:00
+ 1 Overview 1*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ This machine ───────────────────────────────────────────────────────────────────────┐┌ cleanup-cache ──────────────────────────────────────────────────────┐
+│  Reviews sentry starts by itself                                                    ││ text                                                                │
+│    Review at start     [x] yes                                                      ││                                                                     │
+│    Review after a run  [x] yes                                                      ││ report ~/.cache over threshold; delete opted-in dirs. A job of this │
+│                                                                                     ││ machine's. How often it is due: a duration (7d, 30d), `off`, or     │
+│  Notes Claude may read                                                              ││ empty for its own default.                                          │
+│    Notes               (none)                                                       ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Containers                                                                         ││                                                                     │
+│    Terminal            ($TERMINAL, xdg-terminal-exec, ghostty, ptyxis)              ││                                                                     │
+│                                                                                     ││                                                                     │
+│  Upkeep                                                                             ││                                                                     │
+│    quick-update        (not on a cadence)                                           ││                                                                     │
+│    release-rebase      (not on a cadence)                                           ││                                                                     │
+│    rpmfusion-migrate   (not on a cadence)                                           ││                                                                     │
+│    audit               (30d)                                                        ││                                                                     │
+│    update-check        (7d)                                                         ││                                                                     │
+│    cleanup-flatpak     (30d)                                                        ││                                                                     │
+│    cleanup-podman      (30d)                                                        ││                                                                     │
+│    cleanup-ostree      (30d)                                                        ││                                                                     │
+│    cleanup-cache       (off)                                                        ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  edit   Esc  back   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

@@ -507,14 +507,14 @@ pub const FIELDS: &[Field] = &[
         "servers.*.maintenance.items",
         "Items",
         Kind::Records,
-        false,
+        true,
         "Things kept at a deliberate version: an image, held packages, or an app on the host.",
     ),
     f(
         "servers.*.maintenance.items[].id",
         "Id",
         Kind::Text,
-        false,
+        true,
         "A short name for it, unique on this server.",
     ),
     f(
@@ -570,7 +570,7 @@ pub const FIELDS: &[Field] = &[
         "servers.*.maintenance.items[].source",
         "Source",
         Kind::Text,
-        false,
+        true,
         "Where newer versions come from: `github:owner/repo`, `docker:repo` (Docker Hub), `ghcr:owner/image`. Packages use apt's candidate.",
     ),
     f(
@@ -584,7 +584,7 @@ pub const FIELDS: &[Field] = &[
         "servers.*.maintenance.items[].risk",
         "Risk",
         Kind::Choice(RISKS),
-        false,
+        true,
         "How risky a change to it is: low (routine), medium (have a rollback ready), high (back up first, in a window). `tier:` and green/amber/red are still read.",
     ),
     f(
@@ -619,7 +619,7 @@ pub const FIELDS: &[Field] = &[
         "servers.*.maintenance.items[].workflow",
         "Workflow",
         Kind::Text,
-        false,
+        true,
         "The workflow that applies a change to it.",
     ),
     f(

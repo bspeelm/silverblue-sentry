@@ -31,4 +31,4 @@ expression: "render_to_string(&mut a, 80, 30)"
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- Enter  open   Space  tick   s  save…   c  check   ?  help   q  quit
+ Enter  open   Space  tick   x  remove   s  save…   ?  help   q  quit

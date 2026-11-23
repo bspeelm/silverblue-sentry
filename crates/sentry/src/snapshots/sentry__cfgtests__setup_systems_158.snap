@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 config*    nothing is written before the save box                                   ● 1 not saved   Mon 26 Oct 12:00
+ 1 Overview 1*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Setup  1 Agent › 2 This machine ›  3 Systems  › 4 Review › 5 Upkeep › 6 Save
+ Space ticks · Enter looks at what is ticked, then goes on · none: this machine
+┌ Hosts sentry could look at · 0 of 2 ticked ─────────────────────────────────────────┐┌ newbox ─────────────────────────────────────────────────────────────┐
+│  From your ssh config                                                               ││ A host of your ssh config. Tick it to have sentry look at it.       │
+│  [ ] newbox                                                                         ││                                                                     │
+│                                                                                     ││ Tick the hosts sentry should look at; Enter with none ticked goes   │
+│  This machine's default gateway  likely your router                                 ││ on with just what there is.                                         │
+│  [ ] root@192.0.2.1                                                                 ││ Nothing was read anywhere to make this list: it is this machine's   │
+│                                                                                     ││ own.                                                                │
+│  Another                                                                            ││                                                                     │
+│      n  add one by name (an ssh alias, or user@host)                                ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  go on   b  back   Esc  leave the setup   Space  tick   a  all   /  filter   n  by name   ?  help   q  quit

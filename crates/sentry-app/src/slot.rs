@@ -490,6 +490,11 @@ impl Slot {
     /// Something here may still change the host or read it as root: a run in progress, a
     /// session at work, a series, a command in the pane, a step for a session elsewhere, a
     /// read as root. The security audit's re-run after a change waits for none of them.
+    /// It never had the window: nothing of it is read or running but a run picked up.
+    pub(crate) fn is_asleep(&self) -> bool {
+        self.asleep
+    }
+
     pub(crate) fn at_work(&self) -> bool {
         self.run.as_ref().is_some_and(|r| !r.done())
             || self.apply.as_ref().is_some_and(|s| s.busy())
