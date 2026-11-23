@@ -83,7 +83,7 @@ impl Slot {
         self.sec_sync(w);
         if quiet {
             return w.toast(&format!(
-                "security audit after the upgrade: {n} to do first · {} shows it",
+                "security audit read again: {n} to do first · {} shows it",
                 sec::KEY
             ));
         }
@@ -373,6 +373,19 @@ impl Slot {
             .filter(|i| at.is_none_or(|at| !sec::outdated(i, at, &upgrades)))
             .cloned()
             .collect();
+    }
+
+    /// A session on one of the audit's items settled done: the audit reads every
+    /// target again by itself (nothing opens, no review), and its rows follow the report.
+    pub(crate) fn sec_again(&mut self, w: &mut Win) {
+        if w.sec.busy()
+            || (w.sec.collect.is_none() && !w.offline)
+            || (w.offline && !w.sec.rerun_offline)
+        {
+            return;
+        }
+        self.sec_read_all(w, true);
+        w.toast("the security audit reads every target again · its rows follow");
     }
 
     /// After an upgrade the window audits again by itself: the facts only, nothing opened,

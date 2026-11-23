@@ -189,6 +189,24 @@ impl Slot {
                     }
                     self.apply(w, vec![Effect::Goto(ScreenId::Upgrade)], w.at);
                 }
+                Fx::SecAgain => self.sec_again(w),
+                Fx::Expect { key, why } => {
+                    let fx = self.target.expect(&key);
+                    self.apply(w, fx, w.at);
+                    let e = sentry_core::maint::log::LogEntry::event(
+                        &self.scope,
+                        "expected",
+                        "expected",
+                        true,
+                        &format!(
+                            "{key} is marked expected: Claude looked into it and found it \
+                             fine as it is. {why}\n\nRecords › Later takes it back."
+                        ),
+                        &[format!("apply:{key}"), "expected".into()],
+                        jiff::Timestamp::now(),
+                    );
+                    self.log_event(w, e);
+                }
                 Fx::MarkDone => {
                     let a = self
                         .apply

@@ -106,6 +106,21 @@ impl Upkeep for LocalTarget {
         self.screens.maint.selected(&v).map(|r| r.key)
     }
 
+    fn expect(&self, key: &str) -> Vec<Effect> {
+        // A finding of the latest audit is expected its own way (a listener's addresses).
+        let finding = self
+            .data
+            .reports
+            .get()
+            .and_then(|r| r.last())
+            .and_then(|r| r.report.findings.iter().find(|f| f.id == key));
+        let edit = match finding {
+            Some(f) => crate::tui::screens::audit::edit_for(f),
+            None => BaselineEdit::Finding(key.to_string()),
+        };
+        vec![lift(local::Effect::Baseline(edit))]
+    }
+
     fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, _cx: &Cx) -> Result<Vec<Effect>, String> {
         Ok(match row.kind {
             LaterKind::Expected => vec![lift(local::Effect::Unbaseline(BaselineEdit::Finding(

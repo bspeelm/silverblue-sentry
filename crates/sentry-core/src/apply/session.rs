@@ -193,6 +193,16 @@ pub enum Fx {
         again: Option<String>,
         body: String,
     },
+    /// Claude found what the session is about fine as it is (`key`: the finding's id, or
+    /// the row's key of one of the security audit's items): the target marks it expected,
+    /// and the log keeps the reason (`why`).
+    Expect {
+        key: String,
+        why: String,
+    },
+    /// A session about one of the security audit's items settled done: the audit reads
+    /// every target again by itself, and its rows follow what it finds.
+    SecAgain,
     /// Mark the task (or the plan done by hand) done, by hand: Claude didn't say it is.
     MarkDone,
     /// A check for later, as a one-time task on Maintenance (due after its `after`).
@@ -2230,7 +2240,31 @@ impl Session {
                     }
                 }
             }
-            Status::Done => {
+            // Fine as it is: nothing changes, it is marked expected and leaves the list.
+            Status::Expected if self.expectable().is_some() => {
+                let key = self.expectable().unwrap_or_default();
+                self.chat
+                    .push(Kind::Good, format!("✓ Fine as it is · {}", v.summary));
+                next(self);
+                self.chat.push(
+                    Kind::Info,
+                    "marked expected · it leaves the list (Records › Later takes it back)",
+                );
+                self.still = None;
+                self.phase = Phase::Settled(End::Done);
+                self.secret.clear();
+                let mut fx = self.log_runs(Some(&v.summary));
+                fx.push(Fx::Expect {
+                    key,
+                    why: v.summary.clone(),
+                });
+                if self.series.is_some() && !self.can_grant() {
+                    fx.push(Fx::Next);
+                }
+                fx
+            }
+            // (Anything else that is fine as it is, a task say, is done.)
+            Status::Done | Status::Expected => {
                 self.chat
                     .push(Kind::Good, format!("✓ Done · {}", v.summary));
                 next(self);
@@ -2352,6 +2386,24 @@ impl Session {
 
     // ── The end ─────────────────────────────────────────────────────────────────────────
 
+    /// The row's key, when the session is about one of the security audit's items.
+    fn audit_row(&self) -> Option<String> {
+        self.chat
+            .ask
+            .applying()
+            .map(|a| a.key.clone())
+            .filter(|k| k.starts_with(crate::maint::rec::AUDIT_ROW))
+    }
+
+    /// What an `expected` verdict marks: the session's finding, or its audit item's row.
+    fn expectable(&self) -> Option<String> {
+        self.chat
+            .ask
+            .applying()
+            .and_then(|a| a.finding.clone())
+            .or_else(|| self.audit_row())
+    }
+
     fn settle(&mut self, end: End) -> Vec<Fx> {
         self.settle_with(end, None)
     }
@@ -2360,6 +2412,14 @@ impl Session {
         self.phase = Phase::Settled(end);
         self.secret.clear();
         let mut fx = self.log_runs(verdict);
+        // One of the security audit's items: done is the audit's to say.
+        if end == End::Done && self.audit_row().is_some() {
+            self.chat.push(
+                Kind::Info,
+                "the security audit looks again · its row follows",
+            );
+            fx.push(Fx::SecAgain);
+        }
         if end == End::Done
             && let Some(p) = self.chat.ask.applying().and_then(|a| a.plan.clone())
         {
@@ -2575,6 +2635,97 @@ mod tests {
         }
         s.chat.on_event(Event::Text(text.into()));
         s.turn_ended(0, &["quick-update".into()])
+    }
+
+    /// Whatever a session concludes moves its row: fine as it is marks it expected (an
+    /// audit's item by its row, a finding by its id), a wait puts the row itself off, and
+    /// done on an audit's item has the audit look again.
+    #[test]
+    fn an_audit_items_session_resolves_its_row() {
+        let item = crate::secaudit::Item {
+            id: "sec:listen-wide:srv:myserver".into(),
+            group: crate::secaudit::Group::Logins,
+            state: crate::secaudit::State::Worth,
+            rank: 0,
+            title: "7 services listen on every address".into(),
+            why: String::new(),
+            fix: String::new(),
+            targets: vec!["srv:myserver".into()],
+            evidence: Vec::new(),
+            brief: "Fix it.".into(),
+            question: None,
+        };
+        let row = "audit:sec:listen-wide:srv:myserver";
+        let Some(crate::claude::Target::Apply(ap)) = item.ask().target else {
+            panic!("no target")
+        };
+        let q = crate::claude::apply_question(&ap);
+        assert!(q.contains("sentry marks it expected for me"), "{q}");
+        // Fine as it is: marked expected, with the reason.
+        let mut s = Session::new(item.ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "They are all behind the firewall.\n```sentry-verdict\nstatus = \"expected\"\n\
+             summary = \"the firewall closes them\"\n```",
+        );
+        assert_eq!(s.phase, Phase::Settled(End::Done));
+        assert_eq!(
+            fx,
+            [Fx::Expect {
+                key: row.into(),
+                why: "the firewall closes them".into()
+            }]
+        );
+        // A finding's session likewise, by the finding's id; a task that is fine is done.
+        let mut s = Session::new(Ask::apply(
+            "report.timer: last ran 12 days ago",
+            "ctx",
+            Apply {
+                key: "finding:srv:timer-stale:report.timer".into(),
+                finding: Some("srv:timer-stale:report.timer".into()),
+                ..Default::default()
+            },
+        ));
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"expected\"\nsummary = \"meant to be\"\n```",
+        );
+        assert!(
+            matches!(&fx[..], [Fx::Expect { key: k, .. }] if k == "srv:timer-stale:report.timer"),
+            "{fx:?}"
+        );
+        // Not now: the row (by its own key) is put off.
+        let mut s = Session::new(item.ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"wait\"\nsummary = \"later\"\n```",
+        );
+        assert!(
+            matches!(&fx[0], Fx::Wait { key: k, .. } if k == row),
+            "{fx:?}"
+        );
+        // Something ran: the audit looks again.
+        let mut s = Session::new(item.ask());
+        let fx = key(&mut s, KeyCode::Enter);
+        answer(
+            &mut s,
+            &fx,
+            &plan("[[step]]\ntitle = \"bind\"\nrun = \"true\"\n"),
+        );
+        key(&mut s, KeyCode::Enter);
+        let fx = s.step_ended(0);
+        let fx = answer(
+            &mut s,
+            &fx,
+            "```sentry-verdict\nstatus = \"done\"\nsummary = \"bound to 127.0.0.1\"\n```",
+        );
+        assert!(fx.iter().any(|f| matches!(f, Fx::SecAgain)), "{fx:?}");
     }
 
     fn plan(steps: &str) -> String {

@@ -502,6 +502,10 @@ pub trait Upkeep {
     /// What Records lists besides the shared records: rows of its own under Later, and when
     /// it was last audited.
     fn records(&self, sh: &Shared, cx: &Cx) -> (Vec<LaterRow>, Option<jiff::Timestamp>);
+    /// Mark something expected as `x` on its row does (a finding by its id, one of the
+    /// security audit's items by its row's key `audit:<id>`): the effects that write it to
+    /// the target's baseline.
+    fn expect(&self, key: &str) -> Vec<Effect>;
     /// Take back one of those rows, or something marked expected.
     fn undo(&mut self, row: &LaterRow, sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String>;
     /// Stop watching something the config lists (`what`: `timer:<unit>`, one of

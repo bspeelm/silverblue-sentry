@@ -570,7 +570,8 @@ impl Item {
             context,
             question: self.brief.clone(),
             target: Some(claude::Target::Apply(claude::Apply {
-                key: self.id.clone(),
+                // (The row's key: what a wait puts off and a settled session resolves.)
+                key: crate::maint::rec::audit_key(&self.id),
                 remote: self.targets.first().is_some_and(|t| t != LOCAL),
                 ..Default::default()
             })),

@@ -1107,6 +1107,10 @@ impl Upkeep for NetworkTarget {
         }
     }
 
+    fn expect(&self, key: &str) -> Vec<Effect> {
+        vec![Effect::own(Own::Expected(key.to_string(), true))]
+    }
+
     fn undo(&mut self, row: &LaterRow, _sh: &mut Shared, cx: &Cx) -> Result<Vec<Effect>, String> {
         match row.kind {
             LaterKind::Expected => Ok(vec![Effect::own(Own::Expected(row.key.clone(), false))]),

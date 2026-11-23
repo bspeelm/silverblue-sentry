@@ -176,6 +176,9 @@ pub fn tick_all(ticks: &mut Ticks, can: Vec<String>) {
     }
 }
 
+/// `x` on one of the security audit's rows: what marking it expected does.
+pub const AUDIT_EXPECTED: &str = "Its row leaves this list (baseline.toml; Records › Later takes it back). The security audit's report (S) still says it.";
+
 /// `x` on a row that has nothing to dismiss.
 pub const NOTHING_TO_DISMISS: &str = "only findings can be marked expected: z puts this off";
 

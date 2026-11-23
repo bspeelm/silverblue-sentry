@@ -1357,7 +1357,7 @@ fn an_item_becomes_a_session_ask() {
     let Some(claude::Target::Apply(a)) = ask.target else {
         panic!("no target")
     };
-    assert_eq!(a.key, "sec:sudo:srv:myserver");
+    assert_eq!(a.key, "audit:sec:sudo:srv:myserver");
     assert!(a.remote);
 }
 
