@@ -61,6 +61,14 @@ pub struct HostFacts {
     pub units: BTreeMap<String, String>,
 }
 
+impl HostFacts {
+    /// The OS release as endoflife.date names it: product and cycle (`debian`, `13`).
+    pub fn release(&self) -> Option<(String, String)> {
+        let (id, v) = self.os.as_ref()?;
+        sentry_core::secaudit::release_from(id, v).map(|(p, c, _)| (p, c))
+    }
+}
+
 fn script(units: &[&str], pkgs: &[String]) -> String {
     let q = |s: &str| sentry_core::exec::sh_quote(s);
     let pats: Vec<String> = INFRA
@@ -313,20 +321,21 @@ pub fn find(
             });
         }
         // The OS release's end of life.
-        if let Some((id, v)) = &f.os {
-            let cycle = if id == "debian" {
-                v.split('.').next().unwrap_or(v).to_string()
-            } else {
-                v.clone()
-            };
-            let key = format!("{id}/{cycle}");
-            if !items.iter().any(|i| i.eol.as_deref() == Some(key.as_str())) {
+        // Tracked by product: `eol: debian` and `eol: debian/12` both watch it, and an upgrade
+        // to the next release doesn't suggest a second item. The item names the product only:
+        // its series is the host's release (`eval`).
+        if let (Some((id, v)), Some((product, cycle))) = (&f.os, f.release()) {
+            let tracked = items
+                .iter()
+                .filter_map(|i| i.eol.as_deref())
+                .any(|e| super::upstream::product(e) == product);
+            if !tracked {
                 add(Candidate {
-                    key: format!("eol:{key}"),
+                    key: format!("eol:{product}/{cycle}"),
                     what: format!("{id} {v}: its end of life"),
                     item: MaintItem {
                         id: id.clone(),
-                        eol: Some(key),
+                        eol: Some(product),
                         risk: Risk::High,
                         ..Default::default()
                     },
@@ -468,6 +477,34 @@ mod tests {
         assert_eq!(db.source.as_deref(), Some("docker:postgres"));
         assert_eq!(db.workflow.as_deref(), Some("compose-bump"));
         assert_eq!(f.candidates[3].item.id, "kernel");
+        assert_eq!(f.candidates[4].item.eol.as_deref(), Some("debian"));
+        // The OS counts as tracked by its product, whatever cycle (if any) is written.
+        for eol in ["debian", "debian/11", "debian/12"] {
+            let mut c = cfg();
+            c.maintenance.items.push(MaintItem {
+                id: "os".into(),
+                eol: Some(eol.into()),
+                ..Default::default()
+            });
+            let f = find(&c, &compose, Some(&docker), Some(&facts), &[], &[]);
+            assert!(
+                !f.candidates.iter().any(|c| c.key.starts_with("eol:")),
+                "{eol}"
+            );
+        }
+        // A release endoflife.date doesn't know by that name: nothing suggested.
+        let other = parse_facts("@@os\nsomeos 3\n");
+        assert_eq!(other.release(), None);
+        assert!(
+            find(&cfg(), &compose, None, Some(&other), &[], &[])
+                .candidates
+                .iter()
+                .all(|c| !c.key.starts_with("eol:"))
+        );
+        assert_eq!(
+            parse_facts("@@os\nubuntu \"24.04\"\n").release(),
+            Some(("ubuntu".into(), "24.04".into()))
+        );
         let gone: Vec<(&str, &str)> = f
             .gone
             .iter()

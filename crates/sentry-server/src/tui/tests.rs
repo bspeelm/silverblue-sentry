@@ -150,17 +150,18 @@ fn maint_payload() -> Payload {
         },
     );
     lk.eol.insert(
-        "debian/12".into(),
-        Ok(Eol {
+        "debian".into(),
+        Ok(vec![Eol {
             cycle: "12".into(),
             eol: Some(jiff::civil::date(2026, 12, 10)),
             latest: Some("12.12".into()),
-        }),
+        }]),
     );
     let st = crate::maint::eval::evaluate(
         &maint_items(),
         &local,
         Some(&lk),
+        None,
         &Default::default(),
         &Default::default(),
         jiff::civil::date(2026, 10, 26),

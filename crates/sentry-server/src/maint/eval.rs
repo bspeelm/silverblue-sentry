@@ -69,10 +69,31 @@ pub struct Status {
     pub flags: Vec<Flag>,
     /// The review date in force (a snooze overrides the config's).
     pub review_by: Option<jiff::civil::Date>,
+    /// The release series `eol:` resolved to, and its end of life.
     pub eol: Option<Eol>,
+    /// How that series was told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eol_from: Option<EolFrom>,
     /// Why something is unknown.
     pub note: Option<String>,
 }
+
+/// Where an item's release series (endoflife.date's cycle) came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EolFrom {
+    /// The version that runs (or is pinned): `upstream::cycle_for`.
+    Running,
+    /// The server's own operating system release (`/etc/os-release`), for an item that only
+    /// watches the OS's end of life.
+    Os,
+    /// The cycle written in the config (`product/cycle`): nothing else told it.
+    Typed,
+}
+
+/// The server's operating system as endoflife.date names it: product and cycle
+/// (`secaudit::release_from` of its `ID` and `VERSION_ID`).
+pub type HostOs<'a> = Option<(&'a str, &'a str)>;
 
 impl Status {
     pub fn has(&self, f: Flag) -> bool {
@@ -80,11 +101,13 @@ impl Status {
     }
 }
 
-/// `retired`: the items whose retirement ended well (from the maintenance log, `retired_in`).
+/// `retired`: the items whose retirement ended well (from the maintenance log, `retired_in`);
+/// `os`: the server's own release, when it was read.
 pub fn evaluate(
     items: &[MaintItem],
     local: &BTreeMap<String, Local>,
     lookups: Option<&Lookups>,
+    os: HostOs,
     later: &sentry_core::maint::later::Snoozes,
     retired: &std::collections::BTreeSet<String>,
     today: jiff::civil::Date,
@@ -96,12 +119,105 @@ pub fn evaluate(
                 it,
                 local.get(&it.id),
                 lookups,
+                os,
                 later,
                 retired.contains(&it.id),
                 today,
             )
         })
         .collect()
+}
+
+fn add_note(s: &mut Status, n: String) {
+    match &mut s.note {
+        Some(old) if !old.is_empty() => {
+            old.push_str("; ");
+            old.push_str(&n);
+        }
+        _ => s.note = Some(n),
+    }
+}
+
+/// The series an item's `eol:` stands for, from what runs first (see [`EolFrom`]), with a
+/// note when that isn't what the config says or nothing told it. None, no note: not looked
+/// up yet.
+fn series(
+    it: &MaintItem,
+    l: &Local,
+    lookups: Option<&Lookups>,
+    os: HostOs,
+    s: &mut Status,
+) -> Option<(Eol, EolFrom)> {
+    let key = it.eol.as_deref()?;
+    let product = upstream::product(key);
+    let typed = key
+        .split_once('/')
+        .map(|(_, c)| c.trim())
+        .filter(|c| !c.is_empty());
+    let cycles = match lookups.and_then(|lk| lk.eol.get(product))? {
+        Ok(c) => c,
+        Err(e) => {
+            add_note(
+                s,
+                format!("endoflife.date {product} couldn't be asked: {e}"),
+            );
+            return None;
+        }
+    };
+    let eol_only = it.image.is_none() && it.apt.is_empty() && it.version_cmd.is_none();
+    let version = if eol_only {
+        None
+    } else {
+        l.running.as_deref().or(l.pinned.as_deref())
+    };
+    let found = if let Some(v) = version {
+        upstream::cycle_for(cycles, v).map(|e| (e, EolFrom::Running, v.to_string()))
+    } else if eol_only {
+        os.filter(|(p, _)| *p == product).and_then(|(p, c)| {
+            cycles
+                .iter()
+                .find(|e| e.cycle == c)
+                .map(|e| (e, EolFrom::Os, format!("{p} {c}")))
+        })
+    } else {
+        None
+    };
+    let found = found.or_else(|| {
+        let t = typed?;
+        cycles
+            .iter()
+            .find(|e| e.cycle == t)
+            .map(|e| (e, EolFrom::Typed, String::new()))
+    });
+    match found {
+        Some((e, from, what)) => {
+            if from != EolFrom::Typed
+                && let Some(t) = typed
+                && t != e.cycle
+            {
+                add_note(
+                    s,
+                    format!("config says {t}; {what} runs, series {}", e.cycle),
+                );
+            }
+            Some((e.clone(), from))
+        }
+        None => {
+            add_note(
+                s,
+                match (version, typed) {
+                    (Some(v), None) => format!(
+                        "couldn't tell which series {v} belongs to (endoflife.date {product})"
+                    ),
+                    (_, Some(t)) => format!("endoflife.date {product} has no cycle {t}"),
+                    (None, None) => {
+                        format!("couldn't tell which series runs here (endoflife.date {product})")
+                    }
+                },
+            );
+            None
+        }
+    }
 }
 
 /// The items the maintenance log says were retired: a retirement run (kind `retire`) that
@@ -117,6 +233,7 @@ fn one(
     it: &MaintItem,
     l: Option<&Local>,
     lookups: Option<&Lookups>,
+    os: HostOs,
     later: &sentry_core::maint::later::Snoozes,
     retired: bool,
     today: jiff::civil::Date,
@@ -166,9 +283,8 @@ fn one(
             }
         }
     }
-    if let Some(key) = &it.eol
-        && let Some(Ok(e)) = lookups.and_then(|lk| lk.eol.get(key))
-    {
+    if let Some((e, from)) = series(it, &l, lookups, os, &mut s) {
+        s.eol_from = Some(from);
         if let Some(d) = e.eol {
             let days = (d - today).get_days();
             if d <= today {
@@ -177,12 +293,12 @@ fn one(
                 flags.push(Flag::EolSoon);
             }
         }
-        s.eol = Some(e.clone());
         // Only an end of life to watch (an OS release): its cycle stands for the version.
         if it.image.is_none() && it.apt.is_empty() && it.version_cmd.is_none() {
             s.pinned = Some(e.cycle.clone());
             s.latest = e.latest.clone();
         }
+        s.eol = Some(e);
     }
     if s.newer.iter().any(|r| r.security) {
         flags.push(Flag::Security);
@@ -428,14 +544,180 @@ mod tests {
             },
         );
         lk.eol.insert(
-            "debian/12".into(),
-            Ok(Eol {
-                cycle: "12".into(),
-                eol: Some(d("2026-12-01")),
-                latest: None,
-            }),
+            "debian".into(),
+            Ok(vec![
+                Eol {
+                    cycle: "13".into(),
+                    eol: Some(d("2030-06-30")),
+                    latest: Some("13.7".into()),
+                },
+                Eol {
+                    cycle: "12".into(),
+                    eol: Some(d("2026-12-01")),
+                    latest: None,
+                },
+            ]),
         );
         (vec![web, engine, legacy, os], local, lk)
+    }
+
+    fn eol(cycle: &str, eol: &str, latest: &str) -> Eol {
+        Eol {
+            cycle: cycle.into(),
+            eol: Some(d(eol)),
+            latest: Some(latest.into()),
+        }
+    }
+
+    /// The nvidia driver's cycles as endoflife.date lists them (newest first).
+    fn nvidia() -> Lookups {
+        let mut lk = Lookups::default();
+        lk.eol.insert(
+            "nvidia".into(),
+            Ok(vec![
+                eol("r620-linux", "2029-11-04", "620.70.06"),
+                eol("r620-windows", "2029-11-04", "621.14"),
+                eol("r550-linux", "2025-04-17", "550.144.03"),
+                eol("r550-windows", "2025-04-17", "553.74"),
+            ]),
+        );
+        lk
+    }
+
+    fn driver(eol: &str, running: &str) -> (MaintItem, Local) {
+        (
+            MaintItem {
+                id: "nvidia-driver".into(),
+                apt: vec!["nvidia-driver".into()],
+                eol: Some(eol.into()),
+                ..Default::default()
+            },
+            Local {
+                pinned: Some(running.into()),
+                running: Some(running.into()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn judge(it: &MaintItem, l: &Local, lk: &Lookups, os: HostOs) -> Status {
+        one(
+            it,
+            Some(l),
+            Some(lk),
+            os,
+            &Default::default(),
+            false,
+            d("2026-11-23"),
+        )
+    }
+
+    #[test]
+    fn the_series_is_the_one_that_runs_not_the_one_typed() {
+        let lk = nvidia();
+        // The config still names the old series; 620 runs now.
+        let (it, l) = driver("nvidia/r550-linux", "620.70.06-1");
+        let s = judge(&it, &l, &lk, None);
+        assert_eq!(s.eol.as_ref().unwrap().cycle, "r620-linux");
+        assert_eq!(s.eol_from, Some(EolFrom::Running));
+        assert!(!s.has(Flag::Eol) && !s.has(Flag::EolSoon), "{:?}", s.flags);
+        assert_eq!(
+            s.note.as_deref(),
+            Some("config says r550-linux; 620.70.06-1 runs, series r620-linux")
+        );
+        // While 550 ran, the same config was right: past its end.
+        let (it, l) = driver("nvidia/r550-linux", "550.144.03-1");
+        let s = judge(&it, &l, &lk, None);
+        assert_eq!(s.eol_from, Some(EolFrom::Running));
+        assert!(s.has(Flag::Eol) && s.note.is_none());
+        // A product alone is enough.
+        let (it, l) = driver("nvidia", "620.70.06-1");
+        let s = judge(&it, &l, &lk, None);
+        assert_eq!(s.eol.as_ref().unwrap().cycle, "r620-linux");
+        assert!(s.note.is_none());
+        // An existing note is kept, the series' added after it.
+        let (it, mut l) = driver("nvidia/r550-linux", "620.70.06-1");
+        l.note = Some("held by hand".into());
+        let s = judge(&it, &l, &lk, None);
+        assert!(
+            s.note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("held by hand; config says r550-linux")),
+            "{:?}",
+            s.note
+        );
+    }
+
+    #[test]
+    fn a_series_nothing_tells_is_said_not_guessed() {
+        let lk = nvidia();
+        let (it, l) = driver("nvidia", "470.256.02-1");
+        let s = judge(&it, &l, &lk, None);
+        assert!(s.eol.is_none() && s.eol_from.is_none());
+        assert!(!s.has(Flag::Eol) && !s.has(Flag::EolSoon));
+        assert_eq!(
+            s.note.as_deref(),
+            Some("couldn't tell which series 470.256.02-1 belongs to (endoflife.date nvidia)")
+        );
+        // The typed cycle stands when the version names none.
+        let (it, l) = driver("nvidia/r550-linux", "470.256.02-1");
+        let s = judge(&it, &l, &lk, None);
+        assert_eq!(s.eol_from, Some(EolFrom::Typed));
+        assert!(s.has(Flag::Eol));
+        // A lookup that failed is said.
+        let mut failed = Lookups::default();
+        failed.eol.insert("nvidia".into(), Err("timed out".into()));
+        let s = judge(&it, &l, &failed, None);
+        assert!(s.eol.is_none());
+        assert_eq!(
+            s.note.as_deref(),
+            Some("endoflife.date nvidia couldn't be asked: timed out")
+        );
+        // Not looked up yet: nothing said.
+        let s = judge(&it, &l, &Lookups::default(), None);
+        assert!(s.eol.is_none() && s.note.is_none());
+    }
+
+    #[test]
+    fn an_os_item_follows_the_hosts_release() {
+        let (items, _, lk) = setup();
+        let os = &items[3];
+        // `debian/12` in the config; the server was upgraded to 13.
+        let s = judge(os, &Local::default(), &lk, Some(("debian", "13")));
+        assert_eq!(s.eol_from, Some(EolFrom::Os));
+        assert_eq!(s.pinned.as_deref(), Some("13"));
+        assert_eq!(s.latest.as_deref(), Some("13.7"));
+        assert!(s.has(Flag::Current) && !s.has(Flag::EolSoon));
+        assert_eq!(
+            s.note.as_deref(),
+            Some("config says 12; debian 13 runs, series 13")
+        );
+        // `eol: debian` alone, on a Debian 12 host.
+        let bare = MaintItem {
+            eol: Some("debian".into()),
+            ..os.clone()
+        };
+        let s = judge(&bare, &Local::default(), &lk, Some(("debian", "12")));
+        assert_eq!(s.pinned.as_deref(), Some("12"));
+        assert!(s.has(Flag::EolSoon) && s.note.is_none());
+        // Another system's release says nothing about this product.
+        let s = judge(&bare, &Local::default(), &lk, Some(("ubuntu", "24.04")));
+        assert!(s.eol.is_none() && s.has(Flag::Unknown));
+        assert!(s.note.is_some());
+        // Without the host's release, the typed cycle as before.
+        let s = judge(os, &Local::default(), &lk, None);
+        assert_eq!(s.eol_from, Some(EolFrom::Typed));
+        assert!(s.has(Flag::EolSoon));
+    }
+
+    #[test]
+    fn a_status_stored_before_reads_without_eol_from() {
+        let old = r#"{"id":"os","risk":"medium","pinned":"12","running":null,"latest":null,
+            "newer":[],"flags":["current"],"review_by":null,
+            "eol":{"cycle":"12","eol":"2028-06-10","latest":"12.15"},"note":null}"#;
+        let s: Status = serde_json::from_str(old).unwrap();
+        assert_eq!(s.eol_from, None);
+        assert_eq!(s.eol.unwrap().cycle, "12");
     }
 
     #[test]
@@ -445,6 +727,7 @@ mod tests {
             &items,
             &local,
             Some(&lk),
+            None,
             &Default::default(),
             &Default::default(),
             d("2026-10-27"),
@@ -487,6 +770,7 @@ mod tests {
             &items,
             &local,
             Some(&lk),
+            None,
             &Default::default(),
             &retired,
             d("2026-10-27"),
@@ -508,6 +792,7 @@ mod tests {
                 &items,
                 &local,
                 Some(&lk),
+                None,
                 later,
                 &Default::default(),
                 d(today),

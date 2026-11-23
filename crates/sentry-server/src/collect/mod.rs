@@ -263,15 +263,18 @@ pub fn maint_read(
     let read = maint::local::read(r, cfg);
     let lookups = maint::upstream::load(&r.name).map(|c| c.data);
     let today = jiff::Zoned::now().date();
+    let facts = maint::discover::read_facts(r, cfg).ok();
+    // The server's own release, for an item that watches the OS's end of life.
+    let os = facts.as_ref().and_then(|f| f.release());
     let st = maint::eval::evaluate(
         &cfg.maintenance.items,
         &read.local,
         lookups.as_ref(),
+        os.as_ref().map(|(p, c)| (p.as_str(), c.as_str())),
         &sentry_core::maint::later::load(&r.name),
         &maint::eval::retired_in(&sentry_core::maint::log::list(&r.name)),
         today,
     );
-    let facts = maint::discover::read_facts(r, cfg).ok();
     let workflows: Vec<String> = crate::workflow::list_for(&r.name)
         .into_iter()
         .map(|e| e.name)

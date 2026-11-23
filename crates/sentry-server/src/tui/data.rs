@@ -1,7 +1,7 @@
 //! What the server TUI knows, and fetching it: every fetch runs on its own thread and reports
 //! back as a [`Data`] through the target's `Mail`; a kind already in flight isn't started twice.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Instant;
 
 use crate::audit::{self, Report};
@@ -78,7 +78,8 @@ pub enum Payload {
         BTreeMap<String, maint::local::Local>,
         maint::discover::Found,
     ),
-    Upstream(jiff::Timestamp),
+    /// When, and the endoflife.date products that have an answer.
+    Upstream(jiff::Timestamp, BTreeSet<String>),
     History(Box<sentry_core::tui::histview::HistData>),
 }
 
@@ -191,6 +192,8 @@ pub struct Store {
     pub maint_local: Option<BTreeMap<String, maint::local::Local>>,
     /// When upstream was last looked up.
     pub upstream_at: Option<jiff::Timestamp>,
+    /// The endoflife.date products those lookups answer (cycles, or why not).
+    pub upstream_eol: BTreeSet<String>,
     /// What discovery found: untracked things, tracked ones gone.
     pub maint_found: maint::discover::Found,
     pub inflight: HashSet<Kind>,
@@ -269,7 +272,10 @@ impl Store {
                 self.maint_local = Some(local);
                 self.maint_found = found;
             }
-            Payload::Upstream(at) => self.upstream_at = Some(at),
+            Payload::Upstream(at, eol) => {
+                self.upstream_at = Some(at);
+                self.upstream_eol = eol;
+            }
             Payload::History(h) => self.history.set(Ok(*h)),
         }
     }
@@ -374,8 +380,8 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
             Payload::Maint(st, local, found)
         }
         Kind::Upstream => {
-            maint::upstream::refresh(&r.name, &r.cfg);
-            Payload::Upstream(jiff::Timestamp::now())
+            let lk = maint::upstream::refresh(&r.name, &r.cfg);
+            Payload::Upstream(jiff::Timestamp::now(), lk.eol.into_keys().collect())
         }
         Kind::History => Payload::History(Box::new(sentry_core::tui::histview::load(&r.name))),
     })

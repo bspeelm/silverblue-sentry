@@ -50,6 +50,8 @@ pub struct View<'a> {
     pub inventory: Option<jiff::Timestamp>,
     /// When upstream versions were last looked up.
     pub upstream: Option<jiff::Timestamp>,
+    /// The endoflife.date products those lookups answer.
+    pub upstream_eol: &'a std::collections::BTreeSet<String>,
     /// That read with sudo is from before the last maintenance run.
     pub inventory_stale: bool,
     /// Maintenance lists what can wait too (`o`).
@@ -180,11 +182,15 @@ impl Screens {
             e.push(Own::fetch(Kind::Apt));
         }
         if id == ScreenId::Maint {
-            // Upstream changes slowly: looked up again at most daily without `c`.
+            // Upstream changes slowly: looked up again at most daily without `c`, and when
+            // an item names an endoflife.date product the lookups don't have yet.
             let stale = v
                 .upstream
                 .is_none_or(|at| jiff::Timestamp::now().as_second() - at.as_second() > 86400);
-            if stale && !v.cfg.maintenance.items.is_empty() {
+            let missing = crate::maint::upstream::products(&v.cfg.maintenance.items)
+                .iter()
+                .any(|p| !v.upstream_eol.contains(*p));
+            if (stale || missing) && !v.cfg.maintenance.items.is_empty() {
                 e.push(Own::fetch(Kind::Upstream));
             }
         }

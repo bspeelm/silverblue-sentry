@@ -711,6 +711,7 @@ fn view_of<'a>(
             .zip(cx.last_change)
             .is_some_and(|(read, changed)| read < changed),
         upstream: store.upstream_at,
+        upstream_eol: &store.upstream_eol,
         everything: cx.everything,
         auto: cx.auto,
         plans: &sh.plans,
@@ -742,7 +743,10 @@ impl Target for ServerTarget {
                 sentry_core::config::Config::load().0.retention.reports,
             );
             self.inventory_at = crate::inventory::load(name).map(|c| c.fetched_at);
-            self.store.upstream_at = crate::maint::upstream::load(name).map(|c| c.fetched_at);
+            if let Some(c) = crate::maint::upstream::load(name) {
+                self.store.upstream_at = Some(c.fetched_at);
+                self.store.upstream_eol = c.data.eol.into_keys().collect();
+            }
             self.has_ring = sentry_core::recorder::ring::path(name).exists();
             // After the review dates were read: the old plans' file also held them.
             crate::maint::migrate_plans(name);
