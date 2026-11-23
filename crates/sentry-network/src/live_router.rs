@@ -2519,6 +2519,37 @@ fn proxy_rules(r: &Router) -> usize {
         .len()
 }
 
+/// The DNS proxy forcing and still: its two rules in procd's data on three reads 2 s apart,
+/// and no new start of it in the log between them. Each start of it restarts dnsmasq, and
+/// here (no dnsmasq can run in the container) a start can set off a few more within
+/// seconds; read in one of those gaps, the proxy forces nothing.
+fn proxy_settled(r: &Router) {
+    let starts = |r: &Router| {
+        on(r, "logread | grep -c 'Starting https-dns-proxy'; true")
+            .stdout
+            .trim()
+            .to_string()
+    };
+    let until = std::time::Instant::now() + Duration::from_secs(90);
+    let mut seen: Vec<(usize, String)> = Vec::new();
+    loop {
+        seen.push((proxy_rules(r), starts(r)));
+        let n = seen.len();
+        if n >= 3
+            && seen[n - 3..]
+                .iter()
+                .all(|x| x.0 == 2 && x.1 == seen[n - 1].1)
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the DNS proxy never settled: {seen:?}"
+        );
+        sleep(2);
+    }
+}
+
 /// dnsmasq's settings as they are now refuse every canary name.
 fn canaries_refused(r: &Router) -> bool {
     let u = crate::collect::uci::collect(r).unwrap();
@@ -2555,6 +2586,7 @@ fn live_security_takeover() {
     no_firewall_reload();
     let o = on(&r, PROXY_SETUP);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    proxy_settled(&r);
     assert_eq!(
         proxy_rules(&r),
         2,
@@ -2583,6 +2615,23 @@ fn live_security_takeover() {
     b.save(&r.scope).unwrap();
     let both = Do::filter([ta.clone(), tb.clone()]).word();
     let configs = ["firewall", "https-dns-proxy", "dhcp"];
+
+    // The proxy set to force lookups but not running (stopped, or caught restarting): its
+    // rules would come first once it is back, so no plan is made on that read. (Its stop
+    // takes its own canary entries out of dhcp; sentry changes nothing.)
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    on(&r, "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; true");
+    assert_eq!(proxy_rules(&r), 0);
+    let stopped = sums(&r, &configs);
+    let e = secrun::show(&r, &Do::parse(&both).unwrap(), &mut |_| {}).unwrap_err();
+    assert!(e.contains(crate::security::actions::PROXY_ABSENT), "{e}");
+    assert_eq!(sums(&r, &configs), stopped);
+    on(
+        &r,
+        "/etc/init.d/https-dns-proxy start >/dev/null 2>&1; true",
+    );
+    proxy_settled(&r);
+    assert_eq!(proxys_canaries(&r), 3, "its canary names back");
     let before = sums(&r, &configs);
 
     // The plan: the takeover and the canary entries in it, reads only.
@@ -2597,7 +2646,10 @@ fn live_security_takeover() {
             && text.contains("address=/use-application-dns.net/")
             && text.contains("After a router restart nothing changes")
             && text.contains("Nothing has changed."),
-        "{text}"
+        "{text}\n(the proxy's procd data now: {} rules; through the shared connection: {:?})",
+        proxy_rules(&r),
+        r.output(&r.sh("ubus call service list '{\"name\":\"https-dns-proxy\"}'"))
+            .map(|t| t.len())
     );
     assert_eq!(sums(&r, &configs), before);
 
@@ -2613,6 +2665,7 @@ fn live_security_takeover() {
             .trim(),
         "1"
     );
+    proxy_settled(&r);
     assert_eq!(proxy_rules(&r), 2, "the proxy forces lookups again");
     nothing_left(&r, r.cfg.guard.window);
 
@@ -2730,6 +2783,7 @@ fn live_security_takeover() {
         "uci set https-dns-proxy.config.force_dns='1' && uci commit https-dns-proxy && /etc/init.d/https-dns-proxy reload >/dev/null 2>&1; sleep 2",
     );
     assert_eq!(o.code, 0, "{}", o.stderr);
+    proxy_settled(&r);
     assert_eq!(proxy_rules(&r), 2);
     let (code, said) = act(&r, &both);
     assert_eq!(code, 0, "{said:#?}");

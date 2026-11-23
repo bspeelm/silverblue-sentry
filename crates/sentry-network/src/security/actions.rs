@@ -278,6 +278,13 @@ pub struct Facts<'a> {
     pub forced: Option<&'a [family::Forced]>,
 }
 
+/// Why a family filter isn't planned while the DNS proxy is set to force lookups and its
+/// forcing isn't in the firewall.
+pub const PROXY_ABSENT: &str = "the DNS proxy (https-dns-proxy) is set to send every lookup \
+     through the router, but its rules aren't in the firewall right now (it is restarting, or \
+     not running). They would come ahead of the filter as soon as it is back, so nothing was \
+     changed: Enter tries again once it is running";
+
 fn forward(f: &Facts, section: &str) -> Result<crate::collect::uci::Redirect, String> {
     f.uci
         .forwards()
@@ -687,6 +694,20 @@ fn filter_plan(tags: &[String], keep_forcing: bool, f: &Facts) -> Result<Planned
             }
             takeover |= hijack.iter().any(|h| h == family::PROXY);
         }
+    }
+    // The DNS proxy's settings say it forces every lookup, yet nothing of its forcing is in
+    // the firewall as read: it is restarting, or not running. Its rules would come first the
+    // moment it is back, ahead of anything sentry adds, so nothing is planned on that read.
+    // (Only where it would force them: the zones its settings name.)
+    let proxy_on = family::proxy_forces(f.uci).is_some_and(|(_, on)| on);
+    let its_zones: Vec<String> = family::default_forced(f.uci)
+        .into_iter()
+        .filter(|x| x.kind == "redirect")
+        .map(|x| x.src)
+        .collect();
+    if adding && !takeover && !taken && proxy_on && want.iter().any(|w| its_zones.contains(&w.zone))
+    {
+        return Err(PROXY_ABSENT.into());
     }
     // (An earlier takeover's sections are made again from what the proxy hands over now:
     // counted as gone where sentry's filters are put in front of a DNS redirect.)
@@ -1470,6 +1491,21 @@ mod tests {
         };
         let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
         assert!(e.contains("couldn't be read"), "{e}");
+        // The proxy restarting (or stopped) at the moment of the read: neither the firewall
+        // nor procd has its forcing. Never a plain filter that its rules would come before.
+        let calm = crate::collect::counters::Counters {
+            rules: Some(Vec::new()),
+            ..Default::default()
+        };
+        for forced in [None, Some(&[][..])] {
+            let f = Facts {
+                counters: Some(&calm),
+                forced,
+                ..facts(&u, &b, &[])
+            };
+            let e = plan(&Do::filter(["0000000a".to_string()]), &f).unwrap_err();
+            assert!(e.contains(PROXY_ABSENT), "{e}");
+        }
         // Read: one change, the takeover with the filter's own rules.
         let f = Facts {
             counters: Some(&c),
