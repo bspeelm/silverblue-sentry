@@ -189,6 +189,9 @@ pub struct ServerTarget {
     /// The audit asked for is the one after a finding's fix (`Why::Reaudit`): when it's
     /// in, the session hears whether the finding is still reported.
     reaudit: bool,
+    /// The security audit's app items the statuses read since contradict, said once each
+    /// (`Effect::SecStale`), until its next report.
+    sec_stale: std::collections::BTreeSet<String>,
     /// What needs root is being read again first, for that audit.
     reaudit_reads: bool,
     /// Tests: every fetch asked for, in order (nothing is fetched offline).
@@ -246,6 +249,7 @@ impl ServerTarget {
             inventory_at: None,
             offer_reread: false,
             reaudit: false,
+            sec_stale: Default::default(),
             reaudit_reads: false,
             #[cfg(any(test, feature = "testing"))]
             asked: Vec::new(),
@@ -409,6 +413,35 @@ impl ServerTarget {
     }
 
     /// `b` on a finding (or `B`, a pattern): into the baseline file, or out of it.
+    /// The statuses were read again (a lookup, a run's end): an app the security audit's
+    /// report calls unsupported or missing security fixes, which is neither any more, is
+    /// said to the window once (`Effect::SecStale`): its row goes and the audit looks again.
+    fn sec_stale(&mut self, sh: &Shared) -> Vec<Effect> {
+        use crate::maint::eval::Flag;
+        let me = self.ident.id.to_string();
+        let said: Vec<String> = sh
+            .sec
+            .iter()
+            .filter_map(|i| {
+                let (target, item) = i.id.strip_prefix("sec:app:")?.rsplit_once(':')?;
+                (target == me).then(|| item.to_string())
+            })
+            .collect();
+        self.sec_stale.retain(|i| said.contains(i));
+        let statuses = self.store.maint.value.as_deref().unwrap_or_default();
+        let mut fx = Vec::new();
+        for item in said {
+            let fine = statuses
+                .iter()
+                .find(|s| s.id == item)
+                .is_some_and(|s| !s.has(Flag::Eol) && !s.has(Flag::Security));
+            if fine && self.sec_stale.insert(item.clone()) {
+                fx.push(Effect::SecStale(item));
+            }
+        }
+        fx
+    }
+
     fn expected(&mut self, id: &str, on: bool, sh: &mut Shared, cx: &Cx) -> Vec<Effect> {
         let toast = |s: &str| vec![Effect::Toast(s.to_string())];
         // What's in memory is the file as last read; tests write nothing.
@@ -828,6 +861,9 @@ impl Target for ServerTarget {
         self.store.apply(k, *res);
         if matches!(k, Kind::Audit | Kind::Report | Kind::ReportAt(_)) {
             self.remark(sh);
+        }
+        if k == Kind::Maint && ok {
+            fx.extend(self.sec_stale(sh));
         }
         if k == Kind::Audit {
             fx.push(Effect::AuditEnded(ok));

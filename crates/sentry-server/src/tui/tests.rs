@@ -6019,3 +6019,51 @@ fn a_findings_session_audits_once_and_the_rest_is_read_again() {
         "the security audit hasn't looked"
     );
 }
+
+/// The security audit's report is a snapshot. When the server's statuses are read again
+/// (a lookup with `c`, a run's end) and an app the report calls unsupported is neither
+/// that nor missing security fixes any more, its row goes at once and the audit reads
+/// every target again by itself; an app that still has a security fix out keeps its row.
+#[test]
+fn an_audit_row_the_server_now_contradicts_goes_and_the_audit_looks_again() {
+    use sentry_core::secaudit::{Group, Item, State};
+    let item = |app: &str| Item {
+        id: format!("sec:app:srv:myserver:{app}"),
+        group: Group::KnownHoles,
+        state: State::Worth,
+        rank: 0,
+        title: format!("{app} on myserver is no longer supported"),
+        why: String::new(),
+        fix: String::new(),
+        targets: vec!["srv:myserver".into()],
+        evidence: Vec::new(),
+        brief: String::new(),
+        question: None,
+    };
+    let mut a = app();
+    let screen = |a: &mut App| render_to_string(a, 158, 60);
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    let mut report = sec_report_before(&a);
+    report.items = vec![item("engine"), item("web")];
+    a.win.sec.report = Some(report);
+    a.win.sec.rev += 1;
+    a.win.sec.rerun_offline = true;
+    let s = screen(&mut a);
+    // (web's item joins the row web already has.)
+    assert!(s.contains("engine on myserver is no longer"), "{s}");
+    assert!(a.win.sec.since().is_empty());
+    // The statuses arrive again: engine is held and behind, nothing more; web has a
+    // security fix out.
+    data(&mut a, Kind::Maint, maint_payload());
+    let s = screen(&mut a);
+    assert!(!s.contains("engine on myserver is no longer"), "{s}");
+    let since = a.win.sec.since();
+    assert_eq!(since.len(), 1, "said once: {since:?}");
+    assert_eq!(since[0].item.as_deref(), Some("engine"));
+    // Read again: nothing more is said.
+    data(&mut a, Kind::Maint, maint_payload());
+    assert_eq!(a.win.sec.since().len(), 1);
+    // And the audit looks again by itself, quietly.
+    a.tick(Instant::now());
+    assert!(a.win.sec.busy() && a.win.sec.quiet);
+}

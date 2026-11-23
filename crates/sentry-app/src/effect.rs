@@ -122,6 +122,11 @@ pub enum Effect {
     SecItem(String),
     /// The answer to one of its questions (None: not known; the item's id then).
     SecAnswer(String, Option<bool>),
+    /// From a target: what it reads now no longer agrees with what the security audit's
+    /// report says of one of its items (the maintenance item's id: an app that was looked
+    /// up again and is supported after all). The report is a snapshot: that item's row is
+    /// withheld and the audit reads every target again by itself, once nothing is at work.
+    SecStale(String),
     /// A target that never had the window starts now (its id): this one's screen shows
     /// what it knows.
     Wake(String),

@@ -44,6 +44,17 @@ impl Slot {
                 Effect::SecRun => self.sec_run(w),
                 Effect::SecItem(id) => self.sec_item(w, &id),
                 Effect::SecAnswer(key, said) => self.sec_answer(w, &key, said),
+                Effect::SecStale(item) => {
+                    w.sec.note(crate::secaudit::Changed {
+                        target: crate::secaudit::name(self.mail.id()).to_string(),
+                        at: w.now(),
+                        item: Some(item),
+                        upgrade: false,
+                        seq: 0,
+                    });
+                    self.sec_sync(w);
+                    self.settle(w, Settle::Lists);
+                }
                 Effect::Wake(id) => {
                     if w.system.iter().any(|s| s.peer.id == id) {
                         w.outbox.push_back((id, crate::system::Parcel::Wake));
