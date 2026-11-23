@@ -1,0 +1,26 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: server
+---
+# newbox (server) · Debian GNU/Linux 12 at ‹user@host›
+# What it says now, as a draft. Nothing is staged or changed by this.
+servers:
+  newbox:
+    ssh: ‹hidden›
+    sudo:
+      - docker ps
+    disks:
+      - mount: /
+      - mount: /srv
+    services:
+      - app.service
+      - docker.service
+    timers:
+      - unit: backup.timer
+        max_age: 26h
+    listeners:
+      - "*:22/sshd"
+      - "*:443/*"
+# note · Review every part: it's a starting point, not a verdict.
+# note · services: admin-written units, and the well-known ones that run
+# note · listeners: everything listening now. Remove what you didn't expect: it becomes a finding.

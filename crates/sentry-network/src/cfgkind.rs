@@ -23,6 +23,89 @@ use crate::remote::Router;
 
 pub struct NetworksKind;
 
+/// What [`for_agent`] made of a networks file.
+pub struct ForAgent {
+    pub file: NetworkFile,
+    /// What was taken out, counted: (network, a line).
+    pub notes: Vec<(String, String)>,
+    /// The networks that have no salt, each with why its devices and zones aren't shown.
+    pub held: Vec<(String, String)>,
+}
+
+/// Why a network without a salt is only counted.
+pub const NO_SALT: &str = "not saved yet: its devices can't be shown (its tags are made \
+    when the network is first saved and looked at in the window)";
+
+/// `network_config.yaml` as the Config tab's wizard may see it. Always hidden: what ssh
+/// connects to, where each forward goes, a notes file and a recipient that is a file but
+/// by their names (a public `age1…` key by its first characters). A network that has a
+/// salt (`salt`: it was saved and read once): its devices' MACs and hostnames are that
+/// salt's tags, the names you gave them stay, as `sentry config show` prints them. One
+/// that has none: its devices and its zones are only counted, and a listener's zone is
+/// left out; the forwards keep their names, protocols and ports.
+pub fn for_agent(
+    file: &NetworkFile,
+    salt: &dyn Fn(&str) -> Option<crate::redact::Salt>,
+) -> ForAgent {
+    use sentry_core::cfg::hide;
+    let mut f = file.clone();
+    let (mut notes, mut held) = (Vec::new(), Vec::new());
+    for (name, n) in &mut f.networks {
+        if n.router.ssh.is_some() {
+            n.router.ssh = Some(hide::HIDDEN.to_string());
+        }
+        for fw in &mut n.expect.forwards {
+            fw.to = hide::HIDDEN.to_string();
+        }
+        for x in &mut n.notes {
+            *x = hide::file_name(x);
+        }
+        for r in &mut n.backup.recipients {
+            *r = hide::recipient(r);
+        }
+        match salt(name) {
+            Some(salt) => crate::redact::tag_identities(n, &salt),
+            None => {
+                held.push((name.clone(), NO_SALT.to_string()));
+                let named = n.devices.iter().filter(|d| d.name.is_some()).count();
+                notes.push((
+                    name.clone(),
+                    format!("devices: {} ({named} named), not shown", n.devices.len()),
+                ));
+                n.devices.clear();
+                let ifaces: usize = n.expect.zones.values().map(Vec::len).sum();
+                notes.push((
+                    name.clone(),
+                    format!(
+                        "zones: {} ({ifaces} interfaces), not shown",
+                        n.expect.zones.len()
+                    ),
+                ));
+                n.expect.zones.clear();
+                for l in &mut n.expect.listeners {
+                    if let Some((what, _)) = l.split_once('@') {
+                        *l = format!("{what}@{}", hide::HIDDEN);
+                    }
+                }
+            }
+        }
+        if !n.expect.forwards.is_empty() {
+            notes.push((
+                name.clone(),
+                format!(
+                    "forwards: {}, where each goes is not shown",
+                    n.expect.forwards.len()
+                ),
+            ));
+        }
+    }
+    ForAgent {
+        file: f,
+        notes,
+        held,
+    }
+}
+
 /// What is wrong in the networks' file: what its parse said, then each network's lint.
 pub fn problems(file: &NetworkFile, warnings: &[String]) -> Vec<Problem> {
     let mut out: Vec<Problem> = warnings
@@ -388,6 +471,45 @@ impl Kind for NetworksKind {
             );
             lines
         }))
+    }
+
+    fn for_agent(&self, tree: &Value) -> kind::AgentView {
+        let Ok(file) = tree.to::<NetworkFile>() else {
+            return kind::AgentView::default();
+        };
+        let seen = for_agent(&file, &|name| {
+            crate::redact::Salt::existing(&crate::remote::scope(name))
+        });
+        match Value::of(&seen.file) {
+            Ok(t) => kind::AgentView {
+                tree: kind::masked(&t),
+                notes: seen.notes,
+                held: seen.held,
+            },
+            Err(_) => kind::AgentView::default(),
+        }
+    }
+
+    /// What a draft says of a device (the address it holds) and of a forward it didn't
+    /// take is the network's own: not for the wizard.
+    fn agent_note(&self, note: &sentry_core::cfg::Note) -> Option<String> {
+        match note.path.as_deref() {
+            Some(p) if p.starts_with("devices[") || p.starts_with("expect.forwards") => None,
+            _ => Some(sentry_core::cfg::hide::mask(&note.text)),
+        }
+    }
+
+    /// A network's lint quotes what it is about (a device's label, a forward's address):
+    /// the wizard gets the sentence without what is quoted.
+    fn agent_problem(&self, text: &str) -> String {
+        let mut out = String::new();
+        for (i, part) in text.split('`').enumerate() {
+            match i % 2 {
+                0 => out.push_str(part),
+                _ => out.push_str("‹…›"),
+            }
+        }
+        sentry_core::cfg::hide::mask(&out)
     }
 
     fn probe(&self, ssh: &str, name: &str) -> Probe {

@@ -118,6 +118,12 @@ impl Field {
     }
 }
 
+/// `path` is at the pattern `pat` (`servers.*.sudo`) or somewhere in what is there.
+pub fn under(pat: &str, path: &[Seg]) -> bool {
+    let pat = pattern(pat);
+    pat.len() <= path.len() && fits(&pat, &path[..pat.len()])
+}
+
 /// The setting at a path (`servers.myserver.timers[2]`; a literal `<name>` or `*` for a name
 /// and `[]` for an index are read too): the one that is it, else the one it is a value in.
 pub fn find<'a>(fields: &'a [Field], path: &str) -> Option<&'a Field> {

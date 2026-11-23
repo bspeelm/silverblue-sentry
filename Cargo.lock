@@ -2464,6 +2464,7 @@ name = "sentry-app"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "insta",
  "jiff",
  "ratatui",
  "rustix",

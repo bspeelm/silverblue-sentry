@@ -1,10 +1,17 @@
 //! The three config files together: read and checked offline (what the window does at start,
 //! `Win.config_problems`), and `sentry config check|show|explain` on the command line.
+//!
+//! Three of its commands are what the Config tab's wizard may run (and nothing else):
+//! `explain` (the settings' own documentation), `show-agent` (the files as saved, with
+//! everything private hidden: [`shown_for_agent`]) and `probe` (the read-only discovery
+//! again, only for a host ticked in the window: [`probe_for_agent`]). All three only read,
+//! and are safe to run by hand.
 
 use std::process::ExitCode;
 
-use sentry_app::cfgarea::Problem;
-use sentry_core::cfg::{self, ConfigFile, Field, FileId};
+use sentry_app::cfgarea::kind::Probe;
+use sentry_app::cfgarea::{Kind, Problem, wizard};
+use sentry_core::cfg::{self, ConfigFile, Field, FileId, Value, hide};
 use sentry_core::config::Config;
 use sentry_network::config::{self as networks, NetworkFile};
 use sentry_server::config::{self as servers, ServerFile};
@@ -140,7 +147,11 @@ sentry config: the three config files (config.toml, server_config.yaml, network_
   sentry config                             the window, on its Config tab
   sentry config check                       what's wrong in them, without contacting any host
   sentry config show [app|servers|networks] each file as sentry would write it
-  sentry config explain [<path>]            what a setting is (servers.<name>.timers), or the list";
+  sentry config explain [<path>]            what a setting is (servers.<name>.timers), or the list
+What the Config tab's wizard runs (reads only; safe by hand):
+  sentry config show-agent [app|servers|networks]  the files as an agent may see them: hosts,
+                                            addresses, device identities and paths hidden
+  sentry config probe <system>              look again at a host you ticked in the Config tab";
 
 /// `sentry config [check|show|explain …]`.
 pub fn main(args: &[String]) -> ExitCode {
@@ -149,6 +160,17 @@ pub fn main(args: &[String]) -> ExitCode {
         ["check"] => check(),
         ["show"] => show(None),
         ["show", which] => show(Some(which)),
+        ["show-agent"] => show_agent(None),
+        ["show-agent", which] => show_agent(Some(which)),
+        ["probe", name] => {
+            let hosts = wizard::read_hosts(&wizard::hosts_path());
+            let (code, text) = probe_for_agent(name, hosts.as_deref(), &crate::tui::probe);
+            match code {
+                0 => print!("{text}"),
+                _ => eprint!("{text}"),
+            }
+            ExitCode::from(code)
+        }
         ["explain"] => explain(None),
         ["explain", path] => explain(Some(path)),
         [] => ExitCode::from(crate::tui::run(crate::tui::Open::Config)),
@@ -272,6 +294,233 @@ fn shown_networks(f: &NetworkFile) -> NetworkFile {
         }
     }
     f
+}
+
+/// The kind that describes `file` (its rules for what an agent may see among them).
+fn kind_of(file: FileId) -> Box<dyn Kind> {
+    match file {
+        FileId::App => Box::new(sentry_local::cfgkind::AppKind),
+        FileId::Servers => Box::new(sentry_server::cfgkind::ServersKind),
+        FileId::Networks => Box::new(sentry_network::cfgkind::NetworksKind),
+    }
+}
+
+/// A rendered file without the comment sentry heads it with (it is about saving).
+fn body(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .skip_while(|l| l.starts_with('#') || l.trim().is_empty())
+        .collect();
+    match lines.is_empty() {
+        true => "# (every setting at its default)\n".to_string(),
+        false => format!("{}\n", lines.join("\n")),
+    }
+}
+
+/// One file's text as an agent may see it: rendered as sentry writes the file, from its
+/// value with everything private hidden by its kind's rules (`Kind::for_agent`). An entry
+/// that may only be counted (a network that has no salt yet) is left out and said under
+/// the text, with why and the counts.
+fn agent_text<T: ConfigFile>(v: &T) -> Result<String, String> {
+    let view = kind_of(T::FILE).for_agent(&Value::of(v)?);
+    let mut tree = view.tree;
+    if let Value::Map(top) = &mut tree {
+        for (_, entries) in top.iter_mut() {
+            if let Value::Map(m) = entries {
+                m.retain(|(name, _)| !view.held.iter().any(|(h, _)| h == name));
+            }
+        }
+    }
+    let mut out = body(&cfg::render(&tree.to::<T>()?)?);
+    for (name, why) in &view.held {
+        out.push_str(&format!("# `{name}` is left out: {why}\n"));
+    }
+    for (name, line) in &view.notes {
+        out.push_str(&format!("# {name}: {line}\n"));
+    }
+    Ok(out)
+}
+
+/// What `sentry config show-agent` prints for these files, and whether one couldn't be
+/// shown. The rules, each kind's own (`for_agent` in its `cfgkind`):
+/// - config.toml: notes files and the agent's command by their names only; the command
+///   that looks from outside hidden.
+/// - server_config.yaml: what ssh connects to hidden; a compose file and a notes file by
+///   their names only; every command (an action's, an item's version command) hidden.
+/// - network_config.yaml: what ssh connects to and where each forward goes hidden; notes
+///   and a recipient that is a file by their names, a public `age1…` key by its first
+///   characters; devices by their salt's tags (the names you gave them stay). A network
+///   with no salt yet is not printed: it is named, with why and counts.
+/// - everywhere, after that: whatever still looks like an address (but loopback and
+///   "any"), a MAC, a `user@host` or a path under a home directory is masked.
+///
+/// The files are named, never their paths (a path names the user).
+pub fn shown_for_agent(f: &Files, files: &[FileId]) -> (String, bool) {
+    let mut out = String::new();
+    let mut bad = false;
+    for (i, file) in files.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("# ── {} ──\n", file.name()));
+        if f.missing.contains(file) {
+            out.push_str(&format!("# (isn't there: {})\n", what(*file)));
+            continue;
+        }
+        let text = match file {
+            FileId::App => agent_text(&f.app),
+            FileId::Servers => match &f.servers {
+                Some(s) => agent_text(s),
+                None => Err("it doesn't parse".to_string()),
+            },
+            FileId::Networks => match &f.networks {
+                Some(n) => agent_text(n),
+                None => Err("it doesn't parse".to_string()),
+            },
+        };
+        match text {
+            Ok(t) => out.push_str(&t),
+            // (Why is the file's own words, which may quote what is in it: not shown.)
+            Err(_) => {
+                out.push_str("# (can't be shown: it doesn't read as this kind of file)\n");
+                bad = true;
+            }
+        }
+    }
+    (out, bad)
+}
+
+fn show_agent(which: Option<&str>) -> ExitCode {
+    let files: Vec<FileId> = match which {
+        None => cfg::FILES.to_vec(),
+        Some(w) => match FileId::from_word(w) {
+            Some(f) => vec![f],
+            None => {
+                eprintln!("sentry config show-agent: the file is app, servers or networks");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let (text, bad) = shown_for_agent(&read(), &files);
+    print!("{text}");
+    match bad {
+        true => ExitCode::FAILURE,
+        false => ExitCode::SUCCESS,
+    }
+}
+
+/// What a refused `probe` says, and its exit code (as a gateway's refusal).
+pub const PROBE_REFUSED: &str =
+    "add it in the Config tab first: only hosts you ticked there can be looked at";
+pub const REFUSED: u8 = 126;
+
+/// `sentry config probe <system>`: the read-only discovery again, for a host the user
+/// ticked and confirmed in the window, and no other. `hosts` is the window's list (None:
+/// no window wrote one); `name` a system in it, as `[targets] show` spells it or by its
+/// name alone. Anything else is refused before `prober` is called: no connection is made.
+/// What comes back is the draft as its file would hold it, by the rules of `show-agent`
+/// (a router's as a network that has no salt: its devices and zones counted, its forwards
+/// without where they go), then its notes. The exit code and the text.
+pub fn probe_for_agent(
+    name: &str,
+    hosts: Option<&[(String, String)]>,
+    prober: &dyn Fn(&str) -> Probe,
+) -> (u8, String) {
+    let Some(hosts) = hosts else {
+        return (
+            REFUSED,
+            format!(
+                "sentry config probe: no host was ticked in a sentry window. {PROBE_REFUSED}\n"
+            ),
+        );
+    };
+    let Some((id, ssh)) = wizard::find_host(hosts, name) else {
+        return (
+            REFUSED,
+            format!("sentry config probe: refused. {PROBE_REFUSED}\n"),
+        );
+    };
+    let entry = id.split_once(':').map_or(id.as_str(), |(_, n)| n);
+    // Whatever names the host is taken out of every line once more.
+    let clean = |text: &str| {
+        let t = hide::mask(text);
+        match ssh.len() >= 3 && ssh != entry {
+            true => t.replace(ssh.as_str(), hide::HIDDEN),
+            false => t,
+        }
+    };
+    let d = match prober(ssh) {
+        Probe::Drafted(d) => d,
+        Probe::Failed(r) => {
+            let todo = match r.todo.starts_with("ssh said") {
+                true => "(what ssh said isn't shown)".to_string(),
+                false => clean(&r.todo),
+            };
+            return (
+                1,
+                format!(
+                    "sentry config probe: {entry} couldn't be looked at: {}\n{todo}\n",
+                    clean(&r.why)
+                ),
+            );
+        }
+    };
+    let kind = kind_of(d.file);
+    let top = match d.file {
+        FileId::Servers => "servers",
+        FileId::Networks => "networks",
+        FileId::App => return (1, "sentry config probe: not a system\n".to_string()),
+    };
+    let tree = Value::Map(vec![(
+        top.to_string(),
+        Value::Map(vec![(entry.to_string(), d.entry.clone())]),
+    )]);
+    let text = match d.file {
+        FileId::Servers => tree
+            .to::<ServerFile>()
+            .and_then(|f| Value::of(&sentry_server::cfgkind::for_agent(&f)))
+            .and_then(|t| sentry_app::cfgarea::kind::masked(&t).to::<ServerFile>())
+            .and_then(|f| cfg::render(&f)),
+        // (A draft has no salt of its own, whatever a network of that name has.)
+        _ => tree.to::<NetworkFile>().and_then(|f| {
+            let seen = sentry_network::cfgkind::for_agent(&f, &|_| None);
+            let mut text = Value::of(&seen.file)
+                .and_then(|t| sentry_app::cfgarea::kind::masked(&t).to::<NetworkFile>())
+                .and_then(|f| cfg::render(&f))
+                .map(|t| body(&t))?;
+            for (_, line) in &seen.notes {
+                text.push_str(&format!("# {line}\n"));
+            }
+            Ok(text)
+        }),
+    };
+    let text = match text {
+        Ok(t) => t,
+        Err(_) => {
+            return (
+                1,
+                format!(
+                    "sentry config probe: what {entry} said doesn't read as a {}\n",
+                    d.kind
+                ),
+            );
+        }
+    };
+    let mut out = format!(
+        "# {entry} ({}) · {}\n# What it says now, as a draft. Nothing is staged or changed by this.\n",
+        d.kind,
+        clean(&d.what)
+    );
+    out.push_str(&clean(&body(&text)));
+    for n in &d.notes {
+        if let Some(text) = kind.agent_note(n) {
+            out.push_str(&match &n.path {
+                Some(p) => format!("# note · {p}: {}\n", clean(&text)),
+                None => format!("# note · {}\n", clean(&text)),
+            });
+        }
+    }
+    (0, out)
 }
 
 /// Every setting there is, the three files' tables together.

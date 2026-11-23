@@ -55,7 +55,7 @@ pub(crate) fn with_files(mut a: App, files: &[(FileId, &str)]) -> (App, PathBuf)
 }
 
 /// This machine and `myserver`, the server's file saying so; the Config tab in view.
-fn config(files: &[(FileId, &str)]) -> (App, PathBuf) {
+pub(crate) fn config(files: &[(FileId, &str)]) -> (App, PathBuf) {
     let mut all = vec![(FileId::Servers, SERVERS)];
     all.extend(files.iter().copied());
     let (mut a, d) = with_files(two(), &all);
@@ -128,7 +128,7 @@ fn found(cmd: &str, path: Option<&str>) -> Event {
 }
 
 /// The lines of the save box as it is on screen.
-fn save_box(a: &App) -> Vec<String> {
+pub(crate) fn save_box(a: &App) -> Vec<String> {
     a.config
         .save
         .as_ref()
@@ -974,11 +974,11 @@ fn the_agent_screen_says_whether_it_is_there_and_tests_one_turn() {
 const TWO_SERVERS: &str = "servers:\n  myserver:\n    ssh: admin@192.0.2.10\n    services: [app.service]\n    timers: [{unit: backup.timer, max_age: 26h}, {unit: x, max_age: 1d}]\n    disks: [{mount: /, warn: 85, crit: 95}]\n  other: {}\n";
 const HOME: &str = "networks:\n  home:\n    router: {ssh: myrouter}\n    expect:\n      zones: {lan: [lan], wan: [wan, wan6]}\n      forwards: [{name: web, proto: tcp, port: 443, to: 192.0.2.20}]\n    devices:\n      - {name: nas, mac: \"02:00:5e:00:53:01\"}\n      - {hostname: phone, private_mac: true}\n";
 
-fn probed(ssh: &str, p: Probe) -> Event {
+pub(crate) fn probed(ssh: &str, p: Probe) -> Event {
     Event::Config(Box::new(Msg2::Probed(ssh.to_string(), p)))
 }
 
-fn candidates(hosts: &[(&str, Source)]) -> Event {
+pub(crate) fn candidates(hosts: &[(&str, Source)]) -> Event {
     Event::Config(Box::new(Msg2::Candidates(
         hosts
             .iter()
@@ -991,7 +991,7 @@ fn candidates(hosts: &[(&str, Source)]) -> Event {
 }
 
 /// What looking at a Debian server comes to, as `init`'s draft would say it.
-fn server_draft(ssh: &str, name: &str) -> Probe {
+pub(crate) fn server_draft(ssh: &str, name: &str) -> Probe {
     let (file, _) = sentry_server::config::parse(
         "servers:\n  x:\n    sudo: [docker ps]\n    services: [app.service, docker.service]\n    timers:\n      - {unit: backup.timer, max_age: 26h}\n    disks:\n      - {mount: /, warn: 85, crit: 95}\n      - {mount: /srv, warn: 85, crit: 95}\n    listeners: [\"*:22/sshd\", \"*:443/*\"]\n",
     )
@@ -1020,7 +1020,7 @@ fn server_draft(ssh: &str, name: &str) -> Probe {
 }
 
 /// What looking at an OpenWrt router comes to.
-fn network_draft(ssh: &str) -> Probe {
+pub(crate) fn network_draft(ssh: &str) -> Probe {
     let (file, _) = sentry_network::config::parse(
         "networks:\n  x:\n    expect:\n      zones: {lan: [lan], wan: [wan, wan6]}\n      forwards: [{name: web, proto: tcp, port: 443, to: 192.0.2.20}]\n    devices:\n      - {mac: \"02:00:5e:00:53:01\"}\n",
     )
@@ -1041,7 +1041,7 @@ fn network_draft(ssh: &str) -> Probe {
     })
 }
 
-fn refused(ssh: &str) -> Probe {
+pub(crate) fn refused(ssh: &str) -> Probe {
     Probe::Failed(sentry_app::cfgarea::discover::refusal(
         ssh,
         "root@192.0.2.1: Permission denied (publickey,password).",
@@ -2047,7 +2047,7 @@ fn which_targets_show_is_ticked_in_a_list_and_a_changed_entry_is_followed() {
 }
 
 /// A window on a first run: no config file, the setup flow in view.
-fn first_run() -> (App, PathBuf) {
+pub(crate) fn first_run() -> (App, PathBuf) {
     let (mut a, d) = with_files(one(), &[]);
     a.set_maker(Box::new(crate::tui::make));
     a.setup_at_start();

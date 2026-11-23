@@ -42,4 +42,4 @@ expression: screen(&mut a)
 │  ▸ Expected       all defaults  Listeners and findings taken as expected.           ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  edit   Esc  back   s  save…   c  check   e  editor   u  undo   ?  help   q  quit
+ Enter  edit   Esc  back   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

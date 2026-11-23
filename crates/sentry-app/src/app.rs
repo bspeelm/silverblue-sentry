@@ -1080,6 +1080,7 @@ impl sentry_core::tui::Ui for App {
         for s in &mut self.slots {
             s.shutdown();
         }
+        self.config.shutdown();
     }
     fn next_due(&self, now: Instant) -> Instant {
         App::next_due(self, now)

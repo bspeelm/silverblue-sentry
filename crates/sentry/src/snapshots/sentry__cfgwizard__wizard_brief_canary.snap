@@ -1,0 +1,56 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: brief
+---
+sentry's Config tab, as the window shows it now.
+
+Where the user is:
+  screen: Overview
+  in front: the hosts sentry could look at, to tick
+
+Systems configured:
+  this machine
+  myserver (server)
+  newbox (server) · staged to be added, not saved yet
+  home (network) · staged to be added, not saved yet
+  rawnet (network)
+  saltednet (network)
+
+Problems (3):
+  network_config.yaml · saltednet: forward ‹…›: to ‹…› isn't an address
+  network_config.yaml · saltednet: backup: ‹…› isn't a whole age recipient (age1… is 62 characters)
+  network_config.yaml · saltednet: backup: recipient file …/backup.pub isn't there
+
+Pending changes (5; staged, nothing is written before the user's save):
+  [ ] myserver · ssh (servers.myserver.ssh): ‹hidden› → ‹hidden› · by the user · unticked: not in the next save
+  [x] saltednet · Devices (networks.saltednet.devices): + name = laptop, mac = redacted:b597b4ad, hostname = redacted:ab94f41c, leave_alone = false, private_mac = false · by the user
+  [x] this machine · Notes (maintenance.notes): + …/secret-plan.md, − …/local.md · by the user
+  [x] newbox · Servers (servers.newbox): a new system, as drafted · by the user
+  [x] home · Networks (networks.home): a new system, as drafted · by the user
+
+Drafted here by looking at a host, staged to be added:
+  newbox (server) · Debian GNU/Linux 12 at ‹user@host›
+    sudo (1): docker ps
+    disks (2): /, /srv
+    services (2): app.service, docker.service
+    timers (1): backup.timer
+    listeners (2): *:22/sshd, *:443/*
+    note: Review every part: it's a starting point, not a verdict.
+    note: services: admin-written units, and the well-known ones that run
+    note: listeners: everything listening now. Remove what you didn't expect: it becomes a finding.
+    note: listeners: also on ‹addr› and ‹addr›
+  home (network) · OpenWrt 25.12.5 · Example Router AX
+    expect.forwards (1): web
+    note: devices: every lease now, unnamed: give the ones you know a name
+    note: router: reached as ‹user@host›
+
+Not shown to you:
+  home: devices: 1 (0 named), not shown
+  home: zones: 2 (3 interfaces), not shown
+  home: forwards: 1, where each goes is not shown
+  rawnet: devices: 1 (1 named), not shown
+  rawnet: zones: 1 (1 interfaces), not shown
+  rawnet: forwards: 1, where each goes is not shown
+  saltednet: forwards: 2, where each goes is not shown
+
+`sentry config probe` may look at: newbox, home.

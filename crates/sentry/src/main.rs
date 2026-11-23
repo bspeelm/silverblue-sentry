@@ -8,6 +8,8 @@ mod cfgcmd;
 mod cfgforms;
 #[cfg(test)]
 mod cfgtests;
+#[cfg(test)]
+mod cfgwizard;
 mod network;
 mod secaudit;
 mod server;

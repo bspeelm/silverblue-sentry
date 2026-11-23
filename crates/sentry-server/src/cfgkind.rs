@@ -24,6 +24,40 @@ use crate::remote::{Remote, SrvError, SudoMode};
 
 pub struct ServersKind;
 
+/// `server_config.yaml` as the Config tab's wizard may see it. Hidden: what ssh connects
+/// to (the entry's name is what it is called), every command (a custom action's `run` and
+/// `undo`, an item's `version_cmd`: they are yours, with whatever they name); a compose
+/// file and a notes file by their names only. What stays: the names of what is watched
+/// (units, timers, mounts, containers, items and where their versions come from),
+/// thresholds, and listeners with any address that isn't loopback or "any" masked.
+pub fn for_agent(file: &ServerFile) -> ServerFile {
+    use sentry_core::cfg::hide;
+    let mut f = file.clone();
+    for s in f.servers.values_mut() {
+        if s.ssh.is_some() {
+            s.ssh = Some(hide::HIDDEN.to_string());
+        }
+        for c in &mut s.compose {
+            c.file = hide::file_name(&c.file);
+        }
+        for n in &mut s.maintenance.notes {
+            *n = hide::file_name(n);
+        }
+        for a in &mut s.actions {
+            a.run = hide::HIDDEN.to_string();
+            if a.undo.is_some() {
+                a.undo = Some(hide::HIDDEN.to_string());
+            }
+        }
+        for i in &mut s.maintenance.items {
+            if i.version_cmd.is_some() {
+                i.version_cmd = Some(hide::HIDDEN.to_string());
+            }
+        }
+    }
+    f
+}
+
 /// What is wrong in the servers' file: what its parse said, then each server's lint.
 pub fn problems(file: &ServerFile, warnings: &[String]) -> Vec<Problem> {
     let mut out: Vec<Problem> = warnings
@@ -412,6 +446,27 @@ impl Kind for ServersKind {
             );
             lines
         }))
+    }
+
+    fn for_agent(&self, tree: &Value) -> kind::AgentView {
+        match tree
+            .to::<ServerFile>()
+            .and_then(|f| Value::of(&for_agent(&f)))
+        {
+            Ok(t) => kind::AgentView {
+                tree: kind::masked(&t),
+                ..Default::default()
+            },
+            Err(_) => kind::AgentView::default(),
+        }
+    }
+
+    /// (A draft says where it was drafted from: the wizard is told the entry's name.)
+    fn agent_note(&self, note: &sentry_core::cfg::Note) -> Option<String> {
+        match note.text.starts_with("Drafted by ") {
+            true => None,
+            false => Some(sentry_core::cfg::hide::mask(&note.text)),
+        }
     }
 
     fn probe(&self, ssh: &str, name: &str) -> Probe {

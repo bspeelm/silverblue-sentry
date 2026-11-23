@@ -83,14 +83,18 @@ impl ConfigArea {
 
     /// The entry a change belongs to and its setting's label.
     pub(crate) fn named(&self, p: &Pending) -> (String, String) {
-        let c = &p.change;
-        match self.kind(c.file) {
+        self.named_at(p.change.file, &p.change.path)
+    }
+
+    /// The entry a setting belongs to and its label.
+    pub(crate) fn named_at(&self, file: FileId, path: &str) -> (String, String) {
+        match self.kind(file) {
             Some(k) => (
-                k.entry_of(&c.path),
-                cfg::fields::find(k.fields(), &c.path)
-                    .map_or_else(|| c.path.clone(), |f| f.label.to_string()),
+                k.entry_of(path),
+                cfg::fields::find(k.fields(), path)
+                    .map_or_else(|| path.to_string(), |f| f.label.to_string()),
             ),
-            None => (c.file.word().to_string(), c.path.clone()),
+            None => (file.word().to_string(), path.to_string()),
         }
     }
 
@@ -263,23 +267,42 @@ impl ConfigArea {
             }
         }
         out.push(String::new());
-        for p in &all {
+        let line = |p: &Pending| {
             let (entry, label) = self.named(p);
-            out.push(format!(
-                "  {entry} · {}{}",
+            format!(
+                "  {entry} · {}",
                 match self.whole(p) {
                     Some((Whole::Added, _, _)) => "added, as drafted and reviewed".to_string(),
                     Some((Whole::Removed, _, _)) => "removed from the file".to_string(),
                     None => format!(
                         "{label}: {}",
-                        what_changed(p.change.from.as_ref(), p.change.to.as_ref())
+                        match self.said_of(&p.change.path) {
+                            Some(said) => said.to_string(),
+                            None => what_changed(p.change.from.as_ref(), p.change.to.as_ref()),
+                        }
                     ),
-                },
-                match p.change.by {
-                    cfg::By::You => "",
-                    cfg::By::Agent => "  (Claude)",
                 }
+            )
+        };
+        // Yours first; what the agent proposed apart, under its own heading.
+        let (yours, agents): (Vec<&Pending>, Vec<&Pending>) =
+            all.iter().partition(|p| p.change.by == cfg::By::You);
+        out.extend(yours.iter().map(|p| line(p)));
+        if !agents.is_empty() {
+            if !yours.is_empty() {
+                out.push(String::new());
+            }
+            out.push(format!(
+                "Proposed by Claude, not by you ({}; Esc, then Space on one in the Overview \
+                 unticks it):",
+                count(agents.len(), "change")
             ));
+            for p in &agents {
+                out.push(format!("{}  (Claude)", line(p)));
+                if let Some(why) = self.why_of(&p.change.path) {
+                    out.push(format!("      its reason: {why}"));
+                }
+            }
         }
         out.push(String::new());
         let follows = self.follows(&all);

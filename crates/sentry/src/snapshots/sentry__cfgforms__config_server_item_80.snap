@@ -31,4 +31,4 @@ expression: "render_to_string(&mut a, 80, 30)"
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- Enter  edit   j/k  move   Esc  back to the list
+ Enter  edit   j/k  move   Esc  back to the list   A  wizard

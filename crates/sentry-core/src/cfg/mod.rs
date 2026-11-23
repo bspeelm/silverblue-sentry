@@ -10,7 +10,9 @@
 //! three (the window) needs no target crate: a `Doc<T>` per file.
 
 pub mod change;
+pub mod changes;
 pub mod fields;
+pub mod hide;
 pub mod value;
 
 use std::io;

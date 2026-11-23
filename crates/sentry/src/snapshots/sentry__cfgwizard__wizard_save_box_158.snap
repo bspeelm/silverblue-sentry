@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgwizard.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config*    nothing is written before the save box                     ● 3 not saved   Mon 26 Oct 12:00
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ myserver · Services ──────────────────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ server_config.yaml · servers.myserver.services                                    │
+│  ● myserver         server                                            ││                                                                                   │
+│  + add a system…                                                      ││ before  app.service                                                               │
+│                                                                       ││ after   app.service, web.service                                                  │
+│                                                                       ││                                                                                   │
+│                                                                       ││ Proposed by Claude.                                                               │
+│                            ┌ Save configuration ──────────────────────────────────────────────────────────────────────────────┐                            │
+│                            │                                                                                                  │                            │
+│                            │   config.toml           this machine: Review at start, Review after a run  (a new file)          │                            │
+│                            │   server_config.yaml    myserver: Timers                                                         │                            │
+│                            │                                                                                                  │t back                      │
+│                            │   this machine · Review at start: off                                                            │                            │
+│                            │                                                                                                  │                            │
+│                            │ Proposed by Claude, not by you (2 changes; Esc, then Space on one in the Overview unticks it):   │                            │
+│                            │   this machine · Review after a run: on → off  (Claude)                                          │                            │
+│                            │       its reason: you said reviews are noisy                                                     │                            │
+│                            │   myserver · Timers: backup.timer · max_age 26h → 30h  (Claude)                                  │                            │
+│                            │       its reason: it runs daily: 26h leaves little slack                                         │                            │
+│                            │                                                                                                  │                            │
+│                            │ What follows: reviews at start and after a run follow it from now · myserver reads its settings  │                            │
+│                            │ again                                                                                            │                            │
+│                            │ Kept before saving: server_config.yaml.bak-<UTC time> (beside it, the newest 5)                  │                            │
+│                            │ ! server_config.yaml was written by hand: its comments and layout are not kept.                  │                            │
+│                            │ Left out, still staged: 1 unticked.                                                              │                            │
+│                            │                                                                                                  │                            │
+│                            │  Enter  save    Esc  back   nothing is written before Enter                                      │                            │
+│                            └──────────────────────────────────────────────────────────────────────────────────────────────────┘                            │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · 4 changes ──────────────────────────────────────────────────┐│                                                                                   │
+│  [x] this machine  Review at start  off                               ││                                                                                   │
+│  [x] myserver  Timers  backup.timer · max_age 26h → 30h  (Claude)     ││                                                                                   │
+│  [x] this machine  Review after a run  on → off  (Claude)             ││                                                                                   │
+│  [ ] myserver  Services  + web.service  (Claude)                      ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  save   Esc  back   j/k  scroll

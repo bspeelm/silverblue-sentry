@@ -42,4 +42,4 @@ expression: screen(&mut a)
 │                                                                                     ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  go on   b  back   Esc  leave the setup   Space  edit · toggle   t  test it   ?  help   q  quit
+ Enter  go on   b  back   Esc  leave the setup   Space  edit · toggle   t  test it   A  wizard   ?  help   q  quit

@@ -19,6 +19,7 @@ pub mod kind;
 mod save;
 pub mod systems;
 pub mod upkeep;
+pub mod wizard;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -420,6 +421,18 @@ pub struct ConfigArea {
     tx: Sender<Event>,
     /// The targets the window has (the app says, before each key and draw).
     pub(crate) targets: Vec<InWindow>,
+    /// The wizard (`A`): a chat about the setup. It explains and proposes; it never saves.
+    pub chat: Option<sentry_core::tui::chat::Chat>,
+    /// The wizard's turns, numbered.
+    turn_seq: u64,
+    /// What its last turn sent (tests read it).
+    wizard_prompt: Option<String>,
+    /// What the agent proposed, in its own terms: (the staged setting, what it does, why).
+    whys: Vec<(String, String, String)>,
+    /// Where the list of hosts it may look at is written (None: the runtime dir's).
+    hosts_at: Option<PathBuf>,
+    /// That list as last written (None: not written).
+    hosts_written: Option<Vec<(String, String)>>,
 }
 
 impl ConfigArea {
@@ -462,6 +475,12 @@ impl ConfigArea {
             loaded: false,
             tx,
             targets: Vec::new(),
+            chat: None,
+            turn_seq: 0,
+            wizard_prompt: None,
+            whys: Vec::new(),
+            hosts_at: None,
+            hosts_written: None,
         }
     }
 
@@ -734,8 +753,11 @@ impl ConfigArea {
     pub fn stage(&mut self, path: &str, to: Option<Value>, by: By) -> Result<(), String> {
         let file = FileId::of_path(path);
         // A setting of an entry that is itself staged as new: that one change holds it.
+        // (What the agent proposes there is laid over the draft as a change of its own,
+        // so it can be seen, unticked and taken back by itself.)
         let segs = parse_path(path)?;
-        if segs.len() > 2
+        if by == By::You
+            && segs.len() > 2
             && discover::is_entry(&segs[..2])
             && let Some(i) = self.pending.iter().position(|p| {
                 p.change.on
@@ -1152,7 +1174,8 @@ impl ConfigArea {
 
     /// A text is being typed: a character is never a key of the window's.
     pub fn takes_text(&self) -> bool {
-        self.cmd.is_some()
+        self.wizard_visible()
+            || self.cmd.is_some()
             || self.prompt.is_some()
             || self.form.as_ref().is_some_and(|f| f.editing())
             || self.row.as_ref().is_some_and(|r| r.form.editing())
@@ -1205,6 +1228,19 @@ impl ConfigArea {
 
     /// Something a worker of the area's sent.
     pub(crate) fn on_data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
+        self.data(w, data);
+        self.sync_hosts();
+    }
+
+    fn data(&mut self, w: &mut Win, data: Box<dyn std::any::Any + Send>) {
+        let data = match data.downcast::<wizard::Msg>() {
+            Ok(m) => {
+                self.wizard_msg(w, *m);
+                w.dirty = true;
+                return;
+            }
+            Err(d) => d,
+        };
         let data = match data.downcast::<agent::Msg>() {
             Ok(m) => {
                 self.agent.on_msg(*m);

@@ -38,6 +38,9 @@ pub trait DocAny {
     fn save(&mut self) -> io::Result<Option<PathBuf>>;
     /// The same file with nothing staged in it: what is on disk.
     fn on_disk(&self) -> Box<dyn DocAny>;
+    /// The file's type reads this tree: the tree as the type writes it back (a proposal's
+    /// value is one the type holds, or why not).
+    fn reads(&self, tree: &Value) -> Result<Value, String>;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -89,6 +92,9 @@ impl<T: ConfigFile + 'static> DocAny for Doc<T> {
             d.now = b;
         }
         Box::new(d)
+    }
+    fn reads(&self, tree: &Value) -> Result<Value, String> {
+        Value::of(&tree.to::<T>()?)
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -387,6 +393,23 @@ pub trait Kind {
     fn upkeep(&self, _d: &dyn DocAny, _entry: &str, _disk: bool) -> Upkeep {
         Upkeep::default()
     }
+    /// The file's tree (as staged, as on disk, or a draft's entry in a file of its own) as
+    /// the Config tab's wizard may see it: what is private in this kind of file hidden by
+    /// its own rules, then whatever still looks private masked.
+    fn for_agent(&self, tree: &Value) -> AgentView {
+        AgentView {
+            tree: masked(tree),
+            ..Default::default()
+        }
+    }
+    /// A draft's note as the wizard may see it (None: not at all).
+    fn agent_note(&self, note: &cfg::Note) -> Option<String> {
+        Some(cfg::hide::mask(&note.text))
+    }
+    /// A problem's text as the wizard may see it.
+    fn agent_problem(&self, text: &str) -> String {
+        cfg::hide::mask(text)
+    }
     /// The change that makes `workflow` due every `every` for this entry (None: not on a
     /// cadence; `off` where the kind has it): the setting to stage and its whole value.
     fn cadence(
@@ -397,6 +420,30 @@ pub trait Kind {
         _every: Option<&str>,
     ) -> Option<(String, Option<Value>)> {
         None
+    }
+}
+
+/// What the Config tab's wizard may see of a file: an agent is never shown a config file
+/// as it is.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AgentView {
+    /// The file's tree with everything private in it hidden or taken out. It still reads
+    /// as the file's type, so it can be printed as the file would be.
+    pub tree: Value,
+    /// What was taken out and how much of it there is: (entry, a line).
+    pub notes: Vec<(String, String)>,
+    /// Entries that are only counted, not shown, and why (a network that has no salt
+    /// yet): a command that prints the file leaves them out and says so.
+    pub held: Vec<(String, String)>,
+}
+
+/// Every text in a tree through [`cfg::hide::mask`]: the net under each kind's own rules.
+pub fn masked(v: &Value) -> Value {
+    match v {
+        Value::Str(s) => Value::Str(cfg::hide::mask(s)),
+        Value::List(l) => Value::List(l.iter().map(masked).collect()),
+        Value::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), masked(v))).collect()),
+        v => v.clone(),
     }
 }
 

@@ -46,6 +46,55 @@ pub fn cache_dir() -> PathBuf {
     xdg("XDG_CACHE_HOME", ".cache")
 }
 
+/// Where the window leaves what the commands it starts for an agent read back (the hosts
+/// the Config tab's wizard may look at): `$XDG_RUNTIME_DIR/sentry`, gone at logout, else a
+/// directory of this user's under /tmp. Private (0700) once made ([`private_dir`]).
+pub fn runtime_dir() -> PathBuf {
+    #[cfg(any(test, feature = "testing"))]
+    if !REAL_DIRS.load(std::sync::atomic::Ordering::SeqCst) {
+        return std::env::temp_dir()
+            .join(format!("sentry-test-{}", std::process::id()))
+            .join("run")
+            .join("sentry");
+    }
+    match std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        Some(d) => d.join("sentry"),
+        None => PathBuf::from(format!(
+            "/tmp/sentry-{}",
+            rustix::process::getuid().as_raw()
+        )),
+    }
+}
+
+/// Make `dir` (and what leads to it) for this user alone: 0700.
+pub fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Write a file only this user can read (0600), whole or not at all.
+pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(contents))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    written.inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 /// Root of the host filesystem: `/run/host` inside a toolbox, `/` otherwise.
 pub fn host_root() -> PathBuf {
     if crate::exec::spawn_mode() && Path::new("/run/host/etc").is_dir() {

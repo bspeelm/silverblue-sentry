@@ -261,9 +261,18 @@ impl ConfigArea {
                 f,
                 areas.keybar,
                 &t,
-                &frame::KeyBar::Hints(self.hints()),
+                &frame::KeyBar::Hints(
+                    self.hints_in(
+                        (areas.keybar.width as usize)
+                            .saturating_sub(toast.map_or(0, |m| m.chars().count() + 2)),
+                    ),
+                ),
                 toast,
             ),
+        }
+        // The wizard's chat is in front of the screen, and under any box.
+        if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
+            sentry_core::tui::chat::draw(f, body, &t, c);
         }
         if self.save.is_some() {
             widgets::dim_backdrop(f.buffer_mut(), body);
@@ -347,7 +356,10 @@ impl ConfigArea {
             ),
             None => (
                 label,
-                what_changed(p.change.from.as_ref(), p.change.to.as_ref()),
+                match self.said_of(&p.change.path) {
+                    Some(said) => said.to_string(),
+                    None => what_changed(p.change.from.as_ref(), p.change.to.as_ref()),
+                },
             ),
         };
         let by = match p.change.by {
@@ -727,6 +739,14 @@ impl ConfigArea {
         }
         if c.by == By::Agent {
             out.push(Line::styled("Proposed by Claude.", t.s(t.mag)));
+            if let Some(why) = self.why_of(&c.path) {
+                out.extend(
+                    widgets::wrap(&format!("Its reason: {why}"), width.max(20))
+                        .into_iter()
+                        .map(|l| Line::styled(l, t.fg())),
+                );
+            }
+            out.push(Line::raw(""));
         }
         if let Some(help) = self.kind(c.file).and_then(|k| k.explain(&c.path)) {
             out.extend(

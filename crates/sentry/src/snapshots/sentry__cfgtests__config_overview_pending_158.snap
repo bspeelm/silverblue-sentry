@@ -42,4 +42,4 @@ expression: screen(&mut a)
 │  [x] this machine  Notes  + ~/notes/upgrades.md                       ││                                                                                   │
 └───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  open   Space  tick   x  remove   s  save…   c  check   e  editor   u  undo   ?  help   q  quit
+ Enter  open   Space  tick   x  remove   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

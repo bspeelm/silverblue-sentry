@@ -10,8 +10,9 @@ use std::fmt;
 use serde::de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Value {
+    #[default]
     Null,
     Bool(bool),
     Int(i64),

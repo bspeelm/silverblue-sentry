@@ -351,6 +351,56 @@ Every setting in the forms (after part 3; the decision changed):
 - **A problem finds its field** in a system's form too: `Problem::about` also matches a lint
   line that starts `section: leaf` (`guard: window: 3 s`), so the group holding it opens.
 
+Part 4 (the wizard agent):
+- **The chat is the area's** (`ConfigArea.chat`, the existing `Chat` and its drawing;
+  `cfgarea/wizard.rs`). A turn's process is started by the area and its lines come back as
+  `Event::Config(wizard::Msg::Stream(id, …))`: the area was already the owner of that event,
+  so no slot is faked and the stream plumbing is as it was. Offline and with
+  `Win.scripted_turns` nothing is started (`wizard_answer_for_test` hands the answer in).
+- **The agent's `show` is `show-agent`**, a command of its own; the human `show` is as it
+  was. `probe` takes a **system's name** (`newbox`, or `srv:newbox`), not an ssh target: the
+  wizard is never told what ssh connects to, so the window's list
+  (`$XDG_RUNTIME_DIR/sentry/config-hosts`, a line per system: its id, a tab, what ssh
+  connects to) is also where the name is turned into the host. Only systems whose host was
+  ticked and confirmed in this window are in it.
+- **What hides what** is each kind's own (`Kind::for_agent(tree) -> AgentView`,
+  `agent_note`, `agent_problem`; free functions `for_agent` in the three `cfgkind`s), since
+  `sentry-app` can't know a network's salt or a server's fields. `cfg::hide::mask` is the
+  net under all of them. The brief, `show-agent` and `probe` go through the same functions.
+- **A network without a salt**: `show-agent` leaves it out and says so, as designed. The
+  brief and `probe` can't leave a drafted router out (it is what is being asked about), so
+  there it is counted: devices and zones as counts, a listener without its zone, forwards
+  with name, protocol and port but never where they go.
+- **A proposal is staged at its setting**, not at the path it names: a list, a list of
+  records or named entries is one change of the whole setting (parts 2 and 3's rule), so
+  `[[set]] servers.x.timers[0].max_age` stages `servers.x.timers`. `cfg::changes::Proposed`
+  carries both (`path` to stage, `at` as written, `said` in a few words), and the Pending
+  row and the save box say an agent's change in its own words (`said`), not as the list
+  before and after.
+- **Inside a system still being drafted**, what the agent proposes is a change of its own
+  laid over the draft (`stage` folds into the draft only for `By::You`): it is seen, marked
+  and unticked by itself. The user's own edits of a draft are part of the draft, so "you
+  changed this yourself" can only be told for settings outside one.
+- **More than `agent.*` can never be proposed** (`cfg::changes::NEVER`): also every other
+  command sentry would run (`audit.outside`, `ui.terminal`, a server's `sudo`, `actions`,
+  an item's `version_cmd`), every host it would connect to (`ssh`), every notes file (what
+  an agent may read later), a network's backup recipients (who can decrypt) and its
+  `claude` settings (what an agent may see). A record added to a list is checked field by
+  field, so none of these comes in inside one.
+- **`[[remove]]` takes an optional `value`**: the element is removed only if that is what
+  is there (an index read from an older `show-agent` can't take the wrong one). On a
+  setting that is neither a list element nor a named entry it unsets it, if its type has
+  an unset.
+- **No grants, no continuing elsewhere**: a tool call the agent is refused is said once and
+  dropped (`Chat.requests` is emptied; nothing in this chat can allow anything), and the
+  chat's `C` (continue in Claude Code) is not offered (`Chat.stays_here`): outside the
+  window it would have tools it must not have. Tab shows the whole brief before it is sent
+  (`Chat.brief_open`).
+- **The key bar's `A  wizard`** is the first hint to go where the hints don't fit
+  (`ConfigArea::hints_in`), so no narrow screen lost a key of its own to it.
+- **Two windows** share the one list file: the last to write wins, and a window's wizard
+  removes a list it didn't write before its turn starts. Not solved further.
+
 ## Order of work (one PR at a time)
 
 1. **One writer**: `core/cfg` (`render`, `save` + backups, `diff`/`apply`), `Serialize` clean-up,

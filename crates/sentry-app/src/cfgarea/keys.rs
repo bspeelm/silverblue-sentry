@@ -22,7 +22,13 @@ pub(crate) const QUIT: &str = "Quit sentry? Nothing keeps running after exit.";
 
 impl ConfigArea {
     pub(crate) fn on_paste(&mut self, w: &mut Win, text: &str) {
-        if let Some(p) = self.prompt.as_mut() {
+        if w.modal.is_some() {
+            // (A box of the window's is in front: nothing is typed anywhere.)
+        } else if let Some(c) = self.chat.as_mut().filter(|c| !c.hidden) {
+            if !c.busy() {
+                c.paste(text);
+            }
+        } else if let Some(p) = self.prompt.as_mut() {
             p.line.paste(text);
         } else if let Some(line) = self.cmd.as_mut() {
             line.paste(text);
@@ -61,7 +67,20 @@ impl ConfigArea {
         w.dirty = true;
     }
 
+    /// A key for the area. What is in front has it: the window's own box (help, quit),
+    /// then the wizard's chat while it is in view, then a box of the area's (one that
+    /// asks, a line typed, the save box), the `:` line, a field being edited; only then
+    /// the keys that work everywhere (the wizard's `A` among them), the setup flow's, the
+    /// page's and the screen's. So the chat is never opened over a box or a field being
+    /// edited (there `A` isn't the wizard's key), and while it is in view nothing behind
+    /// it gets a key.
     pub(crate) fn on_key(&mut self, w: &mut Win, k: KeyEvent) -> Option<Fx> {
+        let fx = self.key(w, k);
+        self.sync_hosts();
+        fx
+    }
+
+    fn key(&mut self, w: &mut Win, k: KeyEvent) -> Option<Fx> {
         w.dirty = true;
         self.disk = !w.offline;
         // The window's own box (help, quit).
@@ -76,6 +95,10 @@ impl ConfigArea {
                 Answer::No => w.modal = None,
                 Answer::Stay => {}
             }
+            return None;
+        }
+        if self.wizard_visible() {
+            self.wizard_key(w, &k);
             return None;
         }
         if self.ask.is_some() {
@@ -140,6 +163,11 @@ impl ConfigArea {
                 }
                 Some(Action::Command) => {
                     self.cmd = Some(LineEdit::default());
+                    return None;
+                }
+                // The wizard: wherever the area's keys are, the setup flow included.
+                Some(Action::Ask) => {
+                    self.wizard_open(w);
                     return None;
                 }
                 _ => {}
@@ -674,6 +702,8 @@ impl ConfigArea {
             l("c         check the files; on a system, its connection too (reads only)"),
             l("x         (a system) stage its removal: its records stay on disk"),
             l("t         (Agent) test the agent: one turn, no tools"),
+            l("A         the wizard: ask the agent about the setup. It explains and proposes;"),
+            l("          what it proposes lands in Pending, ticked, (Claude): you save, or not"),
             l(":overview :agent :machine :servers :networks :window  :save  :check  :q"),
             l(":add      look for systems to add          :setup  the setup, step by step"),
             Line::raw(""),
@@ -710,6 +740,48 @@ impl ConfigArea {
 
     /// The key bar's hints for what is in front.
     pub(crate) fn hints(&self) -> Hints<'static> {
+        if let Some(c) = self.chat.as_ref().filter(|c| !c.hidden) {
+            return sentry_core::tui::chat::keys(c);
+        }
+        let h = self.hints_behind();
+        // The wizard is offered wherever its key works: not in a box, not while a field
+        // is edited, and not without an agent.
+        let boxed = self.ask.is_some() || self.prompt.is_some() || self.save.is_some();
+        if boxed || self.takes_text() {
+            return h;
+        }
+        let word = match &self.chat {
+            Some(c) => c.hidden_word(),
+            None if sentry_core::claude::available() => "wizard",
+            None => return h,
+        };
+        // After what the screen itself does, before what is always there.
+        let always = ["s", "c", "e", "u", "?", "q"];
+        let at = h
+            .iter()
+            .position(|(k, _)| always.contains(k) && *k != "s")
+            .unwrap_or(h.len());
+        let mut out = h;
+        out.insert(at, ("A", word));
+        out
+    }
+
+    /// The hints as the key bar has room for them: where they don't all fit, the wizard's
+    /// is the first to go (every other one is a key of what is in view; `?` still says it).
+    pub(crate) fn hints_in(&self, room: usize) -> Hints<'static> {
+        let mut h = self.hints();
+        let width: usize = h
+            .iter()
+            .map(|(k, d)| k.chars().count() + d.chars().count() + 5)
+            .sum();
+        if width > room && !self.wizard_visible() {
+            h.retain(|(k, d)| !(*k == "A" && *d == "wizard"));
+        }
+        h
+    }
+
+    /// The hints of what is in front, the wizard aside.
+    fn hints_behind(&self) -> Hints<'static> {
         if let Some(a) = &self.ask {
             return vec![("Enter", a.enter), ("Esc", "back")];
         }

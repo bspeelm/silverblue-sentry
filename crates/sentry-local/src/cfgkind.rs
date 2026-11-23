@@ -17,6 +17,27 @@ use crate::workflows;
 
 pub struct AppKind;
 
+/// `config.toml` as the Config tab's wizard may see it: the notes files and the agent's
+/// command by their names only, the command that looks from outside not at all (it is the
+/// user's own, with whatever it names); then the mask over every text.
+pub fn for_agent(cfg: &Config) -> Config {
+    use sentry_core::cfg::hide;
+    let mut c = cfg.clone();
+    for n in &mut c.maintenance.notes {
+        *n = hide::file_name(n);
+    }
+    if c.audit.outside.is_some() {
+        c.audit.outside = Some(hide::HIDDEN.to_string());
+    }
+    if c.agent.command.contains('/') {
+        c.agent.command = hide::file_name(&c.agent.command);
+    }
+    if let Some(t) = c.ui.terminal.as_mut().filter(|t| t.contains('/')) {
+        *t = hide::file_name(t);
+    }
+    c
+}
+
 /// What is wrong in `config.toml`: what its parse said (unknown keys), `[keys]` (an action
 /// or a key that isn't one), `[agent] command`. (`[targets] show` is checked against the
 /// targets there are by whoever knows them.)
@@ -236,6 +257,16 @@ impl Kind for AppKind {
     /// This machine's upkeep: its workflows (they run when there is something for them to
     /// do: no cadence), then its jobs, each due as `[jobs]` says or by its own default.
     /// There is one set of workflows here, nobody else's to share.
+    fn for_agent(&self, tree: &Value) -> kind::AgentView {
+        match tree.to::<Config>().and_then(|c| Value::of(&for_agent(&c))) {
+            Ok(t) => kind::AgentView {
+                tree: kind::masked(&t),
+                ..Default::default()
+            },
+            Err(_) => kind::AgentView::default(),
+        }
+    }
+
     fn upkeep(&self, d: &dyn DocAny, entry: &str, disk: bool) -> Upkeep {
         if entry != MACHINE {
             return Upkeep::default();
