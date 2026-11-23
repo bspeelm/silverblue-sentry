@@ -28,7 +28,7 @@ It is opinionated about one kind of setup and encodes procedures proven on one m
 
 ## Status and safety
 
-**v0.6.0, early.** Everything here is built and tested against fixtures and a real Silverblue 44 machine, a real server and a real OpenWrt router. The quick-update kernel path (`rpm-ostree upgrade`, both reboots, layering the kmod, the GL runtimes) has been run end to end on that machine. Some paths have still only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree rollback`/`cleanup`, `akmods` building a kmod, `flatpak uninstall`, `podman` prune/remove, and on a router a reboot in the middle of a guarded change. The `firmware-upgrade` workflow has been run end to end once on one real router (a patch release within its series); a move to another release series is refused and has never run.
+**v1.0.0.** Everything here is built and tested against fixtures and a real Silverblue 44 machine, a real server and a real OpenWrt router. The quick-update kernel path (`rpm-ostree upgrade`, both reboots, layering the kmod, the GL runtimes) has been run end to end on that machine. Some paths have still only been exercised up to their confirm modal, never executed for real during development: `rpm-ostree rollback`/`cleanup`, `akmods` building a kmod, `flatpak uninstall`, `podman` prune/remove, and on a router a reboot in the middle of a guarded change. The `firmware-upgrade` workflow has been run end to end once on one real router (a patch release within its series); a move to another release series is refused and has never run. The Config tab's wizard and the agent's test turn have been exercised with scripted answers only, not yet against a live agent.
 
 - Nothing runs in the background: no services, timers or autostart. The recorder is a foreground process you start and stop.
 - Every destructive action shows a preview, waits for your confirmation, and streams its output. Reboots never happen on their own.
@@ -51,11 +51,11 @@ make install-binary      # builds sentry and copies it to ~/.local/bin, with sen
 From a release (x86_64; built on Fedora 44 and linked only against glibc). One binary, `sentry`; make the two links yourself:
 
 ```sh
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.6.0/silverblue-sentry-0.6.0-x86_64-linux-gnu.tar.gz
-curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v0.6.0/silverblue-sentry-0.6.0-x86_64-linux-gnu.tar.gz.sha256
-sha256sum -c silverblue-sentry-0.6.0-x86_64-linux-gnu.tar.gz.sha256
-tar xf silverblue-sentry-0.6.0-x86_64-linux-gnu.tar.gz
-install -Dm755 silverblue-sentry-0.6.0/sentry ~/.local/bin/sentry
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v1.0.0/silverblue-sentry-1.0.0-x86_64-linux-gnu.tar.gz
+curl -LO https://github.com/bspeelm/silverblue-sentry/releases/download/v1.0.0/silverblue-sentry-1.0.0-x86_64-linux-gnu.tar.gz.sha256
+sha256sum -c silverblue-sentry-1.0.0-x86_64-linux-gnu.tar.gz.sha256
+tar xf silverblue-sentry-1.0.0-x86_64-linux-gnu.tar.gz
+install -Dm755 silverblue-sentry-1.0.0/sentry ~/.local/bin/sentry
 ln -sfn sentry ~/.local/bin/sentry-server    # optional: servers over ssh
 ln -sfn sentry ~/.local/bin/sentry-network   # optional: a network through its router
 ```
