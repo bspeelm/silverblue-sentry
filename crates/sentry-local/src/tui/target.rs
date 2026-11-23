@@ -245,6 +245,12 @@ pub struct LocalTarget {
     wf_plan: Option<String>,
     /// The audit after a finding's plan (its stream).
     pub(super) reaudit: Option<u64>,
+    /// The audit's stream after sentry changed this machine (`Why::Changed`): nobody waits
+    /// on its answer.
+    changed_audit: Option<u64>,
+    /// Tests: how many times what a change can alter was asked to be read again.
+    #[cfg(any(test, feature = "testing"))]
+    pub changed_reads: u32,
 }
 
 fn view_of<'a>(d: &'a DataStore, cfg: &'a Config, sh: &'a Shared, cx: &Cx<'a>) -> View<'a> {
@@ -355,6 +361,9 @@ impl LocalTarget {
             wf_from: None,
             wf_plan: None,
             reaudit: None,
+            changed_audit: None,
+            #[cfg(any(test, feature = "testing"))]
+            changed_reads: 0,
         }
     }
 
@@ -950,6 +959,15 @@ impl Target for LocalTarget {
 
     /// The audit after a finding's plan: is the finding gone?
     fn on_stream(&mut self, id: u64, m: &StreamMsg, cx: &Cx) -> Option<Vec<Effect>> {
+        // The audit after a change: when it's done, its report and the log are read.
+        if self.changed_audit == Some(id) {
+            if matches!(m, StreamMsg::Exit { .. }) {
+                self.changed_audit = None;
+                self.fetch(Fetch::Reports);
+                self.fetch(Fetch::Log);
+            }
+            return Some(Vec::new());
+        }
         if self.reaudit != Some(id) {
             return None;
         }
@@ -999,12 +1017,28 @@ impl Target for LocalTarget {
             Why::Step | Why::Facts => {}
             // Keep tabs, dashboard and the workflow list in step with the run.
             Why::Run => self.fetch(Fetch::Workflows),
-            Why::Changed => {
-                let quick = cx
-                    .run
-                    .is_some_and(|s| s.wf().name == crate::maint::local::UPDATE_WORKFLOW);
-                if quick && !cx.offline {
-                    self.recheck_updates();
+            // sentry changed this machine (a run or a session's steps that ended well): what
+            // is still waiting is checked again, and the audit runs (as `Why::Reaudit` does,
+            // with no session waiting on it) unless one is under way already or a finding's
+            // session had it run after its change (`ChangedAudited`).
+            Why::Changed | Why::ChangedAudited => {
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    self.changed_reads += 1;
+                }
+                if cx.offline {
+                    return Vec::new();
+                }
+                self.recheck_updates();
+                if why == Why::Changed && self.reaudit.is_none() && self.changed_audit.is_none() {
+                    let id = self.mail.next();
+                    match self
+                        .mail
+                        .stream(id, &super::screens::sentry_cmd(&["job", "audit"]))
+                    {
+                        Ok(_) => self.changed_audit = Some(id),
+                        Err(e) => return vec![Effect::Toast(format!("couldn't audit: {e}"))],
+                    }
                 }
             }
             Why::Logged => {

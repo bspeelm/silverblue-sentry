@@ -324,8 +324,8 @@ impl Slot {
         {
             w.toast(&format!("couldn't write the maintenance log: {e}"));
         }
+        // (A record of what was done by hand: sentry changed nothing on the host.)
         self.rows_changed(w);
-        self.last_change_at = Some(jiff::Timestamp::now());
         if self.auto_skips_note() {
             self.settled(w);
             return self.review_after_run(w);

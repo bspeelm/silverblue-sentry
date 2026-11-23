@@ -2591,6 +2591,19 @@ impl Session {
             .filter(|k| k.starts_with(crate::maint::rec::AUDIT_ROW))
     }
 
+    /// A session on one of the security audit's items whose audit answered after the last
+    /// thing it changed: that run read every target as the session left it, so what the
+    /// session changed needs no run of its own.
+    pub fn audit_covers_its_changes(&self) -> bool {
+        self.audit_row().is_some() && self.audited
+    }
+
+    /// A finding's session whose target's audit answered after the last thing it changed
+    /// (`reaudited`): that audit read the target as the session left it.
+    pub fn reaudit_covers_its_changes(&self) -> bool {
+        self.audit_row().is_none() && self.audited
+    }
+
     /// What an `expected` verdict marks: the session's finding, or its audit item's row.
     fn expectable(&self) -> Option<String> {
         self.chat

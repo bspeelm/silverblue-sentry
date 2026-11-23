@@ -247,6 +247,12 @@ impl App {
             .expect("this machine")
     }
 
+    /// How many times this machine was asked to read again what a change can alter
+    /// (`Why::Changed`: the updates waiting, and the audit).
+    pub fn changed_reads_for_test(&self) -> u32 {
+        self.local().changed_reads
+    }
+
     /// Where Maintenance's cursor is.
     pub fn maint_cursor_for_test(&self) -> usize {
         self.local().screens.maint.cur.sel

@@ -187,7 +187,13 @@ impl Slot {
             Parcel::Entry(e) => {
                 self.log_event(w, *e);
             }
-            Parcel::Log { ok, body, tags } => {
+            // (Steps a session elsewhere ran here changed this target: `log_event_as`.)
+            Parcel::Log {
+                ok,
+                body,
+                tags,
+                covered,
+            } => {
                 let e = sentry_core::maint::log::LogEntry::event(
                     &self.scope,
                     "apply",
@@ -197,7 +203,12 @@ impl Slot {
                     &tags,
                     jiff::Timestamp::now(),
                 );
-                self.log_event(w, e);
+                // (The session's own audit, when it is a finding's, was its home target's.)
+                let covered = super::rows::Covered {
+                    own_audit: false,
+                    security: covered,
+                };
+                self.log_event_as(w, e, covered);
             }
             // ---- answers, for this slot's own session
             Parcel::Started { id, pid } => {
@@ -458,7 +469,12 @@ impl Slot {
                 typed: sess.secret.clone(),
             },
             Fx::StartWorkflow(name, vars) => Parcel::Workflow { from, name, vars },
-            Fx::Log { ok, body, tags } => Parcel::Log { ok, body, tags },
+            Fx::Log { ok, body, tags } => Parcel::Log {
+                ok,
+                body,
+                tags,
+                covered: sess.audit_covers_its_changes(),
+            },
             _ => return,
         };
         // A target the window lost (it can't: targets stay for as long as it's open).

@@ -5857,3 +5857,165 @@ fn live_reaudit() {
     );
     println!("✓ a session that changed nothing is not done: the audit still reports it");
 }
+
+/// A security report from before anything this test does (the window's: none on disk).
+fn sec_report_before(a: &App) -> sentry_core::secaudit::Report {
+    sentry_core::secaudit::Report {
+        version: 1,
+        at: a.win.now() - jiff::SignedDuration::from_hours(24),
+        targets: Vec::new(),
+        observed: false,
+        items: Vec::new(),
+        errors: Vec::new(),
+        diff: Default::default(),
+        alone: String::new(),
+    }
+}
+
+/// A workflow run that ends well changed the server (`Slot::host_changed`): what a change
+/// can alter is read again by itself (the host, the updates, the services, containers,
+/// the items, CrowdSec) and the server's own audit with it; the window notes the change,
+/// and once nothing is at work the security audit reads every target again, quietly.
+#[test]
+fn a_good_run_reads_the_server_again_and_the_security_audit_follows() {
+    let mut a = app();
+    let text = "name = \"apt-maintenance\"\ndescription = \"test\"\n[[steps]]\nid = \"one\"\n\
+                title = \"one\"\nrun = \"true\"\ngate = \"auto\"\n";
+    let _turn = startable_as(&mut a, "host-changed-apt-maintenance.toml", text);
+    a.win.sec.report = Some(sec_report_before(&a));
+    a.win.sec.rev += 1;
+    a.win.sec.rerun_offline = true;
+    assert_eq!(a.last_change_for_test(), None);
+    a.apply(
+        vec![Effect::Wf(WfCmd::Begin("apt-maintenance".into()))],
+        Instant::now(),
+    );
+    a.tick(Instant::now());
+    let asked = srv(&a).asked.len();
+    a.run_step_exit_for_test(0);
+    a.run_logged_for_test();
+    assert!(wf(&a).unwrap().done());
+    let fetched = &srv(&a).asked[asked..];
+    for k in [
+        Kind::Host,
+        Kind::Apt,
+        Kind::Units,
+        Kind::Docker,
+        Kind::Maint,
+        Kind::Crowdsec,
+        Kind::Audit,
+    ] {
+        assert!(fetched.contains(&k), "{k:?} in {fetched:?}");
+    }
+    assert!(a.last_change_for_test().is_some());
+    assert_eq!(a.win.sec.since().len(), 1);
+    // Nothing is at work any more: the security audit reads every target, quietly, once.
+    a.tick(Instant::now());
+    assert!(a.win.sec.busy() && a.win.sec.quiet);
+    let rerun = a.win.sec.rerun_for;
+    a.tick(Instant::now());
+    assert_eq!(a.win.sec.rerun_for, rerun);
+    // Its answer is in: it answers for the change.
+    a.on_event(
+        Ev::Data(
+            super::id_of("myserver"),
+            Box::new(sentry_app::secaudit::Done(vec![
+                sentry_core::secaudit::TargetFacts::new(
+                    "srv:myserver",
+                    sentry_core::secaudit::Kind::Server,
+                    "myserver",
+                ),
+            ])),
+        ),
+        Instant::now(),
+    );
+    assert!(!a.win.sec.busy() && a.win.sec.since().is_empty());
+}
+
+/// Only what changed the server moves "the last change" (the inventory's header) and has
+/// it read again: something marked expected, a wait, a review's changes, a task done by
+/// hand change nothing there. An apply session's entry with a step that ran does.
+#[test]
+fn records_are_no_change_of_the_server() {
+    use sentry_core::maint::log::LogEntry;
+    let mut a = app();
+    a.win.sec.report = Some(sec_report_before(&a));
+    a.win.sec.rev += 1;
+    let at = jiff::Timestamp::now();
+    let ev = |kind: &str, body: &str| {
+        Effect::LogEvent(Box::new(LogEntry::event(
+            "myserver",
+            kind,
+            kind,
+            true,
+            body,
+            &[],
+            at,
+        )))
+    };
+    let asked = srv(&a).asked.len();
+    a.apply(
+        vec![
+            ev("expected", "srv:x is marked expected"),
+            ev("wait", "Claude advises waiting"),
+            ev("review", "1 task added"),
+            Effect::LogEvent(Box::new(LogEntry::task("myserver", "t", "T", None))),
+        ],
+        Instant::now(),
+    );
+    assert_eq!(a.last_change_for_test(), None);
+    assert!(!srv(&a).asked[asked..].contains(&Kind::Audit));
+    assert!(a.win.sec.since().is_empty());
+    // A step that ran and ended well: a change.
+    a.apply(
+        vec![ev(
+            "apply",
+            "Restart it\n\n1. ✓ Restart (run systemctl): ok",
+        )],
+        Instant::now(),
+    );
+    assert!(a.last_change_for_test().is_some());
+    let fetched = &srv(&a).asked[asked..];
+    for k in [Kind::Apt, Kind::Crowdsec, Kind::Audit] {
+        assert!(fetched.contains(&k), "{k:?} in {fetched:?}");
+    }
+    assert_eq!(a.win.sec.since().len(), 1);
+}
+
+/// A finding's session audits again after its plan: the change it logs after that has
+/// everything else read again, but not a second audit; the security audit still follows.
+#[test]
+fn a_findings_session_audits_once_and_the_rest_is_read_again() {
+    use sentry_core::apply::session::{End, Phase};
+    let mut a = app();
+    a.win.sec.report = Some(sec_report_before(&a));
+    a.win.sec.rev += 1;
+    key(&mut a, KeyCode::Char(ScreenId::Maint.key()));
+    a.apply(vec![Own::maint_find("finding:".into())], Instant::now());
+    key(&mut a, KeyCode::Char('A'));
+    key(&mut a, KeyCode::Enter);
+    a.apply_answer_for_test(
+        "```sentry-apply\nsummary = \"start db\"\n[[step]]\ntitle = \"Start\"\nrun = \"true\"\n```",
+    );
+    key(&mut a, KeyCode::Enter);
+    let asked = srv(&a).asked.len();
+    a.apply_exit_for_test(0);
+    audited(&mut a, false);
+    a.apply_answer_for_test("```sentry-verdict\nstatus = \"done\"\nsummary = \"db is up\"\n```");
+    assert_eq!(a.apply_session().unwrap().phase, Phase::Settled(End::Done));
+    let fetched = &srv(&a).asked[asked..];
+    assert_eq!(
+        fetched.iter().filter(|k| **k == Kind::Audit).count(),
+        1,
+        "{fetched:?}"
+    );
+    for k in [Kind::Apt, Kind::Crowdsec] {
+        assert!(fetched.contains(&k), "{k:?} in {fetched:?}");
+    }
+    assert!(a.last_change_for_test().is_some());
+    assert_eq!(
+        a.win.sec.since().len(),
+        1,
+        "the security audit hasn't looked"
+    );
+}

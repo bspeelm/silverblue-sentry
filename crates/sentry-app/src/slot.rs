@@ -190,8 +190,11 @@ pub struct Slot {
     pub(crate) sec_view: Option<usize>,
     /// The audit as this slot's records last took it in (`Sec::rev`, targets surveyed).
     sec_seen: (u64, usize, Option<jiff::Timestamp>),
-    /// Asleep: the newest upgrade in its log, read once (`Slot::upgraded`).
-    slept_upgrade: Option<Option<(jiff::Timestamp, String)>>,
+    /// Asleep: the entries of its log that changed the host, read once (`Slot::host_log`).
+    slept_log: Option<Vec<sentry_core::maint::log::LogEntry>>,
+    /// What its log says changed since the security audit's report was handed to the
+    /// window (`Slot::note_logged_changes`, once).
+    changes_noted: bool,
     /// Records (`v`, `:log`): tasks, log, plans, reviews, what's put off.
     pub rec_view: Option<sentry_core::tui::records::Records>,
     /// The workflow run in progress on this target.
@@ -304,7 +307,8 @@ impl Slot {
             review_view: None,
             sec_view: None,
             sec_seen: (0, 0, None),
-            slept_upgrade: None,
+            slept_log: None,
+            changes_noted: false,
             rec_view: None,
             run: None,
             chat: None,
@@ -461,6 +465,20 @@ impl Slot {
         } else {
             Needs::Nothing
         }
+    }
+
+    /// Something here may still change the host or read it as root: a run in progress, a
+    /// session at work, a series, a command in the pane, a step for a session elsewhere, a
+    /// read as root. The security audit's re-run after a change waits for none of them.
+    pub(crate) fn at_work(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| !r.done())
+            || self.apply.as_ref().is_some_and(|s| s.busy())
+            || self.series.is_some()
+            || self.pane.as_ref().is_some_and(|p| p.done.is_none())
+            || self.guest.is_some()
+            || self.guest_wait.is_some()
+            || self.guest_aux.is_some()
+            || !self.reads.is_empty()
     }
 
     /// What quitting now would cut short here, a line each.

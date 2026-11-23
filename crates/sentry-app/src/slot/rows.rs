@@ -101,6 +101,8 @@ impl Slot {
     pub(crate) fn look(&mut self, w: &mut Win) {
         if !w.offline && !self.asleep {
             self.look_now(w);
+            // (And the window at the security audit's reports: `App::sec_look`.)
+            w.sec.look = true;
         }
     }
 
@@ -175,5 +177,95 @@ impl Slot {
         if let Some(doc) = self.shared.plans.get(key) {
             sentry_core::maint::plan::save(doc).expect("the plan's file");
         }
+    }
+}
+
+/// What already read a host after a change sentry made to it (`Slot::host_changed`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Covered {
+    /// The target's own audit (a finding's session audits again after its plan).
+    pub own_audit: bool,
+    /// The security audit, every target (a session on one of its items waits for it).
+    pub security: bool,
+}
+
+impl Covered {
+    /// What a session's own audit read after the steps it logs.
+    pub(crate) fn by(s: Option<&sentry_core::apply::session::Session>) -> Self {
+        Self {
+            own_audit: s.is_some_and(|s| s.reaudit_covers_its_changes()),
+            security: s.is_some_and(|s| s.audit_covers_its_changes()),
+        }
+    }
+}
+
+impl Slot {
+    /// sentry changed the host (`LogEntry::changed_host`: a run or a session's steps that
+    /// ended well, here or for a session elsewhere): what was read of it is a snapshot from
+    /// before, so it is read again, and the window knows (the security audit looks again
+    /// once nothing is at work, `App::sec_after_change`; until then what the report said of
+    /// what the change may have settled isn't a row). The one place `last_change_at` is
+    /// set. `covered`: what already read the host after the change (a session's own audit).
+    pub(crate) fn host_changed(
+        &mut self,
+        w: &mut Win,
+        entry: &sentry_core::maint::log::LogEntry,
+        covered: Covered,
+    ) {
+        self.last_change_at = Some(jiff::Timestamp::now());
+        if let Some(log) = self.slept_log.as_mut() {
+            log.insert(0, entry.clone());
+        }
+        // (A slot never in view reads what it shows when it first has the window.)
+        if !self.asleep {
+            let why = if covered.own_audit {
+                Why::ChangedAudited
+            } else {
+                Why::Changed
+            };
+            self.refresh(w, why);
+        }
+        if !covered.security
+            && let Some(c) = crate::secaudit::Changed::of(self.mail.id(), entry)
+        {
+            w.sec.note(c);
+        }
+    }
+
+    /// What the log says sentry changed on this target since the security audit's report
+    /// (a run while the window was closed, or by `sentry` on the command line): kept by the
+    /// window once, at the slot's start (its own, or the window's for one never in view).
+    pub(crate) fn note_logged_changes(&mut self, w: &mut Win) {
+        if std::mem::replace(&mut self.changes_noted, true) {
+            return;
+        }
+        let Some(to) = w.sec.report.as_ref().map(|r| r.at) else {
+            // (No report: the first one is from after every change.)
+            return;
+        };
+        let id = self.mail.id().clone();
+        for e in self.host_log(w) {
+            if let Some(c) = crate::secaudit::Changed::of(&id, &e)
+                && c.at > to
+            {
+                w.sec.note(c);
+            }
+        }
+    }
+
+    /// The entries of this target's log that changed the host. A slot that never had the
+    /// window hasn't read its log: it is read here, once.
+    pub(crate) fn host_log(&mut self, w: &Win) -> Vec<sentry_core::maint::log::LogEntry> {
+        let changed = |v: Vec<sentry_core::maint::log::LogEntry>| {
+            v.into_iter().filter(|e| e.changed_host()).collect()
+        };
+        if self.asleep && !w.offline {
+            let scope = self.scope.clone();
+            return self
+                .slept_log
+                .get_or_insert_with(|| changed(sentry_core::maint::log::list(&scope)))
+                .clone();
+        }
+        changed(self.shared.log.clone())
     }
 }

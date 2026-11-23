@@ -415,8 +415,8 @@ impl Slot {
         } else {
             self.shared.log.insert(0, entry.clone());
         }
+        // (A record: nothing changed on the host.)
         self.rows_changed(w);
-        self.last_change_at = Some(jiff::Timestamp::now());
         // Auto asks for no note (Records adds one any time).
         if self.auto_skips_note() {
             if !self.ways.task_note {

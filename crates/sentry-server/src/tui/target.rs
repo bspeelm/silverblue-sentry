@@ -524,9 +524,9 @@ impl ServerTarget {
         vec![Effect::Toast(said)]
     }
 
-    /// After a run that changed the server: what Maintenance and Containers show was read
-    /// with sudo before it. With the password held it's read again by itself (a read);
-    /// without, `I` does it.
+    /// After a run that changed the server while the password wasn't held: what Maintenance
+    /// and Containers show was read with sudo before it, and `I` reads it again (said once
+    /// the run is settled; with the password held it was read again at once: `Why::Changed`).
     fn reread(&mut self, cx: &Cx) -> Vec<Effect> {
         if !std::mem::take(&mut self.offer_reread) {
             return Vec::new();
@@ -903,10 +903,36 @@ impl Target for ServerTarget {
                     self.fetch(k, cx);
                 }
             }
-            // What was read with sudo is from before this run: offer to read it again.
-            Why::Changed => {
-                self.offer_reread = self.store.sudo.value == Some(SudoMode::Password)
-                    && self.inventory_at.is_some();
+            // sentry changed the server (a run or a session's steps that ended well): what
+            // was read of it is from before. Read again what a run reads, and CrowdSec;
+            // what needs root, by itself where the password is held (else it's said, and
+            // `I` does it: nothing is asked); then the audit, so its findings follow.
+            Why::Changed | Why::ChangedAudited => {
+                for k in [
+                    Kind::Host,
+                    Kind::Apt,
+                    Kind::Units,
+                    Kind::Docker,
+                    Kind::Maint,
+                    Kind::Crowdsec,
+                ] {
+                    self.fetch(k, cx);
+                }
+                let inventory = self.store.sudo.value == Some(SudoMode::Password)
+                    && !crate::inventory::script(&self.remote).is_empty();
+                // (A finding's session had the audit run after its change already, with
+                // what needs root read again first where the password is held: `Reaudit`.)
+                if why == Why::ChangedAudited {
+                    self.offer_reread = inventory && !cx.root && self.inventory_at.is_some();
+                    return Vec::new();
+                }
+                if inventory && cx.root {
+                    // (The audit runs when the read is in: `after_inventory`.)
+                    self.reaudit_reads = true;
+                    return vec![Own::Inventory.into()];
+                }
+                self.offer_reread = inventory && self.inventory_at.is_some();
+                self.fetch(Kind::Audit, cx);
             }
             // A finding's fix ran: the audit says whether it's still reported. What the
             // audit reads as root comes from the last inventory where sudo asks: with the

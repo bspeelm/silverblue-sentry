@@ -895,6 +895,12 @@ pub fn latest() -> Option<Report> {
     latest_in(&dir())
 }
 
+/// The newest report's file, by listing the directory and reading nothing: whether a
+/// report was written since (the window looks at it where it looks at its records).
+pub fn latest_stamp() -> Option<PathBuf> {
+    reports_in(&dir()).into_iter().next()
+}
+
 /// At most this many in "Do these first": a short list is one that gets done.
 pub const FIRST: usize = 5;
 

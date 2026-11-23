@@ -121,8 +121,14 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
                     "Writing its plan failed.".into(),
                     Action::Plan(id.clone()),
                 )),
-                // Being written, or Claude advised waiting: nothing to add.
-                _ => continue,
+                // Claude advised waiting: nothing to add while the wait (later.toml, under
+                // the item's key, as `Fx::Wait` writes it) holds. Once its date has passed
+                // the item's rows are back; the plan is just a document then, and Enter on
+                // the item starts a session as for any item.
+                PlanStatus::Wait if i.snooze.get(&id).is_some_and(|d| *d > today) => continue,
+                // (Nothing writes `writing` any more since plans are a session's: one left
+                // from before has no end, so it hides nothing.)
+                _ => {}
             }
         }
         let held = s.has(Flag::Held);
@@ -602,6 +608,42 @@ mod tests {
             t.why
         );
         assert!(!r.iter().any(|x| x.title.starts_with("web: security fix")));
+        // Claude advised waiting with db: its rows are away while the wait holds (its
+        // date in later.toml, under the item's key), and back once that has passed, the
+        // plan saying `wait` or not.
+        let mut waiting = plans.clone();
+        let mut p = PlanDoc::default();
+        p.head.status = PlanStatus::Wait;
+        waiting.insert("db".to_string(), p.clone());
+        let db = |r: &[Rec]| r.iter().any(|x| x.title.starts_with("db: "));
+        let until = |d| BTreeMap::from([("db".to_string(), d)]);
+        let future = until(jiff::civil::date(2026, 11, 20));
+        let r = recommend(&Inputs {
+            plans: &waiting,
+            snooze: &future,
+            ..Inputs { ..inputs }
+        });
+        assert!(!db(&r));
+        let past = until(jiff::civil::date(2026, 10, 20));
+        let r = recommend(&Inputs {
+            plans: &waiting,
+            snooze: &past,
+            ..Inputs { ..inputs }
+        });
+        assert!(db(&r), "the wait is over");
+        let none = BTreeMap::new();
+        assert!(db(&recommend(&Inputs {
+            plans: &waiting,
+            snooze: &none,
+            ..Inputs { ..inputs }
+        })));
+        // A plan left `writing` from before plans were a session's hides nothing.
+        p.head.status = PlanStatus::Writing;
+        waiting.insert("db".to_string(), p);
+        assert!(db(&recommend(&Inputs {
+            plans: &waiting,
+            ..Inputs { ..inputs }
+        })));
     }
 
     #[test]

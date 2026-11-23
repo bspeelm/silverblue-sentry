@@ -96,9 +96,6 @@ impl Own {
     }
 }
 
-/// The workflows that change what the router runs: when one ends, the audit runs again.
-pub const CHANGES_RELEASE: &[&str] = &["firmware-upgrade", "package-update"];
-
 /// A fetch a screen wants while it's in view: when it's entered, then every `every` (None:
 /// at entry only).
 struct Poll {
@@ -707,8 +704,14 @@ impl Target for NetworkTarget {
                 self.fetch(Kind::Audit, cx);
                 Vec::new()
             }
-            // A run ended: what it may have made (a backup) is read again.
-            Why::Run | Why::Changed => {
+            // A run ended: what it may have made (a backup) is read again. sentry changed
+            // the router (a run or a session's steps that ended well): the same, and the
+            // audit says what stands now (its findings, and so the rows made of them),
+            // unless it already ran after the change (a finding's session).
+            Why::Run | Why::Changed | Why::ChangedAudited => {
+                if why == Why::Changed {
+                    self.fetch(Kind::Audit, cx);
+                }
                 self.fetch(Kind::Backup, cx);
                 // The release and the packages as they are now: the firmware and packages
                 // rows (and the Items panel) follow what the run did, wherever the user is.
@@ -1439,11 +1442,7 @@ impl Host for NetworkTarget {
     /// follows the run.
     fn step_ended(&mut self, run: &dyn WfRun, cx: &Cx) {
         self.fetch(Kind::Backup, cx);
-        // A run that changed the release or the packages: the audit says what stands now
-        // (its findings, and so the rows made of them), by itself.
-        if run.done() && CHANGES_RELEASE.contains(&run.wf().name.as_str()) {
-            self.fetch(Kind::Audit, cx);
-        }
+        // (A run that ended well has the audit run again with the rest: `Why::Changed`.)
         // A draft that just ran end to end, well: offered to be one no longer.
         use sentry_core::workflows::state::RunStatus;
         // (The file says whether it is a draft: the run's own copy may have been started

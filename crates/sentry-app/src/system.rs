@@ -95,6 +95,9 @@ pub enum Parcel {
         ok: bool,
         body: String,
         tags: Vec<String>,
+        /// The session's own security audit answered after these steps ran
+        /// (`Session::audit_covers_its_changes`): no audit runs again for them.
+        covered: bool,
     },
     // ---- back to the session's slot
     Started {

@@ -238,8 +238,13 @@ impl App {
         }
         let r = self.with_one(i, f);
         self.deliver();
-        // An upgrade just ended (or was found): the security audit looks again.
-        self.sec_after_upgrade();
+        // A slot looked at its files: a security report written since is taken in.
+        if std::mem::take(&mut self.win.sec.look) {
+            self.sec_look();
+        }
+        // sentry changed a target, and nothing is at work now: the security audit looks
+        // again.
+        self.sec_after_change();
         self.deliver();
         if self.win.sec.pending.is_some() {
             self.sec_go();
@@ -440,7 +445,9 @@ impl App {
                 if w.focused {
                     s.start(w, now)
                 } else {
-                    s.pickup(w)
+                    s.pickup(w);
+                    // (What its log says changed since the security audit's report.)
+                    s.note_logged_changes(w);
                 }
             });
         }
@@ -1040,9 +1047,17 @@ impl App {
         let p = self.slot().pane.as_ref()?;
         Some((p.lines.iter().cloned().collect(), p.done))
     }
-    /// When the target last changed (a run, a task done).
+    /// When sentry last changed the target (a run or a session's steps that ended well).
     pub fn set_last_change_for_test(&mut self, at: jiff::Timestamp) {
         self.slot_mut().last_change_at = Some(at);
+    }
+    /// When sentry last changed the target in view (`Slot::host_changed`).
+    pub fn last_change_for_test(&self) -> Option<jiff::Timestamp> {
+        self.slot().last_change_at
+    }
+    /// The same, for the slot at `i`.
+    pub fn last_change_at(&self, i: usize) -> Option<jiff::Timestamp> {
+        self.slots[i].last_change_at
     }
 }
 
