@@ -42,4 +42,4 @@ expression: screen(&mut a)
 │                                                                                     ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Enter  next   Esc  back   t  test it   s  save…   c  check   e  editor   u  undo   ?  help   q  quit                   `claude` isn't there: nothing to test
+ Enter  next   Esc  back   t  test it   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

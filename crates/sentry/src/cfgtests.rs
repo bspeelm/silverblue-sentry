@@ -917,6 +917,8 @@ fn the_agent_screen_says_whether_it_is_there_and_tests_one_turn() {
         ))),
         Instant::now(),
     );
+    // (What an earlier key said is gone by now.)
+    a.win.toast = None;
     insta::assert_snapshot!("config_agent_158", screen(&mut a));
     assert!(screen(&mut a).contains("test      ✓ answers (ready)"));
     // Not logged in: said in plain words, with what to do.
