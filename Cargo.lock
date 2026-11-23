@@ -2444,7 +2444,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sentry"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "clap",
  "insta",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "sentry-app"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "jiff",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "sentry-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "insta",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "sentry-local"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "insta",
@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "sentry-network"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "age",
  "anyhow",
@@ -2535,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "sentry-server"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "insta",
