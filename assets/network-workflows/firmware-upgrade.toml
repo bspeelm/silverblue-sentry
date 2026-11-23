@@ -1,9 +1,8 @@
 name = "firmware-upgrade"
 description = "Upgrade the router to the newest release of its series, keeping its settings and add-on packages"
-# A DRAFT until it has been run end to end on a router once: sentry starts it only from the
-# firmware row (Maintenance), after a box that says what has and hasn't been proven, and
-# never by auto mode or a series. After a good run it offers to take the next line out.
-draft = true
+# Run end to end once on a real router: a patch release within its series (the check, the
+# backup, the plan, the download, the flash, the restart and the return). A move to another
+# series is refused by the plan step. Auto mode never answers the download or the flash.
 # How it works: `owut` (OpenWrt's upgrade tool, on the router) has the upgrade server build
 # an image with every package installed now, downloads it into the router's memory and
 # verifies it; sentry checks it again and the router's own `sysupgrade --test` takes it; the
@@ -75,8 +74,6 @@ this run before anything was downloaded.
 What can't be helped from here: if the flash itself fails, nothing automatic can rescue the
 router; it is then brought back by the device's own recovery procedure (on its OpenWrt
 page). Have those instructions at hand, on paper or another device, before you go on.
-
-sentry has never flashed a router before this run.
 
 Never turn the router off while it is flashing."""
 on_fail = "manual"

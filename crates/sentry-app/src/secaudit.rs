@@ -55,6 +55,14 @@ pub struct Sec {
     /// Per slot, the newest firmware or OS upgrade its log has (`App::survey`), said
     /// with where it ran.
     pub upgraded: Vec<Option<(jiff::Timestamp, String)>>,
+    /// An upgrade that ended well in this window just now (a slot's run): when.
+    pub upgrade_new: Option<jiff::Timestamp>,
+    /// The newest upgrade the audit was run again for, by itself (once per upgrade).
+    pub rerun_for: Option<jiff::Timestamp>,
+    /// The audit running is that one: nothing opens, no review is asked for.
+    pub quiet: bool,
+    /// Tests: the run after an upgrade starts offline too (they hand the facts in).
+    pub rerun_offline: bool,
 }
 
 impl Sec {
@@ -73,7 +81,25 @@ impl Sec {
             loaded: false,
             rev: 0,
             upgraded: Vec::new(),
+            upgrade_new: None,
+            rerun_for: None,
+            quiet: false,
+            rerun_offline: false,
         }
+    }
+
+    /// The newest upgrade the window knows of that ended after the report was made: the
+    /// audit is run again for it (once).
+    pub fn rerun_due(&self) -> Option<jiff::Timestamp> {
+        let at = self
+            .upgraded
+            .iter()
+            .flatten()
+            .map(|(at, _)| *at)
+            .chain(self.upgrade_new)
+            .max()?;
+        let report = self.report.as_ref()?;
+        (at > report.at && self.rerun_for.is_none_or(|r| r < at) && !self.busy()).then_some(at)
     }
 
     pub fn busy(&self) -> bool {
@@ -113,6 +139,19 @@ pub fn audited(now: jiff::Timestamp, at: jiff::Timestamp) -> String {
         1 => "audited yesterday".into(),
         d => format!("audited {d} days ago"),
     }
+}
+
+/// What an upgrade of a target changes, and so what a report from before it can't say any
+/// more: its firmware, its packages, its operating system and that system's support.
+pub const UPGRADED: &[&str] = &["firmware", "packages", "os", "os-life"];
+
+/// An item of a report made at `at` about what an upgrade since changed (`upgrades`: the
+/// target as items name it, and when its newest upgrade ended). Withheld from the rows
+/// until the audit has looked again.
+pub fn outdated(i: &Item, at: jiff::Timestamp, upgrades: &[(String, jiff::Timestamp)]) -> bool {
+    upgrades
+        .iter()
+        .any(|(t, when)| *when > at && UPGRADED.iter().any(|w| i.id == format!("sec:{w}:{t}")))
 }
 
 /// The key of an item's row in a target's list (put off and found again by it).
@@ -394,5 +433,37 @@ mod tests {
         let p = review_profile();
         assert_eq!(p.tools, ["WebFetch", "WebSearch"]);
         assert!(p.denied.iter().any(|d| d == "Bash"));
+    }
+
+    /// After an upgrade, what the report said of that target's firmware, packages or system
+    /// is withheld until a newer report; the audit is run again for it once.
+    #[test]
+    fn an_upgrade_since_the_report_withholds_its_items_and_reruns_once() {
+        let at: jiff::Timestamp = "2026-11-01T00:00:00Z".parse().unwrap();
+        let later: jiff::Timestamp = "2026-11-02T00:00:00Z".parse().unwrap();
+        let up = vec![("net:home".to_string(), later)];
+        let fw = item("sec:firmware:net:home", State::DoFirst, &["net:home"]);
+        assert!(outdated(&fw, at, &up));
+        assert!(!outdated(&fw, later, &up), "a report after it");
+        let other = item("sec:firmware:net:lab", State::DoFirst, &["net:lab"]);
+        assert!(!outdated(&other, at, &up), "another target's");
+        let door = item("sec:door:net:home:tcp:443", State::DoFirst, &["net:home"]);
+        assert!(!outdated(&door, at, &up), "not what an upgrade changes");
+        let mut sec = Sec::new();
+        sec.upgrade_new = Some(later);
+        assert_eq!(sec.rerun_due(), None, "no report: nothing to look again at");
+        sec.report = Some(Report {
+            version: 1,
+            at,
+            targets: Vec::new(),
+            observed: false,
+            items: vec![fw],
+            errors: Vec::new(),
+            diff: Default::default(),
+            alone: String::new(),
+        });
+        assert_eq!(sec.rerun_due(), Some(later));
+        sec.rerun_for = Some(later);
+        assert_eq!(sec.rerun_due(), None, "once");
     }
 }

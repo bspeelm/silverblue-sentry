@@ -1876,11 +1876,13 @@ fn live_security_ssh_keys_only() {
 /// The firmware upgrade through the window, against the stand-ins `scripts/live-router.sh`
 /// puts on the disposable router (a pretend owut, sysupgrade's `--test` and flash, a
 /// pretend restart that drops ssh logins and changes the boot id). In turn: a warning owut
-/// raises stops the plan before any download; an image whose checksum isn't the server's
+/// raises stops the plan before any download; a router already on the newest release ends
+/// the run done after its plan, nothing needed; an image whose checksum isn't the server's
 /// stops before the flash and is removed; the router not back by the deadline ends the
 /// wait failed, and a window opened once it answers carries on at the checks; a package
 /// missing after the flash is installed again by the step that offers it; a good run
-/// offers to take the draft off. Nothing here can flash, restart or write a real router.
+/// offers nothing about drafts (it isn't one). Nothing here can flash, restart or write a
+/// real router.
 #[test]
 #[ignore]
 fn live_firmware_upgrade() {
@@ -2006,7 +2008,7 @@ fn live_firmware_upgrade() {
     };
     let start = |a: &mut App| {
         a.apply(
-            vec![Effect::own(crate::tui::Own::FirmwareStart)],
+            vec![Effect::StartWorkflow("firmware-upgrade".into())],
             Instant::now(),
         );
         assert!(a.slot().run.is_some(), "{}", screen(a));
@@ -2041,6 +2043,26 @@ fn live_firmware_upgrade() {
     );
     assert!(!image_there(&r));
     done_with(&mut a);
+    drop(a);
+
+    // 1b. Already on the newest release: the run ends after its plan, done and nothing
+    //     needed, with nothing downloaded and nothing handed to Claude.
+    mode("newest");
+    let (mut a, rx) = open();
+    start(&mut a);
+    let next = settle(&mut a, &rx, 120);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    let st = &a.slot().run.as_ref().unwrap().run().state;
+    assert_eq!(st.status, RunStatus::Done, "{}", log(&a));
+    assert!(sentry_app::remote::workflow::ended_with_nothing(st));
+    let said = log(&a);
+    assert!(
+        said.contains("nothing newer") && said.contains("nothing was needed"),
+        "{said}"
+    );
+    assert!(a.apply_session().is_none(), "nothing was handed to Claude");
+    assert!(!image_there(&r));
+    a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
     drop(a);
 
     // 2. The image isn't the one the server built: stopped before the flash, removed.
@@ -2243,10 +2265,9 @@ fn live_firmware_upgrade() {
             && said.contains("installed by name before are installed"),
         "{said}"
     );
-    // The good run offers to take the draft off (Esc: it stays one).
+    // It isn't a draft: nothing offers to take that off.
     let s = screen(&mut a);
-    assert!(s.contains("The firmware upgrade ran end to end"), "{s}");
-    key(&mut a, KeyCode::Esc);
+    assert!(!s.contains("The firmware upgrade ran end to end"), "{s}");
     a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
     drop(a);
 

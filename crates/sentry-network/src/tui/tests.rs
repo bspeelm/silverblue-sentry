@@ -2226,13 +2226,24 @@ fn with_workflows(cfg: &Network, backup: Option<Status>) -> App {
         ],
         "the seeded workflows"
     );
-    // The firmware's is a draft until the user says otherwise; the others aren't.
-    let drafts: Vec<&str> = list
-        .iter()
-        .filter(|e| e.wf.as_ref().is_ok_and(|w| w.draft))
-        .map(|e| e.name.as_str())
-        .collect();
-    assert_eq!(drafts, ["firmware-upgrade"]);
+    // None is a draft (the firmware's was run end to end once).
+    assert!(list.iter().all(|e| e.wf.as_ref().is_ok_and(|w| !w.draft)));
+    a.set_wf_entries(list);
+    a
+}
+
+/// The same, with the firmware's workflow marked a draft (as a copy of it that still says
+/// `draft = true` would be): how a draft starts, and nowhere else.
+fn with_draft(cfg: &Network) -> App {
+    let mut a = with_workflows(cfg, None);
+    let mut list = a.slot().shared.wf_entries.clone();
+    for e in &mut list {
+        if e.name == "firmware-upgrade"
+            && let Ok(w) = e.wf.as_mut()
+        {
+            w.draft = true;
+        }
+    }
     a.set_wf_entries(list);
     a
 }
@@ -3687,7 +3698,7 @@ fn crowdsec_is_a_status_row_only_where_the_router_has_it() {
     assert!(!net(&a).asked.contains(&Kind::Crowdsec));
 }
 
-/// A workflow marked `draft = true` (the firmware upgrade: never run end to end) is
+/// A workflow marked `draft = true` (a copy of the firmware upgrade that still says so) is
 /// started by nobody: not by its name, not by auto mode, not with its values handed over
 /// (what a series or a session's plan step sends), and not by the one function every
 /// start ends in.
@@ -3698,7 +3709,19 @@ fn a_draft_never_starts_whoever_asks() {
     const NAME: &str = "firmware-upgrade";
     // (It looks at the runs on disk: no other test's run is there meanwhile.)
     let _turn = runs();
-    let entry = crate::workflow::seeded_all()
+    // The firmware's, marked a draft as a copy of it that still says so would be.
+    let drafted = || {
+        let mut all = crate::workflow::seeded_all();
+        for e in &mut all {
+            if e.name == NAME
+                && let Ok(w) = e.wf.as_mut()
+            {
+                w.draft = true;
+            }
+        }
+        all
+    };
+    let entry = drafted()
         .into_iter()
         .find(|e| e.name == NAME)
         .expect("seeded");
@@ -3713,7 +3736,7 @@ fn a_draft_never_starts_whoever_asks() {
     };
     for auto in [false, true] {
         let mut a = full();
-        a.slot_mut().shared.wf_entries = crate::workflow::seeded_all();
+        a.slot_mut().shared.wf_entries = drafted();
         if auto {
             ctrl(&mut a, 'a');
             assert!(a.slot().auto);
@@ -4054,8 +4077,8 @@ fn enter_on_each_kind_of_task() {
     let enter = |id: &str| net(&a).task_enter(id, &a.slot().shared, &cx);
     assert!(matches!(&enter("hand")[..], [Effect::ApplyAsk]));
     assert!(matches!(&enter("run")[..], [Effect::StartWorkflow(w)] if w == "package-update"));
-    // An item's task is the item's own Enter: the packages' workflow; the firmware's is a
-    // draft, so how it stands, with nothing to say yes to.
+    // An item's task is the item's own Enter: the packages' workflow; the firmware's starts
+    // with a backup and there is no key here, so why not, with nothing to say yes to.
     assert!(matches!(&enter("pkgs")[..], [Effect::StartWorkflow(w)] if w == "package-update"));
     assert!(matches!(&enter("fw")[..], [Effect::Confirm(m)] if m.yes.is_none()));
     let toast = |id: &str| match &enter(id)[..] {

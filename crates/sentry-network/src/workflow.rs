@@ -67,6 +67,18 @@ pub const SEEDS: &[(&str, &str)] = &[
 
 pub use crate::packages::{base_package, package_name};
 
+/// Earlier seeded versions, replaced by the one shipped now where a copy is one of them
+/// unchanged. The firmware upgrade's include each draft as `undraft` left it (the user said
+/// "mark it proven" after a good run): that copy is ours too, not an edit of the user's.
+pub const SHIPPED: &[(&str, u64)] = &[
+    ("firmware-upgrade", 0x6d365073e584a321),
+    ("firmware-upgrade", 0x5cf09feac36281c3),
+    ("firmware-upgrade", 0xdc511dfe8882ff0b),
+    ("firmware-upgrade", 0xc16ad799045a699d),
+    ("firmware-upgrade", 0x897862a545400404),
+    ("firmware-upgrade", 0x8cee64011edb685e),
+];
+
 /// The generic workflows, seeded.
 pub fn dir() -> PathBuf {
     paths::config_dir().join("network-workflows")
@@ -83,7 +95,7 @@ pub fn list_for(scope: &str) -> Vec<Entry> {
     let d = dir_for(scope);
     if d == dir() {
         let _ = std::fs::create_dir_all(&d);
-        let _ = workflows::seed_with(&d, SEEDS, &[]);
+        let _ = workflows::seed_with(&d, SEEDS, SHIPPED);
     }
     let mut v: Vec<Entry> = tomls(&d)
         .into_iter()
@@ -274,13 +286,6 @@ mod tests {
     #[test]
     fn the_seeded_workflows_parse_and_lint_clean() {
         for e in seeded_all() {
-            if e.name == "firmware-upgrade" {
-                let w = e.wf.as_ref().unwrap();
-                let issues = workflows::lint_with(w, &RULES);
-                assert!(w.draft && issues.iter().all(|i| !i.error), "{issues:?}");
-                assert!(e.blocked().unwrap().starts_with("draft"));
-                continue;
-            }
             let w =
                 e.wf.as_ref()
                     .unwrap_or_else(|err| panic!("{}: {err}", e.name));
@@ -289,16 +294,15 @@ mod tests {
             assert!(issues.is_empty(), "{}: {issues:?}", e.name);
             assert!(e.blocked().is_none());
         }
-        // The firmware upgrade is the one draft.
-        let drafts: Vec<&str> = seeded_all()
-            .iter()
-            .filter(|e| e.blocked().is_some())
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|n| SEEDS.iter().find(|(s, _)| *s == n).unwrap().0)
-            .collect();
-        assert_eq!(drafts, ["firmware-upgrade"]);
+        // None is a draft any more (the firmware upgrade has been run end to end once),
+        // and none says it never flashed a router.
+        assert!(seeded_all().iter().all(|e| e.blocked().is_none()));
+        assert!(SEEDS.iter().all(|(_, t)| !t.contains(DRAFT_LINE)));
+        // An earlier version left as it was seeded (or as "mark it proven" left it) is
+        // replaced; the one shipped now isn't listed as an earlier one.
+        for (name, text) in SEEDS {
+            assert!(!SHIPPED.contains(&(name, workflows::fnv(text.as_bytes()))));
+        }
         let backup = &seeded()[0];
         let w = backup.wf.as_ref().unwrap();
         // Both steps run here, by this program, and neither asks.
@@ -590,7 +594,7 @@ mod change_tests {
             }
         }
         let f = wf("firmware-upgrade");
-        assert!(f.draft);
+        assert!(!f.draft);
         assert!(!auto(&f, "flash"), "auto never flashes");
         let mut flash = f.steps.iter().find(|s| s.id == "flash").unwrap().clone();
         flash.risky = false;

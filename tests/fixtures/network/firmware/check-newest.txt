@@ -1,0 +1,24 @@
+owut - OpenWrt Upgrade Tool 2026.07.08~db17536e-r1 (/usr/bin/owut)
+ASU-Server     https://sysupgrade.openwrt.org
+Upstream       https://downloads.openwrt.org
+Target         x86/64
+Profile        generic
+Package-arch   x86_64
+Root-FS-type   squashfs
+Sys-type       combined
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Build-commit   https://git.openwrt.org/?p=openwrt/openwrt.git;a=shortlog;h=f5dae5ece4
+Build-FS-type  squashfs
+Build-at       2026-09-02T10:12:41Z (~81 days ago)
+Image-prefix   openwrt-25.12.5-x86-64-generic
+Image-URL      https://downloads.openwrt.org/releases/25.12.5/targets/x86/64
+Image-file     openwrt-25.12.5-x86-64-generic-squashfs-combined.img.gz
+Installed       12 packages
+Top-level        8 packages
+Default          5 packages
+User-installed   3 packages (top-level only)
+
+All packages are up-to-date
+
+There are no changes, upgrade not necessary

@@ -54,6 +54,9 @@ pub enum Way {
     LaterBack,
     /// A workflow's run ends well: the task it does leaves.
     Run,
+    /// The same for a task a review wrote for an item (`item = …`): a run of the workflow
+    /// as a whole (it names no item) does it too.
+    RunForItem,
     /// A series of ticked rows ends.
     Series,
     /// A review's changes, applied.
@@ -85,7 +88,7 @@ pub const NEEDS_ALONE: &str =
     "its files are the process's own: crates/sentry/tests/rows_on_disk.rs";
 
 impl Way {
-    pub const ALL: [Way; 23] = [
+    pub const ALL: [Way; 24] = [
         Way::FixGone,
         Way::FixStill,
         Way::Expected,
@@ -99,6 +102,7 @@ impl Way {
         Way::Later,
         Way::LaterBack,
         Way::Run,
+        Way::RunForItem,
         Way::Series,
         Way::Review,
         Way::Track,
@@ -125,6 +129,7 @@ impl Way {
             | Way::TaskRemove
             | Way::Later
             | Way::Run
+            | Way::RunForItem
             | Way::Series
             | Way::Review
             | Way::Track
@@ -403,9 +408,13 @@ pub fn run(rig: &dyn Rig, way: Way, alone: bool) -> Outcome {
             undo(&mut a, &row);
             (after, listed(&mut a, &row))
         }
-        Way::Run | Way::Series => {
+        Way::Run | Way::RunForItem | Way::Series => {
             let _turn = rig.workflow(&mut a, &name);
-            a.add_task_for_test(task(RUN, Some("30d"), &format!("run {WF}")));
+            let mut t = task(RUN, Some("30d"), &format!("run {WF}"));
+            if way == Way::RunForItem {
+                t.item = Some("rows-item".into());
+            }
+            a.add_task_for_test(t);
             let row = task_key(RUN);
             let before = listed(&mut a, &row);
             select(&mut a, &row);

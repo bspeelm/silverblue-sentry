@@ -372,7 +372,9 @@ fn item_workflow(v: &View, kind: ItemKind) -> Option<&'static str> {
         ItemKind::Packages => PACKAGES_WF,
         ItemKind::Firmware => FIRMWARE_WF,
     };
-    (v.sh.workflows.iter().any(|w| w == wf) && !draft(v, wf)).then_some(wf)
+    // (The firmware's starts with a backup: without a key to encrypt it to, not offered.)
+    let no_key = kind == ItemKind::Firmware && v.cfg.backup.recipients.is_empty();
+    (v.sh.workflows.iter().any(|w| w == wf) && !draft(v, wf) && !no_key).then_some(wf)
 }
 
 /// What Enter is called on an item's row (and on a row about it).
@@ -592,19 +594,19 @@ pub const PACKAGES_WF: &str = "package-update";
 pub const FIRMWARE_WF: &str = "firmware-upgrade";
 
 /// What has been proven of the firmware upgrade, and what hasn't: said in the box that
-/// starts the draft. Kept true by hand: change it when a real router has been flashed.
+/// starts it while a copy of it is marked a draft. Kept true by hand.
 pub const FIRMWARE_PROVEN: &[&str] = &[
-    "Proven on a real router (reads and memory only): owut's check and download, the image \
-     checked against the upgrade server's checksum, the router's own sysupgrade --test, and \
-     the image removed afterwards.",
+    "Proven on a real router, once: a patch release within its series, every step from the \
+     check to the router back on the new release (the flash, the restart and the return \
+     included).",
     "Proven on a stand-in router (a container with a pretend owut and a pretend restart): \
      every step in order, a warning that stops it, a failed check of the image, the router \
      not coming back in time and the run carrying on when it does, a package missing \
-     afterwards.",
+     afterwards, nothing newer to upgrade to.",
 ];
 pub const FIRMWARE_UNPROVEN: &[&str] = &[
-    "Not proven anywhere yet: the flash itself, the restart and the return on a real router. \
-     This first run is that proof, so stay with it.",
+    "Not proven: any other router, and a move to another release series (sentry refuses \
+     that one). Stay with the run.",
 ];
 
 /// Enter on the firmware while its workflow is a draft: a box that says what has and
@@ -614,7 +616,7 @@ fn firmware_draft_box(v: &View) -> Vec<Effect> {
     let mut lines = item_lines(v, ItemKind::Firmware);
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        format!("{FIRMWARE_WF} has never been run end to end, so it is still a draft."),
+        format!("{FIRMWARE_WF} is marked a draft in its file."),
         t.s(t.yellow),
     ));
     lines.extend(FIRMWARE_PROVEN.iter().map(|l| Line::styled(*l, t.fg())));
@@ -672,7 +674,7 @@ pub(crate) fn item_enter(v: &View, kind: ItemKind) -> Vec<Effect> {
     lines.push(Line::raw(""));
     let said = if has(wf) {
         vec![
-            format!("{wf} is a draft: it has never been run end to end on a router."),
+            format!("{wf} is marked a draft in its file."),
             "Read its steps (0), then delete `draft = true` from its file to use it.".to_string(),
             "Until then Enter starts nothing here; A asks Claude about it.".to_string(),
         ]
@@ -1028,9 +1030,13 @@ fn item_says(v: &View, kind: ItemKind) -> String {
         (ItemKind::Backup, _) => "Enter: make a backup now (config-backup)".into(),
         (_, Some(wf)) => format!("Enter: start {wf} (each change is shown and confirmed)"),
         (ItemKind::Firmware, None) if v.sh.workflows.iter().any(|w| w == FIRMWARE_WF) => {
-            format!(
-                "Enter: what has and hasn't been proven of {FIRMWARE_WF} (a draft), and start it from there"
-            )
+            if v.cfg.backup.recipients.is_empty() {
+                "Enter: why it isn't offered yet (no backup key is set)".into()
+            } else {
+                format!(
+                    "Enter: what has and hasn't been proven of {FIRMWARE_WF} (marked a draft), and start it from there"
+                )
+            }
         }
         (_, None) => "Enter: how it stands (this network has no workflow for it)".into(),
     }

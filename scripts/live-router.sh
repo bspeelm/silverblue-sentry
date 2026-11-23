@@ -42,7 +42,7 @@
 #     /proc/sys/kernel/random/boot_id), os-release says 25.12.6, `partx-utils` is removed in
 #     mode `missing`, and dropbear starts again. Nothing is written to any storage but the
 #     container's, nothing restarts, the kernel and every other process stay as they were.
-#     The mode is in /etc/sentry-stub/mode (ok, warn, badsum, slow, missing; silent: owut install ends without a word and flashes nothing; hang: owut install keeps working for 5 min, the router answering); `seed` puts
+#     The mode is in /etc/sentry-stub/mode (ok, warn, badsum, slow, missing; newest: owut check says there is nothing newer; silent: owut install ends without a word and flashes nothing; hang: owut install keeps working for 5 min, the router answering); `seed` puts
 #     it back to ok and the release back to 25.12.5.
 #   - adblock-fast and its always-staged lines; the real router's package set.
 set -euo pipefail
@@ -91,6 +91,7 @@ stubs() {
   "${P[@]}" exec "$c" sh -c 'mkdir -p /usr/share/sentry-stub /etc/sentry-stub; S=/usr/share/sentry-stub; cp /usr/lib/os-release $S/os-release; cp /etc/openwrt_release $S/openwrt_release; [ -e /usr/bin/owut.real ] || mv /usr/bin/owut /usr/bin/owut.real; [ -e /sbin/sysupgrade.real ] || mv /sbin/sysupgrade /sbin/sysupgrade.real; echo ok >/etc/sentry-stub/mode'
   put "$c" /usr/share/sentry-stub/check.txt 644 <"$f/check.txt"
   put "$c" /usr/share/sentry-stub/check-downgrade.txt 644 <"$f/check-downgrade.txt"
+  put "$c" /usr/share/sentry-stub/check-newest.txt 644 <"$f/check-newest.txt"
   put "$c" /usr/share/sentry-stub/download.txt 644 <"$f/download.txt"
   put "$c" /usr/bin/owut 755 <<'EOF'
 #!/bin/sh
@@ -108,6 +109,7 @@ stem=${img%.*}
 case "$cmd" in
 check)
   [ "$mode" = warn ] && { cat $S/check-downgrade.txt; exit 0; }
+  [ "$mode" = newest ] && { cat $S/check-newest.txt; exit 0; }
   cat $S/check.txt
   ;;
 download)

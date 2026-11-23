@@ -237,7 +237,18 @@ impl App {
             self.survey();
         }
         let r = self.with_one(i, f);
-        // What that flow handed over for other slots, and whatever those hand on.
+        self.deliver();
+        // An upgrade just ended (or was found): the security audit looks again.
+        self.sec_after_upgrade();
+        self.deliver();
+        if self.win.sec.pending.is_some() {
+            self.sec_go();
+        }
+        r
+    }
+
+    /// What a flow handed over for other slots, and whatever those hand on.
+    fn deliver(&mut self) {
         let mut rounds = 0;
         while let Some((to, p)) = self.win.outbox.pop_front() {
             rounds += 1;
@@ -249,10 +260,6 @@ impl App {
                 self.with_one(j, |s, w| s.parcel(w, p));
             }
         }
-        if self.win.sec.pending.is_some() {
-            self.sec_go();
-        }
-        r
     }
 
     /// How a worker thread answers a slot.
@@ -278,7 +285,7 @@ impl App {
         }
     }
 
-    fn with_one<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {
+    pub(crate) fn with_one<R>(&mut self, i: usize, f: impl FnOnce(&mut Slot, &mut Win) -> R) -> R {
         let focus = self.focus;
         if self.slots.len() > 1 {
             self.win.others_working = (0..self.slots.len())

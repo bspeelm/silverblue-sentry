@@ -159,6 +159,13 @@ impl Slot {
                 .retain(|e| e.head.run.is_none() || e.head.run != entry.head.run);
             self.shared.log.insert(0, entry.clone());
         }
+        // An upgrade that ended well: the security audit looks again (`App::sec_after_upgrade`),
+        // and until it has, what the report said of what was upgraded isn't a row.
+        if done
+            && let Some((at, _)) = sentry_core::secaudit::upgrade_in(std::slice::from_ref(&entry))
+        {
+            w.sec.upgrade_new = w.sec.upgrade_new.max(Some(at));
+        }
         // The rows the run resolves leave now.
         self.rows_changed(w);
         if done {

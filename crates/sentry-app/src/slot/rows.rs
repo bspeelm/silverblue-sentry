@@ -82,6 +82,8 @@ impl Slot {
 
     /// The records in memory are what there is now: everything made from them follows.
     fn rows_follow(&mut self, w: &mut Win) {
+        // The audit's items it lists, as its log now says (an upgrade withholds some).
+        self.sec_sync(w);
         self.refresh(w, Why::Lists);
         self.settle(w, Settle::Lists);
         // Records, if open, lists what there is now, where it was.

@@ -8,8 +8,8 @@ expression: s
 
 ┌ Recommended · 1 · audited 5m ago ──────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
 │          What                            Why                                       │ │ firmware                                                            │
-│ normal   Run config-backup · every 30d   On a cadence (maintenance.cadence in netw │ │ Enter: what has and hasn't been proven of firmware-upgrade (a       │
-│                                                                                    │ │ draft), and start it from there                                     │
+│ normal   Run config-backup · every 30d   On a cadence (maintenance.cadence in netw │ │ Enter: what has and hasn't been proven of firmware-upgrade (marked  │
+│                                                                                    │ │ a draft), and start it from there                                   │
 │                                                                                    │ │                                                                     │
 └────────────────────────────────────┌ Upgrade the router's firmware (a draft) ─────────────────────────────────────────┐                                    │
 ┌ Items · 3 ─────────────────────────│                                                                                  │                                    │
@@ -19,16 +19,16 @@ expression: s
 │ backup     …                       │ Looked up from this machine (endoflife.date, GitHub): nothing runs on the router │                                    │
 └────────────────────────────────────│ for it.                                                                          │                                    │
 ┌ Last audit · 2026-10-26 ───────────│                                                                                  │                                    │
-│ ✓ firewall      3 zones · 2 forward│ firmware-upgrade has never been run end to end, so it is still a draft.          │                                    │
-│ ✓ access        ssh keys only · web│ Proven on a real router (reads and memory only): owut's check and download, the  │                                    │
-│ ✓ config        nothing staged     │ image checked against the upgrade server's checksum, the router's own sysupgrade │                                    │
-│ ✓ listeners     24 sockets         │ --test, and the image removed afterwards.                                        │                                    │
+│ ✓ firewall      3 zones · 2 forward│ firmware-upgrade is marked a draft in its file.                                  │                                    │
+│ ✓ access        ssh keys only · web│ Proven on a real router, once: a patch release within its series, every step     │                                    │
+│ ✓ config        nothing staged     │ from the check to the router back on the new release (the flash, the restart and │                                    │
+│ ✓ listeners     24 sockets         │ the return included).                                                            │                                    │
 │ ✓ clients       10 seen            │ Proven on a stand-in router (a container with a pretend owut and a pretend       │                                    │
 │ ✓ services      3 of 3 running     │ restart): every step in order, a warning that stops it, a failed check of the    │                                    │
 │                                    │ image, the router not coming back in time and the run carrying on when it does,  │                                    │
-│                                    │ a package missing afterwards.                                                    │                                    │
-│                                    │ Not proven anywhere yet: the flash itself, the restart and the return on a real  │                                    │
-│                                    │ router. This first run is that proof, so stay with it.                           │                                    │
+│                                    │ a package missing afterwards, nothing newer to upgrade to.                       │                                    │
+│                                    │ Not proven: any other router, and a move to another release series (sentry       │                                    │
+│                                    │ refuses that one). Stay with the run.                                            │                                    │
 │                                    │                                                                                  │                                    │
 │                                    │ Starting it changes nothing by itself: it checks, backs up and shows the plan,   │                                    │
 │                                    │ and asks before the download and again, with what happens, before the flash.     │                                    │

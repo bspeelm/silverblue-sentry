@@ -13,7 +13,7 @@ expression: "stable.join(\"\\n\")"
 │ now                                                      │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│ firmware-upgrade  9 steps  draft                         │  │                                                                                              │
+│ firmware-upgrade  9 steps                                │  │                                                                                              │
 │ Upgrade the router to the newest release of its series,  │  │                                                                                              │
 │ keeping its settings and add-on packages                 │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
