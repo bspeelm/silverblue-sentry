@@ -358,6 +358,10 @@ alerts = ["cpu>90%:5m", "disk_free<5%", "new_listener"]
 
 [baseline]
 listeners = ["127.0.0.1:631/cupsd"]
+
+[agent]
+kind = "claude-code"             # the only kind so far
+command = "claude"               # a name on PATH, or a path
 ```
 
 ## 13. Milestones

@@ -32,6 +32,8 @@ pub enum Event {
     Stream(TargetId, u64, StreamMsg),
     /// Output fetched for the pane (logs).
     Text(TargetId, u64, Result<String, String>),
+    /// Something a worker of the Config area's found (`cfgarea::agent::Msg`).
+    Config(Box<dyn std::any::Any + Send>),
 }
 
 impl From<sentry_core::tui::Input> for Event {
@@ -74,9 +76,15 @@ pub struct Win {
     pub focused: bool,
     /// The slot whose flow runs isn't the one in view: its toasts say whose they are.
     pub(crate) speaker: Option<String>,
-    /// The target strip (empty with one target), and which entry is in view.
+    /// The target strip (every target shown, then the Config tab), and which entry is in
+    /// view.
     pub(crate) strip: Vec<frame::TargetTab>,
     pub(crate) strip_focus: usize,
+    /// How many targets the window has.
+    pub(crate) n_targets: usize,
+    /// `config.toml` as it is now: read when the window opens and again when it is saved
+    /// (or edited) in the Config area. What a slot starts with, instead of the file.
+    pub cfg: sentry_core::config::Config,
     /// The other targets that are at work now, by name (this machine's reboot waits for
     /// them).
     pub(crate) others_working: Vec<String>,
@@ -112,7 +120,7 @@ impl Win {
 
     /// More than one target is open.
     pub fn several(&self) -> bool {
-        self.strip.len() > 1
+        self.n_targets > 1
     }
 }
 
@@ -132,12 +140,22 @@ pub struct App {
     key_overrides: std::collections::BTreeMap<String, String>,
     /// The slot whose command has the terminal.
     handed: Option<usize>,
+    /// The Config area: part of the window, not a target. It has the keys and the frame
+    /// while `in_config`.
+    pub config: crate::cfgarea::ConfigArea,
+    /// The Config tab has the window. `focus` is then the slot that had it before (its
+    /// keymap and input line stay in `win`): no slot is in view, all of them run on.
+    pub in_config: bool,
+    /// The Config area's editor has the terminal.
+    config_handed: bool,
 }
 
 impl App {
     /// The window with one target in it. `make` builds the target around the `Mail` its
     /// threads answer through. More targets: [`App::add`].
     pub fn new(tx: Sender<Event>, id: &str, make: impl FnOnce(Mail) -> Box<dyn Target>) -> Self {
+        let cfg = sentry_core::config::Config::load().0;
+        sentry_core::claude::set_command(&cfg.agent.command);
         let mut app = Self {
             slots: Vec::new(),
             focus: 0,
@@ -158,6 +176,8 @@ impl App {
                 speaker: None,
                 strip: Vec::new(),
                 strip_focus: 0,
+                n_targets: 0,
+                cfg: cfg.clone(),
                 others_working: Vec::new(),
                 target_cmd: None,
                 quit_asked: false,
@@ -166,12 +186,15 @@ impl App {
                 sec: Default::default(),
                 config_problems: Vec::new(),
             },
+            config: crate::cfgarea::ConfigArea::new(tx.clone()),
+            in_config: false,
+            config_handed: false,
             tx,
             seq: Arc::new(AtomicU64::new(0)),
             sweep: Default::default(),
             surveyed: None,
             // The same `[keys]` for every target (another target's screens in it are skipped).
-            key_overrides: sentry_core::config::Config::load().0.keys,
+            key_overrides: cfg.keys,
             handed: None,
         };
         app.add(id, make);
@@ -194,6 +217,7 @@ impl App {
             slot.keys = keys;
         }
         self.slots.push(slot);
+        self.win.n_targets = self.slots.len();
         self.slots.len() - 1
     }
 
@@ -303,19 +327,27 @@ impl App {
                 .map(|j| self.slots[j].title().to_string())
                 .collect();
         }
+        // Out of view: another slot has the window, or the Config area does.
+        let out = i != focus || self.in_config;
         if i != focus {
             self.slots[focus].park(&mut self.win);
             self.slots[i].park(&mut self.win);
+        }
+        if out {
             self.win.speaker = Some(self.slots[i].title().to_string());
         }
-        self.win.focused = i == focus;
+        self.win.focused = !out;
         self.slots[i].sec_sync(&self.win);
         let r = f(&mut self.slots[i], &mut self.win);
         self.win.focused = true;
-        if i != focus {
+        if out {
             self.win.speaker = None;
+        }
+        if i != focus {
             self.slots[i].park(&mut self.win);
             self.slots[focus].park(&mut self.win);
+        }
+        if out {
             self.flag(i);
         }
         r
@@ -339,19 +371,26 @@ impl App {
     /// its first fetches go out, its review at start may follow); after that its screen
     /// comes back into view and is fetched again.
     pub fn focus(&mut self, to: usize, now: Instant) {
-        if to >= self.slots.len() || to == self.focus {
+        // (Coming back from the Config area, the slot that had the window may be the one.)
+        let from_config = std::mem::take(&mut self.in_config);
+        if to >= self.slots.len() || (to == self.focus && !from_config) {
+            self.in_config = from_config;
             return;
         }
         self.win.at = now;
-        // What the one left waits for has been seen: it isn't announced again.
         let old = self.focus;
-        self.slots[old].flagged = match self.needs(old) {
-            Needs::You(what) => Some(what),
-            _ => None,
-        };
-        self.slots[old].park(&mut self.win);
-        self.slots[to].park(&mut self.win);
-        self.focus = to;
+        if to != old {
+            // What the one left waits for has been seen: it isn't announced again.
+            if !from_config {
+                self.slots[old].flagged = match self.needs(old) {
+                    Needs::You(what) => Some(what),
+                    _ => None,
+                };
+            }
+            self.slots[old].park(&mut self.win);
+            self.slots[to].park(&mut self.win);
+            self.focus = to;
+        }
         self.slots[to].flagged = None;
         // What was said about it out of view is on screen now.
         let said = format!("{} · ", self.slots[to].title());
@@ -369,6 +408,168 @@ impl App {
         self.with(to, |s, w| s.shown(w, now));
     }
 
+    /// Give the Config area the window: no slot is in view (each runs on, as a slot out of
+    /// view does), and the area looks at its files.
+    pub fn focus_config(&mut self, now: Instant) {
+        if self.in_config {
+            return;
+        }
+        self.win.at = now;
+        let old = self.focus;
+        self.slots[old].flagged = match self.needs(old) {
+            Needs::You(what) => Some(what),
+            _ => None,
+        };
+        self.in_config = true;
+        self.win.modal = None;
+        self.win.dirty = true;
+        self.config.targets = self.in_window();
+        let fx = self.config.shown(&mut self.win);
+        self.config_fx(fx, now);
+    }
+
+    /// Before the TUI is up: the window opens on the Config tab (`sentry config`).
+    pub fn config_at_start(&mut self) {
+        self.in_config = true;
+    }
+
+    /// The slots in the strip, in its order (one `[targets] show` hides isn't).
+    fn visible(&self) -> Vec<usize> {
+        (0..self.slots.len())
+            .filter(|i| !self.slots[*i].hidden)
+            .collect()
+    }
+
+    /// The targets the window has, as the Config area names them.
+    fn in_window(&self) -> Vec<crate::cfgarea::InWindow> {
+        (0..self.slots.len())
+            .map(|i| crate::cfgarea::InWindow {
+                id: show_id(self.slots[i].mail.id()).to_string(),
+                title: self.slots[i].title().to_string(),
+                hidden: self.slots[i].hidden,
+                working: self.needs(i) == Needs::Working,
+            })
+            .collect()
+    }
+
+    /// What the Config area asked for when its key or event was done.
+    fn config_fx(&mut self, fx: Option<crate::cfgarea::Fx>, now: Instant) {
+        match fx {
+            Some(crate::cfgarea::Fx::Command(line)) => self.target_cmd(&line, now),
+            Some(crate::cfgarea::Fx::Changed(files)) => self.config_changed(&files),
+            None => {}
+        }
+        self.quit_asked();
+    }
+
+    /// The quit box was just opened: with several targets it lists what each has going,
+    /// and whatever is staged in the Config area is said (quitting drops it).
+    fn quit_asked(&mut self) {
+        if !std::mem::take(&mut self.win.quit_asked) {
+            return;
+        }
+        if self.slots.len() > 1 {
+            self.quit_box();
+        }
+        let t = self.win.theme;
+        if let (Some(note), Some(m)) = (self.config.quit_note(), self.win.modal.as_mut()) {
+            m.lines.push(ratatui::text::Line::raw(""));
+            m.lines
+                .push(ratatui::text::Line::styled(note, t.s(t.yellow)));
+        }
+    }
+
+    /// Config files are not what they were (saved in the Config area, or edited): what
+    /// follows at once. `config.toml`: every setting the window and its slots took from it
+    /// at start. A server's or a network's own file: its slot sees it when it next looks at
+    /// its files (`Slot::look`, on focus).
+    fn config_changed(&mut self, files: &[sentry_core::cfg::FileId]) {
+        if !files.contains(&sentry_core::cfg::FileId::App) {
+            return;
+        }
+        // (What the file says: a change staged and not saved is nobody's yet.)
+        let Some(cfg) = self.config.app_on_disk() else {
+            return;
+        };
+        self.configure(cfg);
+    }
+
+    /// `config.toml` is `cfg` from now: `[keys]` (every slot's keymap), `[review]`,
+    /// `[retention]`, `[maintenance] notes`, `[ui] terminal` (the target's own copy),
+    /// `[agent] command`, `[targets] show`.
+    pub fn configure(&mut self, cfg: sentry_core::config::Config) {
+        self.key_overrides = cfg.keys.clone();
+        for i in 0..self.slots.len() {
+            let (keys, _) = Keymap::new(self.slots[i].target.ident().screens, &self.key_overrides);
+            // (The keymap of the slot that has, or last had, the window is the window's.)
+            if i == self.focus {
+                self.win.keys = keys;
+            } else {
+                self.slots[i].keys = keys;
+            }
+            self.slots[i].configured(&self.win, &cfg);
+        }
+        sentry_core::claude::set_command(&cfg.agent.command);
+        self.retarget(&cfg.targets);
+        self.win.cfg = cfg;
+        self.win.dirty = true;
+    }
+
+    /// The strip as `[targets] show` says it now, for the targets the window has: their
+    /// order, and which are hidden. By id, never by place: the slot in view (and the one
+    /// whose command has the terminal) stay the ones they were. A hidden slot is not
+    /// closed: it runs on out of view and comes back when it is shown again. (Targets
+    /// added to or taken out of the files: the next part.)
+    pub fn retarget(&mut self, targets: &sentry_core::config::Targets) {
+        let ids: Vec<String> = self
+            .slots
+            .iter()
+            .map(|s| show_id(s.mail.id()).to_string())
+            .collect();
+        let (mut shown, _) = targets.pick(&ids);
+        if shown.is_empty() {
+            shown = ids.clone();
+        }
+        let place = |id: &str| shown.iter().position(|s| s == id);
+        let focus_id = self.slots[self.focus].mail.id().clone();
+        let handed_id = self.handed.map(|i| self.slots[i].mail.id().clone());
+        // Shown ones in `show`'s order, then the hidden ones as they were.
+        let mut order: Vec<usize> = (0..self.slots.len()).collect();
+        order.sort_by_key(|i| (place(&ids[*i]).unwrap_or(usize::MAX), *i));
+        if order.iter().enumerate().any(|(to, from)| to != *from) {
+            let mut old: Vec<Option<Slot>> = std::mem::take(&mut self.slots)
+                .into_iter()
+                .map(Some)
+                .collect();
+            self.slots = order.iter().filter_map(|i| old[*i].take()).collect();
+        }
+        for s in &mut self.slots {
+            s.hidden = place(show_id(s.mail.id())).is_none();
+        }
+        self.focus = self.place(&focus_id).unwrap_or(0);
+        self.handed = handed_id.and_then(|id| self.place(&id));
+        // The slot in view was hidden: the first one shown has the window (or stands behind
+        // the Config area) instead.
+        if self.slots[self.focus].hidden
+            && let Some(to) = self.visible().first().copied()
+        {
+            let old = self.focus;
+            self.slots[old].park(&mut self.win);
+            self.slots[to].park(&mut self.win);
+            self.focus = to;
+            if !self.in_config {
+                let now = self.win.at;
+                self.with(to, |s, w| s.shown(w, now));
+            }
+        }
+        // What is kept by place is asked again.
+        self.surveyed = None;
+        if self.slots.len() > 1 {
+            self.survey();
+        }
+        self.win.dirty = true;
+    }
+
     /// Before the TUI is up: the target that has the window when it opens.
     pub fn focus_at_start(&mut self, to: usize) {
         if to < self.slots.len() && to != self.focus {
@@ -380,14 +581,24 @@ impl App {
 
     /// One of the window's target keys.
     fn target_key(&mut self, a: Action, now: Instant) {
-        let n = self.slots.len();
+        // The strip: the targets shown, then the Config tab.
+        let shown = self.visible();
+        let n = shown.len();
+        let here = match self.in_config {
+            true => n,
+            false => shown.iter().position(|i| *i == self.focus).unwrap_or(0),
+        };
         let to = match a {
             Action::Target(i) => i as usize,
-            Action::NextTarget => (self.focus + 1) % n,
-            Action::PrevTarget => (self.focus + n - 1) % n,
+            Action::NextTarget => (here + 1) % (n + 1),
+            Action::PrevTarget => (here + n) % (n + 1),
             _ => return,
         };
-        self.focus(to, now);
+        match shown.get(to) {
+            Some(i) => self.focus(*i, now),
+            None if to == n => self.focus_config(now),
+            None => {}
+        }
     }
 
     /// `:local`, `:server <name>`…: the target of that kind whose name starts so (the first
@@ -395,10 +606,15 @@ impl App {
     fn target_cmd(&mut self, line: &str, now: Instant) {
         let mut parts = line.split_whitespace();
         let (word, arg) = (parts.next().unwrap_or(""), parts.next());
+        if (word, arg) == (CONFIG_WORD, None) {
+            return self.focus_config(now);
+        }
         let hit = self.slots.iter().position(|s| {
             let id = s.target.ident();
             let name = id.id.split_once(':').map_or("", |(_, n)| n);
-            id.word == word && arg.is_none_or(|a| !name.is_empty() && name.starts_with(a))
+            !s.hidden
+                && id.word == word
+                && arg.is_none_or(|a| !name.is_empty() && name.starts_with(a))
         });
         match hit {
             Some(i) => self.focus(i, now),
@@ -444,6 +660,13 @@ impl App {
     pub fn start(&mut self, now: Instant) {
         self.win.at = now;
         self.sec_load();
+        // The config files as the Config area reads them: what is wrong in them is the
+        // window's to show (its tab says so).
+        self.config.targets = self.in_window();
+        self.config.load(&mut self.win);
+        if self.in_config {
+            self.config.enter(&mut self.win, self.config.screen);
+        }
         for i in 0..self.slots.len() {
             self.with(i, |s, w| {
                 if w.focused {
@@ -463,6 +686,46 @@ impl App {
     pub fn enter(&mut self, id: ScreenId, now: Instant) {
         self.win.at = now;
         self.with(self.focus, |s, w| s.enter(w, id, now));
+    }
+
+    /// The strip: every target shown, then the Config tab (always there, always last, its
+    /// key the next by place). `*` on it: changes staged and not saved; `!`: problems in the
+    /// files.
+    fn strip(&self) -> (Vec<frame::TargetTab>, usize) {
+        let shown = self.visible();
+        let mut tabs: Vec<frame::TargetTab> = shown
+            .iter()
+            .enumerate()
+            .map(|(at, i)| frame::TargetTab {
+                key: self.win.keys.key_of(Action::Target(at as u8)),
+                name: self.slots[*i].title().to_string(),
+                mark: match self.needs(*i) {
+                    Needs::Nothing => frame::Mark::None,
+                    Needs::Working => frame::Mark::Working,
+                    Needs::You(_) => frame::Mark::You,
+                },
+                auto: self.slots[*i].auto,
+                accent: None,
+            })
+            .collect();
+        tabs.push(frame::TargetTab {
+            key: self.win.keys.key_of(Action::Target(shown.len() as u8)),
+            name: match self.config.pending.is_empty() {
+                true => CONFIG_WORD.to_string(),
+                false => format!("{CONFIG_WORD}*"),
+            },
+            mark: match self.config.problems.is_empty() {
+                true => frame::Mark::None,
+                false => frame::Mark::You,
+            },
+            auto: false,
+            accent: Some(crate::cfgarea::accent(&self.win.theme)),
+        });
+        let focus = match self.in_config {
+            true => shown.len(),
+            false => shown.iter().position(|i| *i == self.focus).unwrap_or(0),
+        };
+        (tabs, focus)
     }
 
     pub fn apply(&mut self, effects: Vec<Effect>, now: Instant) {
@@ -486,7 +749,7 @@ impl App {
     pub fn next_due(&self, now: Instant) -> Instant {
         let mut due = now + Duration::from_secs(60);
         for (i, s) in self.slots.iter().enumerate() {
-            if let Some(t) = s.next_due(&self.win, now, i == self.focus) {
+            if let Some(t) = s.next_due(&self.win, now, i == self.focus && !self.in_config) {
                 due = due.min(t);
             }
         }
@@ -502,20 +765,29 @@ impl App {
             Event::Key(k) => {
                 // The window's own keys: F-keys wherever the keys are; a character only
                 // where it wouldn't be typed (a message, a prompt, the password).
-                if let Some((a, text)) = self.win.keys.target(&k)
-                    && !(text && self.slots[self.focus].takes_text(&self.win))
-                {
-                    return self.target_key(a, now);
+                if let Some((a, text)) = self.win.keys.target(&k) {
+                    let typing = match self.in_config {
+                        true => self.config.takes_text(),
+                        false => self.slots[self.focus].takes_text(&self.win),
+                    };
+                    if !(text && typing) {
+                        return self.target_key(a, now);
+                    }
+                }
+                if self.in_config {
+                    self.config.targets = self.in_window();
+                    let fx = self.config.on_key(&mut self.win, k);
+                    return self.config_fx(fx, now);
                 }
                 self.with(self.focus, |s, w| s.on_key(w, k, now));
                 if let Some(line) = self.win.target_cmd.take() {
                     self.target_cmd(&line, now);
                 }
-                if std::mem::take(&mut self.win.quit_asked) && self.slots.len() > 1 {
-                    self.quit_box();
-                }
+                self.quit_asked();
             }
+            Event::Paste(text) if self.in_config => self.config.on_paste(&mut self.win, &text),
             Event::Paste(text) => self.with(self.focus, |s, w| s.on_paste(w, &text)),
+            Event::Config(data) => self.config.on_data(&mut self.win, data),
             Event::Resize => self.win.dirty = true,
             Event::Signal => self.win.quit = true,
             // Whatever is in view, it lands in its own slot.
@@ -538,23 +810,13 @@ impl App {
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
-        self.win.strip = if self.slots.len() > 1 {
-            (0..self.slots.len())
-                .map(|i| frame::TargetTab {
-                    key: self.win.keys.key_of(Action::Target(i as u8)),
-                    name: self.slots[i].title().to_string(),
-                    mark: match self.needs(i) {
-                        Needs::Nothing => frame::Mark::None,
-                        Needs::Working => frame::Mark::Working,
-                        Needs::You(_) => frame::Mark::You,
-                    },
-                    auto: self.slots[i].auto,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.win.strip_focus = self.focus;
+        let (strip, focus) = self.strip();
+        self.win.strip = strip;
+        self.win.strip_focus = focus;
+        if self.in_config {
+            self.config.targets = self.in_window();
+            return self.config.draw(&mut self.win, f);
+        }
         self.with(self.focus, |s, w| s.draw(w, f));
     }
 
@@ -562,6 +824,12 @@ impl App {
     /// until it's looked at; its strip entry says it needs you).
     pub fn take_suspend(&mut self) -> Option<(Cmd, String)> {
         self.win.at = Instant::now();
+        // The Config area's editor; a slot's command waits until its slot is looked at.
+        if self.in_config {
+            let r = self.config.take_suspend();
+            self.config_handed = r.is_some();
+            return r;
+        }
         let r = self.with(self.focus, |s, w| s.take_suspend(w));
         if r.is_some() {
             self.handed = Some(self.focus);
@@ -573,6 +841,11 @@ impl App {
     /// handled next.)
     pub fn after_suspend(&mut self, status: Result<ExitStatus, ExecError>) {
         self.win.at = Instant::now();
+        if std::mem::take(&mut self.config_handed) {
+            self.config.targets = self.in_window();
+            let fx = self.config.after_editor(&mut self.win);
+            return self.config_fx(fx, self.win.at);
+        }
         let i = self.handed.take().unwrap_or(self.focus);
         self.with(i, |s, w| s.after_suspend(w, status));
     }
@@ -613,6 +886,14 @@ impl sentry_core::tui::Ui for App {
     fn tick(&mut self, now: Instant) {
         App::tick(self, now);
     }
+}
+
+/// The Config tab's name in the strip, and its `:` command.
+pub const CONFIG_WORD: &str = "config";
+
+/// A target's id as `[targets] show` spells it: this machine's (the empty one) is `local`.
+fn show_id(id: &str) -> &str {
+    if id.is_empty() { "local" } else { id }
 }
 
 /// How often the targets are surveyed while several are open.
@@ -766,6 +1047,13 @@ impl App {
     pub fn unlock_at(&self, i: usize) -> Option<(String, usize)> {
         let u = self.slots[i].unlock.as_ref()?;
         Some((u.what.clone(), u.typed.len()))
+    }
+    /// The Config area's editor came back (nothing ran: the test changed the file itself).
+    pub fn config_edited_for_test(&mut self) {
+        self.config_handed = false;
+        self.config.targets = self.in_window();
+        let fx = self.config.after_editor(&mut self.win);
+        self.config_fx(fx, Instant::now());
     }
     /// The toast on screen.
     pub fn toast_for_test(&self) -> Option<&str> {

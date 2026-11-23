@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config* !    nothing is written before the save box                   ● 1 not saved   Mon 26 Oct 12:00
+ 1 Overview 1*   2 Agent   3 This machine 1   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Window · 1 changed ─────────────────────────────────────────────────────────────────┐┌ Keys ───────────────────────────────────────────────────────────────┐
+│  Targets in the strip                                                               ││ named entries (name = value)                                        │
+│    Shown, in order          (all of them, this machine first)                       ││                                                                     │
+│                                                                                     ││ Rebinds: `quit = "Q"`, `"screen.history" = "F9"`, `"target.next" =  │
+│  Keys                                                                               ││ "C-n"`.                                                             │
+│  * Keys                     quit = Q                                                ││                                                                     │
+│                                                                                     ││ * changed here, not saved yet                                       │
+│  How long records are kept (every target)                                           ││                                                                     │
+│    Log (months)             12                                                      ││                                                                     │
+│    Log entries always kept  20                                                      ││                                                                     │
+│    Runs per workflow        10                                                      ││                                                                     │
+│    Done plans (months)     ┌ Save configuration ──────────────────────────────────────────────────────────────────────────────┐                            │
+│    Reviews kept            │                                                                                                  │                            │
+│    Reports kept            │   config.toml           window: Keys                                                             │                            │
+│                            │                                                                                                  │                            │
+│                            │   window · Keys: − nope                                                                          │                            │
+│                            │                                                                                                  │                            │
+│                            │ What follows: keys are rebound now, in every target                                              │                            │
+│                            │ Kept before saving: config.toml.bak-<UTC time> (beside it, the newest 5)                         │                            │
+│                            │ ! config.toml was written by hand: its comments and layout are not kept.                         │                            │
+│                            │ ! config.toml: not kept either: unknown key `ui.bogus` ignored                                   │                            │
+│                            │                                                                                                  │                            │
+│                            │  Enter  save    Esc  back   nothing is written before Enter                                      │                            │
+│                            └──────────────────────────────────────────────────────────────────────────────────────────────────┘                            │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  save   Esc  back   j/k  scroll

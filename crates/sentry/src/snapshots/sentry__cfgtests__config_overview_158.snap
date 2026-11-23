@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: s
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config    nothing is written before the save box                  ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ this machine · silverblue 44.1 ───────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ What         reviews at start on, after a run on · no notes files                 │
+│  ● myserver         server                                            ││ Window       a tab (silverblue 44.1)                                              │
+│  + add a system…                                                      ││ File         config.toml · not there yet: every setting at its default            │
+│                                                                       ││                                                                                   │
+│                                                                       ││ Enter opens it · e opens config.toml in $EDITOR                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · nothing staged ─────────────────────────────────────────────┐│                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  open   Space  tick   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

@@ -76,6 +76,7 @@ Inside a toolbox, host tools (`rpm-ostree`, `flatpak`, `podman`, …) are reache
 | `sentry record [--interval 10s]` | Foreground metrics recorder for a spare terminal or tmux pane; Ctrl-C stops it |
 | `sentry status [--short]` | One line from state files only (workflow, due jobs, high findings); runs no collectors. `--short` prints nothing when there's nothing to say. |
 | `sentry audit security [--json] [--outside]` · `answers [<key> yes\|no]` | The security audit across this machine, every server and every network (below) |
+| `sentry config` · `check` · `show [app\|servers\|networks]` · `explain [<path>]` | The window on its Config tab; or, on the command line, what's wrong in the config files, each as sentry writes it, what a setting is (below) |
 | `sentry collect <name>` | A collector as JSON: `system processes gpu disk disk-breakdown net ostree flatpak flatpak-updates podman units repos shell journal`. Exit 3 = the tool it needs isn't installed. |
 
 **Jobs:** `audit`, `update-check`, `update-apply`, `cleanup-flatpak`, `cleanup-podman`, `cleanup-ostree`, `cleanup-cache`. `--dry-run` shows the plan (what would run, what it would free) and changes nothing.
@@ -420,8 +421,22 @@ outside = "ssh vps 'for p in $(echo {ports} | tr , \" \"); do nc -zw2 {address} 
 - `[baseline] findings = ["repo:rpmfusion-*"]`: audit findings to treat as expected (globs allowed).
 - `[keys]`: rebinds, for example `quit = "Q"`, `"screen.history" = "F9"` or `"target.next" = "C-n"`.
 - `[targets] show = ["local", "srv:myserver", "net:home"]`: which targets the window opens, in the strip's order (default: this machine, then every server, then every network).
+- `[agent] kind = "claude-code"`, `command = "claude"`: the agent sentry asks and the program that starts it (a name on PATH or a path). Claude Code's CLI is the only kind so far: other agents, API connections and locally deployed models are not supported yet.
 
-`sentry config check` lists what's wrong in all three files without contacting any host (the window checks the same at start and says how many problems there are), `sentry config show [app|servers|networks]` prints each as sentry would write it, and `sentry config explain [<path>]` says what a setting is (`sentry config explain servers.myserver.timers`), or lists them all.
+### The Config tab
+
+The last tab of the strip is always `config` (`sentry config` opens the window on it; from anywhere its key, the next after the targets', `{` / `}`, or `:config`). You know you are in it by its colour: the chip reads `sentry config` on magenta, its tab is magenta, and so is the rule under its screens. Its screens are `1` Overview, `2` Agent, `3` This machine, `4` Servers, `5` Networks, `6` Window. Every target keeps running while you are there, as targets out of view do.
+
+- **Overview** lists the systems (a dot and a count for what is wrong in each one's part of the files) and, under them, what you have changed and not saved. Enter opens a system; Space leaves a change out of the next save, `u` takes it back.
+- **Agent**, **This machine** and **Window** are forms: `j`/`k` move, Enter edits in place (a line editor with a cursor), Space toggles a yes/no, and in a list `n` adds, `x` removes, Enter edits an element and `J`/`K` move it. The forms cover the essentials: the agent's kind and command; reviews at start and after a run, your notes files, the terminal; which targets the strip shows and in what order, `[keys]`, how long records are kept. What a value can't be is refused where you typed it, with why. Everything else: `e` opens the file in `$EDITOR`, and on return it is read and checked again.
+- **Agent** also says whether the command is there, where, and its version, and `t` tests it with one turn that has no tools (a missing login shows here, not later in the middle of a fix).
+- **Servers** and **Networks** list what is configured, with each one's problems and its essential settings to read. Their forms, adding and removing one, and a setup flow for a first run are the next step; until then `sentry-server init <ssh-host>` and `sentry-network init <ssh-host>` draft an entry.
+
+Nothing is written while you edit: the tab shows `config*` while changes are staged. `s` opens the save box, which says, before anything is written, which file will be rewritten and what changes in it, what follows in the window, the copy that is kept (`<file>.bak-<UTC time>` beside it, the newest 5), and, for a file you wrote by hand, that its comments and layout are not kept. Enter saves, Esc goes back. A file that changed on disk in the meantime is read again first: your changes are made on the newer file, and one that no longer fits is shown as a conflict and left out, never written over it.
+
+A save is followed at once, without a restart: rebound keys in every target, the reviews sentry starts, how long records are kept, your notes and the terminal, the agent's command, and the strip's order and which of the open targets it shows (one hidden this way keeps running out of view and comes back when shown again). `!` on the tab means something is wrong in the files; `c` checks them again without contacting any host.
+
+On the command line, `sentry config check` lists what's wrong in all three files without contacting any host (the window checks the same at start, says how many problems there are, and shows them in the Config tab), `sentry config show [app|servers|networks]` prints each as sentry would write it, and `sentry config explain [<path>]` says what a setting is (`sentry config explain servers.myserver.timers`), or lists them all.
 
 What you decide in the TUI goes to machine-written files next to it:
 - `baseline.toml`: listeners and findings marked expected.

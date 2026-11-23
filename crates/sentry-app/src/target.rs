@@ -423,6 +423,9 @@ pub trait Target: Upkeep + Asks + Host {
     fn files(&self) -> Vec<PathBuf> {
         Vec::new()
     }
+    /// `config.toml` was saved (or edited) while the window is open: whatever the target
+    /// keeps of it is `cfg` from now.
+    fn configured(&mut self, _cfg: &sentry_core::config::Config) {}
     /// One of its own effects came back.
     fn on_own(&mut self, fx: &Own, sh: &mut Shared, cx: &Cx) -> Vec<Effect>;
     /// A prompt of its own was answered (None: dismissed).

@@ -87,5 +87,9 @@ expression: "serde_json::to_string_pretty(&c).unwrap()"
   },
   "targets": {
     "show": null
+  },
+  "agent": {
+    "kind": "claude-code",
+    "command": "claude"
   }
 }

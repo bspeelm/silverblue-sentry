@@ -45,20 +45,12 @@ fn assemble(
     if !app_there {
         missing.push(FileId::App);
     }
-    problems.extend(warnings.iter().map(|w| Problem::of(FileId::App, None, w)));
-    let (_, keys) = sentry_core::tui::keys::Keymap::new(&sentry_local::tui::SCREENS, &app.keys);
-    problems.extend(keys.iter().map(|w| Problem::of(FileId::App, None, w)));
+    // (Each file's own lint is its kind's: the same the Config area shows.)
+    problems.extend(sentry_local::cfgkind::problems(&app, &warnings));
 
     let (servers_file, servers_err) = match servers_load {
         Ok((f, w)) => {
-            problems.extend(w.iter().map(|w| Problem::of(FileId::Servers, None, w)));
-            for (n, s) in &f.servers {
-                problems.extend(
-                    servers::lint(n, s)
-                        .iter()
-                        .map(|p| Problem::of(FileId::Servers, Some(n), p)),
-                );
-            }
+            problems.extend(sentry_server::cfgkind::problems(&f, &w));
             (Some(f), None)
         }
         Err(e) => {
@@ -72,14 +64,7 @@ fn assemble(
     };
     let (networks_file, networks_err) = match networks_load {
         Ok((f, w)) => {
-            problems.extend(w.iter().map(|w| Problem::of(FileId::Networks, None, w)));
-            for (n, net) in &f.networks {
-                problems.extend(
-                    networks::lint(n, net)
-                        .iter()
-                        .map(|p| Problem::of(FileId::Networks, Some(n), p)),
-                );
-            }
+            problems.extend(sentry_network::cfgkind::problems(&f, &w));
             (Some(f), None)
         }
         Err(e) => {
@@ -92,18 +77,17 @@ fn assemble(
         }
     };
     // `[targets] show` against the targets there are.
-    if let Ok(plan) = crate::tui::plan_all(
-        &app,
-        servers_file.as_ref(),
-        networks_file.as_ref(),
-        crate::tui::Open::Local,
-    ) {
-        problems.extend(
-            plan.warnings
-                .iter()
-                .map(|w| Problem::of(FileId::App, None, w)),
-        );
+    let mut all = vec!["local".to_string()];
+    if let Some(f) = &servers_file {
+        all.extend(f.servers.keys().map(|n| sentry_server::tui::id_of(n)));
     }
+    if let Some(f) = &networks_file {
+        all.extend(f.networks.keys().map(|n| sentry_network::tui::id_of(n)));
+    }
+    problems.extend(sentry_app::cfgarea::targets_problems(
+        app.targets.show.as_deref(),
+        &all,
+    ));
     Files {
         app,
         servers: servers_file,
@@ -117,6 +101,7 @@ fn assemble(
 
 const USAGE: &str = "\
 sentry config: the three config files (config.toml, server_config.yaml, network_config.yaml)
+  sentry config                             the window, on its Config tab
   sentry config check                       what's wrong in them, without contacting any host
   sentry config show [app|servers|networks] each file as sentry would write it
   sentry config explain [<path>]            what a setting is (servers.<name>.timers), or the list";
@@ -130,7 +115,8 @@ pub fn main(args: &[String]) -> ExitCode {
         ["show", which] => show(Some(which)),
         ["explain"] => explain(None),
         ["explain", path] => explain(Some(path)),
-        [] => {
+        [] => ExitCode::from(crate::tui::run(crate::tui::Open::Config)),
+        ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
@@ -359,7 +345,7 @@ mod tests {
         );
         assert!(f.missing.is_empty());
         let toast = sentry_app::cfgarea::toast(&f.problems).unwrap();
-        assert!(toast.starts_with("7 config problems, `sentry config check` lists them"));
+        assert!(toast.starts_with("7 config problems, the Config tab lists them"));
         // A file that doesn't parse is a problem; one that isn't there isn't.
         let f = assemble(
             ((Config::default(), vec![]), false),

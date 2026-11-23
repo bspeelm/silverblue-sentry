@@ -202,6 +202,39 @@ At start every file is linted offline (cheap) and the result drives the tab's `!
 and each field. `c` in Config runs the connection checks. `sentry config check` prints the same on
 the command line; `sentry config` opens the window on the tab.
 
+## As built (where the code went another way)
+
+Part 2 (the area):
+- **Focus** is `App.focus: usize` (the slot in view, or the one that was before the Config
+  tab took the window) plus `App.in_config: bool`, not an enum: every existing use of `focus`
+  (`slot()`, `parts()`, `with_one`'s parking, `needs`, the tests) keeps meaning what it did,
+  and a slot's keymap and input line stay parked in `Win` while the area has the window.
+- **`Kind`** is smaller than sketched: `id`, `load(path)`, `fields`, `entries`, `sections`,
+  `entry_of`, `problems(doc, warnings)`, `explain` (defaulted from the table). `set` is one
+  generic function (`cfgarea::kind::set(doc, path, to, by) -> Change`: the tree and the type
+  validate, so no kind writes its own), and the document is `DocAny`, `cfg::Doc<T>` with its
+  type erased (tree, base, defaults, apply, reset, rebase, save, handwritten). `probe`, `check`
+  and `upkeep` are not there yet (part 3 adds them with defaults).
+- **A form field is one change**: a list (`maintenance.notes`, `targets.show`) or a table
+  (`keys`) is staged whole at its own path (`from` the old list, `to` the new), not element by
+  element. One pending change per setting; a conflict is the setting's.
+- **Problems** in the area are of the files as they are to be (staged changes made), found by
+  each kind's own lint (`sentry_local::cfgkind::problems` and the two others, which
+  `cfgcmd::read` calls too) plus `cfgarea::targets_problems`. So a fix in a form takes its
+  problem away before the save, and a staged mistake shows under its field. Unknown keys are
+  the file's as read: they go with the save that drops them (the save box says so).
+- **`[targets] show` live** (`App::retarget`, by id): the targets the window has are put in
+  that order, and one left out is *hidden* (`Slot.hidden`: no tab, no key, no `:` name), not
+  closed: it runs on out of view and comes back when shown again. Closing one (refused while
+  `at_work`) and adding one with its registered maker are part 3.
+- **The save box** also lists each change under its file's scope line, and what was unticked
+  or no longer fits stays staged after the save.
+- **The tick-list** was not moved to core (the family filter keeps its `Menu`): it didn't fall
+  out of the forms built here; part 3's drafted lists are where it is needed.
+- **`claude::available()`** stays the cached lookup of the configured command;
+  `claude::set_command` forgets that command's cached answer, and the Agent screen's own
+  lookup (`claude::find`) never uses the cache.
+
 ## Order of work (one PR at a time)
 
 1. **One writer**: `core/cfg` (`render`, `save` + backups, `diff`/`apply`), `Serialize` clean-up,

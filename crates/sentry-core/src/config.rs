@@ -26,6 +26,50 @@ pub struct Config {
     pub maintenance: Maintenance,
     pub review: Review,
     pub targets: Targets,
+    pub agent: Agent,
+}
+
+/// The agent sentry asks (`[agent]`): which kind it is and the command that starts it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Agent {
+    pub kind: AgentKind,
+    /// The program: a name on PATH, or a path.
+    pub command: String,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            kind: AgentKind::default(),
+            command: "claude".into(),
+        }
+    }
+}
+
+/// The kinds of agent there are: Claude Code's CLI, so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum AgentKind {
+    #[default]
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+}
+
+impl AgentKind {
+    pub const WORDS: &'static [&'static str] = &["claude-code"];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "claude-code",
+        }
+    }
+
+    /// What it is called in a sentence.
+    pub fn name(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude Code",
+        }
+    }
 }
 
 /// Which targets the window opens (`[targets]`): this machine is `local`, a server
@@ -631,6 +675,27 @@ pub const FIELDS: &[Field] = &[
         Kind::List,
         true,
         "The targets shown, in the strip's order: `local`, `srv:<name>`, `net:<name>`. Left out: all of them, this machine first.",
+    ),
+    f(
+        "agent",
+        "Agent",
+        Kind::Section,
+        true,
+        "The agent sentry asks: explanations, plans, reviews, fixes. Claude Code's CLI is the only kind so far.",
+    ),
+    f(
+        "agent.kind",
+        "Kind",
+        Kind::Choice(AgentKind::WORDS),
+        true,
+        "Which kind of agent it is: `claude-code`, Claude Code's CLI with its own login. It is the only kind so far.",
+    ),
+    f(
+        "agent.command",
+        "Command",
+        Kind::Text,
+        true,
+        "The program that starts it: a name on PATH or a path (claude).",
     ),
 ];
 

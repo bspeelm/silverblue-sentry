@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config*    nothing is written before the save box                     ● 3 not saved   Mon 26 Oct 12:00
+ 1 Overview 3*   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ──────────────────────────────────────────────────────────────┐┌ this machine · Review at start ───────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                   ││ config.toml · review.at_start                                                     │
+│  ● myserver         server                                            ││                                                                                   │
+│  + add a system…                                                      ││ before  true                                                                      │
+│                                                                       ││ after   false                                                                     │
+│                                                                       ││                                                                                   │
+│                                                                       ││ At each start of the window: which tasks are due again because something changed  │
+│                                                                       ││ (on).                                                                             │
+│                                                                       ││                                                                                   │
+│                                                                       ││ In the next save · Space leaves it out · u takes it back                          │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+│                                                                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘│                                                                                   │
+┌ Pending · 3 changes ──────────────────────────────────────────────────┐│                                                                                   │
+│  [x] agent  Command  claude → /opt/claude                             ││                                                                                   │
+│  [x] this machine  Review at start  off                               ││                                                                                   │
+│  [x] this machine  Notes  + ~/notes/upgrades.md                       ││                                                                                   │
+└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  open   Space  tick   s  save…   c  check   e  editor   u  undo   ?  help   q  quit

@@ -1,0 +1,28 @@
+---
+source: crates/sentry-core/src/tui/form.rs
+expression: "drawn(&f, 80, 24)"
+---
+┌ Window · 1 changed ──────────────────────────────────────────────────────────┐
+│  Agent                                                                       │
+│  * Command          /usr/local/bin/▏claude                                   │
+│    Review at start  [x] yes                                                  │
+│    Kind             claude-code                                              │
+│                                                                              │
+│  Records                                                                     │
+│    Log (months)     12                                                       │
+│      ! retention: log_months must be at least 1                              │
+│    Interval         10s                                                      │
+│    Shown, in order  (all, this machine first)                                │
+│    Keys             quit = Q                                                 │
+│    Timers           2 entries                                                │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Command ─────────────────────────────────────────────────────────────────────┐
+│ text                                                                         │
+│                                                                              │
+│ The program that starts it: a name on PATH or a path.                        │
+│                                                                              │
+│ * changed here, not saved yet                                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

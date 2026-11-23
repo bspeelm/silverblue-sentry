@@ -1,0 +1,34 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: "render_to_string(&mut a, 80, 30)"
+---
+ sentry config   F1 silverb…   F2 myserver   F3 config        ○ nothing to save
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Systems ─────────────────────────────────────────────────────────────────────┐
+│  ● this machine     silverblue 44.1                                          │
+│  ● myserver         server                                                   │
+│  + add a system…                                                             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Pending · nothing staged ────────────────────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ this machine · silverblue 44.1 ──────────────────────────────────────────────┐
+│ What         reviews at start on, after a run on · no notes files            │
+│ Window       a tab (silverblue 44.1)                                         │
+│ File         config.toml · not there yet: every setting at its default       │
+│                                                                              │
+│ Enter opens it · e opens config.toml in $EDITOR                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  open   Space  tick   s  save…   c  check   ?  help   q  quit

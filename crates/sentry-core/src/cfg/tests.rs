@@ -111,6 +111,10 @@ pub(crate) fn full() -> Config {
         targets: Targets {
             show: Some(vec!["srv:my.server".into(), "local".into()]),
         },
+        agent: crate::config::Agent {
+            kind: crate::config::AgentKind::ClaudeCode,
+            command: "/opt/my agents/claude".into(),
+        },
     }
 }
 

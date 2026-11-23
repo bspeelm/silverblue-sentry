@@ -2,6 +2,7 @@
 //! installed on the server; everything here runs from this machine through `exec::Cmd::ssh`.
 
 pub mod audit;
+pub mod cfgkind;
 pub mod cli;
 pub mod collect;
 pub mod config;

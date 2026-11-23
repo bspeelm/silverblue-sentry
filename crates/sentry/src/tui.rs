@@ -17,6 +17,8 @@ pub enum Open<'a> {
     Local,
     Server(Option<&'a str>),
     Network(Option<&'a str>),
+    /// `sentry config`: the same window as `sentry`, opened on its Config tab.
+    Config,
 }
 
 /// `[targets]`' name for this machine (its id as a target is the empty one).
@@ -28,6 +30,9 @@ const LOCAL: &str = "local";
 pub(crate) struct Plan {
     targets: Vec<String>,
     focus: usize,
+    /// What `[targets] show` names that isn't there (the Config area and `sentry config
+    /// check` say the same of the files: `cfgarea::targets_problems`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) warnings: Vec<String>,
 }
 
@@ -70,7 +75,7 @@ pub(crate) fn plan_all(
         targets = all;
     }
     let want = match open {
-        Open::Local => LOCAL.to_string(),
+        Open::Local | Open::Config => LOCAL.to_string(),
         Open::Server(name) => {
             let file = file.ok_or("server_config.yaml has no servers")?;
             sentry_server::tui::id_of(servers::pick(file, name)?.0)
@@ -83,7 +88,7 @@ pub(crate) fn plan_all(
     let focus = match targets.iter().position(|t| *t == want) {
         Some(i) => i,
         // The server or network asked for is opened even when `[targets]` leaves it out.
-        None if open != Open::Local => {
+        None if matches!(open, Open::Server(_) | Open::Network(_)) => {
             targets.push(want);
             targets.len() - 1
         }
@@ -96,10 +101,20 @@ pub(crate) fn plan_all(
     })
 }
 
+/// The kinds of config the window's Config area has: one per file, each described by the
+/// crate that owns its type.
+pub fn kinds() -> Vec<Box<dyn sentry_app::cfgarea::Kind>> {
+    vec![
+        Box::new(sentry_local::cfgkind::AppKind),
+        Box::new(sentry_server::cfgkind::ServersKind),
+        Box::new(sentry_network::cfgkind::NetworksKind),
+    ]
+}
+
 /// `sentry`, `sentry-server [name]` or `sentry-network [name]`: the TUI. Returns the exit code.
 pub fn run(open: Open) -> u8 {
     let prog = match open {
-        Open::Local => "sentry",
+        Open::Local | Open::Config => "sentry",
         Open::Server(_) => "sentry-server",
         Open::Network(_) => "sentry-network",
     };
@@ -171,6 +186,13 @@ pub fn run(open: Open) -> u8 {
         }
         let mut app = app.expect("a target");
         app.focus_at_start(plan.focus);
+        // The Config area: each kind of config describes itself, as the targets do.
+        for k in kinds() {
+            app.config.register(k);
+        }
+        if open == Open::Config {
+            app.config_at_start();
+        }
         // The security audit is the window's: every target's facts, read side by side.
         app.win.sec.collect = Some(std::sync::Arc::new(crate::secaudit::collect));
         // What's wrong in the config files, said once the TUI is up (ahead of a `[keys]`

@@ -77,3 +77,6 @@ show = [
     "srv:my.server",
     "local",
 ]
+
+[agent]
+command = "/opt/my agents/claude"

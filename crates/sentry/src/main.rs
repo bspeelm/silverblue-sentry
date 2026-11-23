@@ -4,6 +4,8 @@
 //! that command.
 
 mod cfgcmd;
+#[cfg(test)]
+mod cfgtests;
 mod network;
 mod secaudit;
 mod server;
@@ -95,8 +97,9 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// The config files: `check` (what's wrong in them, offline), `show [app|servers|networks]`
-    /// (each as sentry writes it), `explain [<path>]` (what a setting is).
+    /// The config files. Alone: the window, on its Config tab. `check` (what's wrong in them,
+    /// offline), `show [app|servers|networks]` (each as sentry writes it), `explain [<path>]`
+    /// (what a setting is).
     Config {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

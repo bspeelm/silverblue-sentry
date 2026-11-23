@@ -12,6 +12,7 @@
 
 pub mod audit;
 pub mod backup;
+pub mod cfgkind;
 pub mod cli;
 pub mod clients;
 pub mod collect;

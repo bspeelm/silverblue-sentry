@@ -231,6 +231,9 @@ pub struct Slot {
     /// their place while this one's does, whatever the window had (`Slot::park`).
     pub(crate) keys: sentry_core::tui::keys::Keymap,
     pub(crate) line: Input<Prompt>,
+    /// `[targets] show` leaves it out (since the window opened): it has no tab and no key,
+    /// and runs on out of view until it is shown again (`App::retarget`).
+    pub hidden: bool,
     /// Not started yet: it never had the window (`App::start` only picked up its run).
     asleep: bool,
     /// What it waits for out of view, once said (`App::flag`).
@@ -327,6 +330,7 @@ impl Slot {
             auto_took_values: false,
             keys: Default::default(),
             line: Input::None,
+            hidden: false,
             asleep: false,
             flagged: None,
             reboot_held: None,
@@ -347,6 +351,22 @@ impl Slot {
 
     /// Swap this slot's keymap and input line with the window's: the window's are the slot's
     /// own while its flow runs or it is in view, and are kept here meanwhile.
+    /// `config.toml` is `cfg` from now (saved in the Config area, or edited): the reviews
+    /// sentry starts, what the target keeps of it, and, for a target that has started, its
+    /// records pruned by the new limits.
+    pub(crate) fn configured(&mut self, w: &Win, cfg: &sentry_core::config::Config) {
+        self.auto_review = cfg.review.clone();
+        self.target.configured(cfg);
+        if !w.offline && !self.asleep {
+            sentry_core::maint::retention::purge(
+                &self.scope,
+                &self.target.ident().runs,
+                &cfg.retention,
+                jiff::Timestamp::now(),
+            );
+        }
+    }
+
     pub(crate) fn park(&mut self, w: &mut Win) {
         std::mem::swap(&mut self.keys, &mut w.keys);
         std::mem::swap(&mut self.line, &mut w.input);

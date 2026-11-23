@@ -583,7 +583,7 @@ pub fn read_only(cmd: &str) -> bool {
 pub fn interactive_cmd(session: &str) -> Cmd {
     let dir = cwd();
     let _ = std::fs::create_dir_all(&dir);
-    Cmd::host("claude")
+    Cmd::host(&command())
         .args(["--resume", session, "--strict-mcp-config"])
         .arg("--append-system-prompt")
         .arg(format!(
@@ -771,14 +771,159 @@ pub fn available() -> bool {
     #[cfg(any(test, feature = "testing"))]
     return TEST_AVAILABLE.with(std::cell::Cell::get);
     #[cfg(not(any(test, feature = "testing")))]
-    Cmd::host("claude").available()
+    Cmd::host(&command()).available()
 }
 
 #[cfg(any(test, feature = "testing"))]
 thread_local! {
     /// Render tests don't depend on whether this machine has Claude Code.
     pub static TEST_AVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Each test has its own `[agent] command` (tests run side by side in one process).
+    static TEST_COMMAND: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
+
+/// The command when `[agent] command` says nothing.
+pub const DEFAULT_COMMAND: &str = "claude";
+
+#[cfg(not(any(test, feature = "testing")))]
+static COMMAND: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The program that is the agent (`[agent] command`): what [`available`] looks for and
+/// every turn starts. Set by the window at start and when the setting is saved
+/// ([`set_command`]); `claude` until then.
+pub fn command() -> String {
+    #[cfg(any(test, feature = "testing"))]
+    let set = TEST_COMMAND.with(|c| c.borrow().clone());
+    #[cfg(not(any(test, feature = "testing")))]
+    let set = COMMAND.read().ok().and_then(|c| c.clone());
+    set.unwrap_or_else(|| DEFAULT_COMMAND.to_string())
+}
+
+/// `[agent] command` as it is now. Whether it is there is looked up again (a program
+/// installed or removed since is seen).
+pub fn set_command(cmd: &str) {
+    let cmd = cmd.trim();
+    let cmd = (!cmd.is_empty()).then(|| cmd.to_string());
+    crate::exec::forget_bin(cmd.as_deref().unwrap_or(DEFAULT_COMMAND));
+    #[cfg(any(test, feature = "testing"))]
+    TEST_COMMAND.with(|c| *c.borrow_mut() = cmd);
+    #[cfg(not(any(test, feature = "testing")))]
+    if let Ok(mut c) = COMMAND.write() {
+        *c = cmd;
+    }
+}
+
+/// Where the agent's command is and what it says it is: the Config area's Agent screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Found {
+    pub command: String,
+    /// None: not on PATH (or no file at that path).
+    pub path: Option<std::path::PathBuf>,
+    /// What `<command> --version` printed (its first line).
+    pub version: Option<String>,
+}
+
+/// Look for `command` now (never from the cache) and ask its version. Two lookups at
+/// most, one of them an exec; run on a worker.
+pub fn find(command: &str) -> Found {
+    crate::exec::forget_bin(command);
+    let c = Cmd::host(command);
+    let path = c.found_at();
+    let version = path.as_ref().and_then(|_| {
+        let out = c
+            .arg("--version")
+            .timeout(Some(std::time::Duration::from_secs(10)))
+            .output()
+            .ok()?;
+        out.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    });
+    Found {
+        command: command.to_string(),
+        path,
+        version,
+    }
+}
+
+/// What one test turn came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tested {
+    /// It answered (what it said, cut short).
+    Answers(String),
+    /// It is there and isn't logged in.
+    NotLoggedIn,
+    /// Anything else, in its own words.
+    Failed(String),
+}
+
+/// What the test turn asks.
+pub const TEST_PROMPT: &str = "Reply with the single word: ready";
+
+/// The test turn: no tools, no session, nothing of the system in it.
+pub fn test_cmd(command: &str) -> Cmd {
+    let dir = cwd();
+    let _ = std::fs::create_dir_all(&dir);
+    Cmd::host(command)
+        .args(["-p", TEST_PROMPT])
+        .args(["--output-format", "stream-json", "--verbose"])
+        .arg("--strict-mcp-config")
+        .args(["--tools", ""])
+        .dir(dir)
+        .timeout(Some(std::time::Duration::from_secs(90)))
+}
+
+/// Ask the agent for one word (one turn, no tools). Run on a worker.
+pub fn test(command: &str) -> Tested {
+    match test_cmd(command).run() {
+        Ok(out) => tested(out.code, &out.stdout, &out.stderr),
+        Err(e) => Tested::Failed(e.to_string()),
+    }
+}
+
+/// What a test turn's output says (pure): its `result` line decides; without one, the exit
+/// code and the last thing it printed.
+pub fn tested(code: i32, stdout: &str, stderr: &str) -> Tested {
+    let (mut text, mut done) = (String::new(), None);
+    for ev in stdout.lines().flat_map(parse_line) {
+        match ev {
+            Event::Text(t) => text.push_str(&t),
+            Event::Done {
+                is_error, result, ..
+            } => done = Some((is_error, result)),
+            _ => {}
+        }
+    }
+    let short = |s: &str| -> String {
+        let s = s.trim();
+        match s.char_indices().nth(120) {
+            Some((i, _)) => format!("{}…", &s[..i]),
+            None => s.to_string(),
+        }
+    };
+    match done {
+        Some((true, r)) if r.starts_with(NOT_LOGGED_IN) => Tested::NotLoggedIn,
+        Some((true, r)) => Tested::Failed(short(&r)),
+        Some((false, r)) => Tested::Answers(short(if text.trim().is_empty() { &r } else { &text })),
+        None => {
+            let all = format!("{stdout}\n{stderr}");
+            let low = all.to_lowercase();
+            if low.contains("/login") || low.contains("api key") || low.contains("authenticat") {
+                return Tested::NotLoggedIn;
+            }
+            let last = all
+                .lines()
+                .map(str::trim)
+                .rfind(|l| !l.is_empty())
+                .unwrap_or("it printed nothing");
+            Tested::Failed(format!("exit {code}: {}", short(last)))
+        }
+    }
+}
+
+/// How a turn that failed for want of a login starts (`parse_line`).
+pub const NOT_LOGGED_IN: &str = "Claude Code isn't logged in";
 
 /// What a grant lets Claude do with one file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1427,7 +1572,7 @@ pub fn turn_cmd(prompt: &str, resume: Option<&str>) -> Cmd {
 }
 
 pub fn turn_cmd_with(prompt: &str, resume: Option<&str>, p: &Profile) -> Cmd {
-    let mut c = Cmd::host("claude")
+    let mut c = Cmd::host(&command())
         .args(["-p", prompt])
         .args([
             "--output-format",
@@ -1568,8 +1713,7 @@ pub fn parse_line(line: &str) -> Vec<Event> {
             vec![Event::Done {
                 is_error,
                 result: if login {
-                    "Claude Code isn't logged in: run `claude` once in a terminal, then try again."
-                        .into()
+                    format!("{NOT_LOGGED_IN}: run `claude` once in a terminal, then try again.")
                 } else {
                     result
                 },
@@ -1655,6 +1799,85 @@ mod tests {
         assert!(touches_deployment("echo x; systemctl reboot"));
         assert!(!touches_deployment("rpm-ostree status -v"));
         assert!(!touches_deployment("touch /tmp/flag"));
+    }
+
+    #[test]
+    fn a_test_turn_is_read_as_answers_not_logged_in_or_why() {
+        let ok = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+            "\n",
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ready"}}}"#,
+            "\n",
+            r#"{"type":"result","is_error":false,"result":"ready","total_cost_usd":0.001}"#,
+            "\n",
+        );
+        assert_eq!(tested(0, ok, ""), Tested::Answers("ready".into()));
+        // (No deltas: what the result says.)
+        assert_eq!(
+            tested(
+                0,
+                r#"{"type":"result","is_error":false,"result":"ready"}"#,
+                ""
+            ),
+            Tested::Answers("ready".into())
+        );
+        // The login error, as a result line and as plain text on stderr.
+        assert_eq!(
+            tested(
+                1,
+                r#"{"type":"result","is_error":true,"result":"Invalid API key · Please run /login"}"#,
+                ""
+            ),
+            Tested::NotLoggedIn
+        );
+        assert_eq!(tested(1, "", "Please run /login\n"), Tested::NotLoggedIn);
+        // Anything else in its own words; nothing printed is said as that.
+        assert_eq!(
+            tested(
+                1,
+                r#"{"type":"result","is_error":true,"result":"model not available"}"#,
+                ""
+            ),
+            Tested::Failed("model not available".into())
+        );
+        assert_eq!(
+            tested(2, "", "error: unknown option '--tools'\n"),
+            Tested::Failed("exit 2: error: unknown option '--tools'".into())
+        );
+        assert_eq!(
+            tested(127, "", ""),
+            Tested::Failed("exit 127: it printed nothing".into())
+        );
+        // The test turn has no tools and asks for one word; the command is the one given.
+        let c = test_cmd("/opt/claude");
+        let argv = c.quoted_argv();
+        assert!(argv.starts_with("/opt/claude -p "), "{argv}");
+        assert!(argv.ends_with("--tools ''"), "{argv}");
+    }
+
+    #[test]
+    fn the_agents_command_is_what_every_turn_starts() {
+        assert_eq!(command(), "claude");
+        assert!(
+            turn_cmd("hi", None)
+                .quoted_argv()
+                .starts_with("claude -p hi ")
+        );
+        set_command(" /opt/agents/claude ");
+        assert_eq!(command(), "/opt/agents/claude");
+        assert!(
+            turn_cmd("hi", None)
+                .quoted_argv()
+                .starts_with("/opt/agents/claude -p hi ")
+        );
+        assert!(
+            interactive_cmd("abc")
+                .quoted_argv()
+                .starts_with("/opt/agents/claude --resume abc ")
+        );
+        // Nothing said: the default again.
+        set_command("");
+        assert_eq!(command(), "claude");
     }
 
     #[test]

@@ -2,4 +2,4 @@
 source: crates/sentry/src/tests.rs
 expression: "top(&mut a, 158)"
 ---
- sentry   F1 silverblue 44.1   F2 myserver   F3 home    OpenWrt 25.12.3  Example Router AX  up …  ● connected   Mon 26 Oct 12:00
+ sentry   F1 silverblue 44.1   F2 myserver   F3 home   F4 config    OpenWrt 25.12.3  Example Router AX  up …  ● connected   Mon 26 Oct 12:00

@@ -192,6 +192,7 @@ impl Slot {
             clock: frame::clock(&now),
             targets: w.strip.clone(),
             focus: w.strip_focus,
+            accent: None,
         }
     }
 

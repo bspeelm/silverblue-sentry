@@ -304,6 +304,15 @@ impl Cmd {
             .join(" ")
     }
 
+    /// Where the command's program is, looked up now (never from the cache). None: not
+    /// there; over ssh, not known.
+    pub fn found_at(&self) -> Option<PathBuf> {
+        match self.site {
+            Site::Ssh(_) => None,
+            s => bin_path(s, &self.bin()),
+        }
+    }
+
     pub fn available(&self) -> bool {
         match self.site {
             // Whether the remote command exists is only known by running it (exit 127).
@@ -758,25 +767,45 @@ fn search_dirs(site: Site) -> Vec<PathBuf> {
     }
 }
 
+static BIN_CACHE: OnceLock<Mutex<HashMap<(Site, String), bool>>> = OnceLock::new();
+
 pub fn bin_available(site: Site, bin: &str) -> bool {
-    static CACHE: OnceLock<Mutex<HashMap<(Site, String), bool>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
+    let cache = BIN_CACHE.get_or_init(Default::default);
     let key = (site, bin.to_string());
     if let Some(&v) = cache.lock().expect("exec cache").get(&key) {
         return v;
     }
-    let found = if bin.contains('/') {
+    let found = bin_path(site, bin).is_some();
+    cache.lock().expect("exec cache").insert(key, found);
+    found
+}
+
+/// Where `bin` is for `site`, looked up now: the path given when it has a `/`, else the
+/// first of the site's PATH directories that has it.
+pub fn bin_path(site: Site, bin: &str) -> Option<PathBuf> {
+    if bin.contains('/') {
         let p = if site == Site::Host && spawn_mode() {
             Path::new("/run/host").join(bin.trim_start_matches('/'))
         } else {
             PathBuf::from(bin)
         };
-        p.exists()
-    } else {
-        search_dirs(site).iter().any(|d| d.join(bin).is_file())
-    };
-    cache.lock().expect("exec cache").insert(key, found);
-    found
+        return p.exists().then(|| PathBuf::from(bin));
+    }
+    search_dirs(site)
+        .iter()
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file())
+}
+
+/// Whether `bin` is there is looked up again the next time it is asked (it may have been
+/// installed, or removed, since).
+pub fn forget_bin(bin: &str) {
+    if let Some(cache) = BIN_CACHE.get() {
+        cache
+            .lock()
+            .expect("exec cache")
+            .retain(|(_, b), _| b != bin);
+    }
 }
 
 #[cfg(test)]

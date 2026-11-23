@@ -1,0 +1,45 @@
+---
+source: crates/sentry/src/cfgtests.rs
+expression: screen(&mut a)
+---
+ sentry config   F1 silverblue 44.1   F2 myserver   F3 config    nothing is written before the save box                  ○ nothing to save   Mon 26 Oct 12:00
+ 1 Overview   2 Agent   3 This machine   4 Servers   5 Networks   6 Window
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Agent ──────────────────────────────────────────────────────────────────────────────┐┌ Kind ───────────────────────────────────────────────────────────────┐
+│  The agent sentry asks                                                              ││ one of: claude-code                                                 │
+│    Kind     claude-code                                                             ││                                                                     │
+│    Command  claude                                                                  ││ Which kind of agent it is: `claude-code`, Claude Code's CLI with    │
+│                                                                                     ││ its own login. It is the only kind so far.                          │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Status                                                              │
+│                                                                                     ││ command   claude                                                    │
+│                                                                                     ││ found     ✓ /usr/bin/claude                                         │
+│                                                                                     ││ version   2.1.0 (Claude Code)                                       │
+│                                                                                     ││ test      ✓ answers (ready)                                         │
+│                                                                                     ││                                                                     │
+│                                                                                     ││ Other agents, API connections and locally deployed models are not   │
+│                                                                                     ││ supported yet.                                                      │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+│                                                                                     ││                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  next   Esc  back   t  test it   s  save…   c  check   e  editor   u  undo   ?  help   q  quit                   `claude` isn't there: nothing to test
