@@ -135,6 +135,41 @@ pub fn gather(r: &Router) -> Result<Gathered, CollectError> {
 pub struct Said {
     pub rows: Vec<super::Row>,
     pub posture: Vec<super::Line>,
+    /// Who the family filter is on: (label, since when, epoch seconds, if noted here).
+    pub filtered: Vec<(String, Option<i64>)>,
+    /// When the security audit whose items are among the rows ran (None: none here).
+    pub audited: Option<Timestamp>,
+}
+
+/// The latest security audit's items this network lists, as the window's Security page
+/// would (what is to do first, worth doing or asked and not answered yet), the most urgent
+/// first: those about this network, and those that span targets or name none.
+pub fn audit_items(
+    name: &str,
+    report: &sentry_core::secaudit::Report,
+) -> Vec<sentry_core::secaudit::Item> {
+    use sentry_core::secaudit::{Answers, State as St};
+    let me = crate::tui::id_of(name);
+    let answers = Answers::load();
+    let mut out: Vec<sentry_core::secaudit::Item> = report
+        .items
+        .iter()
+        .filter(|i| match i.state {
+            St::DoFirst | St::Worth => true,
+            St::Ask => i
+                .question
+                .as_ref()
+                .is_some_and(|q| answers.get(q).is_none()),
+            St::Fine | St::CouldNotCheck => false,
+        })
+        .filter(|i| {
+            i.targets.iter().any(|t| t == &me)
+                || (i.targets.len() != 1 && !i.targets.iter().any(|t| t.starts_with("net:")))
+        })
+        .cloned()
+        .collect();
+    out.sort_by_key(|i| (std::cmp::Reverse(i.state.weight()), i.rank));
+    out
 }
 
 /// What `sentry-network security [name]` prints: the rows not put off or marked expected
@@ -170,10 +205,40 @@ pub fn said(r: &Router, g: &Gathered) -> Said {
     };
     let later = sentry_core::maint::later::load(&r.scope);
     let today = now.to_zoned(jiff::tz::TimeZone::system()).date();
-    let mut rows = super::attention(&state);
-    rows.retain(|x| later.get(&x.key).is_none_or(|d| *d <= today));
+    let kept = |x: &super::Row| later.get(&x.key).is_none_or(|d| *d <= today);
+    // The page's own rows and the latest security audit's, joined as the page joins them.
+    let report = sentry_core::secaudit::latest();
+    let items = report
+        .as_ref()
+        .map(|rep| audit_items(&r.name, rep))
+        .unwrap_or_default();
+    let mut rows = super::attention::raw(&state);
+    super::attention::audit_rows(&items, &crate::tui::id_of(&r.name), &state, &mut rows);
+    rows.retain(kept);
+    let mut rows = super::attention::arrange(rows, None);
+    rows.retain(kept);
+    let filtered = g
+        .uci
+        .as_ref()
+        .map(super::family::found)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| {
+            (
+                blocks
+                    .device
+                    .get(&f.tag)
+                    .map(|d| d.label.clone())
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or(f.mac),
+                blocks.filter.get(&f.tag).map(|n| n.since),
+            )
+        })
+        .collect();
     Said {
         rows,
         posture: super::posture(&state),
+        filtered,
+        audited: report.filter(|_| !items.is_empty()).map(|r| r.at),
     }
 }

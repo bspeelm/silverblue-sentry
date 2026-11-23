@@ -49,6 +49,21 @@ pub const SUDO_REFUSED: &str = "sudo asked for a password · r retries, and asks
 
 const LOG_LINES: usize = 2000;
 
+/// The exit of a step this program runs (`<prog> …`) that found there is nothing to do: the
+/// step is done, and so is the run, the steps after it not needed (a firmware upgrade when
+/// the router already runs the newest release). A command on the host never says this: only
+/// sentry's own steps are taken at their word.
+pub const NOTHING_NEEDED: u8 = 10;
+
+pub use sentry_core::workflows::NOT_NEEDED;
+
+/// The run ended early, nothing needed (no step after that one ran).
+pub fn ended_with_nothing(st: &RunState) -> bool {
+    st.steps
+        .iter()
+        .any(|s| s.note.as_deref() == Some(NOT_NEEDED))
+}
+
 /// What a run calls the host it's on. A server's by default; another kind of host says its
 /// own (`Session::on`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -458,6 +473,13 @@ impl Session {
     pub fn on_exit(&mut self, idx: usize, code: i32) {
         self.live = None;
         let id = self.wf.steps[idx].id.clone();
+        let ours = self.wf.steps[idx]
+            .run
+            .as_deref()
+            .is_some_and(|r| self.here(r).is_some());
+        if ours && code == i32::from(NOTHING_NEEDED) {
+            return self.nothing_needed(idx);
+        }
         let note = (code != 0 && self.sudo_refused).then(|| SUDO_REFUSED.to_string());
         runner::complete(
             &self.wf,
@@ -478,6 +500,29 @@ impl Session {
         self.refresh();
         if self.done() {
             self.push(format!("✓ {} complete", self.wf.name), LogKind::Ok);
+        }
+    }
+
+    /// A step of ours found nothing to do: it is done, the steps after it aren't needed, and
+    /// the run ends well.
+    fn nothing_needed(&mut self, idx: usize) {
+        let id = self.wf.steps[idx].id.clone();
+        let why = "nothing to do";
+        self.run
+            .append_log(&id, &format!("(exit {NOTHING_NEEDED}: {why})"));
+        runner::mark_done(&mut self.run.state, idx, why);
+        for i in idx + 1..self.wf.steps.len() {
+            if self.run.state.steps[i].status == StepStatus::Pending {
+                runner::skip(&mut self.run.state, i, NOT_NEEDED);
+            }
+        }
+        self.push(format!("✓ {id}: nothing to do"), LogKind::Ok);
+        self.refresh();
+        if self.done() {
+            self.push(
+                format!("✓ {} complete: nothing was needed", self.wf.name),
+                LogKind::Ok,
+            );
         }
     }
 
@@ -743,6 +788,72 @@ mod tests {
         assert_eq!(
             s.go(None).err().unwrap(),
             "shell steps aren't supported on routers"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One of sentry's own steps that finds nothing to do ends the run well, the steps
+    /// after it not needed; a command on the host exiting the same way is a failure.
+    #[test]
+    fn a_step_of_ours_that_finds_nothing_to_do_ends_the_run_well() {
+        struct NoEnv;
+        impl Env for NoEnv {
+            fn cond(&self, _: &str) -> Result<bool, String> {
+                Ok(false)
+            }
+            fn builtin(&self, name: &str) -> Result<String, String> {
+                Err(format!("no built-in {name}"))
+            }
+            fn boot_id(&self) -> String {
+                String::new()
+            }
+        }
+        let text = "name = \"w\"\ndescription = \"d\"\n\
+            [[steps]]\nid = \"plan\"\ntitle = \"t\"\nrun = \"sentry-network firmware plan\"\ngate = \"auto\"\non_fail = \"manual\"\n\
+            [[steps]]\nid = \"flash\"\ntitle = \"t\"\nrun = \"sentry-network firmware flash\"\ngate = \"confirm\"\n\
+            [[steps]]\nid = \"host\"\ntitle = \"t\"\nrun = \"uptime\"\ngate = \"auto\"\non_fail = \"manual\"\n";
+        let wf = workflows::parse(text).unwrap();
+        let dir = std::env::temp_dir().join(format!("sentry-nothing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ids: Vec<String> = wf.steps.iter().map(|s| s.id.clone()).collect();
+        let run = |tag: &str| {
+            Run::create_in(
+                &dir.join(tag),
+                "w",
+                "",
+                RunState::new("w", &ids, BTreeMap::new()),
+            )
+            .unwrap()
+        };
+        let r = Remote::new(
+            "home",
+            "root@router.example",
+            "net:home",
+            super::super::Privilege::Root,
+        );
+        let mut s = Session::new(wf.clone(), run("a"), &r, "sentry-network", Box::new(NoEnv));
+        assert_eq!(s.next, Next::Run(0));
+        s.on_exit(0, i32::from(NOTHING_NEEDED));
+        assert!(s.done(), "{:?}", s.next);
+        assert_eq!(s.run.state.status, RunStatus::Done);
+        assert_eq!(s.run.state.steps[0].status, StepStatus::Ok);
+        assert_eq!(s.run.state.steps[1].status, StepStatus::Skipped);
+        assert_eq!(s.run.state.steps[2].status, StepStatus::Skipped);
+        assert!(ended_with_nothing(&s.run.state));
+        // The host's own command saying 10 is no word of ours: it failed.
+        let mut s = Session::new(wf, run("b"), &r, "sentry-network", Box::new(NoEnv));
+        s.on_exit(0, 0);
+        runner::mark_done(&mut s.run.state, 1, "test");
+        s.refresh();
+        assert_eq!(s.next, Next::Run(2));
+        s.on_exit(2, i32::from(NOTHING_NEEDED));
+        assert!(!s.done());
+        assert_eq!(
+            s.next,
+            Next::Manual {
+                idx: 2,
+                failed: true
+            }
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

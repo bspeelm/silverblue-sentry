@@ -32,6 +32,8 @@ pub struct Extra<'a> {
     pub firmware: Option<eval::Firmware>,
     /// None: not read. `Some(None)`-like absence is a `DnsState` without a blocklist.
     pub dns: Option<&'a DnsState>,
+    /// The firewall's rule counters: whether forced lookups come before the family filter.
+    pub counters: Option<&'a crate::collect::counters::Counters>,
 }
 
 fn eol(s: EolState) -> Eol {
@@ -143,6 +145,7 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                             to_port: f.dest_port.clone().unwrap_or_else(|| f.port.clone()),
                             dest: f.dest_ip.clone(),
                             zone: zone.clone(),
+                            probe: None,
                         })
                         .collect::<Vec<_>>()
                 })
@@ -202,6 +205,9 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                             .map(|(_, d)| d.clone())
                             .collect(),
                         devices: None,
+                        named: None,
+                        wifi: None,
+                        wired: None,
                     })
                     .collect(),
             );
@@ -252,7 +258,8 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
         use crate::clients::Link;
         use crate::security::{End, Nets};
         let nets = Nets::new(ifaces, s.uci.as_ref());
-        let mut count: std::collections::BTreeMap<String, usize> = Default::default();
+        // (all, named, on Wi-Fi, on a cable) per zone.
+        let mut count: std::collections::BTreeMap<String, [usize; 4]> = Default::default();
         for c in clients {
             let zone = c
                 .addrs
@@ -267,16 +274,37 @@ pub fn facts(name: &str, s: &Snapshot, x: &Extra, now: Timestamp) -> TargetFacts
                     _ => None,
                 });
             if let Some(z) = zone {
-                *count.entry(z).or_default() += 1;
+                let n = count.entry(z).or_default();
+                n[0] += 1;
+                n[1] += usize::from(c.known);
+                n[2] += usize::from(matches!(c.link, Link::Wifi { .. }));
+                n[3] += usize::from(matches!(c.link, Link::Wired { .. } | Link::Dmz { .. }));
             }
         }
         for z in zones.iter_mut().filter(|z| !z.wan) {
-            z.devices = Some(count.get(&z.name).copied().unwrap_or(0));
+            let [all, named, wifi, wired] = count.get(&z.name).copied().unwrap_or_default();
+            z.devices = Some(all);
+            z.named = Some(named);
+            z.wifi = Some(wifi);
+            z.wired = Some(wired);
         }
     }
     r.devices = s.clients.as_ref().map(|c| Devices {
         total: c.len(),
         unknown: c.iter().filter(|c| c.unknown() && !c.leave_alone).count(),
+    });
+    // The family filter: on how many devices (never which), and whether it still works.
+    r.family = s.uci.as_ref().map(|u| {
+        use crate::security::family::{self, Trouble};
+        use sentry_core::secaudit::{Family, FamilyTrouble};
+        Family {
+            devices: family::found(u).len(),
+            trouble: family::trouble(u, x.counters).map(|t| match t {
+                Trouble::Forced => FamilyTrouble::Forced,
+                Trouble::Canaries => FamilyTrouble::Canaries,
+                Trouble::Unforced => FamilyTrouble::Unforced,
+            }),
+        }
     });
     r.dns_filter = x.dns.and_then(|d| {
         let b = d.blocklist.as_ref()?;
@@ -323,6 +351,8 @@ pub fn collect(r: &Router) -> TargetFacts {
     let dns = crate::collect::dnsstate::collect(r)
         .map_err(|e| errors.push(("dns filter".to_string(), e.to_string())))
         .ok();
+    // (Only to judge the family filter: nothing is said when it can't be read.)
+    let counters = crate::collect::counters::collect(r).ok();
     let firmware = snap.ifaces.as_ref().map(|i| {
         let installed = i.board.version.as_str();
         let up = eval::series(installed).map(|s| crate::maint::upstream::get(&r.name, &s));
@@ -336,6 +366,7 @@ pub fn collect(r: &Router) -> TargetFacts {
             updates: updates.as_ref(),
             firmware,
             dns: dns.as_ref(),
+            counters: counters.as_ref(),
         },
         now,
     );
@@ -389,6 +420,14 @@ mod tests {
             }
         }
         assert_eq!(r.wan_input_accept, Some(false));
+        // The firewall was read and holds no filter of sentry's: none, said by count.
+        assert_eq!(
+            r.family,
+            Some(sentry_core::secaudit::Family {
+                devices: 0,
+                trouble: None
+            })
+        );
         assert!(r.zones.as_ref().unwrap().iter().any(|z| z.wan));
         assert!(
             r.wifi

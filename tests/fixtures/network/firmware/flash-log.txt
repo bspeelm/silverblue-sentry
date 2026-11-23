@@ -1,0 +1,5 @@
+Verifying   : /tmp/sentry-firmware.bin (15247680 bytes) against /tmp/sentry-firmware.sha256sums
+  Saved sha256 matches
+  verifying sysupgrade tar file integrity
+Checks complete, image is valid.
+Installing /tmp/sentry-firmware.bin and rebooting...

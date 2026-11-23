@@ -21,6 +21,7 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row as TRow};
 
+use super::filter::{self, Filtered};
 use super::security::{self as panels, Security};
 use super::{Hints, View};
 use crate::security::actions::Do;
@@ -59,6 +60,12 @@ pub enum Want {
     Name { mac: String, label: String },
     /// The answer to "the new Wi-Fi password".
     WifiKey { sections: Vec<String> },
+    /// The family filter on exactly the action's devices: first noting who the ticked ones
+    /// are, then the workflow.
+    Filter { act: Do, devs: Vec<DevRef> },
+    /// A filter this machine and the router disagree about: noted here (`keep`) or
+    /// forgotten here. Nothing on the router changes.
+    FilterNote { tag: String, keep: bool },
 }
 
 impl Want {
@@ -80,6 +87,8 @@ pub struct Built {
     pub rows: Vec<Row>,
     pub posture: Vec<crate::security::Line>,
     pub shut: Vec<Shut>,
+    /// "Filtered by you": the entry that chooses, then each device filtered.
+    pub filtered: Vec<Filtered>,
 }
 
 fn today(v: &View) -> jiff::civil::Date {
@@ -122,7 +131,7 @@ pub fn built(v: &View) -> Built {
     let day = today(v);
     let later = |r: &Row| v.sh.later.get(&r.key).is_none_or(|d| *d <= day);
     let mut rows = attention::raw(&state);
-    audit_rows(v, &state, &mut rows);
+    attention::audit_rows(&v.sh.sec, &crate::tui::id_of(v.name), &state, &mut rows);
     // Put off one by one, then as the one row several of a kind make.
     rows.retain(later);
     let mut rows = attention::arrange(rows, v.group.as_deref());
@@ -155,6 +164,7 @@ pub fn built(v: &View) -> Built {
         rows,
         posture,
         shut,
+        filtered: filter::filtered(v),
     }
 }
 
@@ -183,123 +193,6 @@ pub fn server_guard(v: &View) -> Option<crate::security::attention::ServerGuard>
             Some(Some(b)) => Some(b.on() && b.age_s.is_some()),
         },
     })
-}
-
-/// The page's own row that is already about an audit item's subject, by its key (a
-/// prefix), for the items that are this network's.
-fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
-    let what = i.id.split(':').nth(1).unwrap_or("");
-    Some(
-        match what {
-            "ssh-password" => "finding:net:ssh:password",
-            "admin-http" => "finding:net:luci:http",
-            "unknown-devices" => "finding:net:client:",
-            "crossing" => "finding:net:flow:",
-            "dns-filter" => "sec:blocklist",
-            "wan-input" => "finding:net:zone:",
-            "watch" => "finding:net:crowdsec:",
-            // A door the page lists as one you haven't listed: `sec:door:<net>:<proto>:<port>`.
-            "door" => {
-                let mut end = i.id.rsplit(':');
-                let (port, proto) = (end.next()?, end.next()?);
-                return Some(format!("finding:net:forward:{proto}:{port}"));
-            }
-            _ => return None,
-        }
-        .to_string(),
-    )
-}
-
-/// What Enter does on a row Maintenance carries out, in the row's own words.
-fn maint_step(what: &str) -> &'static str {
-    match what {
-        "firmware" => "Enter: update the router's software (Maintenance does it)",
-        "packages" => "Enter: update the router's packages (Maintenance does it)",
-        _ => "Enter: make a backup of the router's settings (on Maintenance)",
-    }
-}
-
-/// The security audit's items this page lists (`Shared::sec`), joined with its own rows by
-/// subject: where the page already has the row (it has the action), that row takes the
-/// audit's why and its urgency and the item gets none; where the page's row was marked
-/// expected, the item stays away too; the rest become rows of their own. What Maintenance
-/// does (firmware, packages, the backup) is a row whose Enter goes there.
-fn audit_rows(v: &View, s: &State, rows: &mut Vec<Row>) {
-    use sentry_core::secaudit::State as St;
-    let me = crate::tui::id_of(v.name);
-    for i in &v.sh.sec {
-        let own = i.targets.len() <= 1 || i.targets.contains(&me);
-        let what = i.id.split(':').nth(1).unwrap_or("");
-        let rank = match i.state {
-            St::DoFirst => Rank::Now,
-            St::Ask => Rank::Note,
-            _ => Rank::Look,
-        };
-        if let Some(prefix) = audit_subject(i).filter(|_| own || what == "watch") {
-            let prefix = prefix.as_str();
-            if let Some(r) = rows.iter_mut().find(|r| r.key.starts_with(prefix)) {
-                r.rank = r.rank.min(rank);
-                r.can_wait = false;
-                if !i.why.is_empty() && !r.why.contains(&i.why) {
-                    r.why = format!("{} {}", i.why, r.why);
-                }
-                continue;
-            }
-            // The page read it and has no row: expected, or no longer so.
-            let id = prefix.trim_start_matches("finding:");
-            let expected = s
-                .findings
-                .iter()
-                .any(|f| f.id.starts_with(id) && f.expected)
-                || s.expected
-                    .iter()
-                    .any(|g| sentry_core::baseline::glob(g, id.trim_end_matches(':')));
-            let read = match what {
-                "unknown-devices" => s.read.clients.is_some(),
-                "dns-filter" => s.read.dns.is_some(),
-                _ => false,
-            };
-            // (A door you listed is still the audit's to judge: what answers behind it.)
-            if (expected || read) && what != "door" {
-                continue;
-            }
-        }
-        let key = sentry_app::secaudit::row_key(&i.id);
-        if s.expected
-            .iter()
-            .any(|g| sentry_core::baseline::glob(g, &key))
-        {
-            continue;
-        }
-        let maint = matches!(what, "firmware" | "packages" | "backup") && own;
-        rows.push(Row {
-            id: key.clone(),
-            key,
-            rank,
-            title: i.title.clone(),
-            why: match (i.state, i.fix.is_empty()) {
-                (St::Ask, _) => {
-                    "The security audit can't read this: only you know. Enter answers it."
-                        .to_string()
-                }
-                (_, true) => i.why.clone(),
-                (_, false) => format!("{} What it takes: {}", i.why, i.fix),
-            },
-            seen: i.evidence.clone(),
-            act: if maint {
-                Act::Maint
-            } else {
-                Act::Audit {
-                    id: i.id.clone(),
-                    asks: i.state == St::Ask,
-                }
-            },
-            subject: Subject::None,
-            can_wait: false,
-            class: attention::Class::of_audit(&i.id, i.group),
-            next: maint.then(|| maint_step(what).to_string()),
-        });
-    }
 }
 
 fn listed_of<'a>(rows: &'a [Row], v: &View) -> Vec<&'a Row> {
@@ -363,6 +256,7 @@ impl Built {
 pub enum Sel<'a> {
     Row(&'a Row),
     Shut(&'a Shut),
+    Filter(&'a Filtered),
 }
 
 pub fn sel<'a>(v: &View, b: &'a Built) -> Option<Sel<'a>> {
@@ -370,12 +264,16 @@ pub fn sel<'a>(v: &View, b: &'a Built) -> Option<Sel<'a>> {
     if let Some(r) = rows.get(v.cur) {
         return Some(Sel::Row(r));
     }
-    b.shut.get(v.cur - rows.len()).map(Sel::Shut)
+    let at = v.cur - rows.len();
+    if let Some(s) = b.shut.get(at) {
+        return Some(Sel::Shut(s));
+    }
+    b.filtered.get(at - b.shut.len()).map(Sel::Filter)
 }
 
 pub fn count(v: &View) -> usize {
     let b = built(v);
-    b.listed(v).0.len() + b.shut.len()
+    b.listed(v).0.len() + b.shut.len() + b.filtered.len()
 }
 
 /// What the row at the cursor is, to find it again when the list changes.
@@ -384,6 +282,7 @@ pub fn row_key(v: &View) -> Option<String> {
     Some(match sel(v, &b)? {
         Sel::Row(r) => r.key.clone(),
         Sel::Shut(s) => s.key(),
+        Sel::Filter(f) => f.key(),
     })
 }
 
@@ -391,12 +290,20 @@ pub fn row_key(v: &View) -> Option<String> {
 pub fn position(v: &View, key: &str) -> Option<usize> {
     let b = built(v);
     let (rows, _) = b.listed(v);
-    rows.iter().position(|r| r.key == key).or_else(|| {
-        b.shut
-            .iter()
-            .position(|s| s.key() == key)
-            .map(|i| rows.len() + i)
-    })
+    rows.iter()
+        .position(|r| r.key == key)
+        .or_else(|| {
+            b.shut
+                .iter()
+                .position(|s| s.key() == key)
+                .map(|i| rows.len() + i)
+        })
+        .or_else(|| {
+            b.filtered
+                .iter()
+                .position(|s| s.key() == key)
+                .map(|i| rows.len() + b.shut.len() + i)
+        })
 }
 
 fn claude() -> bool {
@@ -431,12 +338,23 @@ pub fn verbs(v: &View, b: &Built) -> Option<Verbs> {
             enter: "open again",
             ..Default::default()
         },
+        Sel::Filter(Filtered::Choose { .. }) => Verbs {
+            enter: "choose devices",
+            ..Default::default()
+        },
+        Sel::Filter(Filtered::Device { .. }) => Verbs {
+            enter: "take it off",
+            ..Default::default()
+        },
     })
 }
 
 /// Whether a row can be marked expected.
 fn expectable(a: &Act) -> bool {
-    !matches!(a, Act::Unblock { .. } | Act::Group { .. })
+    !matches!(
+        a,
+        Act::Unblock { .. } | Act::Group { .. } | Act::FilterDrift { .. } | Act::FilterRepair
+    )
 }
 
 /// The key bar: the row's keys (`A` is named by the frame), then the screen's.
@@ -448,7 +366,7 @@ pub fn hints(v: &View) -> Hints {
             .filter(|(k, _)| *k != "A")
             .collect(),
         // Something shut is lifted; it isn't put off.
-        (Some(vb), Some(Sel::Shut(_))) => vec![("Enter", vb.enter)],
+        (Some(vb), Some(Sel::Shut(_) | Sel::Filter(_))) => vec![("Enter", vb.enter)],
         _ => Vec::new(),
     };
     if b.open(v).is_some() {
@@ -501,6 +419,10 @@ pub fn help() -> Hints {
         (
             "pauses",
             "no timer on the router: a row here offers to lift one",
+        ),
+        (
+            "filter",
+            "Filtered by you › Choose devices: tick them, Enter applies all as one change",
         ),
         (
             "not seen",
@@ -811,13 +733,17 @@ fn enter(v: &View, row: &Row, sec: &mut Security) -> Vec<Effect> {
         Act::Blocklist { stale: true, .. } => start(Do::ListRefresh),
         Act::Blocklist { .. } => start(Do::ListSchedule),
         Act::WifiKey => wifi_choice(v, row),
+        Act::FilterDrift { tag, on_router } => drift_choice(v, row, tag, *on_router),
+        Act::FilterRepair => filter::start(
+            filter::on_router(v).into_iter().map(|f| f.tag).collect(),
+            Vec::new(),
+        ),
         // The audit's own: a session across whatever targets it names, or your answer.
         Act::Audit { id, asks } if *asks || claude() => vec![Effect::SecItem(id.clone())],
         Act::Audit { .. } => vec![Effect::SecShow],
-        Act::Maint => vec![
-            Effect::Goto(sentry_core::tui::ScreenId::Maint),
-            Effect::Toast("Maintenance does it: its row is in the list here".into()),
-        ],
+        // Where the item's row on Maintenance goes: the backup, the packages' workflow,
+        // the firmware's (its draft box first, or why it isn't offered yet).
+        Act::Maint(kind) => super::maint::item_enter(v, *kind),
         // What has no fixed remedy: a session with Claude plans it, you approve.
         Act::Finding(_) | Act::Server { .. } if claude() => match crate::tui::ask::scrub(v) {
             Ok(_) => vec![Effect::ApplyAsk],
@@ -878,9 +804,51 @@ pub fn apply_ask(v: &View) -> Option<sentry_core::claude::Ask> {
     }
 }
 
+/// Enter on a filter the router and this machine disagree about.
+fn drift_choice(v: &View, row: &Row, tag: &str, on_router: bool) -> Vec<Effect> {
+    let note = |keep: bool| {
+        vec![Effect::own(Own::Security(Want::FilterNote {
+            tag: tag.to_string(),
+            keep,
+        }))]
+    };
+    let options: Vec<(String, Vec<Effect>)> = if on_router {
+        vec![
+            ("Keep it: note it here as filtered".into(), note(true)),
+            (
+                "Take it off the router (its plan first)".into(),
+                filter::lift(v, tag),
+            ),
+        ]
+    } else {
+        vec![
+            (
+                "Put it back on the router (its plan first)".into(),
+                filter::put_back(v, tag),
+            ),
+            ("Forget it here: it isn't filtered".into(), note(false)),
+        ]
+    };
+    let mut c = Choice::numbered(v.t, &trunc(&row.title, 60), options);
+    c.lines.push(Line::raw(""));
+    c.lines.push(Line::styled(
+        "Noting or forgetting changes nothing on the router.",
+        v.t.dim(),
+    ));
+    vec![Effect::Choose(c)]
+}
+
 /// A key on the list (moving is the cursor's).
 pub fn handle(sec: &mut Security, a: Key, v: &View) -> Vec<Effect> {
     let t = v.t;
+    // The family filter's list, open in the list's place.
+    if let Some(m) = sec.filter.as_mut() {
+        let (close, fx) = filter::handle(m, a, v);
+        if close {
+            sec.filter = None;
+        }
+        return fx;
+    }
     let b = built(v);
     let picked = sel(v, &b);
     match a {
@@ -902,6 +870,11 @@ pub fn handle(sec: &mut Security, a: Key, v: &View) -> Vec<Effect> {
             Some(Sel::Shut(Shut::Door { section, .. })) => start(Do::ForwardOn {
                 section: section.clone(),
             }),
+            Some(Sel::Filter(Filtered::Choose { .. })) => {
+                sec.filter = Some(filter::open(v));
+                Vec::new()
+            }
+            Some(Sel::Filter(Filtered::Device { tag, .. })) => filter::lift(v, tag),
             None => Vec::new(),
         },
         Key::Char(c @ ('x' | 'b' | 'z')) => {
@@ -947,15 +920,17 @@ pub fn handle(sec: &mut Security, a: Key, v: &View) -> Vec<Effect> {
 /// What the target does for the list: note who an action is about, then start it.
 pub fn on_own(tg: &mut NetworkTarget, w: &Want, sh: &Shared, cx: &Cx) -> Vec<Effect> {
     let toast = |s: String| vec![Effect::Toast(s)];
-    let Want::Start {
-        act,
-        dev,
-        until,
-        why,
-        door,
-    } = w
-    else {
-        return Vec::new();
+    let (act, dev, until, why, door) = match w {
+        Want::Start {
+            act,
+            dev,
+            until,
+            why,
+            door,
+        } => (act, dev.as_slice(), until, why.as_str(), door),
+        Want::Filter { act, devs } => (act, devs.as_slice(), &None, "", &None),
+        Want::FilterNote { tag, keep } => return filter_note(tg, tag, *keep, cx),
+        _ => return Vec::new(),
     };
     if cx.run.is_some_and(|r| !r.done()) {
         return toast("a workflow is already in progress (0 shows it): one at a time".into());
@@ -968,7 +943,7 @@ pub fn on_own(tg: &mut NetworkTarget, w: &Want, sh: &Shared, cx: &Cx) -> Vec<Eff
     let now = cx.now.as_second();
     let b = &mut tg.store.blocks;
     let before = b.clone();
-    if let Some(d) = dev {
+    for d in dev {
         b.device.insert(
             d.tag.clone(),
             Dev {
@@ -987,7 +962,7 @@ pub fn on_own(tg: &mut NetworkTarget, w: &Want, sh: &Shared, cx: &Cx) -> Vec<Eff
                     since: now,
                     until: *until,
                     reach: *reach,
-                    why: why.clone(),
+                    why: why.to_string(),
                 },
             );
         }
@@ -1079,8 +1054,43 @@ pub fn on_prompt(tg: &mut NetworkTarget, w: &Want, answer: Option<&str>, cx: &Cx
                 ]),
             ))]
         }
-        Want::Start { .. } => Vec::new(),
+        Want::Start { .. } | Want::Filter { .. } | Want::FilterNote { .. } => Vec::new(),
     }
+}
+
+/// A filter noted here as the router has it, or forgotten here: nothing on the router.
+fn filter_note(tg: &mut NetworkTarget, tag: &str, keep: bool, cx: &Cx) -> Vec<Effect> {
+    let b = &mut tg.store.blocks;
+    if keep {
+        b.filter
+            .entry(tag.to_string())
+            .or_insert(crate::security::blocks::Filtered {
+                since: cx.now.as_second(),
+                service: crate::security::family::service().id.into(),
+            });
+    } else {
+        b.filter.remove(tag);
+    }
+    if !cx.offline
+        && let Err(e) = b.save(&tg.router.scope)
+    {
+        return vec![Effect::Toast(format!(
+            "couldn't note it here (blocks.toml): {e}"
+        ))];
+    }
+    vec![Effect::Toast(
+        if keep {
+            "noted here as filtered (the router is as it was)"
+        } else {
+            "forgotten here (the router is as it was)"
+        }
+        .into(),
+    )]
+}
+
+/// How many selectable rows come before "Filtered by you".
+fn rows_len_before(b: &Built, v: &View) -> usize {
+    b.listed(v).0.len() + b.shut.len()
 }
 
 fn rank_color(t: &sentry_core::tui::theme::Theme, r: Rank) -> Color {
@@ -1127,7 +1137,9 @@ fn enter_says(a: &Act) -> &'static str {
             "From the security audit (S shows it). Enter: a session with Claude that fixes it, on whichever devices it takes; you approve its plan first."
         }
         Act::Audit { .. } => "From the security audit. Enter: its report.",
-        Act::Maint => "From the security audit. Enter: Maintenance (6), where it is done.",
+        Act::Maint(_) => {
+            "From the security audit. Enter does it, as its row on Maintenance (6) does."
+        }
         Act::Group {
             kind: Kind::Devices,
             ..
@@ -1141,6 +1153,17 @@ fn enter_says(a: &Act) -> &'static str {
             "Enter: the list of them. Answer each with yes, no, or you don't know; the list stays open as you go, Esc comes back."
         }
         Act::Group { .. } => "Enter: the list of them, each with its own numbers. Esc comes back.",
+        Act::FilterDrift {
+            on_router: true, ..
+        } => {
+            "Enter: keep it (noted here, nothing changes on the router), or take it off the router (its plan first)."
+        }
+        Act::FilterDrift { .. } => {
+            "Enter: put it back on the router (its plan first), or forget it here."
+        }
+        Act::FilterRepair => {
+            "Enter: the filter again on the same devices, which puts sentry's rules back in front (its plan first, through the guard)."
+        }
         Act::Finding(_) | Act::Server { .. } | Act::Evidence => {
             "Enter: the numbers behind it. Nothing here needs changing on the router."
         }
@@ -1148,7 +1171,9 @@ fn enter_says(a: &Act) -> &'static str {
 }
 
 fn when(now: i64, at: i64) -> String {
-    if at >= now {
+    if at == now {
+        "just now".to_string()
+    } else if at > now {
         format!("in {}", lasting((at - now) as u64))
     } else {
         format!("{} ago", lasting((now - at) as u64))
@@ -1232,6 +1257,105 @@ fn detail_lines(v: &View, picked: Option<Sel>, w: usize) -> Vec<Line<'static>> {
                     .into_iter()
                     .map(|x| Line::styled(x, t.s(t.cyan))),
             );
+        }
+        Some(Sel::Filter(Filtered::Choose { n })) => {
+            let svc = crate::security::family::service();
+            l.push(Line::styled(
+                format!(
+                    "The family filter ({}): on {}",
+                    svc.name,
+                    match n {
+                        0 => "no device".to_string(),
+                        1 => "1 device".to_string(),
+                        n => format!("{n} devices"),
+                    }
+                ),
+                t.fg(),
+            ));
+            l.push(Line::raw(""));
+            for s in [
+                format!(
+                    "The devices you tick have their name lookups answered by {} instead of \
+                     the router, so adult and other unwanted sites don't open on them. Every \
+                     other device is left as it is.",
+                    svc.name
+                ),
+                crate::security::actions::FILTER_LIMITS.to_string(),
+                "A filtered device's lookups skip the router's own blocklist; the family \
+                 service blocks malware and scam sites too."
+                    .to_string(),
+            ] {
+                l.extend(wrap(&s, w).into_iter().map(|x| Line::styled(x, t.dim())));
+            }
+            if let Some(why) = filter::refused(v, "lan") {
+                l.push(Line::raw(""));
+                l.extend(
+                    wrap(&format!("It can't work on this router yet: {why}."), w)
+                        .into_iter()
+                        .map(|x| Line::styled(x, t.s(t.yellow))),
+                );
+            } else if !filter::taken(v)
+                && v.s
+                    .counters
+                    .value
+                    .as_ref()
+                    .is_some_and(|c| !crate::security::family::hijacked(c, "lan").is_empty())
+            {
+                l.push(Line::raw(""));
+                l.extend(
+                    wrap(
+                        "On this router the first use includes a one-time step: sentry takes \
+                         over from the DNS proxy the forcing of every device's lookups \
+                         through the router (nothing changes for the others), so the devices \
+                         you pick can come first.",
+                        w,
+                    )
+                    .into_iter()
+                    .map(|x| Line::styled(x, t.s(t.cyan))),
+                );
+            }
+            l.push(Line::raw(""));
+            l.extend(
+                wrap(
+                    "Enter: the list of devices. Tick the ones to filter; Enter there shows \
+                     the plan for all of them as one change.",
+                    w,
+                )
+                .into_iter()
+                .map(|x| Line::styled(x, t.s(t.cyan))),
+            );
+        }
+        Some(Sel::Filter(Filtered::Device { label, since, .. })) => {
+            l.push(Line::styled(
+                format!("{label}'s name lookups are filtered"),
+                t.fg(),
+            ));
+            l.push(Line::raw(""));
+            match since {
+                Some(at) => l.push(Line::styled(format!("since {}", when(now, *at)), t.dim())),
+                None => l.push(Line::styled(
+                    "sentry's rules are on the router; this machine has no note of when",
+                    t.dim(),
+                )),
+            }
+            l.push(Line::raw(""));
+            l.extend(
+                wrap(
+                    &format!(
+                        "sentry can't test from the device itself: open {} on it; it should \
+                         be blocked.",
+                        crate::security::family::service().blocked_test
+                    ),
+                    w,
+                )
+                .into_iter()
+                .map(|x| Line::styled(x, t.dim())),
+            );
+            l.push(Line::raw(""));
+            l.push(Line::styled(
+                "Enter: take it off (exactly sentry's rules for it, through the guard).",
+                t.s(t.cyan),
+            ));
         }
         Some(Sel::Shut(Shut::Door { name, since, .. })) => {
             l.push(Line::styled(
@@ -1396,6 +1520,25 @@ fn evidence_height(v: &View, b: &Built, s: &Subject, w: usize) -> u16 {
 
 pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     let t = v.t;
+    // The family filter's list, in the list's place.
+    if let Some(m) = sec.filter.as_mut() {
+        let wide = area.width >= 120;
+        if wide {
+            let [l, r] =
+                Layout::horizontal([Constraint::Ratio(55, 100), Constraint::Ratio(45, 100)])
+                    .spacing(1)
+                    .areas(area);
+            return filter::render(m, f, l, Some(r), v);
+        }
+        let detail = match area.height {
+            24.. => 11,
+            16.. => 7,
+            _ => 0,
+        };
+        let [l, d] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(detail)]).areas(area);
+        return filter::render(m, f, l, (detail > 0).then_some(d), v);
+    }
     let b = built(v);
     // A list that was gone through to its end is closed.
     if v.group.is_some() && b.open(v).is_none() {
@@ -1424,6 +1567,12 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     } else {
         b.shut.len() as u16 + 3
     };
+    // (No header: its rows say what they are. On a small window it is one line.)
+    let filt_h = if b.filtered.is_empty() {
+        0
+    } else {
+        b.filtered.len() as u16 + 2
+    };
     // A row is two lines: what it is, and under it what Enter does.
     let open = b.open(v);
     let start = match open {
@@ -1439,7 +1588,7 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
         None => attention::pointed(&b.posture, &b.main(v)),
     };
     let full = posture_lines(v, &pointed, text_w, false);
-    let fits = left.height >= 30 && want + full.len() as u16 + 2 + shut_h <= left.height;
+    let fits = left.height >= 30 && want + full.len() as u16 + 2 + shut_h + filt_h <= left.height;
     let cover = match fits {
         true => full,
         false => posture_lines(v, &pointed, text_w, true),
@@ -1449,7 +1598,7 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     } else {
         cover.len() as u16 + 2
     };
-    let room = left.height.saturating_sub(cover_h + shut_h);
+    let room = left.height.saturating_sub(cover_h + shut_h + filt_h);
     // Narrow: the detail has the last lines, where there is room for it.
     let detail_h = if wide || left.height < 20 { 0 } else { 7 };
     let list_h = if wide {
@@ -1457,10 +1606,11 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
     } else {
         room.saturating_sub(detail_h).max(5.min(left.height))
     };
-    let [list_a, cover_a, shut_a, rest_a] = Layout::vertical([
+    let [list_a, cover_a, shut_a, filt_a, rest_a] = Layout::vertical([
         Constraint::Length(list_h),
         Constraint::Length(cover_h),
         Constraint::Length(shut_h),
+        Constraint::Length(filt_h),
         Constraint::Fill(1),
     ])
     .areas(left);
@@ -1536,10 +1686,12 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
                 TRow::new(vec![
                     Cell::from(n).style(if i < start { t.fg() } else { t.dim() }),
                     rank,
-                    Cell::from(ratatui::text::Text::from(vec![
-                        Line::styled(attention::one_line(&x.title, tw), t.fg()),
-                        Line::styled(trunc(&x.step(claude()), tw), t.dim()),
-                    ])),
+                    Cell::from(ratatui::text::Text::from(
+                        match attention::two_lines(&x.title, &x.step(claude()), tw) {
+                            (a, b, true) => vec![Line::styled(a, t.fg()), Line::styled(b, t.dim())],
+                            (a, b, false) => vec![Line::styled(a, t.fg()), Line::styled(b, t.fg())],
+                        },
+                    )),
                 ])
                 .height(2),
             );
@@ -1588,9 +1740,62 @@ pub fn render(sec: &mut Security, f: &mut Frame, area: Rect, v: &View) {
                     Constraint::Fill(2),
                 ],
                 rows: b.shut.iter().map(|s| TRow::new(shut_cells(v, s))).collect(),
-                selected: v.cur.checked_sub(rows.len()),
+                selected: v.cur.checked_sub(rows.len()).filter(|i| *i < b.shut.len()),
             },
         );
+    }
+
+    if filt_a.height >= 3 {
+        let n = b.filtered.len().saturating_sub(1);
+        let bl = panel(
+            t,
+            "Filtered by you",
+            match n {
+                0 => "family filter: no device".to_string(),
+                1 => "family filter: 1 device".to_string(),
+                n => format!("family filter: {n} devices"),
+            },
+        );
+        let r = inner(&bl, filt_a);
+        f.render_widget(bl, filt_a);
+        let now = v.now.as_second();
+        let rows: Vec<TRow> = b
+            .filtered
+            .iter()
+            .map(|x| match x {
+                Filtered::Choose { .. } => TRow::new(vec![
+                    Cell::from("Choose devices…").style(t.s(t.cyan)),
+                    Cell::from("").style(t.dim()),
+                    Cell::from("").style(t.dim()),
+                ]),
+                Filtered::Device { label, since, .. } => TRow::new(vec![
+                    Cell::from(label.clone()).style(t.fg()),
+                    Cell::from("filtered").style(t.dim()),
+                    Cell::from(
+                        since
+                            .map(|at| format!("since {}", when(now, at)))
+                            .unwrap_or_default(),
+                    )
+                    .style(t.dim()),
+                ]),
+            })
+            .collect();
+        let table = ratatui::widgets::Table::new(
+            rows,
+            [
+                Constraint::Fill(2),
+                Constraint::Length(16),
+                Constraint::Fill(2),
+            ],
+        )
+        .column_spacing(1)
+        .row_highlight_style(ratatui::style::Style::new().bg(t.sel_bg));
+        let mut st = ratatui::widgets::TableState::default().with_selected(
+            v.cur
+                .checked_sub(rows_len_before(&b, v))
+                .filter(|i| *i < b.filtered.len()),
+        );
+        f.render_stateful_widget(table, r, &mut st);
     }
 
     let draw_detail = |f: &mut Frame, a: Rect, picked: Option<Sel>| {

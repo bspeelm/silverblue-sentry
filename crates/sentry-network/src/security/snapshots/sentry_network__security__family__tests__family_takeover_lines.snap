@@ -1,0 +1,21 @@
+---
+source: crates/sentry-network/src/security/family.rs
+expression: "l.join(\"\\n\")"
+---
+uci set https-dns-proxy.config.force_dns='0'
+uci set firewall.sentry_dns_0=redirect
+uci set firewall.sentry_dns_0.name='sentry-dns-0'
+uci set firewall.sentry_dns_0.src='lan'
+uci set firewall.sentry_dns_0.proto='tcp udp'
+uci set firewall.sentry_dns_0.target='DNAT'
+uci set firewall.sentry_dns_0.src_dport='53'
+uci set firewall.sentry_dns_0.dest_port='53'
+uci set firewall.sentry_dns_0.family='any'
+uci set firewall.sentry_dns_0.reflection='0'
+uci set firewall.sentry_dns_1=rule
+uci set firewall.sentry_dns_1.name='sentry-dns-1'
+uci set firewall.sentry_dns_1.src='lan'
+uci set firewall.sentry_dns_1.proto='tcp udp'
+uci set firewall.sentry_dns_1.target='REJECT'
+uci set firewall.sentry_dns_1.dest='*'
+uci set firewall.sentry_dns_1.dest_port='853'

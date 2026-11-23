@@ -47,8 +47,8 @@ impl Rank {
 /// |-|-|-|
 /// | 1 | `Live` | happening now and shouldn't be: a live connection across sides kept apart, a connection from the internet with no listed door, refused logins or repeated wrong Wi-Fi passwords, a login from a device with no name, a device on a port ordinary devices rarely use, a device that joined within the last day and has no name |
 /// | 2 | `Hole` | a known hole with a fix: firmware, packages or an app with security fixes waiting or unsupported, a door or a firewall rule that lets the internet in unlisted |
-/// | 3 | `Login` | weak logins and admin pages without encryption (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
-/// | 4 | `Guard` | protection that is installed and not working: CrowdSec's blocker off, a blocklist that is stale or doesn't run, a service that should run |
+/// | 3 | `Login` | weak logins, admin pages without encryption, a door's certificate that lapsed or anyone could make (what the outside reaches is `act now` and so comes first, then what only the inside reaches) |
+/// | 4 | `Guard` | protection that is installed and not working: CrowdSec switched off on the router, a blocklist that is stale or doesn't run, a service that should run |
 /// | 5 | `Structure` | how the network is laid out: everything on one network |
 /// | 6 | `Recovery` | what you'd need afterwards: no backup, a log lost on restart |
 /// | 7 | `Housekeeping` | naming long-standing devices, answering sentry's questions, and everything that is only a note |
@@ -85,6 +85,7 @@ impl Class {
             ("finding:net:crowdsec:", Class::Guard),
             ("finding:net:service:", Class::Guard),
             ("sec:blocklist", Class::Guard),
+            ("sec:filter:", Class::Guard),
             // (A device that joined within the day is `Live`: its builder says so.)
             ("finding:net:client:", Class::Housekeeping),
         ];
@@ -100,14 +101,14 @@ impl Class {
         use sentry_core::secaudit::Group as G;
         match id.split(':').nth(1).unwrap_or("") {
             "crossing" => Class::Live,
-            "firmware" | "packages" | "os" | "apps-behind" | "app" | "reboot" | "wan-input"
-            | "wan-mgmt" | "door" | "outside" | "ctr" | "ctrs" | "listen-wide" | "firewall" => {
-                Class::Hole
-            }
-            "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps" => {
-                Class::Login
-            }
-            "watch" | "dns-filter" | "auto-updates" => Class::Guard,
+            "firmware" | "packages" | "os" | "os-life" | "apps-behind" | "app" | "reboot"
+            | "wan-input" | "wan-mgmt" | "door" | "outside" | "ctr" | "ctrs" | "listen-wide"
+            | "firewall" => Class::Hole,
+            // (A certificate that lapsed or that anyone could make: posing as the server.)
+            "ssh-password" | "admin-http" | "ssh-root" | "sudo" | "keys" | "wifi" | "wps"
+            | "cert" => Class::Login,
+            "watch" | "dns-filter" | "auto-updates" | "family" | "family-forced"
+            | "family-canaries" | "family-unforced" => Class::Guard,
             "flat" | "apart" => Class::Structure,
             "backup" | "logs" | "restore" => Class::Recovery,
             "unknown-devices" => Class::Housekeeping,
@@ -252,13 +253,24 @@ pub enum Act {
         id: String,
         asks: bool,
     },
-    /// The audit says it, Maintenance does it (firmware, packages, the backup).
-    Maint,
+    /// The audit says it and the item does it (firmware, packages, the backup): Enter is
+    /// that item's own Enter on Maintenance (the draft's box, then the workflow).
+    Maint(crate::config::ItemKind),
     /// Several rows of one kind as one: Enter lists them, each still its own decision.
     Group {
         kind: Kind,
         rows: Vec<Row>,
     },
+    /// The family filter differs between the router and this machine's note of it:
+    /// `on_router`, a filter sentry has no note of (keep it or take it off); else one noted
+    /// here that the router doesn't have whole (put it back or forget it).
+    FilterDrift {
+        tag: String,
+        on_router: bool,
+    },
+    /// The filter is on the router but has stopped working (forced lookups in front of it,
+    /// or nobody's forced): the filter again on the same devices puts it right.
+    FilterRepair,
 }
 
 impl Act {
@@ -278,8 +290,10 @@ impl Act {
             Act::Server { .. } => "finish it",
             Act::Audit { asks: true, .. } => "answer",
             Act::Audit { .. } => "fix",
-            Act::Maint => "Maintenance",
+            Act::Maint(_) => "do it",
             Act::Group { .. } => "list them",
+            Act::FilterDrift { .. } => "decide",
+            Act::FilterRepair => "put it right",
         }
     }
 
@@ -307,7 +321,7 @@ impl Act {
                 "Enter: fix it with Claude (it shows a plan, you approve)"
             }
             Act::Audit { .. } => "Enter: read it in the security audit's report",
-            Act::Maint => "Enter: go to Maintenance, where it is done",
+            Act::Maint(k) => maint_step(*k),
             Act::Group {
                 kind: Kind::Devices,
                 ..
@@ -317,6 +331,11 @@ impl Act {
                 ..
             } => "Enter: answer them one after another",
             Act::Group { .. } => "Enter: look at each",
+            Act::FilterDrift {
+                on_router: true, ..
+            } => "Enter: keep it, or take it off the router",
+            Act::FilterDrift { .. } => "Enter: put it back on the router, or forget it",
+            Act::FilterRepair => "Enter: put the filter right (its plan first)",
         }
     }
 }
@@ -346,9 +365,15 @@ pub struct Row {
 impl Row {
     /// The row's second line: what Enter does, in plain words.
     pub fn step(&self, claude: bool) -> String {
-        match &self.next {
-            Some(n) => n.clone(),
-            None => self.act.step(claude).to_string(),
+        match (&self.next, &self.act) {
+            // A fix named for Claude: without Claude Code, what Enter does instead.
+            (Some(_), Act::Finding(_) | Act::Server { .. } | Act::Audit { asks: false, .. })
+                if !claude =>
+            {
+                self.act.step(claude).to_string()
+            }
+            (Some(n), _) => n.clone(),
+            (None, a) => a.step(claude).to_string(),
         }
     }
 
@@ -483,38 +508,43 @@ impl<'a> State<'a> {
 
     /// The device a client is, for an action (None: no MAC, or no tag can be made).
     pub fn dev(&self, c: &Client, nets: Option<&Nets>) -> Option<DevRef> {
-        let mac = c.mac.clone()?;
-        let zone = c
-            .addrs
-            .iter()
-            .filter_map(|a| a.parse::<IpAddr>().ok())
-            .find_map(|a| match nets?.end(a) {
-                End::Zone(z) => Some(z),
-                _ => None,
-            })
-            .or_else(|| match &c.link {
-                Link::Dmz { net, .. } => Some(net.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| "lan".into());
-        Some(DevRef {
-            tag: blocks::tag(self.network, &mac)?,
-            mac,
-            label: c.label().to_string(),
-            zone,
-            wifi: match &c.link {
-                Link::Wifi { ifname, .. } => Some(ifname.clone()),
-                _ => None,
-            },
-            named: c.name.is_some(),
-            via: match &c.link {
-                Link::Wired { .. } => Via::Wired,
-                Link::Wifi { .. } => Via::Wifi,
-                Link::Dmz { .. } => Via::Routed,
-                Link::Unknown => Via::Other,
-            },
-        })
+        dev_of(self.network, c, nets)
     }
+}
+
+/// The device a client is, for an action (None: no MAC, or no tag can be made).
+pub fn dev_of(network: &str, c: &Client, nets: Option<&Nets>) -> Option<DevRef> {
+    let mac = c.mac.clone()?;
+    let zone = c
+        .addrs
+        .iter()
+        .filter_map(|a| a.parse::<IpAddr>().ok())
+        .find_map(|a| match nets?.end(a) {
+            End::Zone(z) => Some(z),
+            _ => None,
+        })
+        .or_else(|| match &c.link {
+            Link::Dmz { net, .. } => Some(net.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "lan".into());
+    Some(DevRef {
+        tag: blocks::tag(network, &mac)?,
+        mac,
+        label: c.label().to_string(),
+        zone,
+        wifi: match &c.link {
+            Link::Wifi { ifname, .. } => Some(ifname.clone()),
+            _ => None,
+        },
+        named: c.name.is_some(),
+        via: match &c.link {
+            Link::Wired { .. } => Via::Wired,
+            Link::Wifi { .. } => Via::Wifi,
+            Link::Dmz { .. } => Via::Routed,
+            Link::Unknown => Via::Other,
+        },
+    })
 }
 
 fn sev_rank(s: Sev) -> Rank {
@@ -534,18 +564,10 @@ const OTHER: &[&str] = &["net:service:", "net:cert:"];
 /// Maintenance.
 pub const EDGE: &str = "net:crowdsec:bouncer";
 
-/// The router has the blocker and it isn't switched on: one sentence, wherever it is said
-/// (the posture, the row, the finding, the audit).
+/// The router has CrowdSec's firewall part and it isn't switched on: one sentence, wherever
+/// the page says it (the posture, the row, the finding).
 pub fn edge_off(server: bool) -> String {
-    format!(
-        "CrowdSec's blocker is installed on the router but not switched on: {} isn't \
-         enforced at the edge yet",
-        if server {
-            "the server's blocklist"
-        } else {
-            "what CrowdSec would block"
-        }
-    )
+    sentry_core::secaudit::edge_off(server)
 }
 /// These only when they are high: the outside reaches something.
 const OTHER_HIGH: &[&str] = &["net:zone:", "net:listener:"];
@@ -580,11 +602,13 @@ pub fn raw(s: &State) -> Vec<Row> {
         title,
         why,
         seen: f.evidence.lines().map(str::to_string).collect(),
-        act,
         subject,
         can_wait: f.severity == Sev::Low,
         class: Class::of(&format!("finding:{}", f.id)),
-        next: None,
+        next: matches!(act, Act::Finding(_))
+            .then(|| fix_step(&f.fix))
+            .flatten(),
+        act,
     };
     let own = |key: &str, rank: Rank, title: String, why: &str, act: Act, subject: Subject| Row {
         key: key.to_string(),
@@ -599,6 +623,113 @@ pub fn raw(s: &State) -> Vec<Row> {
         class: Class::of(key),
         next: None,
     };
+
+    // The family filter where the router and this machine's note of it differ.
+    if let Some(u) = s.read.uci {
+        let on = super::family::found(u);
+        // It has stopped working: something forces lookups in front of it again, or nothing
+        // forces them at all.
+        let trouble = super::family::trouble(u, s.read.counters);
+        use super::family::Trouble;
+        if trouble == Some(Trouble::Forced) {
+            out.push(own(
+                "sec:filter:forced",
+                Rank::Now,
+                "The family filter has stopped working: the router's own forced lookups are \
+                 back in front of it"
+                    .into(),
+                "Its rules are still on the router, but the DNS proxy's forcing of lookups is \
+                 first again (after an update of the package, or a change in its settings), \
+                 so the filtered devices' lookups go to the router like everyone's. Enter \
+                 puts the filter back in front (its plan first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
+        } else if trouble == Some(Trouble::Canaries) {
+            out.push(own(
+                "sec:filter:canaries",
+                Rank::Now,
+                "A browser's own encrypted lookups are no longer switched off on this network"
+                    .into(),
+                "The router stopped refusing the names that tell Firefox to keep its own \
+                 encrypted lookups (DNS over HTTPS) off and switch iCloud Private Relay off, \
+                 so those can switch on by themselves and skip both the router's blocklist \
+                 and the family filter. Enter puts sentry's entries for them back (its plan \
+                 first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
+        } else if trouble == Some(Trouble::Unforced) {
+            out.push(own(
+                "sec:filter:unforced",
+                Rank::Now,
+                "Lookups aren't forced through the router for anyone".into(),
+                "sentry took the forcing of lookups over for the family filter, and its rules \
+                 for that are gone from the router while the DNS proxy's own forcing is off: \
+                 any device can ask another service and skip the router's blocklist and the \
+                 family filter. Enter puts sentry's rules back (its plan first).",
+                Act::FilterRepair,
+                Subject::None,
+            ));
+        }
+        let label = |tag: &str, mac: &str| filtered_label(s.blocks, s.read.clients, tag, mac);
+        for f in &on {
+            if !s.blocks.filter.contains_key(&f.tag) {
+                out.push(own(
+                    &format!("sec:filter:unknown:{}", f.tag),
+                    Rank::Look,
+                    format!(
+                        "A family filter is on {} that sentry has no note of",
+                        label(&f.tag, &f.mac)
+                    ),
+                    "sentry's rule for it is on the router, but this machine doesn't remember \
+                     making it (made from another computer, or the note was lost). Keep it, \
+                     or take it off.",
+                    Act::FilterDrift {
+                        tag: f.tag.clone(),
+                        on_router: true,
+                    },
+                    Subject::None,
+                ));
+            } else if !f.whole() {
+                out.push(own(
+                    &format!("sec:filter:gone:{}", f.tag),
+                    Rank::Look,
+                    format!(
+                        "The family filter on {} is only partly on the router",
+                        label(&f.tag, &f.mac)
+                    ),
+                    "Part of sentry's rules for it was removed on the router, so its lookups \
+                     may not be filtered. Put it back, or forget it.",
+                    Act::FilterDrift {
+                        tag: f.tag.clone(),
+                        on_router: false,
+                    },
+                    Subject::None,
+                ));
+            }
+        }
+        for tag in s.blocks.filter.keys() {
+            if !on.iter().any(|f| &f.tag == tag) {
+                out.push(own(
+                    &format!("sec:filter:gone:{tag}"),
+                    Rank::Look,
+                    format!(
+                        "The family filter on {} isn't on the router any more",
+                        label(tag, "a device")
+                    ),
+                    "This machine remembers filtering it, but the router has no rule of \
+                     sentry's for it now (removed there, or the router was reset): its lookups \
+                     aren't filtered. Put it back, or forget it.",
+                    Act::FilterDrift {
+                        tag: tag.clone(),
+                        on_router: false,
+                    },
+                    Subject::None,
+                ));
+            }
+        }
+    }
 
     // A pause that ended: the rule is still there until Enter takes it away.
     for b in &shut {
@@ -1179,6 +1310,206 @@ pub fn raw(s: &State) -> Vec<Row> {
     out
 }
 
+/// The page's own row that is already about an audit item's subject, by its key (a
+/// prefix), for the items that are this network's.
+fn audit_subject(i: &sentry_core::secaudit::Item) -> Option<String> {
+    let what = i.id.split(':').nth(1).unwrap_or("");
+    Some(
+        match what {
+            "ssh-password" => "finding:net:ssh:password",
+            "admin-http" => "finding:net:luci:http",
+            "unknown-devices" => "finding:net:client:",
+            "crossing" => "finding:net:flow:",
+            "dns-filter" => "sec:blocklist",
+            "wan-input" => "finding:net:zone:",
+            "watch" => "finding:net:crowdsec:",
+            // The family filter stopped working: the page's own row says the same.
+            "family-forced" => "sec:filter:forced",
+            "family-canaries" => "sec:filter:canaries",
+            "family-unforced" => "sec:filter:unforced",
+            // A door the page lists as one you haven't listed: `sec:door:<net>:<proto>:<port>`.
+            "door" => {
+                let mut end = i.id.rsplit(':');
+                let (port, proto) = (end.next()?, end.next()?);
+                return Some(format!("finding:net:forward:{proto}:{port}"));
+            }
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// What Enter does on the audit's items whose fix is always of one kind, in plain words
+/// (a certificate renewed or replaced, a release upgraded, a log kept longer). Others are
+/// named from their fix's own words (`fix_step`).
+fn audit_step(what: &str) -> Option<&'static str> {
+    Some(match what {
+        "cert" => "Enter: renew or replace it with Claude (you approve the plan)",
+        "os-life" => "Enter: plan the upgrade with Claude (you approve the plan)",
+        "logs" => "Enter: keep the log longer, with Claude (you approve the plan)",
+        _ => return None,
+    })
+}
+
+/// What Enter does on a row Maintenance carries out, in the row's own words.
+fn maint_step(kind: crate::config::ItemKind) -> &'static str {
+    use crate::config::ItemKind as K;
+    match kind {
+        K::Firmware => "Enter: upgrade the router's software (it shows the plan first)",
+        K::Packages => "Enter: update the router's packages (it shows the plan first)",
+        K::Backup => "Enter: make a backup of the router's settings",
+    }
+}
+
+/// The security audit's items this page lists (the window's `Shared::sec`; the command line's latest report), joined with its own rows by
+/// subject: where the page already has the row (it has the action), that row takes the
+/// audit's why and its urgency and the item gets none; where the page's row was marked
+/// expected, the item stays away too; the rest become rows of their own. What Maintenance
+/// does (firmware, packages, the backup) is a row whose Enter goes there.
+pub fn audit_rows(items: &[sentry_core::secaudit::Item], me: &str, s: &State, rows: &mut Vec<Row>) {
+    use sentry_core::secaudit::State as St;
+    for i in items {
+        let own = i.targets.len() <= 1 || i.targets.iter().any(|t| t == me);
+        let what = i.id.split(':').nth(1).unwrap_or("");
+        let rank = match i.state {
+            St::DoFirst => Rank::Now,
+            St::Ask => Rank::Note,
+            _ => Rank::Look,
+        };
+        if let Some(prefix) = audit_subject(i).filter(|_| own || what == "watch") {
+            let prefix = prefix.as_str();
+            if let Some(r) = rows.iter_mut().find(|r| r.key.starts_with(prefix)) {
+                r.rank = r.rank.min(rank);
+                r.can_wait = false;
+                if !i.why.is_empty() && !r.why.contains(&i.why) {
+                    r.why = format!("{} {}", i.why, r.why);
+                }
+                continue;
+            }
+            // The page read it and has no row: expected, or no longer so.
+            let id = prefix.trim_start_matches("finding:");
+            let expected = s
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with(id) && f.expected)
+                || s.expected
+                    .iter()
+                    .any(|g| sentry_core::baseline::glob(g, id.trim_end_matches(':')));
+            let read = match what {
+                "unknown-devices" => s.read.clients.is_some(),
+                "dns-filter" => s.read.dns.is_some(),
+                "family-forced" => s.read.uci.is_some() && s.read.counters.is_some(),
+                "family-canaries" | "family-unforced" => s.read.uci.is_some(),
+                _ => false,
+            };
+            // (A door you listed is still the audit's to judge: what answers behind it.)
+            if (expected || read) && what != "door" {
+                continue;
+            }
+        }
+        let key = sentry_app::secaudit::row_key(&i.id);
+        if s.expected
+            .iter()
+            .any(|g| sentry_core::baseline::glob(g, &key))
+        {
+            continue;
+        }
+        use crate::config::ItemKind as K;
+        let maint = match what {
+            "firmware" => Some(K::Firmware),
+            "packages" => Some(K::Packages),
+            "backup" => Some(K::Backup),
+            _ => None,
+        }
+        .filter(|_| own);
+        rows.push(Row {
+            id: key.clone(),
+            key,
+            rank,
+            title: i.title.clone(),
+            why: match (i.state, i.fix.is_empty()) {
+                (St::Ask, _) => {
+                    "The security audit can't read this: only you know. Enter answers it."
+                        .to_string()
+                }
+                (_, true) => i.why.clone(),
+                (_, false) => format!("{} What it takes: {}", i.why, i.fix),
+            },
+            seen: i.evidence.clone(),
+            act: match maint {
+                Some(k) => Act::Maint(k),
+                None => Act::Audit {
+                    id: i.id.clone(),
+                    asks: i.state == St::Ask,
+                },
+            },
+            subject: match what {
+                // What a door's own panel shows: the forward, its counts.
+                "cert" | "door" => Subject::Ingress,
+                _ => Subject::None,
+            },
+            can_wait: false,
+            class: Class::of_audit(&i.id, i.group),
+            next: match maint {
+                Some(k) => Some(maint_step(k).to_string()),
+                None if i.state != St::Ask => audit_step(what)
+                    .map(str::to_string)
+                    .or_else(|| fix_step(&i.fix)),
+                None => None,
+            },
+        });
+    }
+}
+
+/// A row's second line for a fix Claude carries out, named from the fix's own words
+/// ("Enter: with Claude, remove the redirect"): the whole fix where it fits the line, else
+/// its first clause; None where it doesn't name a change (a question, "run the audit
+/// again") or doesn't fit, and the row says the general words.
+pub fn fix_step(fix: &str) -> Option<String> {
+    const MAX: usize = 63;
+    let f = fix.trim().trim_end_matches('.');
+    let f = match f.find("otherwise ") {
+        Some(i) => &f[i + "otherwise ".len()..],
+        None if f.starts_with("If you meant it") => return None,
+        None => f,
+    };
+    if f.is_empty()
+        || [
+            "Run the audit",
+            "See ",
+            "Look at",
+            "Check ",
+            "Press ",
+            "Answer ",
+        ]
+        .iter()
+        .any(|p| f.starts_with(p))
+    {
+        return None;
+    }
+    let lower = |s: &str| {
+        let mut c = s.chars();
+        match (c.next(), s.chars().nth(1)) {
+            (Some(a), Some(b)) if !b.is_uppercase() => {
+                a.to_lowercase().collect::<String>() + c.as_str()
+            }
+            _ => s.to_string(),
+        }
+    };
+    let mut candidates = vec![f];
+    for sep in [". ", "; ", " (", ", or ", ": ", ", "] {
+        if let Some(i) = f.find(sep) {
+            candidates.push(&f[..i]);
+        }
+    }
+    candidates
+        .into_iter()
+        // (Two words, "Fix it", say nothing the general words don't.)
+        .filter(|c| c.split_whitespace().count() >= 3)
+        .map(|c| format!("Enter: with Claude, {}", lower(c.trim())))
+        .find(|s| s.chars().count() <= MAX)
+}
+
 /// The list as it is shown: each row in its class, the levels kept honest, several rows of
 /// one kind as one, and the whole in order.
 ///
@@ -1313,6 +1644,25 @@ pub fn one_line(s: &str, w: usize) -> String {
     }
 }
 
+/// A row's two lines: its sentence and under it what Enter does, when the sentence fits
+/// one line; else the sentence over both (the step gives way: the detail and the key bar
+/// still say it), ending on a clause where even two lines are too few. The flag: the
+/// second line is the step.
+pub fn two_lines(title: &str, step: &str, w: usize) -> (String, String, bool) {
+    let w = w.max(8);
+    if title.chars().count() <= w {
+        return (
+            title.to_string(),
+            sentry_core::tui::widgets::trunc(step, w),
+            true,
+        );
+    }
+    let mut l = sentry_core::tui::widgets::wrap(title, w).into_iter();
+    let first = l.next().unwrap_or_default();
+    let rest = l.collect::<Vec<_>>().join(" ");
+    (first, one_line(&rest, w), false)
+}
+
 /// How many rows are the ones to start with: the first three that ask something of you
 /// (a `note` never does).
 pub fn start_here<'a>(rows: impl IntoIterator<Item = &'a Row>) -> usize {
@@ -1395,6 +1745,7 @@ impl Line {
             "admin" => "Logging in to the router",
             "edge" => "Blocking attackers at the router",
             "server" => "The server's blocklist at the router",
+            "family" => "The family filter",
             _ => "The security audit",
         }
     }
@@ -1413,6 +1764,7 @@ impl Line {
             "wifi" => &["audit:sec:wifi", "audit:sec:wps"],
             "admin" => &["finding:net:ssh:password", "finding:net:luci:http"],
             "edge" | "server" => &["finding:net:crowdsec:"],
+            "family" => &["sec:filter:"],
             _ => &[],
         }
     }
@@ -1423,6 +1775,115 @@ fn plural(n: usize, one: &str, many: &str) -> String {
         1 => format!("1 {one}"),
         n => format!("{n} {many}"),
     }
+}
+
+/// What a filtered device is called: as noted when it was ticked, else as the network
+/// knows it now (by its MAC), else its MAC.
+pub fn filtered_label(b: &Blocks, clients: Option<&[Client]>, tag: &str, mac: &str) -> String {
+    b.device
+        .get(tag)
+        .map(|d| d.label.clone())
+        .filter(|l| !l.is_empty())
+        .or_else(|| {
+            clients?
+                .iter()
+                .find(|c| {
+                    c.mac
+                        .as_deref()
+                        .is_some_and(|m| m.eq_ignore_ascii_case(mac))
+                })
+                .map(|c| c.label().to_string())
+        })
+        .unwrap_or_else(|| mac.to_string())
+}
+
+/// The family filter's line of the cover: "Family filter: on 2 devices (a, b)".
+fn say_family(
+    s: &State,
+    u: &crate::collect::uci::Uci,
+    say: &mut dyn FnMut(&'static str, Cover, String),
+) {
+    let on = super::family::found(u);
+    let svc = super::family::service();
+    let names: Vec<String> = on
+        .iter()
+        .map(|f| filtered_label(s.blocks, s.read.clients, &f.tag, &f.mac))
+        .collect();
+    // What would stop it working in the home zone (the one a filter is usually for).
+    let blocked = s
+        .read
+        .counters
+        .map(|c| super::family::hijacked(c, "lan"))
+        .unwrap_or_default();
+    let drift = on
+        .iter()
+        .any(|f| !f.whole() || !s.blocks.filter.contains_key(&f.tag))
+        || s.blocks
+            .filter
+            .keys()
+            .any(|t| !on.iter().any(|f| &f.tag == t));
+    let who = match names.len() {
+        0 => "on no device".to_string(),
+        n => {
+            let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+            let more = if n > 3 {
+                format!(" and {} more", n - 3)
+            } else {
+                String::new()
+            };
+            format!(
+                "{} ({}{more})",
+                plural(n, "device", "devices"),
+                shown.join(", ")
+            )
+        }
+    };
+    let proxy_only = blocked.iter().all(|b| b == super::family::PROXY);
+    let unforced = !names.is_empty() && super::family::unforced(u);
+    let (state, text) = match (names.len(), blocked.is_empty()) {
+        _ if unforced => (
+            Cover::Off,
+            format!(
+                "Family filter: {who}, but lookups aren't forced through the router for anyone"
+            ),
+        ),
+        (0, false) if proxy_only => (
+            Cover::Ok,
+            format!(
+                "Family filter ({}): on no device · its first use takes over the router's \
+                 forcing of lookups, the same for everyone else",
+                svc.name
+            ),
+        ),
+        (0, false) => (
+            Cover::Ok,
+            format!(
+                "Family filter: on no device; it can't work on this router yet ({} sends \
+                 every lookup to the router first)",
+                blocked.join(", ")
+            ),
+        ),
+        (_, false) => (
+            Cover::Off,
+            format!(
+                "Family filter: {who}, but the router's forced lookups ({}) are in front of \
+                 them again, so they aren't filtered",
+                blocked.join(", ")
+            ),
+        ),
+        (0, true) => (
+            Cover::Ok,
+            format!(
+                "Family filter ({}): on no device · Enter under Filtered by you chooses",
+                svc.name
+            ),
+        ),
+        _ => (
+            if drift { Cover::Weak } else { Cover::Ok },
+            format!("Family filter ({}): on {who}", svc.name),
+        ),
+    };
+    say("family", state, text);
 }
 
 /// How the network is covered: a sentence each, in a fixed order. A part that wasn't read
@@ -1648,6 +2109,11 @@ pub fn posture(s: &State) -> Vec<Line> {
         },
     }
 
+    // The family filter: on which devices, and whether it can work here.
+    if let Some(u) = s.read.uci {
+        say_family(s, u, &mut say);
+    }
+
     // Wi-Fi.
     if s.read.uci.is_some() {
         let aps = &p.aps;
@@ -1759,6 +2225,69 @@ pub fn posture(s: &State) -> Vec<Line> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod wording {
+    use super::*;
+
+    #[test]
+    fn a_fix_with_claude_is_named_in_its_own_words() {
+        for (fix, said) in [
+            (
+                "Set redirect_https to 1 in /etc/config/uhttpd (or drop listen_http).",
+                // (Too long for the line: the general words.)
+                None,
+            ),
+            (
+                "Close the firewall rule or bind it inside.",
+                Some("Enter: with Claude, close the firewall rule or bind it inside"),
+            ),
+            (
+                "If you meant it, add it to expect.forwards in network_config.yaml (or press b); otherwise remove the redirect.",
+                Some("Enter: with Claude, remove the redirect"),
+            ),
+            (
+                "Update it now (its row on the server's Maintenance screen), or close the door.",
+                Some("Enter: with Claude, update it now"),
+            ),
+            ("Run the audit again when the router answers.", None),
+            ("If you meant it, press b.", None),
+            ("Fix it.", None),
+            ("", None),
+        ] {
+            assert_eq!(fix_step(fix).as_deref(), said, "{fix}");
+        }
+        // Always within the line.
+        let long = "Turn the thing that listens on every address of the router off, then check that nothing else needs it any more";
+        assert!(fix_step(long).is_none_or(|s| s.chars().count() <= 63));
+    }
+
+    #[test]
+    fn a_long_sentence_takes_the_step_line_and_ends_on_a_thought() {
+        let (a, b, step) = two_lines("A short one", "Enter: do it", 40);
+        assert_eq!(
+            (a.as_str(), b.as_str(), step),
+            ("A short one", "Enter: do it", true)
+        );
+        let (a, b, step) = two_lines(
+            "Udp port 1900 on the router is open to the internet (the kernel)",
+            "Enter: fix it",
+            40,
+        );
+        assert!(!step);
+        assert_eq!(
+            format!("{a} {b}"),
+            "Udp port 1900 on the router is open to the internet (the kernel)"
+        );
+        // Too long for two lines: the second ends on a clause, marked.
+        let (_, b, _) = two_lines(
+            "An unlisted door from the internet is open: game, which a device inside serves on udp port 8000 to 8010, nobody listed",
+            "Enter",
+            40,
+        );
+        assert!(b.ends_with('…') && b.chars().count() <= 40, "{b}");
+    }
 }
 
 #[cfg(test)]
@@ -2214,7 +2743,7 @@ mod tests {
         // The bouncer installed on the router and not switched on: the posture, the row
         // and the finding say one thing, there is one row, and its Enter is the session
         // across the server and the router that finishes it.
-        const OFF: &str = "CrowdSec's blocker is installed on the router but not switched on: the server's blocklist isn't enforced at the edge yet";
+        const OFF: &str = "CrowdSec is installed on the router but switched off: attackers the server banned aren't turned away there";
         let mut w = World::fixture();
         w.bouncer = Some(Bouncer {
             enabled: Some(false),
@@ -2263,7 +2792,7 @@ mod tests {
         w.guard = None;
         assert_eq!(
             w.row(EDGE_ROW).title,
-            "CrowdSec's blocker is installed on the router but not switched on: what CrowdSec would block isn't enforced at the edge yet"
+            "CrowdSec is installed on the router but switched off: known attackers aren't turned away there"
         );
         // Marked expected (here or on Maintenance): gone from both.
         w.expected = vec![EDGE.into()];
@@ -2294,6 +2823,10 @@ mod tests {
             (
                 "filter",
                 "Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't update by itself",
+            ),
+            (
+                "family",
+                "Family filter (CleanBrowsing Family): on no device · Enter under Filtered by you chooses",
             ),
             (
                 "wifi",
@@ -2454,6 +2987,11 @@ mod tests {
         let said = crate::security::gather::Said {
             rows: w.rows(),
             posture: w.with(posture),
+            filtered: vec![
+                ("kid's tablet".into(), Some(0)),
+                ("02:00:5e:00:53:44".into(), None),
+            ],
+            audited: Some("2026-10-26T09:00:00Z".parse().unwrap()),
         };
         let text = crate::cli::security_text("home", &said, &[]).join("\n");
         for want in [
@@ -2464,6 +3002,9 @@ mod tests {
             "\nHow you're covered\n  ok    2 doors are open from the internet",
             "  ok    Logging in to the router takes a key, and its admin page is encrypted",
             "What a tool like this can't see: what is inside the traffic",
+            "\nFiltered by you (family filter, CleanBrowsing Family)\n  kid's tablet, since ",
+            "  02:00:5e:00:53:44 (this machine has no note of when)",
+            "The security audit's own rows are from its latest report (2026-10-26 09:00 UTC).",
         ] {
             assert!(text.contains(want), "{want}:\n{text}");
         }
@@ -2471,6 +3012,8 @@ mod tests {
         let calm = crate::security::gather::Said {
             rows: said.rows.into_iter().filter(|r| r.can_wait).collect(),
             posture: said.posture,
+            filtered: Vec::new(),
+            audited: None,
         };
         let text = crate::cli::security_text("home", &calm, &[("log".into(), "no logread".into())])
             .join("\n");
@@ -2552,7 +3095,9 @@ mod tests {
             ("sec:packages:net:home", Hole),
             ("sec:app:srv:myserver:stack", Hole),
             ("sec:door:net:home:tcp:443", Hole),
+            ("sec:os-life:srv:myserver", Hole),
             ("sec:ssh-password:srv:myserver", Login),
+            ("sec:cert:net:home:tcp:443", Login),
             ("sec:admin-http:net:home", Login),
             ("sec:watch", Guard),
             ("sec:dns-filter:net:home", Guard),
@@ -2592,7 +3137,11 @@ mod tests {
             vec![
                 look("sec:inbound"),
                 a("finding:net:ssh:password", Rank::Now, Act::SshKeys),
-                a("audit:sec:firmware:net:home", Rank::Now, Act::Maint),
+                a(
+                    "audit:sec:firmware:net:home",
+                    Rank::Now,
+                    Act::Maint(crate::config::ItemKind::Firmware),
+                ),
                 a("finding:net:flow:dmz-lan", Rank::Now, Act::Evidence),
             ],
             None,
@@ -2949,7 +3498,7 @@ mod tests {
                 id: "sec:x".into(),
                 asks: false,
             },
-            Act::Maint,
+            Act::Maint(crate::config::ItemKind::Firmware),
             Act::Group {
                 kind: Kind::Devices,
                 rows: Vec::new(),
@@ -2979,13 +3528,17 @@ mod tests {
             "Enter: see the numbers behind it (nothing to change)"
         );
         // A row that knows better says so itself.
-        let mut r = a("audit:sec:firmware:net:home", Rank::Now, Act::Maint);
-        assert_eq!(r.step(true), "Enter: go to Maintenance, where it is done");
-        r.next = Some("Enter: update the router's software (Maintenance does it)".into());
+        let mut r = a(
+            "audit:sec:firmware:net:home",
+            Rank::Now,
+            Act::Maint(crate::config::ItemKind::Firmware),
+        );
         assert_eq!(
             r.step(true),
-            "Enter: update the router's software (Maintenance does it)"
+            "Enter: upgrade the router's software (it shows the plan first)"
         );
+        r.next = Some("Enter: something it knows better".into());
+        assert_eq!(r.step(true), "Enter: something it knows better");
     }
 
     #[test]
@@ -3033,5 +3586,86 @@ mod tests {
             ["act now", "look", "note"]
         );
         assert!(Rank::Now < Rank::Look && Rank::Look < Rank::Note);
+    }
+
+    /// The audit's certificate, end-of-support and log items say in plain words what
+    /// Enter does, are in their class, and a door's certificate shows the door's panel.
+    #[test]
+    fn the_audits_certificate_release_and_log_rows_say_what_enter_does() {
+        use sentry_core::secaudit::{Group, Item, State as St};
+        let item = |id: &str, group, fix: &str| Item {
+            id: id.into(),
+            group,
+            state: St::Worth,
+            rank: 0,
+            title: format!("about {id}"),
+            why: "Why.".into(),
+            fix: fix.into(),
+            targets: vec!["net:home".into()],
+            evidence: vec![],
+            brief: String::new(),
+            question: None,
+        };
+        let items = [
+            item(
+                "sec:cert:net:home:tcp:443",
+                Group::GettingIn,
+                "Use a certificate from a public authority (Let's Encrypt is free and renews \
+                 by itself).",
+            ),
+            item(
+                "sec:os-life:net:home",
+                Group::KnownHoles,
+                "Upgrade to a supported release (with a backup first); a session with Claude \
+                 can plan it.",
+            ),
+            item(
+                "sec:logs:net:home",
+                Group::Recovering,
+                "Keep more of it (journald's size and age limits); a session with Claude can.",
+            ),
+        ];
+        let w = World::fixture();
+        let rows = w.with(|s| {
+            let mut rows = Vec::new();
+            audit_rows(&items, "net:home", s, &mut rows);
+            rows
+        });
+        let of = |id: &str| {
+            rows.iter()
+                .find(|r| r.id == sentry_app::secaudit::row_key(id))
+                .unwrap_or_else(|| panic!("no row for {id}: {rows:#?}"))
+        };
+        for (id, step, class, subject) in [
+            (
+                "sec:cert:net:home:tcp:443",
+                "Enter: renew or replace it with Claude (you approve the plan)",
+                Class::Login,
+                Subject::Ingress,
+            ),
+            (
+                "sec:os-life:net:home",
+                "Enter: plan the upgrade with Claude (you approve the plan)",
+                Class::Hole,
+                Subject::None,
+            ),
+            (
+                "sec:logs:net:home",
+                "Enter: keep the log longer, with Claude (you approve the plan)",
+                Class::Recovery,
+                Subject::None,
+            ),
+        ] {
+            let r = of(id);
+            assert_eq!(r.step(true), step, "{id}");
+            assert!(step.chars().count() <= 63, "{step}");
+            assert_eq!(r.class, class, "{id}");
+            assert_eq!(r.subject, subject, "{id}");
+            // Without Claude Code: what Enter still does.
+            assert_eq!(
+                r.step(false),
+                "Enter: read it in the security audit's report"
+            );
+        }
     }
 }

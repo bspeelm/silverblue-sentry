@@ -9,20 +9,20 @@ expression: s
 ┌ Needs attention · 10 · o shows 2 good to know ───────────────────────────────┐
 │              Start here                                                      │
 │  1. act now  The router's firmware has security fixes waiting                │
-│              Enter: update the router's software (Maintenance does it)       │
+│              Enter: upgrade the router's software (it shows the plan first)  │
 │  2. look     12 of the router's packages can be updated                      │
-│              Enter: update the router's packages (Maintenance does it)       │
+│              Enter: update the router's packages (it shows the plan first)   │
 │  3. look     The router's remote login (ssh) still accepts a password        │
 │              Enter: logins by key only (sentry checks its key works first)   │
-│              Then                                                            │
-│  4. look     The router's admin page can be opened without encryption        │
-│              Enter: make the admin page use encryption (HTTPS)               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ How you're covered ──────────────────────────────────────────────────────────┐
 │ ! weak Who is on the network: see 9 above                                    │
 │ ! weak Logging in to the router: see 3 and 4 above                           │
 │ ✗ off  Blocking attackers at the router: see 5 above                         │
-│ ✓ ok   5 other parts are fine (a taller window lists them)                   │
+│ ✓ ok   6 other parts are fine (a taller window lists them)                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Filtered by you · family filter: no device ──────────────────────────────────┐
+│ Choose devices…                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
- Enter  Maintenance   x  expected   A  ask Claude   ?  help   q  quit
+ Enter  do it   x  expected   z  later   A  ask Claude   ?  help   q  quit

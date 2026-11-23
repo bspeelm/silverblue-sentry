@@ -146,11 +146,17 @@ pub fn never(cmd: &str) -> Option<&'static str> {
                     if verb("guard") && verb("keep") {
                         return Some("keeping a change the router is about to take back is yours");
                     }
-                    if verb("guard") && verb("apply") {
+                    // (The Security page's actions, the family filter among them, are
+                    // guarded changes of their own: the page's Enter and its confirm.)
+                    if (verb("guard") || verb("security")) && verb("apply") {
                         return Some("it changes the config the network is reached through");
                     }
                     if verb("firmware") && verb("flash") {
                         return Some("it flashes firmware");
+                    }
+                    // The firmware it would flash, and what is installed after one.
+                    if verb("firmware") && (verb("download") || verb("add-missing")) {
+                        return Some("it is part of a firmware upgrade");
                     }
                     // A router's packages, when more than leaves may be in the
                     // transaction (the workflow's risky step, however a file marks it).
@@ -289,6 +295,14 @@ mod tests {
                 false,
             ),
             (Asked::Plan(&["sentry network firmware home flash"]), false),
+            (
+                Asked::Plan(&["sentry-network security home apply filter:ab12cd34"]),
+                false,
+            ),
+            (
+                Asked::Plan(&["sentry-network security home plan filter:ab12cd34"]),
+                true,
+            ),
             (Asked::Plan(&["sentry-network packages preview"]), true),
             (
                 Asked::Plan(&["sentry-network guard preview configs=dhcp"]),

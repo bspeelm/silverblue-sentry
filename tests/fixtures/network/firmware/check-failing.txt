@@ -1,0 +1,25 @@
+ASU-Server     https://sysupgrade.openwrt.org
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.6 r33311-981c978eff (kernel 6.12.112)
+
+Package version changes:
+  dnsmasq                        2.93-r1                        2.93-r2
+  example-addon                  1.2.3-r1                       missing to-version
+1 packages missing in target version, cannot upgrade
+
+There are 1 missing and 0 modified default packages
+Default package analysis:
+  Default                        Provided-by
+  ppp                            (missing)
+
+There are currently package build failures for 25.12.6 x86_64:
+  Feed: packages
+    example-addon                Sat Nov  1 07:05:36 2026 - package installed locally, cannot upgrade
+1 of 4 package build failures affect this device: details at
+  https://downloads.openwrt.org/releases/faillogs-25.12/x86_64/
+
+WARNING: You have a custom uci-defaults script at
+  /rom/etc/uci-defaults/99-asu-defaults
+and have not referenced it with the 'init-script' option.
+WARNING: There are 1 missing default packages, confirm this is expected before proceeding
+ERROR: Checks reveal errors, do not upgrade (re-run with '--verbose' for details)

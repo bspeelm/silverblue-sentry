@@ -191,10 +191,7 @@ pub fn last_done(t: &Task, log: &[LogEntry], audited: Option<Timestamp>) -> Opti
             let ok = h.result == "done";
             h.tags.contains(&tag)
                 || match &act {
-                    Do::Run(wf) => {
-                        ok && &h.workflow == wf
-                            && t.item.as_ref().is_none_or(|i| h.item.as_ref() == Some(i))
-                    }
+                    Do::Run(wf) => ok && &h.workflow == wf && item_fits(t, h),
                     Do::Plan(it) => ok && h.item.as_ref() == Some(it),
                     Do::Job(j) => ok && h.kind == "job" && job_matches(j, &h.workflow),
                     Do::Audit => ok && h.kind == "job" && h.workflow == "audit",
@@ -218,9 +215,7 @@ pub fn tag_run(entry: &mut LogEntry, tasks: &[Task]) {
     let tags: Vec<String> = tasks
         .iter()
         .filter(|t| match t.action() {
-            Do::Run(wf) => {
-                wf == h.workflow && t.item.as_ref().is_none_or(|i| h.item.as_ref() == Some(i))
-            }
+            Do::Run(wf) => wf == h.workflow && item_fits(t, h),
             Do::Plan(it) => h.item.as_ref() == Some(&it),
             _ => false,
         })
@@ -228,6 +223,17 @@ pub fn tag_run(entry: &mut LogEntry, tasks: &[Task]) {
         .filter(|k| !h.tags.contains(k))
         .collect();
     entry.head.tags.extend(tags);
+}
+
+/// A run of the task's workflow does the task: its `item` narrows it only when the run says
+/// which item it changed. A run with no item is the workflow as a whole (the network's
+/// firmware upgrade, or a task's own Enter, which starts the workflow without an item), so a
+/// task written with an item is done by it too; a run for another item is not.
+fn item_fits(t: &Task, h: &super::log::LogHead) -> bool {
+    match (&t.item, &h.item) {
+        (Some(want), Some(ran)) => want == ran,
+        _ => true,
+    }
 }
 
 /// A job task's name against a job that ran (`cleanup`: any cleanup job).
@@ -839,6 +845,70 @@ mod tests {
                 .unwrap();
         tag_run(&mut failed, &tasks);
         assert!(failed.head.tags.is_empty());
+    }
+
+    #[test]
+    fn a_run_of_the_whole_workflow_does_a_task_written_for_an_item() {
+        // A review's task: `run firmware-upgrade`, item `firmware`. The run is logged as the
+        // workflow as a whole (`kind = "system"`, no item).
+        let mut fw = task("run firmware-upgrade", None, "2026-11-01T00:00:00Z");
+        fw.id = "fw".into();
+        fw.item = Some("firmware".into());
+        let mut web = task("run compose-update", None, "2026-11-01T00:00:00Z");
+        web.id = "web".into();
+        web.item = Some("web".into());
+        let tasks = vec![fw.clone(), web.clone()];
+        let whole = entry(
+            "firmware-upgrade",
+            None,
+            "done",
+            "2026-11-20T10:00:00Z",
+            &[],
+        );
+        assert_eq!(
+            last_done(&fw, std::slice::from_ref(&whole), None),
+            Some(ts("2026-11-20T10:00:00Z"))
+        );
+        assert!(!due(
+            &fw,
+            std::slice::from_ref(&whole),
+            None,
+            ts("2026-11-21T00:00:00Z")
+        ));
+        let mut tagged = whole.clone();
+        tag_run(&mut tagged, &tasks);
+        assert_eq!(tagged.head.tags, ["task:fw"]);
+        // A run that said which item it changed does only that item's task.
+        let other = entry(
+            "compose-update",
+            Some("db"),
+            "done",
+            "2026-11-20T10:00:00Z",
+            &[],
+        );
+        assert_eq!(last_done(&web, std::slice::from_ref(&other), None), None);
+        let mut tagged = other.clone();
+        tag_run(&mut tagged, &tasks);
+        assert!(tagged.head.tags.is_empty());
+        let same = entry(
+            "compose-update",
+            Some("web"),
+            "done",
+            "2026-11-20T10:00:00Z",
+            &[],
+        );
+        assert!(last_done(&web, std::slice::from_ref(&same), None).is_some());
+        // Neither a failed run nor another workflow does it.
+        let failed = entry(
+            "firmware-upgrade",
+            None,
+            "failed",
+            "2026-11-20T10:00:00Z",
+            &[],
+        );
+        assert_eq!(last_done(&fw, &[failed], None), None);
+        let pkgs = entry("package-update", None, "done", "2026-11-20T10:00:00Z", &[]);
+        assert_eq!(last_done(&fw, &[pkgs], None), None);
     }
 
     #[test]

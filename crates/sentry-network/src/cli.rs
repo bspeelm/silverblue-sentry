@@ -741,7 +741,7 @@ pub fn guard(name: &str, action: &str, rest: &[String]) -> u8 {
 }
 
 /// The services that should run, do: what `packages check` and `firmware after` say.
-fn services_up(r: &Router) -> bool {
+pub(crate) fn services_up(r: &Router) -> bool {
     use collect::services::{self, State};
     let svc = match services::collect(r) {
         Ok(s) => s,
@@ -897,11 +897,10 @@ pub fn packages(name: &str, action: &str, rest: &[String]) -> u8 {
     }
 }
 
-/// `firmware <name> check|flash|after`: what the `firmware-upgrade` workflow's own steps
-/// run. `flash` is `owut upgrade` on the router, with sentry's sysupgrade lock held, and
-/// the wait for it to come back on a new boot. Never run end to end (the workflow is a
-/// draft).
+/// `firmware <name> check|backup|plan|download|flash|wait|after|add-missing|forget`: what
+/// the `firmware-upgrade` workflow's steps run (`firmware.rs`).
 pub fn firmware(name: &str, action: &str) -> u8 {
+    use super::firmware as fw;
     let (n, cfg) = match load(Some(name)) {
         Ok(x) => x,
         Err(e) => {
@@ -910,113 +909,26 @@ pub fn firmware(name: &str, action: &str) -> u8 {
         }
     };
     let r = Router::new(&n, &cfg);
-    let board = || ifaces::collect(&r).map(|i| i.board);
-    let boot_id = |fresh: bool| {
-        let c = r.cmd("cat").arg("/proc/sys/kernel/random/boot_id");
-        let c = if fresh { c.own_connection() } else { c };
-        c.output().map(|s| s.trim().to_string())
+    let mut say = |l: String| println!("{l}");
+    let mut err = |l: String| eprintln!("{l}");
+    let mut o = fw::Out {
+        say: &mut say,
+        err: &mut err,
     };
     match action {
-        "check" => match board() {
-            Ok(b) => {
-                println!(
-                    "running {} {} ({}, {})",
-                    b.distribution, b.version, b.target, b.board_name
-                );
-                let Some(series) = super::maint::eval::series(&b.version) else {
-                    println!("not a release (a snapshot build): nothing to compare with");
-                    return 0;
-                };
-                let up = super::maint::upstream::get(&n, &series);
-                match &up.data.releases {
-                    Ok(rs) => println!(
-                        "{} release(s) known upstream for {series}: {rs:?}",
-                        rs.len()
-                    ),
-                    Err(e) => println!("the releases couldn't be looked up: {e}"),
-                }
-                0
-            }
-            Err(e) => {
-                eprintln!("sentry-network firmware: {e}");
-                1
-            }
-        },
-        "flash" => {
-            // sysupgrade keeps its file list at a fixed path: nothing else of sentry's
-            // may run it while owut does.
-            let _turn = match super::backup::turn(&r.scope) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("sentry-network firmware: the sysupgrade lock: {e}");
-                    return 1;
-                }
-            };
-            let (Ok(before), Ok(boot)) = (board(), boot_id(false)) else {
-                eprintln!("the router didn't answer: nothing was flashed");
-                return 1;
-            };
-            println!("running {} · flashing with `owut upgrade`", before.version);
-            // The connection drops when the router restarts: that is the upgrade happening.
-            match r
-                .sh("owut upgrade")
-                .timeout(Some(std::time::Duration::from_secs(900)))
-                .run()
-            {
-                Ok(o) => {
-                    print!("{}", o.stdout);
-                    eprint!("{}", o.stderr);
-                }
-                Err(e) => println!("(the connection ended: {e})"),
-            }
-            println!("… waiting for the router to come back (up to 10 minutes)");
-            let until = Instant::now() + std::time::Duration::from_secs(600);
-            while Instant::now() < until {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                if let Ok(now) = boot_id(true)
-                    && !now.is_empty()
-                    && now != boot
-                {
-                    return match board() {
-                        Ok(b) if b.version != before.version => {
-                            println!("✓ back, running {} (was {})", b.version, before.version);
-                            0
-                        }
-                        Ok(b) => {
-                            eprintln!(
-                                "✗ back on {}: it restarted, but nothing was flashed",
-                                b.version
-                            );
-                            1
-                        }
-                        Err(e) => {
-                            eprintln!("✗ back, but the board didn't read: {e}");
-                            1
-                        }
-                    };
-                }
-            }
-            eprintln!("✗ the router didn't come back on a new boot within 10 minutes");
-            1
-        }
-        "after" => {
-            match board() {
-                Ok(b) => println!("running {} {}", b.distribution, b.version),
-                Err(e) => {
-                    eprintln!("the board didn't read: {e}");
-                    return 1;
-                }
-            }
-            let up = services_up(&r);
-            let clients = collect::clients::collect(&r)
-                .map(|c| c.leases.len())
-                .unwrap_or(0);
-            println!("{clients} device(s) hold a lease");
-            let audited = audit(Some(&n));
-            if up && audited == 0 { 0 } else { 1 }
-        }
+        "check" => fw::check(&r, &mut o),
+        "backup" => fw::backup(&r, &mut o),
+        "plan" => fw::plan(&r, &mut o),
+        "download" => fw::download(&r, &mut o),
+        "flash" => fw::flash(&r, &mut o),
+        "wait" => fw::wait(&r, &mut o),
+        "after" => fw::after(&r, &mut o, &|| audit(Some(&n))),
+        "add-missing" => fw::add_missing(&r, &mut o),
+        "forget" => fw::forget(&r, &mut o),
         other => {
-            eprintln!("firmware: `{other}` isn't check, flash or after");
+            eprintln!(
+                "firmware: `{other}` isn't check, backup, plan, download, flash, wait, after, add-missing or forget"
+            );
             2
         }
     }
@@ -1105,10 +1017,18 @@ pub fn security(rest: &[String]) -> u8 {
                 })
             })
             .collect();
+        let filtered: Vec<_> = said
+            .filtered
+            .iter()
+            .map(|(who, since)| serde_json::json!({ "device": who, "since": since }))
+            .collect();
         let v = serde_json::json!({
             "network": n,
             "attention": rows,
             "covered": covered,
+            "filtered": filtered,
+            "service": super::security::family::service().name,
+            "audited": said.audited.map(|t| t.to_string()),
             "not_read": g.errors,
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -1157,6 +1077,30 @@ pub fn security_text(
     }
     for (what, why) in not_read {
         l.push(format!("  (not read: {what}: {why})"));
+    }
+    if !said.filtered.is_empty() {
+        l.push(String::new());
+        l.push(format!(
+            "Filtered by you (family filter, {})",
+            super::security::family::service().name
+        ));
+        let now = jiff::Timestamp::now().as_second();
+        for (who, since) in &said.filtered {
+            l.push(match since {
+                Some(at) => format!(
+                    "  {who}, since {} ago",
+                    super::security::attention::lasting(now.saturating_sub(*at).max(0) as u64)
+                ),
+                None => format!("  {who} (this machine has no note of when)"),
+            });
+        }
+    }
+    if let Some(at) = said.audited {
+        l.push(String::new());
+        l.push(format!(
+            "The security audit's own rows are from its latest report ({}).",
+            at.strftime("%Y-%m-%d %H:%M UTC")
+        ));
     }
     l.push(String::new());
     l.push(

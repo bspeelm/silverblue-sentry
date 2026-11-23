@@ -2479,6 +2479,7 @@ name = "sentry-core"
 version = "0.5.1"
 dependencies = [
  "anyhow",
+ "insta",
  "jiff",
  "ratatui",
  "rustix",

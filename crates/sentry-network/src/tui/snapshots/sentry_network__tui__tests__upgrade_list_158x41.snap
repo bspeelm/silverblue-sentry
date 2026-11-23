@@ -13,9 +13,9 @@ expression: "stable.join(\"\\n\")"
 │ now                                                      │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
-│ firmware-upgrade  6 steps  draft                         │  │                                                                                              │
-│ Upgrade the router's firmware with owut, after a config  │  │                                                                                              │
-│ backup, and check it came back                           │  │                                                                                              │
+│ firmware-upgrade  9 steps                                │  │                                                                                              │
+│ Upgrade the router to the newest release of its series,  │  │                                                                                              │
+│ keeping its settings and add-on packages                 │  │                                                                                              │
 │ never run                                                │  │                                                                                              │
 │                                                          │  │                                                                                              │
 │ guarded-change  3 steps                                  │  │                                                                                              │

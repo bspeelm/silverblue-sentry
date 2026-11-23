@@ -1872,3 +1872,983 @@ fn live_security_ssh_keys_only() {
     assert_eq!(code, 3, "{said:#?}");
     assert!(said.iter().any(|l| l.contains("already off")), "{said:#?}");
 }
+
+/// The firmware upgrade through the window, against the stand-ins `scripts/live-router.sh`
+/// puts on the disposable router (a pretend owut, sysupgrade's `--test` and flash, a
+/// pretend restart that drops ssh logins and changes the boot id). In turn: a warning owut
+/// raises stops the plan before any download; a router already on the newest release ends
+/// the run done after its plan, nothing needed; an image whose checksum isn't the server's
+/// stops before the flash and is removed; the router not back by the deadline ends the
+/// wait failed, and a window opened once it answers carries on at the checks; a package
+/// missing after the flash is installed again by the step that offers it; a good run
+/// offers nothing about drafts (it isn't one). Nothing here can flash, restart or write a
+/// real router.
+#[test]
+#[ignore]
+fn live_firmware_upgrade() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use sentry_app::effect::{Effect, WfCmd};
+    use sentry_app::{App, Event};
+    use sentry_core::workflows::runner::Next;
+    use sentry_core::workflows::state::RunStatus;
+    use std::time::Instant;
+
+    // The backup goes to a throwaway key in the scratch dir (the script's config names
+    // its file).
+    let Some(scratch) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    else {
+        return;
+    };
+    if std::env::var("SENTRY_ROUTER_SCRATCH").is_err() {
+        return;
+    }
+    let to = crate::backup::make_key(&scratch.join("identity.txt")).unwrap();
+    std::fs::write(scratch.join("recipients.txt"), format!("{to}\n")).unwrap();
+    // Short enough for a test; the stand-in comes back after 8 s, or 45 s when slow.
+    // SAFETY: these tests run one at a time (`--test-threads=1`), nothing reads it meanwhile.
+    unsafe { std::env::set_var("SENTRY_FIRMWARE_WAIT", "20") };
+    // SAFETY: as above. The flash's own watch, short (the hanging stand-in outlasts it).
+    unsafe { std::env::set_var("SENTRY_FIRMWARE_WATCH", "8") };
+    let Some(r) = router() else { return };
+    let name = r.name.clone();
+    // Until a new login is let in (the script's seed has just restarted dropbear; the
+    // pretend restart stops it for a while).
+    let answers = |r: &Router, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while r
+            .cmd("true")
+            .own_connection()
+            .timeout(Some(Duration::from_secs(5)))
+            .run()
+            .map_or(true, |o| o.code != 0)
+        {
+            assert!(Instant::now() < until, "the router never answered");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    };
+    answers(&r, 30);
+    let mode = |m: &str| {
+        on(
+            &r,
+            &format!(
+                "echo {m} >/etc/sentry-stub/mode; S=/usr/share/sentry-stub; cp $S/os-release /usr/lib/os-release; cp $S/openwrt_release /etc/openwrt_release"
+            ),
+        )
+    };
+    let image_there = |r: &Router| on(r, "ls /tmp/sentry-firmware.bin").code == 0;
+
+    let open = || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(
+            tx,
+            &crate::tui::id_of(&name),
+            crate::tui::target(router().unwrap()),
+        );
+        a.win.scripted_turns = true;
+        a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+        a.start(Instant::now());
+        a.slot_mut().auto_review.after_run = false;
+        a.slot_mut().auto_review.at_start = false;
+        // The window's first reads go first (dropbear lets few logins be made at once).
+        let until = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+        (a, rx)
+    };
+    let key = |a: &mut App, c: KeyCode| {
+        a.on_event(
+            Event::Key(KeyEvent::new(c, KeyModifiers::NONE)),
+            Instant::now(),
+        );
+    };
+    let screen = |a: &mut App| sentry_app::app::render_to_string(a, 158, 50);
+    // Until the run waits on a step (none: it ended), answering a note's prompt with none.
+    let settle = |a: &mut App, rx: &std::sync::mpsc::Receiver<Event>, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        loop {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+            if matches!(a.win.input, sentry_core::tui::input::Input::Prompt(..)) {
+                key(a, KeyCode::Enter);
+            }
+            match a.slot().run.as_ref() {
+                Some(s) if s.live().is_none() && s.done() => return None,
+                Some(s) if s.live().is_none() && !matches!(s.next(), Next::Run(_)) => {
+                    return Some(s.next().clone());
+                }
+                None => return None,
+                _ => {}
+            }
+            assert!(Instant::now() < until, "nothing settled: {}", screen(a));
+        }
+    };
+    let log = |a: &App| -> String {
+        a.slot()
+            .run
+            .as_ref()
+            .map(|s| {
+                s.as_any()
+                    .downcast_ref::<crate::workflow::Session>()
+                    .unwrap()
+                    .log
+                    .iter()
+                    .map(|(l, _)| l.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    };
+    let start = |a: &mut App| {
+        a.apply(
+            vec![Effect::StartWorkflow("firmware-upgrade".into())],
+            Instant::now(),
+        );
+        assert!(a.slot().run.is_some(), "{}", screen(a));
+        key(a, KeyCode::Char('0'));
+    };
+    let done_with = |a: &mut App| {
+        a.apply(vec![Effect::Wf(WfCmd::Abandon)], Instant::now());
+        a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+    };
+    let boot = |r: &Router| on(r, "cat /proc/sys/kernel/random/boot_id").stdout;
+
+    // 1. A warning owut raises stops the plan: nothing downloaded.
+    mode("warn");
+    let (mut a, rx) = open();
+    start(&mut a);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 2,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("STOPPED before anything was downloaded") && said.contains("older version"),
+        "{said}"
+    );
+    assert!(!image_there(&r));
+    done_with(&mut a);
+    drop(a);
+
+    // 1b. Already on the newest release: the run ends after its plan, done and nothing
+    //     needed, with nothing downloaded and nothing handed to Claude.
+    mode("newest");
+    let (mut a, rx) = open();
+    start(&mut a);
+    let next = settle(&mut a, &rx, 120);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    let st = &a.slot().run.as_ref().unwrap().run().state;
+    assert_eq!(st.status, RunStatus::Done, "{}", log(&a));
+    assert!(sentry_app::remote::workflow::ended_with_nothing(st));
+    let said = log(&a);
+    assert!(
+        said.contains("nothing newer") && said.contains("nothing was needed"),
+        "{said}"
+    );
+    assert!(a.apply_session().is_none(), "nothing was handed to Claude");
+    assert!(!image_there(&r));
+    a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+    drop(a);
+
+    // 2. The image isn't the one the server built: stopped before the flash, removed.
+    mode("badsum");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    let boot_before = boot(&r);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 3,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    assert!(log(&a).contains("checksum"), "{}", log(&a));
+    assert!(
+        !image_there(&r),
+        "the image was left in the router's memory"
+    );
+    assert_eq!(boot(&r), boot_before, "nothing restarted");
+    done_with(&mut a);
+    drop(a);
+
+    // 2b. owut ends without flashing and without an ERROR line: within a minute the run
+    //     says the flash didn't happen; the router untouched; it can be started again.
+    mode("silent");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    let boot_before = boot(&r);
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let t = Instant::now();
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(60),
+        "took {:?}",
+        t.elapsed()
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("still running 25.12.5: the flash did not happen. Nothing was changed.")
+            && !said.contains("hasn't answered")
+            && !said.contains("recovery procedure"),
+        "{said}"
+    );
+    assert_eq!(boot(&r), boot_before, "nothing restarted");
+    assert!(!image_there(&r), "the image is left in memory");
+    assert!(crate::firmware::State::load(&r.scope).flashed_at.is_none());
+    done_with(&mut a);
+    // Started again: it runs as before.
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    done_with(&mut a);
+    drop(a);
+
+    // 2c. The flash keeps working past its watch with the router answering: the wait says
+    //     so, never that the router is gone.
+    mode("hang");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    assert!(
+        said.contains("the flash is still at work")
+            && said.contains("still runs as it was")
+            && !said.contains("hasn't answered"),
+        "{said}"
+    );
+    on(
+        &r,
+        "for p in /proc/[0-9]*; do grep -qE 'owut[^a-z]*[i]nstall' $p/cmdline 2>/dev/null && kill ${p#/proc/}; done; rm -f /tmp/sentry-firmware* /tmp/sentry-flash.log",
+    );
+    done_with(&mut a);
+    drop(a);
+
+    // 3. Not back by the deadline: the wait fails, calmly; a window opened when the router
+    //    answers again carries on at the checks.
+    mode("slow");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    assert!(image_there(&r));
+    // The flash's box first: what happens, then its Enter.
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a);
+    assert!(s.contains("What can't be helped from here"), "{s}");
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 120);
+    assert!(
+        matches!(
+            next,
+            Some(Next::Manual {
+                idx: 5,
+                failed: true
+            })
+        ),
+        "{next:?}\n{}",
+        log(&a)
+    );
+    let said = log(&a);
+    for words in [
+        "hasn't answered for",
+        "What was running when contact was lost: the flash",
+        "Your settings were backed up at",
+        "device's own recovery procedure",
+    ] {
+        assert!(said.contains(words), "{words}: {said}");
+    }
+    drop(a);
+    // The stand-in comes back by itself.
+    answers(&r, 90);
+    let (mut a, rx) = open();
+    key(&mut a, KeyCode::Char('0'));
+    let next = settle(&mut a, &rx, 180);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    let s = a.slot().run.as_ref().unwrap();
+    assert_eq!(s.run().state.status, RunStatus::Done, "{}", log(&a));
+    let said = log(&a);
+    assert!(
+        said.contains("runs OpenWrt 25.12.6")
+            && said.contains("installed by name before are installed"),
+        "{said}"
+    );
+    // It isn't a draft: nothing offers to take that off.
+    let s = screen(&mut a);
+    assert!(!s.contains("The firmware upgrade ran end to end"), "{s}");
+    a.apply(vec![Effect::Wf(WfCmd::Close)], Instant::now());
+    drop(a);
+
+    // 4. A package gone after the flash: named, and installed again by the step that offers
+    //    it (it asks: risky, never auto's).
+    mode("missing");
+    let (mut a, rx) = open();
+    start(&mut a);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(3)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        settle(&mut a, &rx, 120),
+        Some(Next::Confirm(4)),
+        "{}",
+        log(&a)
+    );
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 240);
+    assert_eq!(next, Some(Next::Confirm(7)), "{}", log(&a));
+    assert!(
+        log(&a).contains("Missing since the flash: partx-utils"),
+        "{}",
+        log(&a)
+    );
+    assert_ne!(on(&r, "apk --no-network info -e partx-utils").code, 0);
+    key(&mut a, KeyCode::Enter);
+    let next = settle(&mut a, &rx, 600);
+    assert!(next.is_none(), "{next:?}\n{}", log(&a));
+    assert_eq!(
+        a.slot().run.as_ref().unwrap().run().state.status,
+        RunStatus::Done,
+        "{}",
+        log(&a)
+    );
+    assert_eq!(on(&r, "apk --no-network info -e partx-utils").code, 0);
+    let _ = std::fs::remove_file(scratch.join("identity.txt"));
+}
+
+/// The family filter on two devices through the real flow, one taken off, and a proof
+/// that fails once the change is made: the sections exactly as designed, only sentry's
+/// touched, and taken back byte for byte. What this does NOT show (the container can't
+/// load a firewall): that fw4 makes these sections into nft rules, in the order the design
+/// says, and that a device's lookups are then redirected.
+#[test]
+#[ignore]
+fn live_security_filter() {
+    use crate::security::family;
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    const A: &str = "02:00:5e:00:53:51";
+    const B: &str = "02:00:5e:00:53:52";
+    let (ta, tb) = (
+        blocks::tag(&r.name, A).expect("a tag"),
+        blocks::tag(&r.name, B).expect("a tag"),
+    );
+    // Look-alikes of someone else's, and someone's own DNS intercept from lan, which
+    // sentry's redirects must come before.
+    let o = on(
+        &r,
+        &format!(
+            "uci set firewall.sentry_filter_kids=redirect && uci set firewall.sentry_filter_kids.name='sentry-filter-kids' \
+             && uci set firewall.sentry_filter_kids.src='lan' && uci set firewall.sentry_filter_kids.target='DNAT' \
+             && uci set firewall.mine=redirect && uci set firewall.mine.name='sentry-filter-{ta}' \
+             && uci set firewall.mine.src='lan' && uci set firewall.mine.src_dport='5353' && uci set firewall.mine.target='DNAT' \
+             && uci set firewall.intercept=redirect && uci set firewall.intercept.name='Intercept-DNS' \
+             && uci set firewall.intercept.src='lan' && uci set firewall.intercept.src_dport='53' \
+             && uci set firewall.intercept.target='DNAT' && uci commit firewall"
+        ),
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let before = sums(&r, &["firewall"]);
+    let both = Do::filter([ta.clone(), tb.clone()]).word();
+
+    // Devices sentry has no note of: nothing guessed, nothing changed.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("tick it on Security again")),
+        "{said:#?}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+
+    // What the screen notes when they are ticked.
+    let mut b = Blocks::load(&r.scope);
+    for (t, mac, label) in [(&ta, A, "a tablet"), (&tb, B, "a console")] {
+        b.device.insert(
+            t.clone(),
+            Dev {
+                mac: mac.into(),
+                label: label.into(),
+                zone: "lan".into(),
+                wifi: None,
+            },
+        );
+    }
+    b.save(&r.scope).unwrap();
+    // The container's dnsmasq doesn't run, and what it sends to port 53 outside goes
+    // through whatever this machine's own network does with DNS: the lookups are taken to
+    // hold (they are checked for real only from a real router, read-only).
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 24];
+
+    // The plan: reads only.
+    let mut shown = Vec::new();
+    secrun::show(&r, &Do::parse(&both).unwrap(), &mut |l| shown.push(l)).unwrap();
+    let text = shown.join("\n");
+    println!("{text}");
+    assert!(
+        text.contains("Family filter: on for a tablet and a console")
+            && text.contains("proven now: (test) taken to hold: CleanBrowsing Family answers")
+            && text.contains("Nothing has changed."),
+        "{text}"
+    );
+    assert_eq!(sums(&r, &["firewall"]), before);
+    nothing_left(&r, r.cfg.guard.window);
+
+    // Both, through the guard: kept.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
+    assert!(
+        said.iter().any(|l| l.contains("open pornhub.com on it")),
+        "{said:#?}"
+    );
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "kept");
+    let shown = on(&r, "uci show firewall").stdout;
+    for (t, mac) in [(&ta, A), (&tb, B)] {
+        let w = family::Want {
+            tag: t.clone(),
+            mac: mac.into(),
+            zone: "lan".into(),
+        };
+        for l in family::device_lines(&w, "wan", family::service()).unwrap() {
+            let want = l.strip_prefix("uci set ").unwrap();
+            assert!(shown.lines().any(|x| x == want), "{want}:\n{shown}");
+        }
+    }
+    // sentry's redirects come before someone's own DNS intercept.
+    let at = |what: &str| shown.lines().position(|l| l == what).unwrap();
+    assert!(
+        at(&format!("firewall.sentry_filter_{ta}=redirect")) < at("firewall.intercept=redirect")
+    );
+    assert!(
+        at(&format!("firewall.sentry_filter_{tb}=redirect")) < at("firewall.intercept=redirect")
+    );
+    assert_eq!(on(&r, "uci changes firewall").stdout.trim(), "");
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    let found = family::found(&uci);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.iter().all(family::Found::whole));
+    let noted = Blocks::load(&r.scope);
+    assert!(noted.filter.contains_key(&ta) && noted.filter.contains_key(&tb));
+    // None of them is a door from the internet.
+    assert!(
+        !uci.forwards()
+            .iter()
+            .any(|f| f.name.starts_with("sentry-filter-"))
+    );
+    // Already so: nothing to do.
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+
+    // One taken off: exactly its three sections go; the other's and the look-alikes stay.
+    let one = Do::filter([ta.clone()]).word();
+    let (code, said) = act(&r, &one);
+    assert_eq!(code, 0, "{said:#?}");
+    for s in ["", "_v6in", "_v6out"] {
+        assert_ne!(
+            on(&r, &format!("uci -q get firewall.sentry_filter_{tb}{s}")).code,
+            0
+        );
+        assert_eq!(
+            on(&r, &format!("uci -q get firewall.sentry_filter_{ta}{s}")).code,
+            0
+        );
+    }
+    assert_eq!(
+        on(
+            &r,
+            "uci get firewall.sentry_filter_kids.name; uci get firewall.mine.name; uci get firewall.intercept.name"
+        )
+        .stdout,
+        format!("sentry-filter-kids\nsentry-filter-{ta}\nIntercept-DNS\n")
+    );
+    let noted = Blocks::load(&r.scope);
+    assert!(noted.filter.contains_key(&ta) && !noted.filter.contains_key(&tb));
+
+    // A proof that fails once the change is made (the router's own lookups stop): sentry
+    // does nothing more, and the router takes it back byte for byte.
+    let before = sums(&r, &["firewall"]);
+    *secrun::LOOKUPS.lock().unwrap() = vec![true, true, false, false, false, false, false, false];
+    let (code, said) = act(&r, &both);
+    assert_ne!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("REVERTED")), "{said:#?}");
+    assert_eq!(sums(&r, &["firewall"]), before, "not byte for byte");
+    nothing_left(&r, r.cfg.guard.window);
+    assert_eq!(journal(&r).last().unwrap()["outcome"], "reverted");
+    let noted = Blocks::load(&r.scope);
+    assert!(
+        !noted.filter.contains_key(&tb),
+        "a change not kept isn't noted"
+    );
+    secrun::LOOKUPS.lock().unwrap().clear();
+}
+
+/// The real DNS proxy package on the disposable router (`apk add https-dns-proxy`, from
+/// the release's own feed: the container reaches it), with its config as it ships
+/// (`force_dns '1'`, both canary options on) and one upstream, and a dnsmasq started by
+/// hand on port 53 (the router's own can't run in the container) so the proxy sees 53
+/// listening and hands the firewall its redirect, as on a real router. That dnsmasq
+/// reads no config: what the canary names are answered with is read from the settings
+/// dnsmasq is given (`run`'s `Proof::Canaries` under test, `family::refused_by_config`).
+const PROXY_SETUP: &str = r#"set -e
+apk add -q https-dns-proxy >/dev/null 2>&1 || true
+[ -x /etc/init.d/https-dns-proxy ] || apk fix -q https-dns-proxy >/dev/null 2>&1
+[ -x /etc/init.d/https-dns-proxy ]
+cat > /etc/config/https-dns-proxy <<'EOF'
+config main 'config'
+	option canary_domains_icloud '1'
+	option canary_domains_mozilla '1'
+	option dnsmasq_config_update '*'
+	option force_dns '1'
+	option force_dns_port '53 853'
+	option force_dns_src_interface 'lan'
+	option user 'nobody'
+	option group 'nogroup'
+	option listen_addr '127.0.0.1'
+
+config https-dns-proxy
+	option bootstrap_dns '1.1.1.1,1.0.0.1'
+	option resolver_url 'https://cloudflare-dns.com/dns-query'
+	option listen_port '5053'
+EOF
+grep -q ":0035 " /proc/net/udp || dnsmasq -p 53 --no-resolv --conf-file=/dev/null -x /tmp/sentry-dm.pid
+/etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+sleep 2
+"#;
+
+fn proxy_rules(r: &Router) -> usize {
+    let o = on(r, "ubus call service list '{\"name\":\"https-dns-proxy\"}'");
+    crate::security::family::parse_forced(&o.stdout)
+        .unwrap_or_default()
+        .len()
+}
+
+/// The DNS proxy forcing and still: its two rules in procd's data on three reads 2 s apart,
+/// and no new start of it in the log between them. Each start of it restarts dnsmasq, and
+/// here (no dnsmasq can run in the container) a start can set off a few more within
+/// seconds; read in one of those gaps, the proxy forces nothing.
+fn proxy_settled(r: &Router) {
+    let starts = |r: &Router| {
+        on(r, "logread | grep -c 'Starting https-dns-proxy'; true")
+            .stdout
+            .trim()
+            .to_string()
+    };
+    let until = std::time::Instant::now() + Duration::from_secs(90);
+    let mut seen: Vec<(usize, String)> = Vec::new();
+    loop {
+        seen.push((proxy_rules(r), starts(r)));
+        let n = seen.len();
+        if n >= 3
+            && seen[n - 3..]
+                .iter()
+                .all(|x| x.0 == 2 && x.1 == seen[n - 1].1)
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the DNS proxy never settled: {seen:?}"
+        );
+        sleep(2);
+    }
+}
+
+/// dnsmasq's settings as they are now refuse every canary name.
+fn canaries_refused(r: &Router) -> bool {
+    let u = crate::collect::uci::collect(r).unwrap();
+    crate::security::family::CANARIES
+        .iter()
+        .all(|(n, _)| crate::security::family::refused_by_config(&u, n))
+}
+
+/// The proxy's own canary entries (`server=/name/`) are in dnsmasq's settings.
+fn proxys_canaries(r: &Router) -> usize {
+    let o = on(r, "uci -q get dhcp.@dnsmasq[0].server; true");
+    crate::security::family::CANARIES
+        .iter()
+        .filter(|(n, _)| o.stdout.contains(&format!("/{n}/")))
+        .count()
+}
+
+/// The family filter's first use on a router whose real DNS proxy forces every lookup:
+/// the takeover and the filter as one guarded change; a proof failing once it is made
+/// (firewall, the proxy's config and dhcp back byte for byte, the proxy forcing again);
+/// kept; the proxy stopped and started (it drops its own canary entries) with the canary
+/// names still refused by sentry's; the proxy forcing again by itself, put right; the
+/// last device off handing it back, the proxy's canary entries there at once and nothing
+/// of sentry's left. What this does NOT show: the container has no nft, so who comes
+/// first is read from the config and procd's data in fw4.uc's order
+/// (`family::simulated`), and the forced-DNS detection is made from procd's data; its
+/// dnsmasq isn't the router's, so the canary names' answers are what dnsmasq's settings
+/// say, not a lookup; a device's own lookups.
+#[test]
+#[ignore]
+fn live_security_takeover() {
+    use crate::security::family;
+    let Some(r) = router() else { return };
+    no_firewall_reload();
+    let o = on(&r, PROXY_SETUP);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    proxy_settled(&r);
+    assert_eq!(
+        proxy_rules(&r),
+        2,
+        "the proxy hands the firewall its two rules"
+    );
+    assert_eq!(proxys_canaries(&r), 3, "and dnsmasq its three canary names");
+    assert!(canaries_refused(&r));
+    const A: &str = "02:00:5e:00:53:61";
+    const B: &str = "02:00:5e:00:53:62";
+    let (ta, tb) = (
+        blocks::tag(&r.name, A).expect("a tag"),
+        blocks::tag(&r.name, B).expect("a tag"),
+    );
+    let mut b = Blocks::load(&r.scope);
+    for (t, mac, label) in [(&ta, A, "a tablet"), (&tb, B, "a console")] {
+        b.device.insert(
+            t.clone(),
+            Dev {
+                mac: mac.into(),
+                label: label.into(),
+                zone: "lan".into(),
+                wifi: None,
+            },
+        );
+    }
+    b.save(&r.scope).unwrap();
+    let both = Do::filter([ta.clone(), tb.clone()]).word();
+    let configs = ["firewall", "https-dns-proxy", "dhcp"];
+
+    // The proxy set to force lookups but not running (stopped, or caught restarting): its
+    // rules would come first once it is back, so no plan is made on that read. (Its stop
+    // takes its own canary entries out of dhcp; sentry changes nothing.)
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    on(&r, "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; true");
+    assert_eq!(proxy_rules(&r), 0);
+    let stopped = sums(&r, &configs);
+    let e = secrun::show(&r, &Do::parse(&both).unwrap(), &mut |_| {}).unwrap_err();
+    assert!(e.contains(crate::security::actions::PROXY_ABSENT), "{e}");
+    assert_eq!(sums(&r, &configs), stopped);
+    on(
+        &r,
+        "/etc/init.d/https-dns-proxy start >/dev/null 2>&1; true",
+    );
+    proxy_settled(&r);
+    assert_eq!(proxys_canaries(&r), 3, "its canary names back");
+    let before = sums(&r, &configs);
+
+    // The plan: the takeover and the canary entries in it, reads only.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let mut shown = Vec::new();
+    secrun::show(&r, &Do::parse(&both).unwrap(), &mut |l| shown.push(l)).unwrap();
+    let text = shown.join("\n");
+    println!("{text}");
+    assert!(
+        text.contains("First, once: sentry takes over from the DNS proxy")
+            && text.contains("uci set https-dns-proxy.config.force_dns=0")
+            && text.contains("address=/use-application-dns.net/")
+            && text.contains("After a router restart nothing changes")
+            && text.contains("Nothing has changed."),
+        "{text}\n(the proxy's procd data now: {} rules; through the shared connection: {:?})",
+        proxy_rules(&r),
+        r.output(&r.sh("ubus call service list '{\"name\":\"https-dns-proxy\"}'"))
+            .map(|t| t.len())
+    );
+    assert_eq!(sums(&r, &configs), before);
+
+    // A proof failing once the change is made: everything back, byte for byte.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true, true, false, false, false, false, false, false];
+    let (code, said) = act(&r, &both);
+    assert_ne!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("REVERTED")), "{said:#?}");
+    assert_eq!(sums(&r, &configs), before, "not byte for byte");
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "1"
+    );
+    proxy_settled(&r);
+    assert_eq!(proxy_rules(&r), 2, "the proxy forces lookups again");
+    nothing_left(&r, r.cfg.guard.window);
+
+    // Someone's real change waiting in dhcp: stopped before anything is armed, by
+    // option and never by value.
+    let o = on(&r, "uci set dhcp.@dnsmasq[0].domain='elsewhere.test'");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 3, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("have a change waiting that isn't saved")
+                && l.contains(".domain")
+                && !l.contains("elsewhere.test")),
+        "{said:#?}"
+    );
+    on(&r, "uci revert dhcp");
+    assert_eq!(sums(&r, &configs), before);
+    nothing_left(&r, r.cfg.guard.window);
+    // A waiting line that changes nothing (a package's delete and set of the same value,
+    // as adblock-fast keeps): let through, saved along.
+    let o = on(
+        &r,
+        "v=$(uci get dhcp.@dnsmasq[0].leasefile) && uci delete dhcp.@dnsmasq[0].leasefile && uci set dhcp.@dnsmasq[0].leasefile=\"$v\" && uci changes dhcp | grep -c leasefile",
+    );
+    assert_eq!(o.stdout.trim(), "2", "{}", o.stderr);
+
+    // Kept: the proxy's setting off, sentry's catch-all after both devices, the canary
+    // names refused by sentry's own entries too.
+    *secrun::LOOKUPS.lock().unwrap() = vec![true; 64];
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(said.iter().any(|l| l.starts_with("KEPT")), "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("use-application-dns.net refused")),
+        "{said:#?}"
+    );
+    let seen = secrun::prove(&r, crate::security::actions::Proof::Precedence).unwrap();
+    assert!(
+        seen.contains("every filtered device comes before the catch-all"),
+        "{seen}"
+    );
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "0"
+    );
+    assert_eq!(
+        proxy_rules(&r),
+        0,
+        "the proxy hands the firewall nothing now"
+    );
+    let shown = on(&r, "uci show firewall").stdout;
+    let at = |what: &str| {
+        shown
+            .lines()
+            .position(|l| l == what)
+            .unwrap_or_else(|| panic!("{what}:\n{shown}"))
+    };
+    assert!(
+        at(&format!("firewall.sentry_filter_{ta}=redirect")) < at("firewall.sentry_dns_0=redirect")
+    );
+    assert!(
+        at(&format!("firewall.sentry_filter_{tb}=redirect")) < at("firewall.sentry_dns_0=redirect")
+    );
+    at("firewall.sentry_dns_1.dest_port='853'");
+    let addr = on(&r, "uci -q get dhcp.@dnsmasq[0].address; true").stdout;
+    for (n, _) in family::CANARIES {
+        assert!(addr.contains(&format!("/{n}/")), "{n}: {addr}");
+    }
+    assert_eq!(Blocks::load(&r.scope).canaries.len(), 3);
+    nothing_left(&r, r.cfg.guard.window);
+
+    // The proxy stopped and started (a restart, an upgrade): it takes its own canary
+    // entries away and, forcing nothing, doesn't add them again; its backup of dnsmasq's
+    // servers may hand them back (it did here: they were in `doh_backup_server`), which
+    // nothing promises. Without them at all, sentry's keep the names refused.
+    let o = on(
+        &r,
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; /etc/init.d/https-dns-proxy start >/dev/null 2>&1; sleep 2",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    println!(
+        "the proxy's own canary entries after a stop and start: {}",
+        proxys_canaries(&r)
+    );
+    assert!(canaries_refused(&r), "refused across a stop and start");
+    assert_eq!(proxy_rules(&r), 0);
+    let o = on(
+        &r,
+        "for n in use-application-dns.net mask.icloud.com mask-h2.icloud.com; do uci -q del_list dhcp.@dnsmasq[0].server=/$n/; uci -q del_list dhcp.@dnsmasq[0].doh_backup_server=/$n/; done; uci commit dhcp",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(proxys_canaries(&r), 0);
+    assert!(canaries_refused(&r), "sentry's keep them refused");
+    let o = on(
+        &r,
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; /etc/init.d/https-dns-proxy start >/dev/null 2>&1; sleep 2",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(
+        proxys_canaries(&r),
+        0,
+        "forcing nothing, the proxy adds none"
+    );
+    assert!(canaries_refused(&r), "sentry's still keep them refused");
+
+    // The proxy forcing again by itself (an update, the web page): the same action puts
+    // the filter back in front.
+    let o = on(
+        &r,
+        "uci set https-dns-proxy.config.force_dns='1' && uci commit https-dns-proxy && /etc/init.d/https-dns-proxy reload >/dev/null 2>&1; sleep 2",
+    );
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    proxy_settled(&r);
+    assert_eq!(proxy_rules(&r), 2);
+    let (code, said) = act(&r, &both);
+    assert_eq!(code, 0, "{said:#?}");
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "0"
+    );
+    let uci = crate::collect::uci::collect(&r).unwrap();
+    assert_eq!(family::dns_found(&uci).len(), 2, "made again, not doubled");
+
+    // The last device off: handed back, the proxy restarted so its canary entries are
+    // there at once, sentry's taken away, nothing of sentry's left.
+    let (code, said) = act(&r, &Do::filter([ta.clone()]).word());
+    assert_eq!(code, 0, "{said:#?}");
+    let (code, said) = act(&r, "filter:none");
+    assert_eq!(code, 0, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("https-dns-proxy.config.force_dns=1")),
+        "{said:#?}"
+    );
+    sleep(2);
+    assert_eq!(
+        on(&r, "uci get https-dns-proxy.config.force_dns")
+            .stdout
+            .trim(),
+        "1"
+    );
+    assert_eq!(proxy_rules(&r), 2);
+    assert_eq!(
+        proxys_canaries(&r),
+        3,
+        "the proxy's own canary entries are back at once"
+    );
+    assert!(canaries_refused(&r));
+    assert_eq!(
+        on(&r, "uci -q get dhcp.@dnsmasq[0].address; true")
+            .stdout
+            .trim(),
+        "",
+        "sentry's canary entries are gone"
+    );
+    assert_eq!(
+        on(
+            &r,
+            &format!(
+                "uci show firewall | grep -c -e sentry_dns_ -e sentry_filter_{ta} -e sentry_filter_{tb}; true"
+            )
+        )
+        .stdout
+        .trim(),
+        "0",
+        "nothing of sentry's left"
+    );
+    assert!(Blocks::load(&r.scope).canaries.is_empty());
+    nothing_left(&r, r.cfg.guard.window);
+    secrun::LOOKUPS.lock().unwrap().clear();
+    on(
+        &r,
+        "/etc/init.d/https-dns-proxy stop >/dev/null 2>&1; [ -s /tmp/sentry-dm.pid ] && kill $(cat /tmp/sentry-dm.pid); rm -f /tmp/sentry-dm.pid; true",
+    );
+}
+
+fn sleep(secs: u64) {
+    std::thread::sleep(Duration::from_secs(secs));
+}

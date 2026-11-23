@@ -70,6 +70,52 @@ echo "$t"
 DOOR
 }
 
+# Two doors for the security audit to join and ask: on the server a plain HTTP page that
+# asks for a login (8081, 401) and an HTTPS page with a self-signed certificate that
+# doesn't (8443, openssl's status page); on the router a forward to each.
+audit_doors() {
+  local s=$1 r=$2 addr=$3
+  "${P[@]}" exec -i "$s" sh -c 'cat >/tmp/audit-doors && sh /tmp/audit-doors' <<'DOORS'
+pkill -f '[a]udit-door-http' 2>/dev/null
+pkill -f '[s]_server -quiet -accept 8443' 2>/dev/null
+setsid perl -e '
+  # audit-door-http
+  use IO::Socket::INET;
+  my $s = IO::Socket::INET->new(LocalPort => 8081, Listen => 5, ReuseAddr => 1) or die;
+  while (my $c = $s->accept) {
+    while (my $l = <$c>) { last if $l =~ /^\r?\n$/ }
+    print $c "HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"lab\"\r\nContent-Length: 0\r\n\r\n";
+    close $c;
+  }' >/dev/null 2>&1 </dev/null &
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/audit-door.key -out /tmp/audit-door.crt \
+  -days 30 -subj /CN=lab-server >/dev/null 2>&1
+setsid openssl s_server -quiet -accept 8443 -cert /tmp/audit-door.crt -key /tmp/audit-door.key \
+  -www >/dev/null 2>&1 </dev/null &
+sleep 1
+DOORS
+  "${P[@]}" exec "$r" sh -c "
+    for n in http tls; do uci -q delete firewall.audit_\$n; done
+    uci set firewall.audit_http=redirect
+    uci set firewall.audit_http.name=audit-http
+    uci set firewall.audit_http.target=DNAT
+    uci set firewall.audit_http.src=wan
+    uci set firewall.audit_http.dest=dmz
+    uci set firewall.audit_http.proto=tcp
+    uci set firewall.audit_http.src_dport=8081
+    uci set firewall.audit_http.dest_ip=$addr
+    uci set firewall.audit_http.dest_port=8081
+    uci set firewall.audit_tls=redirect
+    uci set firewall.audit_tls.name=audit-tls
+    uci set firewall.audit_tls.target=DNAT
+    uci set firewall.audit_tls.src=wan
+    uci set firewall.audit_tls.dest=dmz
+    uci set firewall.audit_tls.proto=tcp
+    uci set firewall.audit_tls.src_dport=9443
+    uci set firewall.audit_tls.dest_ip=$addr
+    uci set firewall.audit_tls.dest_port=8443
+    uci commit firewall"
+}
+
 up() {
   [[ -z "$(server)" && -z "$(router)" ]] || die "a live container or router is already up: \`$0 down\` (or the other scripts' down) first"
   "${P[@]}" network exists "$NETWORK" || "${P[@]}" network create "$NETWORK" >/dev/null
@@ -100,6 +146,8 @@ run_test() {
 servers:
   scratch:
     ssh: scratch
+    # (Root reads for the audit's second run: the inventory, once the password is held.)
+    sudo: [docker ps, docker inspect, journalctl]
 YAML
   cat >"$x/config/sentry/network_config.yaml" <<YAML
 networks:
@@ -111,9 +159,13 @@ networks:
 YAML
   printf '[review]\nat_start = false\nafter_run = false\n' >"$x/config/sentry/config.toml"
   "${P[@]}" exec "$s" sh -c "pkill -f '[d]oor-listener'; rm -f /tmp/door-token; true"
+  audit_doors "$s" "$r" "$addr"
   cargo build -q -p sentry
   echo "=== live_resolution"
+  # (The audit asks the doors from this machine; rootless podman's network is reached from
+  # inside its own namespace.)
   env "SENTRY_SSH_CONFIG=$dir/ssh_config" SENTRY_SERVER_SCRATCH=scratch SENTRY_ROUTER_SCRATCH=lab \
+    "SENTRY_PROBE_PREFIX=podman unshare --rootless-netns" \
     "SENTRY_SERVER_SCRATCH_PASSWORD=$sdir/password" "SENTRY_RESOLUTION_ADDR=$addr" \
     "XDG_CONFIG_HOME=$x/config" "XDG_DATA_HOME=$x/data" "XDG_CACHE_HOME=$x/cache" SENTRY_NO_REBOOT=1 \
     cargo test -q -p sentry live_resolution -- --ignored --nocapture --test-threads=1 </dev/null

@@ -7,27 +7,27 @@ expression: s
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ┌ Needs attention · nothing needs you · o shows 2 good to know ──────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
-│                                                                                    │ │ Nothing selected. d shows the numbers behind this page.             │
+│                                                                                    │ │ The family filter (CleanBrowsing Family): on no device              │
 │              ✓ Nothing needs you. How the network is covered is below.             │ │                                                                     │
-│                                                                                    │ │                                                                     │
-└────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-┌ How you're covered ────────────────────────────────────────────────────────────────┐ │                                                                     │
-│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │                                                                     │
-│ ✓ ok   10 devices on the network, none unaccounted for (1 with a private address,  │ │                                                                     │
-│        vouched for by the Wi-Fi password)                                          │ │                                                                     │
-│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │                                                                     │
-│        and nothing crosses right now                                               │ │                                                                     │
-│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
+│                                                                                    │ │ The devices you tick have their name lookups answered by            │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ CleanBrowsing Family instead of the router, so adult and other      │
+┌ How you're covered ────────────────────────────────────────────────────────────────┐ │ unwanted sites don't open on them. Every other device is left as it │
+│ ✓ ok   2 doors are open from the internet, to 2 devices: web, phone                │ │ is.                                                                 │
+│ ✓ ok   10 devices on the network, none unaccounted for (1 with a private address,  │ │ What it is for: accidents and casual browsing. It doesn't stop a    │
+│        vouched for by the Wi-Fi password)                                          │ │ VPN, mobile data, a browser's own encrypted lookups (DNS over       │
+│ ✓ ok   The server's side (dmz) can't reach your home side (lan): the rules say so, │ │ HTTPS), or a device that changes its MAC.                           │
+│        and nothing crosses right now                                               │ │ A filtered device's lookups skip the router's own blocklist; the    │
+│ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │ family service blocks malware and scam sites too.                   │
 │        update by itself                                                            │ │                                                                     │
-│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
-│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
+│ ✓ ok   Family filter (CleanBrowsing Family): on no device · its first use takes    │ │ On this router the first use includes a one-time step: sentry takes │
+│        over the router's forcing of lookups, the same for everyone else            │ │ over from the DNS proxy the forcing of every device's lookups       │
+│ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │ through the router (nothing changes for the others), so the devices │
+│ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │ you pick can come first.                                            │
 │ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ │ Enter: the list of devices. Tick the ones to filter; Enter there    │
+┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ │ shows the plan for all of them as one change.                       │
+│ Choose devices…                                                                    │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
                                                                                        │                                                                     │
@@ -42,4 +42,4 @@ expression: s
                                                                                        │                                                                     │
                                                                                        └─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit
+ Enter  choose devices   o  everything   S  audit   d  numbers   r  read again   v  records   A  ask Claude   ?  help   q  quit

@@ -2,7 +2,9 @@ name = "security-action"
 description = "What Enter on the Security screen does: one change on the router, shown first, taken back by itself if the router stops answering"
 # Started by the Security screen (4), which fills in `action`: blocking or unblocking a
 # device by MAC, closing or opening a port forward, ssh with keys only, the admin page on
-# HTTPS, the blocklist's refresh or schedule, a station sent off the Wi-Fi. Both steps run
+# HTTPS, the blocklist's refresh or schedule, a station sent off the Wi-Fi, the family
+# filter on the devices ticked (`filter:<tags>`: every device added or taken off in one
+# change, proven by the router's own lookups and the family service's). Both steps run
 # on this machine (`sentry-network security …`), which carries them out over ssh:
 #   show   reads only: the plan in words, the exact lines, the guard's own preview, and
 #          what is proven first (a key login on a new connection, the admin page on HTTPS)

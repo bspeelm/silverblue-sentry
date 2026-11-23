@@ -21,16 +21,16 @@ expression: s
 │        and nothing crosses right no│                                                                                  │                                    │
 │ ✓ ok   Bad sites are filtered, 1042│ 1  It's mine: give it a name                                                     │                                    │
 │        update by itself            │ 2  Block it from the internet (it stays on your network)                         │                                    │
-│ ✓ ok   2 Wi-Fi networks, password-p│ 3  Block it from everything, the router included                                 │                                    │
-│ ! weak Remote login (ssh) takes a p│ 4  Pause its internet for an hour                                                │                                    │
-│        without encryption          │ 5  Pause its internet until tomorrow morning                                     │                                    │
-│ ? ?    The security audit of every │ 6  Look again in a week                                                          │                                    │
+│ ✓ ok   Family filter (CleanBrowsing│ 3  Block it from everything, the router included                                 │                                    │
+│        over the router's forcing of│ 4  Pause its internet for an hour                                                │                                    │
+│ ✓ ok   2 Wi-Fi networks, password-p│ 5  Pause its internet until tomorrow morning                                     │                                    │
+│ ! weak Remote login (ssh) takes a p│ 6  Look again in a week                                                          │                                    │
+│        without encryption          │                                                                                  │                                    │
+│ ? ?    The security audit of every │ Blocking and pausing are firewall rules by MAC, made through the guard:          │                                    │
+└────────────────────────────────────│ you see the plan first, and the router undoes the change by itself if            │                                    │
+┌ Filtered by you · family filter: no│ it stops answering. A pause has no timer on the router: when it ends,            │                                    │
+│ Choose devices…                    │ a row here offers to lift it.                                                    │                                    │
 └────────────────────────────────────│                                                                                  │                                    │
-                                     │ Blocking and pausing are firewall rules by MAC, made through the guard:          │                                    │
-                                     │ you see the plan first, and the router undoes the change by itself if            │                                    │
-                                     │ it stops answering. A pause has no timer on the router: when it ends,            │                                    │
-                                     │ a row here offers to lift it.                                                    │                                    │
-                                     │                                                                                  │                                    │
                                      │  Enter  close                                                                    │────────────────────────────────────┘
                                      └──────────────────────────────────────────────────────────────────────────────────┘ws · new connections out 180/min, al┐
                                                                                        │ nothing matches the filter                                          │

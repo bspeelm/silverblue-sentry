@@ -24,6 +24,7 @@
 pub mod actions;
 pub mod attention;
 pub mod blocks;
+pub mod family;
 pub mod gather;
 pub mod names;
 pub mod run;

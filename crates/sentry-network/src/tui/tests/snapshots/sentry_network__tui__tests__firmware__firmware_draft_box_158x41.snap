@@ -1,0 +1,45 @@
+---
+source: crates/sentry-network/src/tui/tests/firmware.rs
+expression: s
+---
+ sentry-network   home  OpenWrt 25.12.3  Example Router AX  up 15d 18:36                                                       ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients   3 Network   4 Security   6 Maintenance   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ Recommended · 1 · audited 5m ago ──────────────────────────────────────────────────┐ ┌ Details ────────────────────────────────────────────────────────────┐
+│          What                            Why                                       │ │ firmware                                                            │
+│ normal   Run config-backup · every 30d   On a cadence (maintenance.cadence in netw │ │ Enter: what has and hasn't been proven of firmware-upgrade (marked  │
+│                                                                                    │ │ a draft), and start it from there                                   │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────┌ Upgrade the router's firmware (a draft) ─────────────────────────────────────────┐                                    │
+┌ Items · 3 ─────────────────────────│                                                                                  │                                    │
+│ Item       State                   │ installed    OpenWrt 25.12.3                                                     │                                    │
+│ firmware   25.12.3                u│ end of life  not known                                                           │oflife.date, GitHub): nothing runs  │
+│ packages   …                       │ upstream not looked up yet (r)                                                   │                                    │
+│ backup     …                       │ Looked up from this machine (endoflife.date, GitHub): nothing runs on the router │                                    │
+└────────────────────────────────────│ for it.                                                                          │                                    │
+┌ Last audit · 2026-10-26 ───────────│                                                                                  │                                    │
+│ ✓ firewall      3 zones · 2 forward│ firmware-upgrade is marked a draft in its file.                                  │                                    │
+│ ✓ access        ssh keys only · web│ Proven on a real router, once: a patch release within its series, every step     │                                    │
+│ ✓ config        nothing staged     │ from the check to the router back on the new release (the flash, the restart and │                                    │
+│ ✓ listeners     24 sockets         │ the return included).                                                            │                                    │
+│ ✓ clients       10 seen            │ Proven on a stand-in router (a container with a pretend owut and a pretend       │                                    │
+│ ✓ services      3 of 3 running     │ restart): every step in order, a warning that stops it, a failed check of the    │                                    │
+│                                    │ image, the router not coming back in time and the run carrying on when it does,  │                                    │
+│                                    │ a package missing afterwards, nothing newer to upgrade to.                       │                                    │
+│                                    │ Not proven: any other router, and a move to another release series (sentry       │                                    │
+│                                    │ refuses that one). Stay with the run.                                            │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │ Starting it changes nothing by itself: it checks, backs up and shows the plan,   │                                    │
+│                                    │ and asks before the download and again, with what happens, before the flash.     │                                    │
+│                                    │                                                                                  │                                    │
+│                                    │  Enter  start it    Esc  cancel                                                  │                                    │
+│                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+│                                                                                    │ │                                                                     │
+└────────────────────────────────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Enter  confirm   Esc  cancel

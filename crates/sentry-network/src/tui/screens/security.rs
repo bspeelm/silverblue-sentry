@@ -67,6 +67,8 @@ pub struct Security {
     /// The list being gone through: the key of the one row several of a kind make
     /// (Enter on it; Esc comes back).
     pub group: Option<String>,
+    /// The family filter's device list, open in the list's place (`threats::Menu`).
+    pub filter: Option<super::filter::Menu>,
 }
 
 /// The panels' keys.
@@ -790,6 +792,9 @@ fn footer(v: &View, p: &Picture) -> Option<Line<'static>> {
 impl Security {
     /// The cursor of the view shown.
     pub fn cursor(&mut self) -> &mut Cursor {
+        if let Some(m) = self.filter.as_mut().filter(|_| !self.panels) {
+            return &mut m.cur;
+        }
         if self.panels {
             &mut self.pcur
         } else {
@@ -798,6 +803,9 @@ impl Security {
     }
 
     pub fn at(&self) -> usize {
+        if let Some(m) = self.filter.as_ref().filter(|_| !self.panels) {
+            return m.cur.sel;
+        }
         if self.panels {
             self.pcur.sel
         } else {
@@ -806,6 +814,9 @@ impl Security {
     }
 
     pub fn count(&self, v: &View) -> usize {
+        if let Some(_m) = self.filter.as_ref().filter(|_| !self.panels) {
+            return super::filter::menu_rows(v).len();
+        }
         if self.panels {
             rows(v, &picture(v), self.sort).len()
         } else {
@@ -816,6 +827,7 @@ impl Security {
     /// The list changed under the cursor: put it back on the row it was on.
     pub fn keep(&mut self, v: &View) {
         if !self.panels
+            && self.filter.is_none()
             && let Some(i) = self
                 .sel
                 .as_deref()

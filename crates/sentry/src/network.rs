@@ -97,7 +97,8 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
-    /// What the `firmware-upgrade` workflow's own steps run: `check`, `flash`, `after`.
+    /// What the `firmware-upgrade` workflow's own steps run: `check`, `backup`, `plan`,
+    /// `download`, `flash`, `wait`, `after`, `add-missing`, `forget`.
     Firmware { name: String, action: String },
     /// What needs attention on a network and how it is covered, as text (`--json`: as
     /// data): `security [name]`. Also what the `security-action` workflow's steps run:

@@ -21,7 +21,7 @@ pub const KEY_BACKUP: &str = "net:maint:backup";
 
 /// How the firmware and the packages are changed: by their workflows (Enter on the row).
 pub const FIRMWARE_VIA: &str = "the firmware-upgrade workflow (owut) does it, after a \
-     config backup; it is a draft until it has been run once";
+     config backup, within the release series the router is on";
 pub const PACKAGES_VIA: &str =
     "the package-update workflow upgrades the packages you name, after a config backup";
 

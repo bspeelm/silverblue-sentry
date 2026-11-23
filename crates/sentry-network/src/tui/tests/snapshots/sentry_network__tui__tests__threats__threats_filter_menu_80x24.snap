@@ -1,0 +1,28 @@
+---
+source: crates/sentry-network/src/tui/tests/threats.rs
+expression: "render_to_string(&mut a, 80, 24)"
+---
+ sentry-network   home  up 15d 18:36             ● connected   Mon 26 Oct 12:00
+ 1 Dashboard   2 Clients 2   3 Network 9   4 Security 7   6 Maintenance 8   0 Up
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Family filter: which devices · 0 ticked · Enter applies them all ────────────┐
+│     device (named first)                                                     │
+│ [ ] cam                                                      plugged in      │
+│ [ ] nas                                                      plugged in      │
+│ [ ] phone                                                    Wi-Fi         ! │
+│ [ ] printer                                                                  │
+│ [ ] web                                                      server's side   │
+│ [ ] 00:00:5e:00:53:11                                        plugged in      │
+│ [ ] 02:00:5e:00:53:21                                        Wi-Fi         ! │
+│ [ ] 02:00:5e:00:53:22                                        plugged in      │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Details ─────────────────────────────────────────────────────────────────────┐
+│ cam                                                                          │
+│ not filtered                                                                 │
+│ A ticked device's name lookups go to CleanBrowsing Family instead of the     │
+│ router, so adult and other unwanted sites don't open on it. Every other      │
+│ device is left as it is.                                                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Enter  apply   Space  tick   a  all named   A  ask Claude   ?  help   q  quit

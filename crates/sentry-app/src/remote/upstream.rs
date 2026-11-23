@@ -159,6 +159,46 @@ pub fn fetch_eol(key: &str) -> Result<Eol, String> {
     parse_eol(&json, cycle)
 }
 
+/// [`fetch_eol`] of one cycle, kept a day in the cache (`eol-<product>-<cycle>`): the
+/// security audit asks it for an operating system's release every time it runs.
+pub fn eol_cached(product: &str, cycle: &str) -> Result<Eol, String> {
+    let key = format!("eol-{product}-{cycle}");
+    if let Some(c) = sentry_core::cache::load::<Eol>(&key)
+        && c.age_secs(jiff::Timestamp::now()) < 86_400
+    {
+        return Ok(c.data);
+    }
+    let e = fetch_eol(&format!("{product}/{cycle}"))?;
+    let _ = sentry_core::cache::store(&key, &e);
+    Ok(e)
+}
+
+/// What the security audit says of an operating system's release (`/etc/os-release`):
+/// looked up on endoflife.date (a day's cache), or why it couldn't be.
+pub fn os_life(os_release: &str) -> sentry_core::secaudit::Life {
+    use sentry_core::secaudit::{Life, release_of};
+    match release_of(os_release) {
+        None => Life {
+            release: String::new(),
+            ends: None,
+            error: Some("sentry doesn't know where to look up this system's support".into()),
+        },
+        Some((product, cycle, release)) => match eol_cached(&product, &cycle) {
+            // (`true` without a date reads as 1970: long past.)
+            Ok(e) => Life {
+                release,
+                ends: e.eol,
+                error: None,
+            },
+            Err(e) => Life {
+                release,
+                ends: None,
+                error: Some(format!("endoflife.date couldn't be asked: {e}")),
+            },
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

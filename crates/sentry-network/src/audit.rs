@@ -925,7 +925,7 @@ fn crowdsec(b: &collect::crowdsec::Bouncer, running: Option<bool>) -> Option<Fin
                 id,
                 Sev::Low,
                 "services",
-                "CrowdSec's blocker is installed on the router but not switched on".into(),
+                sentry_core::secaudit::edge_off(false),
             )
             .explain(
                 "The package is on the router; `option enabled` in /etc/config/crowdsec isn't 1.",
@@ -1812,7 +1812,7 @@ networks:
         });
         let f = of(&s);
         assert_eq!((f.len(), f[0].1), (1, Sev::Low));
-        assert!(f[0].2.contains("not switched on"));
+        assert!(f[0].2.contains("but switched off"));
         // Running with empty sets: low after a day, nothing before (it has just started),
         // nothing when its age isn't known or the tables couldn't be read.
         let empty = Bouncer {

@@ -15,7 +15,7 @@ use crate::remote::Router;
 use sentry_core::tui::{ScreenId, ScreenSet};
 
 pub use sentry_app::{App, Event};
-pub use target::NetworkTarget;
+pub use target::{NetworkTarget, Own};
 
 /// The network target's screens, with sentry's numbers and names: `1` Dashboard, `2`
 /// Clients, `3` Network, `4` Security (what flows through the router: read-only), `6`

@@ -45,6 +45,26 @@ pub const SERVICES: &[&str] = &[
     "network", "wifi", "firewall", "dnsmasq", "odhcpd", "uhttpd", "dropbear",
 ];
 
+/// Configs and services only sentry's own Security actions put under the guard, never a
+/// line of Claude's or a `guarded-change` (whose list is `policy::GUARDED`): the DNS
+/// proxy, whose forced lookups the family filter takes over (`security::family`). A
+/// wrong state there breaks every device's lookups, so it is snapshotted, committed,
+/// reloaded and restored like any guarded config.
+pub const ACTION_ONLY: &[&str] = &["https-dns-proxy"];
+
+/// The order services are reloaded in: the DNS proxy before the firewall (it hands the
+/// firewall its rules, which the firewall's reload then loads in one go).
+const ORDER: &[&str] = &[
+    "network",
+    "wifi",
+    "https-dns-proxy",
+    "firewall",
+    "dnsmasq",
+    "odhcpd",
+    "uhttpd",
+    "dropbear",
+];
+
 /// The verbs a staging line may use.
 const VERBS: &[&str] = &[
     "set", "add", "add_list", "del_list", "delete", "rename", "reorder",
@@ -242,6 +262,14 @@ pub struct Change {
     /// It is meant to change the uplink or the default route: sentry can't check those
     /// against before, so it asks.
     pub alters_wan: bool,
+    /// Configs whose staged lines another package left are let through when they change
+    /// nothing (the config with them reads the same as the saved file): one of sentry's
+    /// own actions sets it, for `dhcp`, which the DNS proxy's reload commits anyway. Staged
+    /// lines that change something there still stop the change before anything is armed.
+    /// On a revert the config is restored from the snapshot and its staged lines dropped
+    /// (`uci revert`): they changed nothing, so its meaning is the same.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tolerate: Vec<String>,
 }
 
 fn list(s: &str) -> Vec<String> {
@@ -261,6 +289,27 @@ impl Change {
         services: &str,
         alters_wan: bool,
     ) -> Result<Self, String> {
+        Self::parse_with(configs, lines, services, alters_wan, false)
+    }
+
+    /// The same, for one of sentry's own Security actions: [`ACTION_ONLY`] allowed too.
+    pub fn parse_action(
+        configs: &str,
+        lines: &str,
+        services: &str,
+        alters_wan: bool,
+    ) -> Result<Self, String> {
+        Self::parse_with(configs, lines, services, alters_wan, true)
+    }
+
+    fn parse_with(
+        configs: &str,
+        lines: &str,
+        services: &str,
+        alters_wan: bool,
+        action: bool,
+    ) -> Result<Self, String> {
+        let extra = |x: &str| action && ACTION_ONLY.contains(&x);
         let mut configs = list(configs);
         configs.dedup();
         if configs.is_empty() {
@@ -269,7 +318,10 @@ impl Change {
                     .into(),
             );
         }
-        if let Some(c) = configs.iter().find(|c| !GUARDED.contains(&c.as_str())) {
+        if let Some(c) = configs
+            .iter()
+            .find(|c| !GUARDED.contains(&c.as_str()) && !extra(c))
+        {
             return Err(format!(
                 "`{c}` isn't one of the guarded configs ({}): change it with a plain `uci` request",
                 GUARDED.join(", ")
@@ -278,7 +330,7 @@ impl Change {
         let asked = list(services);
         let mut services: Vec<String> = Vec::new();
         for s in asked {
-            if !SERVICES.contains(&s.as_str()) {
+            if !SERVICES.contains(&s.as_str()) && !extra(&s) {
                 return Err(format!(
                     "`{s}` isn't a service the guard reloads ({})",
                     SERVICES.join(", ")
@@ -288,7 +340,7 @@ impl Change {
                 services.push(s);
             }
         }
-        services.sort_by_key(|s| SERVICES.iter().position(|x| x == s));
+        services.sort_by_key(|s| ORDER.iter().position(|x| x == s));
         let mut out = Vec::new();
         // (Why a line isn't plain quotes the word: not one of a line that sets a secret.)
         let cmds = crate::policy::plain_commands(lines).map_err(|e| {
@@ -366,6 +418,7 @@ impl Change {
             lines: out,
             services,
             alters_wan,
+            tolerate: Vec::new(),
         })
     }
 
@@ -391,6 +444,9 @@ impl Change {
                 "dnsmasq" | "odhcpd" => &["dhcp", "network"],
                 "dropbear" => &["dropbear"],
                 "uhttpd" => &["uhttpd"],
+                // (Its reload also commits what is staged in dhcp: its own way, said in the
+                // family filter's plan; dhcp isn't snapshotted for it.)
+                "https-dns-proxy" => &["https-dns-proxy"],
                 _ => &[],
             };
             for c in reads {
@@ -515,6 +571,22 @@ pub fn state_script(c: &Change, token: Option<&str>) -> String {
         "echo @@staged; for c in {}; do uci -q changes $c; done\n",
         c.relevant().join(" ")
     ));
+    // Whether a tolerated config's staged lines change anything: the config as it reads
+    // with them, against the saved file read under another name (no staged lines are kept
+    // for that name), each sorted (a delete and a set of the same value reorders).
+    if !c.tolerate.is_empty() {
+        s.push_str(
+            "echo @@saved
+",
+        );
+        for t in &c.tolerate {
+            s.push_str(&format!(
+                "E=$(mktemp -d) && cp /etc/config/{t} \"$E/sentry_saved\" 2>/dev/null && \
+                 if [ \"$(uci -q show {t} | sort)\" = \"$(uci -q -c \"$E\" show sentry_saved | sed 's/^sentry_saved\\./{t}./' | sort)\" ]; \
+                 then echo '{t} same'; else echo '{t} differs'; fi; rm -rf \"$E\"\n"
+            ));
+        }
+    }
     s.push_str("echo @@wan; ubus call network.interface dump 2>/dev/null\n");
     s.push_str(
         "echo @@route; ip route show default 2>/dev/null; ip -6 route show default 2>/dev/null\n",
@@ -790,6 +862,8 @@ pub struct State {
     pub pending: Vec<String>,
     /// Staged lines of the configs that matter.
     pub staged: Vec<String>,
+    /// The tolerated configs whose staged lines change nothing.
+    pub saved_same: Vec<String>,
     /// Each uplink interface and whether it is up; None: the router didn't say.
     pub wan: Option<Vec<(String, bool)>>,
     /// The default routes: `via <gateway> dev <device>`, sorted.
@@ -839,6 +913,12 @@ pub fn parse_state(text: &str) -> State {
                 }
             }
             "staged" => s.staged = lines().map(str::to_string).collect(),
+            "saved" => {
+                s.saved_same = lines()
+                    .filter_map(|l| l.strip_suffix(" same"))
+                    .map(str::to_string)
+                    .collect()
+            }
             "wan" => {
                 let dump = serde_json::from_str::<serde_json::Value>(body).ok();
                 for i in dump
@@ -975,7 +1055,61 @@ pub fn preflight(c: &Change, s: &State) -> Result<(), String> {
             "an earlier guard left its files on the router with nothing running to settle it ({l})"
         ));
     }
-    if !s.staged.is_empty() {
+    // A tolerated config's staged lines: let through when they change nothing; else said,
+    // by option (never by value), and whose they probably are.
+    let cfg_of = |l: &str| {
+        l.trim_start_matches('-')
+            .split(['.', '='])
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    let staged: Vec<&String> = s
+        .staged
+        .iter()
+        .filter(|l| {
+            let c0 = cfg_of(l);
+            !(c.tolerate.contains(&c0) && s.saved_same.contains(&c0))
+        })
+        .collect();
+    if let Some(t) = c
+        .tolerate
+        .iter()
+        .find(|t| staged.iter().any(|l| &cfg_of(l) == *t))
+    {
+        let mut opts: Vec<String> = staged
+            .iter()
+            .filter(|l| &cfg_of(l) == t)
+            .map(|l| {
+                l.trim_start_matches('-')
+                    .split('=')
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+        opts.dedup();
+        let whose = if opts
+            .iter()
+            .any(|o| o.ends_with(".serversfile") || o.contains("addnhosts"))
+        {
+            "probably the blocklist package's (adblock-fast)"
+        } else {
+            "a package's, or a change made in the router's web page and not saved"
+        };
+        return Err(format!(
+            "the router's {t} settings have a change waiting that isn't saved ({}; {whose}). \
+             This change would save it along with sentry's, so nothing was changed: save or \
+             undo it on the router first",
+            opts.join(", ")
+        ));
+    }
+    let staged: Vec<String> = staged.into_iter().cloned().collect();
+    if !staged.is_empty() {
+        let s = State {
+            staged,
+            ..s.clone()
+        };
         return Err(format!(
             "someone else's changes are staged in the configs this would commit or reload \
              (LuCI's \"unsaved changes\", a `uci set` by hand, or a package that keeps its own \
@@ -1307,7 +1441,12 @@ fn preview_with(r: &Router, c: &Change, say: &mut dyn FnMut(String)) -> Result<S
         return Err(scrub.as_ref().map_or(why.clone(), |sc| sc.text(&why)));
     }
     say(format!(
-        "preflight: the router answers · nothing else is staged · uplink {} · {} default route(s){}",
+        "preflight: the router answers · nothing else is staged{} · uplink {} · {} default route(s){}",
+        if s.staged.is_empty() {
+            ""
+        } else {
+            " (what waits in the DHCP settings changes nothing: saved along)"
+        },
         s.wan
             .as_ref()
             .map(|w| {
@@ -2066,6 +2205,57 @@ mod tests {
     }
 
     const BEFORE: &str = "@@board\nok\n@@guards\n@@staged\n@@wan\n{\"interface\":[{\"interface\":\"lan\",\"up\":true},{\"interface\":\"wan\",\"up\":true,\"route\":[{\"target\":\"0.0.0.0\",\"mask\":0,\"nexthop\":\"203.0.113.254\"}]},{\"interface\":\"wan6\",\"up\":false}]}\n@@route\ndefault via 203.0.113.254 dev wan proto static src 203.0.113.7\n@@firewall\nfirewall.@zone[0]=zone\nfirewall.@zone[0].name='lan'\nfirewall.@zone[0].input='ACCEPT'\nfirewall.@zone[1]=zone\nfirewall.@zone[1].name='wan'\nfirewall.@zone[1].input='REJECT'\nfirewall.web=redirect\nfirewall.web.target='DNAT'\nfirewall.web.src='wan'\nfirewall.web.proto='tcp'\nfirewall.web.src_dport='443'\nfirewall.web.dest_ip='192.0.2.10'\n@@stations\nhostapd.phy0-ap0 3\nhostapd.phy1-ap0 0\n@@end\n";
+
+    #[test]
+    fn a_tolerated_configs_staged_lines_go_through_only_when_they_change_nothing() {
+        let mut c = Change::parse_action(
+            "firewall,dhcp",
+            "uci add_list dhcp.@dnsmasq[0].address='/use-application-dns.net/'",
+            "firewall,dnsmasq",
+            false,
+        )
+        .unwrap();
+        // Not for Claude's lines: the general rule stays.
+        assert!(c.tolerate.is_empty());
+        c.tolerate = vec!["dhcp".into()];
+        let script = state_script(&c, None);
+        assert!(
+            script.contains("echo @@saved") && script.contains("show sentry_saved"),
+            "{script}"
+        );
+        let staged = |saved: &str| {
+            BEFORE.replace(
+                "@@staged\n",
+                &format!(
+                    "@@staged\n-dhcp.cfg01411c.serversfile\ndhcp.cfg01411c.serversfile='/var/run/x'\n@@saved\n{saved}\n"
+                ),
+            )
+        };
+        // Changing nothing: through.
+        assert_eq!(preflight(&c, &state(&staged("dhcp same"))), Ok(()));
+        // A real pending change: stopped, by option, never by value, and whose.
+        let e = preflight(&c, &state(&staged("dhcp differs"))).unwrap_err();
+        assert!(
+            e.contains("dhcp.cfg01411c.serversfile")
+                && e.contains("adblock-fast")
+                && !e.contains("/var/run/x")
+                && e.contains("nothing was changed"),
+            "{e}"
+        );
+        // Another config's staged lines are never tolerated.
+        let e = preflight(
+            &c,
+            &state(&BEFORE.replace(
+                "@@staged\n",
+                "@@staged\nfirewall.cfg10.name='new'\n@@saved\ndhcp same\n",
+            )),
+        )
+        .unwrap_err();
+        assert!(e.contains("someone else's"), "{e}");
+        // Without tolerating, as before: staged dhcp lines stop it.
+        c.tolerate.clear();
+        assert!(preflight(&c, &state(&staged("dhcp same"))).is_err());
+    }
 
     #[test]
     fn preflight_stops_before_anything_is_touched() {

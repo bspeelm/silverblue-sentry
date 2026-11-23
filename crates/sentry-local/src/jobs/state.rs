@@ -31,8 +31,8 @@ fn cadence_path() -> std::path::PathBuf {
     paths::config_dir().join("cadence.toml")
 }
 
-fn load() -> Runs {
-    std::fs::read_to_string(runs_path())
+fn load_from(p: &std::path::Path) -> Runs {
+    std::fs::read_to_string(p)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -182,13 +182,16 @@ fn tasks_with(cfg: &Config, ov: &BTreeMap<String, String>) -> Vec<Task> {
 /// `*.migrated` (never deleted).
 pub fn migrate(cfg: &Config) {
     let old_runs = runs_path();
-    if old_runs.exists() {
-        for (name, r) in load() {
+    // Claimed by the rename first: two callers at once (the window's start beside a job)
+    // move it once, never twice (each entry is a file of its own since log names keep
+    // entries of the same minute apart).
+    let moved = old_runs.with_extension("json.migrated");
+    if old_runs.exists() && std::fs::rename(&old_runs, &moved).is_ok() {
+        for (name, r) in load_from(&moved) {
             if let Some(j) = JobId::from_name(&name) {
                 let _ = record_at(j, r.ok, &r.summary, r.at, &["migrated".into()]);
             }
         }
-        let _ = std::fs::rename(&old_runs, old_runs.with_extension("json.migrated"));
     }
     let old_cadence = cadence_path();
     if old_cadence.exists() {

@@ -26,15 +26,15 @@ expression: s
 │        and nothing crosses right now                                               │ │                                                                     │
 │ ✓ ok   Bad sites are filtered, 104200 listed, the list is 14 days old, it doesn't  │ │                                                                     │
 │        update by itself                                                            │ │                                                                     │
+│ ✓ ok   Family filter (CleanBrowsing Family): on no device · its first use takes    │ │                                                                     │
+│        over the router's forcing of lookups, the same for everyone else            │ │                                                                     │
 │ ✓ ok   2 Wi-Fi networks, password-protected (WPA2/WPA3), no joining by button      │ │                                                                     │
 │ ✓ ok   Logging in to the router takes a key, and its admin page is encrypted       │ │                                                                     │
 │ ? ?    The security audit of every target has never run · S runs it                │ │                                                                     │
 └────────────────────────────────────────────────────────────────────────────────────┘ │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       │                                                                     │
-                                                                                       └─────────────────────────────────────────────────────────────────────┘
-                                                                                       ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
-                                                                                       │ rejected   21/min                             █ 31.2k since 1d ago  │
+┌ Filtered by you · family filter: no device ────────────────────────────────────────┐ └─────────────────────────────────────────────────────────────────────┘
+│ Choose devices…                                                                    │ ┌ Ingress · the numbers · d shows them all ───────────────────────────┐
+└────────────────────────────────────────────────────────────────────────────────────┘ │ rejected   21/min                             █ 31.2k since 1d ago  │
                                                                                        │ forward       port       to                     new/min  total live │
                                                                                        │ web       tcp 443        203.0.113.93:443           2.0   5212    2 │
                                                                                        │ game      udp 8000-8010  192.0.2.20:8000-8010         0     77    0 │

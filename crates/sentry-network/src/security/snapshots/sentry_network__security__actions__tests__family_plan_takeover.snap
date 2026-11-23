@@ -1,0 +1,103 @@
+---
+source: crates/sentry-network/src/security/actions.rs
+expression: text
+---
+Family filter: on for kid's tablet and games console
+
+First, once: sentry takes over from the DNS proxy (https-dns-proxy) the job of sending every device's lookups through the router. Nothing changes for the household: lookups are still forced through the router as before, and encrypted lookups (port 853) still refused; sentry does it so the devices you picked can be sent to CleanBrowsing Family first.
+The DNS proxy, the firewall and the router's resolver are reloaded: a few seconds, with lookups forced by the old rules until the new ones are in, and a second or two without answers while the resolver restarts. If the DHCP settings have changes waiting that change nothing, they are saved along; if they have a real one, nothing starts.
+After a router restart nothing changes: sentry's rules are in the router's saved settings, and the DNS proxy stays out of the way.
+The name lookups of kid's tablet and games console go to CleanBrowsing Family instead of the router: adult and other unwanted sites don't open there by name.
+How: for each device, one firewall rule sends whatever it asks on the DNS port (53) to CleanBrowsing Family (185.228.168.168), matched by the device's MAC. Its lookups over IPv6 are refused, so it asks again over IPv4 at once (sent to a service outside, some devices' IPv6 lookups would get no answer and keep them waiting).
+Every other device is left as it is.
+What it is for: accidents and casual browsing. It doesn't stop a VPN, mobile data, a browser's own encrypted lookups (DNS over HTTPS), or a device that changes its MAC.
+A filtered device's lookups skip the router's own blocklist; CleanBrowsing Family blocks malware and scam sites too.
+kid's tablet uses a private (random) Wi-Fi address: turn 'private address' off on the device for this Wi-Fi, or it will slip out of the filter.
+sentry can't test from the device itself: once this is kept, open pornhub.com on each; it should be blocked.
+The rules are named sentry-filter-<tag>: Enter under Filtered by you takes a device off.
+
+Proven first, and again before the change is kept:
+  the router still looks up an ordinary name (openwrt.org) through its own resolver
+  CleanBrowsing Family answers the router, and refuses its own test name (pornhub.com)
+  the router still refuses the names that keep Firefox's own encrypted lookups and iCloud Private Relay off, as before
+
+Proven once the change is made, before it is kept:
+  the firewall as loaded has each filtered device's rule before the catch-all, no other program's in front, and port 853 still refused
+
+Through the guard (firewall,https-dns-proxy; reloads https-dns-proxy,firewall):
+  uci set firewall.sentry_filter_0000000a=redirect
+  uci set firewall.sentry_filter_0000000a.name='sentry-filter-0000000a'
+  uci set firewall.sentry_filter_0000000a.src='lan'
+  uci set firewall.sentry_filter_0000000a.src_mac='02:00:5e:00:53:31'
+  uci set firewall.sentry_filter_0000000a.src_dport='53'
+  uci set firewall.sentry_filter_0000000a.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000a.family='ipv4'
+  uci set firewall.sentry_filter_0000000a.dest='wan'
+  uci set firewall.sentry_filter_0000000a.dest_ip='185.228.168.168'
+  uci set firewall.sentry_filter_0000000a.dest_port='53'
+  uci set firewall.sentry_filter_0000000a.target='DNAT'
+  uci set firewall.sentry_filter_0000000a.reflection='0'
+  uci set firewall.sentry_filter_0000000a_v6in=rule
+  uci set firewall.sentry_filter_0000000a_v6in.name='sentry-filter-0000000a-v6in'
+  uci set firewall.sentry_filter_0000000a_v6in.src='lan'
+  uci set firewall.sentry_filter_0000000a_v6in.src_mac='02:00:5e:00:53:31'
+  uci set firewall.sentry_filter_0000000a_v6in.family='ipv6'
+  uci set firewall.sentry_filter_0000000a_v6in.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000a_v6in.dest_port='53'
+  uci set firewall.sentry_filter_0000000a_v6in.target='REJECT'
+  uci set firewall.sentry_filter_0000000a_v6out=rule
+  uci set firewall.sentry_filter_0000000a_v6out.name='sentry-filter-0000000a-v6out'
+  uci set firewall.sentry_filter_0000000a_v6out.src='lan'
+  uci set firewall.sentry_filter_0000000a_v6out.src_mac='02:00:5e:00:53:31'
+  uci set firewall.sentry_filter_0000000a_v6out.dest='*'
+  uci set firewall.sentry_filter_0000000a_v6out.family='ipv6'
+  uci set firewall.sentry_filter_0000000a_v6out.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000a_v6out.dest_port='53'
+  uci set firewall.sentry_filter_0000000a_v6out.target='REJECT'
+  uci set firewall.sentry_filter_0000000b=redirect
+  uci set firewall.sentry_filter_0000000b.name='sentry-filter-0000000b'
+  uci set firewall.sentry_filter_0000000b.src='lan'
+  uci set firewall.sentry_filter_0000000b.src_mac='02:00:5e:00:53:32'
+  uci set firewall.sentry_filter_0000000b.src_dport='53'
+  uci set firewall.sentry_filter_0000000b.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000b.family='ipv4'
+  uci set firewall.sentry_filter_0000000b.dest='wan'
+  uci set firewall.sentry_filter_0000000b.dest_ip='185.228.168.168'
+  uci set firewall.sentry_filter_0000000b.dest_port='53'
+  uci set firewall.sentry_filter_0000000b.target='DNAT'
+  uci set firewall.sentry_filter_0000000b.reflection='0'
+  uci set firewall.sentry_filter_0000000b_v6in=rule
+  uci set firewall.sentry_filter_0000000b_v6in.name='sentry-filter-0000000b-v6in'
+  uci set firewall.sentry_filter_0000000b_v6in.src='lan'
+  uci set firewall.sentry_filter_0000000b_v6in.src_mac='02:00:5e:00:53:32'
+  uci set firewall.sentry_filter_0000000b_v6in.family='ipv6'
+  uci set firewall.sentry_filter_0000000b_v6in.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000b_v6in.dest_port='53'
+  uci set firewall.sentry_filter_0000000b_v6in.target='REJECT'
+  uci set firewall.sentry_filter_0000000b_v6out=rule
+  uci set firewall.sentry_filter_0000000b_v6out.name='sentry-filter-0000000b-v6out'
+  uci set firewall.sentry_filter_0000000b_v6out.src='lan'
+  uci set firewall.sentry_filter_0000000b_v6out.src_mac='02:00:5e:00:53:32'
+  uci set firewall.sentry_filter_0000000b_v6out.dest='*'
+  uci set firewall.sentry_filter_0000000b_v6out.family='ipv6'
+  uci set firewall.sentry_filter_0000000b_v6out.proto='tcp udp'
+  uci set firewall.sentry_filter_0000000b_v6out.dest_port='53'
+  uci set firewall.sentry_filter_0000000b_v6out.target='REJECT'
+  uci set https-dns-proxy.config.force_dns='0'
+  uci set firewall.sentry_dns_0=redirect
+  uci set firewall.sentry_dns_0.name='sentry-dns-0'
+  uci set firewall.sentry_dns_0.src='lan'
+  uci set firewall.sentry_dns_0.proto='tcp udp'
+  uci set firewall.sentry_dns_0.target='DNAT'
+  uci set firewall.sentry_dns_0.src_dport='53'
+  uci set firewall.sentry_dns_0.dest_port='53'
+  uci set firewall.sentry_dns_0.family='any'
+  uci set firewall.sentry_dns_0.reflection='0'
+  uci set firewall.sentry_dns_1=rule
+  uci set firewall.sentry_dns_1.name='sentry-dns-1'
+  uci set firewall.sentry_dns_1.src='lan'
+  uci set firewall.sentry_dns_1.proto='tcp udp'
+  uci set firewall.sentry_dns_1.target='REJECT'
+  uci set firewall.sentry_dns_1.dest='*'
+  uci set firewall.sentry_dns_1.dest_port='853'
+The router is armed to undo this by itself first; it is kept only if the router still answers as before.

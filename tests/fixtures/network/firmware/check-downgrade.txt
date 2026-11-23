@@ -1,0 +1,21 @@
+ASU-Server     https://sysupgrade.openwrt.org
+Upstream       https://downloads.openwrt.org
+Target         x86/64
+Profile        generic
+Package-arch   x86_64
+Version-from   25.12.5 r33051-f5dae5ece4 (kernel 6.12.94)
+Version-to     25.12.6 r33311-981c978eff (kernel 6.12.112)
+Installed       12 packages
+Top-level        8 packages
+
+Package version changes:
+  dnsmasq                        2.93-r1                        2.93-r2
+  example-addon                  1.2.3-r1                       1.2.2-r1 (downgrade)
+2 packages were downgraded
+
+Default package analysis:
+  No missing or modified default packages
+
+No package build failures found for 25.12.6 x86_64.
+
+WARNING: Checks reveal package downgrades, upgrade still possible with '--force'

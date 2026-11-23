@@ -17,6 +17,7 @@ pub mod clients;
 pub mod collect;
 pub mod config;
 pub mod filter;
+pub mod firmware;
 pub mod gateway;
 pub mod guard;
 pub mod init;

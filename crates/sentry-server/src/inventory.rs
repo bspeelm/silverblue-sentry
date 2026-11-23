@@ -68,6 +68,9 @@ pub fn script(r: &Remote) -> String {
     if allowed(collect::JOURNAL_ARGV) {
         s += &fixed(r, collect::JOURNAL_ARGV);
     }
+    if allowed(collect::BOOTS_ARGV) {
+        s += &fixed(r, collect::BOOTS_ARGV);
+    }
     if allowed(health::F2B_ARGV) {
         s += &fixed(r, health::F2B_ARGV);
         s += "for j in $(fail2ban-client status 2>/dev/null | sed -n 's/.*Jail list:[[:space:]]*//p' | tr ',' ' '); do\n";

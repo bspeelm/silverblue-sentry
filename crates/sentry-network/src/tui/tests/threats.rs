@@ -239,7 +239,7 @@ fn a_calm_page_says_so_and_still_says_how_you_are_covered() {
         s.contains("Needs attention · nothing needs you · o shows"),
         "{s}"
     );
-    assert_eq!(s.matches("✓ ok ").count(), 6, "the whole cover: {s}");
+    assert_eq!(s.matches("✓ ok ").count(), 7, "the whole cover: {s}");
     assert!(
         s.lines()
             .nth(1)
@@ -247,8 +247,9 @@ fn a_calm_page_says_so_and_still_says_how_you_are_covered() {
             .contains("4 Security   6 Maintenance"),
         "no count: {s}"
     );
-    // The key bar names no Enter where there is no row.
-    assert!(!bar(&s).contains("Enter"), "{}", bar(&s));
+    // No row needs you: the cursor is on the family filter's entry, the one thing to
+    // choose on a calm page.
+    assert!(bar(&s).starts_with(" Enter  choose devices"), "{}", bar(&s));
     // The Dashboard says the same in two words.
     key(&mut a, KeyCode::Char('1'));
     let s = render_to_string(&mut a, 158, 41);
@@ -418,13 +419,27 @@ fn the_audits_items_join_the_pages_own_rows() {
     for (row, enter) in [
         ("Every device at home shares one network", "Enter  fix"),
         ("Have you ever restored from the backup?", "Enter  answer"),
-        ("The router's firmware is behind", "Enter  Maintenance"),
+        ("The router's firmware is behind", "Enter  do it"),
     ] {
         let s = on_row(&mut a, row);
         assert!(bar(&s).contains(enter), "{row}: {}", bar(&s));
     }
+    // The firmware's Enter is its item's on Maintenance: here, with no key to encrypt a
+    // backup to, the box that says so (`the_security_pages_firmware_row_opens_the_drafts_box`).
+    let s = on_row(&mut a, "The router's firmware is behind");
+    assert!(
+        s.contains("Enter: upgrade the router's software (it shows the plan first)"),
+        "{s}"
+    );
     key(&mut a, KeyCode::Enter);
-    assert_eq!(a.slot().screen, ScreenId::Maint);
+    assert_eq!(a.slot().screen, ScreenId::Security);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("this network has no workflow firmware-upgrade")
+            || s.contains("A firmware upgrade starts with an encrypted backup"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
     // Put off like any row; marked expected, gone.
     let s = on_row(&mut a, "Every device at home shares one network");
     assert!(bar(&s).contains("x  expected   z  later"), "{}", bar(&s));
@@ -770,6 +785,8 @@ fn blocked_by_you_lists_sentrys_rules_and_enter_unblocks() {
     }
     key(&mut a, KeyCode::Char('4'));
     key(&mut a, KeyCode::Char('G'));
+    // (The last row is the family filter's entry: the door is just above it.)
+    key(&mut a, KeyCode::Char('k'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(s.contains("The door game is closed"), "{s}");
     assert!(bar(&s).starts_with(" Enter  open again   "), "{}", bar(&s));
@@ -1243,7 +1260,7 @@ fn the_page_says_what_to_do_first_second_and_third() {
         " 2. look     12 of the router's packages can be updated",
         " 3. look     The router's remote login (ssh) still accepts a password",
         " 4. look     The router's admin page can be opened without encryption",
-        " 5. look     CrowdSec's blocker is installed on the router but not switched on",
+        " 5. look     CrowdSec is installed on the router but switched off: known attackers",
         " 6. look     Every device at home shares one network",
         " 7. look     The router forgets its log when it restarts",
         " 8. look     There is no backup of the router's configuration",
@@ -1266,7 +1283,7 @@ fn the_page_says_what_to_do_first_second_and_third() {
     for (row, step) in [
         (
             " 1. act now",
-            "Enter: update the router's software (Maintenance does it)",
+            "Enter: upgrade the router's software (it shows the plan first)",
         ),
         (
             " 3. look",
@@ -1503,4 +1520,637 @@ fn a_target_of_the_window_is_never_an_unnamed_device() {
     );
     let s = screen(&mut a, '2', 158, 41);
     assert!(s.contains("myserver") && s.contains("this machine"), "{s}");
+}
+
+/// The firewall's counters as a router without a package that forces DNS has them.
+fn dns_not_forced(a: &mut App) {
+    let mut c = counters_later(120);
+    c.rules
+        .as_mut()
+        .unwrap()
+        .retain(|r| !r.name.starts_with("ubus:"));
+    data(a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+}
+
+fn mac_of(a: &App, label: &str) -> String {
+    net(a)
+        .store
+        .clients
+        .iter()
+        .flatten()
+        .find(|c| c.label() == label)
+        .and_then(|c| c.mac.clone())
+        .unwrap_or_else(|| panic!("no client {label}"))
+}
+
+/// The family filter's list, open from its entry (the page's last row).
+fn filter_menu(a: &mut App) {
+    key(a, KeyCode::Char('4'));
+    key(a, KeyCode::Esc);
+    key(a, KeyCode::Char('G'));
+    key(a, KeyCode::Enter);
+    assert!(net(a).screens.security.filter.is_some(), "the list is open");
+}
+
+#[test]
+fn the_family_filter_is_chosen_in_one_list_and_applied_as_one_change() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filter_menu_158x41", s);
+    // Named first, the rest by what they are known by; how each is on the network; a
+    // private Wi-Fi address marked.
+    let at = |s: &str, what: &str| s.lines().position(|l| l.contains(what)).unwrap();
+    assert!(at(&s, "[ ] cam") < at(&s, "[ ] 00:00:5e:00:53:11"), "{s}");
+    let phone = line(&s, "[ ] phone");
+    assert!(phone.contains("Wi-Fi") && phone.contains("! │"), "{s}");
+    assert!(
+        bar(&s).starts_with(" Enter  apply   Space  tick   a  all named"),
+        "{}",
+        bar(&s)
+    );
+    insta::assert_snapshot!(
+        "threats_filter_menu_80x24",
+        render_to_string(&mut a, 80, 24)
+    );
+    // On the phone: it stays tickable, with the warning said plainly.
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char('j'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("It uses a private (random) Wi-Fi address: turn 'private address'"),
+        "{s}"
+    );
+    // An unnamed one can be named first.
+    key(&mut a, KeyCode::Char('G'));
+    assert!(bar(&render_to_string(&mut a, 158, 41)).contains("e  name it"));
+    key(&mut a, KeyCode::Char('e'));
+    assert!(
+        matches!(a.win.input, Input::Prompt(..)),
+        "a name is asked for"
+    );
+    key(&mut a, KeyCode::Esc);
+    // Space ticks one, a ticks every named one; Enter applies them all as one change.
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Char(' '));
+    assert!(render_to_string(&mut a, 158, 41).contains("1 ticked"));
+    key(&mut a, KeyCode::Char('a'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("5 ticked") && s.contains("[x] phone"), "{s}");
+    assert!(
+        s.contains("[ ] 00:00:5e:00:53:11"),
+        "unnamed ones aren't ticked by a: {s}"
+    );
+    key(&mut a, KeyCode::Enter);
+    assert!(net(&a).screens.security.filter.is_none(), "the list closed");
+    let (name, action) = started(&a);
+    assert_eq!(name, "security-action");
+    let tags: Vec<&str> = action
+        .strip_prefix("filter:")
+        .unwrap_or_else(|| panic!("{action}"))
+        .split(',')
+        .collect();
+    assert_eq!(tags.len(), 5, "{action}");
+    assert!(
+        tags.iter().all(|t| blocks::is_tag(t)),
+        "tags, never MACs: {action}"
+    );
+    let mut sorted = tags.clone();
+    sorted.sort();
+    assert_eq!(tags, sorted);
+    // Who each tag is, noted here for the step (nothing is written in tests).
+    let b = &net(&a).store.blocks;
+    assert!(tags.iter().all(|t| b.device.contains_key(*t)), "{b:?}");
+    assert!(!b.device[tags[0]].zone.is_empty());
+    // The plan first (reads only), then the change waits for Enter; auto never answers it.
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(0));
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(
+        s.contains(&format!("$ sentry-network security plan {action}")),
+        "{s}"
+    );
+    assert!(
+        !s.contains(&mac_of(&a, "phone")),
+        "no MAC in the run's own words: {s}"
+    );
+    a.run_step_exit_for_test(0);
+    let run = wf(&a).unwrap();
+    assert!(matches!(run.next, Next::Confirm(1)), "{:?}", run.next);
+    assert!(run.wf.steps[1].risky);
+    ctrl(&mut a, 'a');
+    assert!(
+        matches!(wf(&a).unwrap().next, Next::Confirm(1)),
+        "auto answered it"
+    );
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Char('0'));
+    key(&mut a, KeyCode::Enter);
+    let run = wf(&a).unwrap();
+    assert_eq!(run.live.as_ref().map(|l| l.idx), Some(1));
+    let s = render_to_string(&mut a, 200, 41);
+    assert!(
+        s.contains(&format!("$ sentry-network security apply {action}")),
+        "{s}"
+    );
+    a.run_step_exit_for_test(0);
+    assert!(wf(&a).is_none_or(|r| r.done()), "the run ended");
+
+    // Nothing changed in the list: said, nothing started.
+    runs_cleared();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    filter_menu(&mut a);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.toast_for_test(),
+        Some("nothing to change: the filter is on exactly these devices already")
+    );
+    assert!(wf(&a).is_none());
+
+    // A router where the DNS proxy forces every lookup to itself (the fixture's): the
+    // list says the first use takes that over, and Enter starts the one plan.
+    runs_cleared();
+    let mut a = armed(busy());
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filter_menu_takeover_158x41", s);
+    assert!(
+        s.contains("The first use includes a one-time step: sentry takes over")
+            && !s.contains("can't"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    assert!(started(&a).1.starts_with("filter:"));
+    runs_cleared();
+
+    // Another program forcing them: said before anything starts, and nothing does.
+    let mut a = armed(busy());
+    let mut c = counters_later(120);
+    for r in c.rules.iter_mut().flatten() {
+        r.name = r.name.replace("https-dns-proxy", "other-dns");
+    }
+    data(&mut a, Kind::Counters, Ok(Payload::Counters(Box::new(c))));
+    filter_menu(&mut a);
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("Nothing was changed. The family filter can't work on this router yet")
+            && s.contains("other-dns"),
+        "{s}"
+    );
+    assert!(wf(&a).is_none());
+
+    // sentry's own targets aren't offered.
+    let mut a = armed(busy());
+    let cam = mac_of(&a, "cam");
+    a.win.system = vec![sentry_app::system::Sys {
+        peer: sentry_core::apply::session::Peer {
+            id: "srv:myserver".into(),
+            title: "myserver".into(),
+            ..Default::default()
+        },
+        line: sentry_app::system::SystemLine {
+            addrs: vec![cam.clone()],
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    filter_menu(&mut a);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(!s.contains("[ ] cam") && !s.contains("[ ] myserver"), "{s}");
+}
+
+/// Against a real router, reads only: the Security page's family filter list from live
+/// reads, two named devices ticked, Enter (which on a router where another program forces
+/// DNS says why and starts nothing), and the plan those two would get on a router where
+/// nothing came first (made from the live config, nothing sent). The screens and the plan
+/// name devices: they go to `SENTRY_LIVE_SCREEN` (a scratch file), never anywhere tracked.
+/// `SENTRY_NETWORK_LIVE=<name> SENTRY_LIVE_SCREEN=<file> XDG_*=<scratch> cargo test -p
+/// sentry-network live_family_filter -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn live_family_filter() {
+    let Some(r) = live_router() else { return };
+    let out = std::env::var("SENTRY_LIVE_SCREEN").expect("SENTRY_LIVE_SCREEN: a scratch file");
+    for v in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        assert!(std::env::var_os(v).is_some(), "{v}: a scratch dir");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut a = App::new(tx, &crate::tui::id_of(&r.name), crate::tui::target(r));
+    a.win.theme = sentry_core::tui::theme::Theme::truecolor();
+    a.start(Instant::now());
+    let pump = |a: &mut App, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < until {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                a.on_event(ev, Instant::now());
+            }
+            a.tick(Instant::now());
+        }
+    };
+    key(&mut a, KeyCode::Char('4'));
+    for _ in 0..60 {
+        pump(&mut a, 1);
+        let t = net(&a);
+        if t.store.clients.is_some()
+            && t.store.uci.value.is_some()
+            && t.store.counters.value.is_some()
+        {
+            break;
+        }
+    }
+    {
+        let t = net(&a);
+        println!(
+            "read: clients {} · config {} · counters {} · unreachable {}",
+            t.store.clients.is_some(),
+            t.store.uci.value.is_some(),
+            t.store.counters.value.is_some(),
+            t.store.unreachable.is_some()
+        );
+    }
+    let mut said = String::new();
+    let page = render_to_string(&mut a, 158, 41);
+    said.push_str(&page);
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Enter);
+    assert!(
+        net(&a).screens.security.filter.is_some(),
+        "the list didn't open"
+    );
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Char(' '));
+    key(&mut a, KeyCode::Char('j'));
+    key(&mut a, KeyCode::Char(' '));
+    let menu = render_to_string(&mut a, 158, 41);
+    said.push_str(&menu);
+    said.push_str(&render_to_string(&mut a, 80, 24));
+    let ticks: Vec<String> = net(&a)
+        .screens
+        .security
+        .filter
+        .as_ref()
+        .unwrap()
+        .ticks
+        .iter()
+        .cloned()
+        .collect();
+    // The menu doesn't say "can't" where the DNS proxy's forcing can be taken over: the
+    // detail says the first use includes it. Enter isn't pressed here (it would start the
+    // workflow); the plan is shown the way its first step shows it: reads only.
+    let said_menu = menu.contains("can't be filtered on this router yet");
+    key(&mut a, KeyCode::Esc);
+    assert!(wf(&a).is_none(), "nothing may start on a real router here");
+    let t = net(&a);
+    let r = t.router.clone();
+    let view = crate::tui::screens::View {
+        t: &a.win.theme,
+        s: &t.store,
+        sh: &a.slot().shared,
+        cfg: &t.router.cfg,
+        name: &t.router.name,
+        cur: 0,
+        now: jiff::Timestamp::now(),
+        filter: None,
+        everything: false,
+        wf: None,
+        auto: false,
+        system: &[],
+        group: None,
+    };
+    // Who the two are, noted in the scratch data dir as the screen notes them.
+    let mut b = crate::security::blocks::Blocks::load(&r.scope);
+    for e in crate::tui::screens::filter::menu_rows(&view) {
+        if ticks.contains(&e.dev.tag) {
+            b.device.insert(
+                e.dev.tag.clone(),
+                blocks::Dev {
+                    mac: e.dev.mac.clone(),
+                    label: e.dev.label.clone(),
+                    zone: e.dev.zone.clone(),
+                    wifi: e.dev.wifi.clone(),
+                },
+            );
+        }
+    }
+    b.save(&r.scope).unwrap();
+    let forced = t
+        .store
+        .counters
+        .value
+        .as_ref()
+        .map(|c| crate::security::family::hijacked(c, "lan"))
+        .unwrap_or_default();
+    let mut shown = Vec::new();
+    let plan = crate::security::run::show(
+        &r,
+        &crate::security::actions::Do::filter(ticks.clone()),
+        &mut |l| shown.push(l),
+    );
+    said.push_str("\n--- the plan as its first step shows it ---\n");
+    said.push_str(&shown.join("\n"));
+    if let Err(e) = &plan {
+        said.push_str(&format!("\nSTOPPED: {e}"));
+    }
+    std::fs::write(&out, &said).unwrap();
+    // What may be printed: shapes, not names.
+    println!(
+        "ticked {} · forced DNS here: {:?} · menu says can't: {} · plan: {}",
+        ticks.len(),
+        forced,
+        said_menu,
+        match &plan {
+            Ok(()) => "shown".to_string(),
+            Err(e) => format!("stopped ({} chars)", e.len()),
+        }
+    );
+}
+
+/// A filter that has stopped working is an act-now row: the DNS proxy's forcing back in
+/// front of it, or nobody's lookups forced at all. Enter is the filter again on the same
+/// devices.
+#[test]
+fn a_family_filter_that_stopped_working_is_said_and_put_right() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    let phone = mac_of(&a, "phone");
+    let tp = blocks::tag(NAME, &phone).unwrap();
+    // The fixture's counters have the proxy's redirect first.
+    data(
+        &mut a,
+        Kind::Uci,
+        Ok(Payload::Uci(Box::new(filtered_uci(&[(&tp, &phone)])))),
+    );
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(&s, "The family filter has stopped working").contains("act now"),
+        "{s}"
+    );
+    // The security audit says the same: one row, the page's, with the audit's why.
+    let me = crate::tui::id_of(NAME);
+    a.slot_mut().shared.sec = vec![audit_item(
+        &format!("sec:family-forced:{me}"),
+        sentry_core::secaudit::State::DoFirst,
+        "The family filter has stopped working: the router's own forced lookups are back",
+        &[&me],
+    )];
+    let s = list(&mut a, 158, 60);
+    assert_eq!(
+        s.matches("The family filter has stopped working").count(),
+        1,
+        "{s}"
+    );
+    let s = on_row(&mut a, "The family filter has stopped working");
+    assert!(s.contains("The audit's why for family-forced."), "{s}");
+    assert!(bar(&s).contains("Enter  put it right"), "{}", bar(&s));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(started(&a).1, format!("filter:{tp}"));
+    runs_cleared();
+    // sentry's forcing gone and the proxy's off: nobody's lookups forced.
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(&s, "Lookups aren't forced through the router for anyone").contains("act now"),
+        "{s}"
+    );
+    assert!(
+        s.contains("✗ off  Family filter") || s.contains("The family filter: see"),
+        "{s}"
+    );
+    // sentry forcing them, and the canary names no longer refused by dnsmasq's settings.
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    let forced =
+        crate::security::family::parse_forced(&fixture("network/service-https-dns-proxy.json"))
+            .unwrap();
+    let mut fw = String::new();
+    for l in crate::security::family::takeover_lines("config", &forced)
+        .unwrap()
+        .iter()
+        .skip(1)
+    {
+        fw.push_str(l.strip_prefix("uci set ").unwrap());
+        fw.push('\n');
+    }
+    u.configs
+        .get_mut("firewall")
+        .unwrap()
+        .extend(crate::collect::uci::show(&fw));
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(
+        line(
+            &s,
+            "A browser's own encrypted lookups are no longer switched off"
+        )
+        .contains("act now"),
+        "{s}"
+    );
+    on_row(&mut a, "A browser's own encrypted lookups are no longer");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(started(&a).1, format!("filter:{tp}"));
+    runs_cleared();
+}
+
+/// The fixture's config with sentry's family filter on these devices.
+fn filtered_uci(devs: &[(&str, &str)]) -> crate::collect::uci::Uci {
+    let mut add = String::new();
+    for (tag, mac) in devs {
+        let w = crate::security::family::Want {
+            tag: tag.to_string(),
+            mac: mac.to_string(),
+            zone: "lan".into(),
+        };
+        for l in
+            crate::security::family::device_lines(&w, "wan", crate::security::family::service())
+                .unwrap()
+        {
+            add.push_str(l.strip_prefix("uci set ").unwrap());
+            add.push('\n');
+        }
+    }
+    let text = fixture("network/uci.txt").replacen("@@dropbear", &format!("{add}@@dropbear"), 1);
+    crate::collect::uci::parse(&text, &crate::redact::Salt::fixed([7; 16]))
+}
+
+/// The last device off, where sentry took the forcing of lookups over: one question,
+/// hand it back (the first answer) or keep it.
+#[test]
+fn the_last_device_off_offers_to_hand_the_forcing_back() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let phone = mac_of(&a, "phone");
+    let tp = blocks::tag(NAME, &phone).unwrap();
+    let mut u = filtered_uci(&[(&tp, &phone)]);
+    let forced =
+        crate::security::family::parse_forced(&fixture("network/service-https-dns-proxy.json"))
+            .unwrap();
+    let mut fw = String::new();
+    for l in crate::security::family::takeover_lines("config", &forced)
+        .unwrap()
+        .iter()
+        .skip(1)
+    {
+        fw.push_str(l.strip_prefix("uci set ").unwrap());
+        fw.push('\n');
+    }
+    u.configs
+        .get_mut("firewall")
+        .unwrap()
+        .extend(crate::collect::uci::show(&fw));
+    u.configs.insert(
+        "https-dns-proxy".into(),
+        crate::collect::uci::show(
+            "https-dns-proxy.config=main\nhttps-dns-proxy.config.force_dns='0'\n",
+        ),
+    );
+    data(&mut a, Kind::Uci, Ok(Payload::Uci(Box::new(u))));
+    let s = list(&mut a, 158, 41);
+    assert!(!s.contains("aren't forced"), "sentry forces them: {s}");
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(
+        s.contains("1  Off, and hand the forcing of lookups back to the DNS proxy (recommended)")
+            && s.contains("2  Off, and keep sentry's forcing of lookups"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Char('1'));
+    assert_eq!(started(&a).1, "filter:none");
+    runs_cleared();
+}
+
+#[test]
+fn filtered_by_you_lists_the_routers_filters_and_enter_takes_one_off() {
+    let _turn = runs();
+    let mut a = armed(busy());
+    dns_not_forced(&mut a);
+    let (phone, cam) = (mac_of(&a, "phone"), mac_of(&a, "cam"));
+    let (tp, tc) = (
+        blocks::tag(NAME, &phone).unwrap(),
+        blocks::tag(NAME, &cam).unwrap(),
+    );
+    let gone = "0000abcd".to_string();
+    data(
+        &mut a,
+        Kind::Uci,
+        Ok(Payload::Uci(Box::new(filtered_uci(&[
+            (&tp, &phone),
+            (&tc, &cam),
+        ])))),
+    );
+    let now = a.win.now_override.unwrap().as_second();
+    {
+        let (slot, _) = a.parts();
+        let t: &mut NetworkTarget = slot.target.as_any_mut().downcast_mut().unwrap();
+        let b = &mut t.store.blocks;
+        for (tag, mac, label) in [(&tp, &phone, "phone"), (&gone, &cam, "old tablet")] {
+            b.device.insert(
+                tag.clone(),
+                blocks::Dev {
+                    mac: mac.clone(),
+                    label: label.into(),
+                    zone: "lan".into(),
+                    wifi: None,
+                },
+            );
+        }
+        // The phone's filter is noted; the cam's isn't (made elsewhere); the tablet's
+        // noted filter is no longer on the router.
+        for tag in [&tp, &gone] {
+            b.filter.insert(
+                tag.clone(),
+                blocks::Filtered {
+                    since: now - 3 * 86_400,
+                    service: "cleanbrowsing-family".into(),
+                },
+            );
+        }
+    }
+    let s = list(&mut a, 158, 41);
+    insta::assert_snapshot!("threats_filtered_158x41", s);
+    assert!(
+        s.contains("Filtered by you · family filter: 2 devices"),
+        "{s}"
+    );
+    assert!(line(&s, "│ phone ").contains("since 3 days ago"), "{s}");
+    assert!(
+        s.contains("! weak The family filter: see 6 and 7 above"),
+        "{s}"
+    );
+    // What differs between the router and this machine: a look each.
+    assert!(
+        s.contains("A family filter is on cam that sentry has no note of"),
+        "{s}"
+    );
+    assert!(
+        s.contains("The family filter on old tablet isn't on the router any more"),
+        "{s}"
+    );
+    // The one sentry has no note of: kept, noted here, nothing on the router.
+    on_row(&mut a, "that sentry has no note of");
+    key(&mut a, KeyCode::Enter);
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(s.contains("1  Keep it: note it here as filtered"), "{s}");
+    key(&mut a, KeyCode::Char('1'));
+    assert!(net(&a).store.blocks.filter.contains_key(&tc));
+    assert!(wf(&a).is_none());
+    // The one gone from the router: forgotten here.
+    on_row(&mut a, "isn't on the router any more");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Char('2'));
+    assert!(!net(&a).store.blocks.filter.contains_key(&gone));
+    key(&mut a, KeyCode::Esc);
+    let s = list(&mut a, 158, 41);
+    assert!(
+        !s.contains("that sentry has no note of") && !s.contains("isn't on the router any more"),
+        "{s}"
+    );
+    assert!(line(&s, "│ cam ").contains("since just now"), "{s}");
+    // Enter under Filtered by you takes one off: the filter on the rest, as one change.
+    key(&mut a, KeyCode::Char('G'));
+    let s = render_to_string(&mut a, 158, 41);
+    assert!(bar(&s).starts_with(" Enter  take it off"), "{}", bar(&s));
+    let last = net(&a)
+        .store
+        .uci
+        .value
+        .as_ref()
+        .map(crate::security::family::found)
+        .unwrap();
+    let off = &last.last().unwrap().tag;
+    key(&mut a, KeyCode::Enter);
+    let (_, action) = started(&a);
+    let rest: Vec<&String> = last.iter().map(|f| &f.tag).filter(|t| *t != off).collect();
+    assert_eq!(action, format!("filter:{}", rest[0]));
+    // Clients marks the filtered ones.
+    let s = screen(&mut a, '2', 158, 41);
+    assert!(
+        s.contains("phone  (filtered)") && s.contains("cam  (filtered)"),
+        "{s}"
+    );
 }

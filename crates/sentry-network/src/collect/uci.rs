@@ -24,7 +24,7 @@ pub const AUDITED: &[&str] = &[
     "network", "firewall", "wireless", "dhcp", "dropbear", "uhttpd",
 ];
 
-pub const SCRIPT: &str = "for c in firewall dropbear uhttpd wireless dhcp network system; do \
+pub const SCRIPT: &str = "for c in firewall dropbear uhttpd wireless dhcp network system https-dns-proxy; do \
      echo @@$c; uci show $c 2>/dev/null; done; echo @@changes; uci changes";
 
 /// One section: its name (`@zone[0]`, `web_https`), its type and its options.
@@ -302,8 +302,10 @@ impl Uci {
     }
 
     /// Every DNAT redirect, the disabled ones too.
+    /// (Sentry's own family filter is a redirect too, of DNS from inside: never a door.)
     pub fn forwards(&self) -> Vec<Redirect> {
         self.firewall("redirect")
+            .filter(|s| !crate::security::family::is_ours(s))
             .filter(|s| {
                 s.one("target")
                     .is_none_or(|t| t.eq_ignore_ascii_case("DNAT"))

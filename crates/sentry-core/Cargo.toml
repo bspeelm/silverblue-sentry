@@ -26,3 +26,6 @@ thiserror.workspace = true
 tracing.workspace = true
 signal-hook.workspace = true
 rustix.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

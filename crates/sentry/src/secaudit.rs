@@ -1,8 +1,10 @@
 //! `sentry audit security`: the security audit across every configured target as one
 //! system (core `secaudit`). Each target's facts are read side by side (`secfacts` in its
 //! crate: this machine, each server, each network); a target that doesn't answer is said
-//! and the audit still completes. Reads only; the one thing run that isn't sentry's own
-//! read is the user's `[audit] outside` command, and only with `--outside`.
+//! and the audit still completes. Reads only, but for two things: each door a router
+//! forwards to one of sentry's own machines is asked once from here (core
+//! `secaudit::probe`: one request to its front page, no login), and the user's own
+//! `[audit] outside` command is run with `--outside`.
 
 use std::process::ExitCode;
 
@@ -26,9 +28,25 @@ pub fn main(args: &[String]) -> ExitCode {
     }
 }
 
-/// Every configured target's facts, read side by side: this machine first. What a window
-/// calls from a worker thread too.
+/// Every configured target's facts, read side by side: this machine first; then each door
+/// to one of them asked once. What a window calls from a worker thread too.
 pub fn collect() -> Vec<TargetFacts> {
+    let mut facts = read_all();
+    secaudit::probe_doors(&mut facts);
+    facts
+}
+
+/// What `--outside` says when `[audit] outside` isn't set: what to put there.
+pub const OUTSIDE_HOW: [&str; 3] = [
+    "--outside: nothing was checked from outside, because config.toml has no [audit] outside.",
+    "sentry never scans anything itself: [audit] outside is your own command, run from a place \
+     outside your home network, with {address} and {ports} in it (sentry fills in your public \
+     address and the ports to try).",
+    "It prints the ports that answer, one per line. The README has two examples: through a VPN \
+     from this machine, and through a shell on a remote host.",
+];
+
+fn read_all() -> Vec<TargetFacts> {
     let servers = sentry_server::config::load().ok().map(|(f, _)| f);
     let networks = sentry_network::config::load().ok().map(|(f, _)| f);
     std::thread::scope(|sc| {
@@ -74,10 +92,7 @@ fn run(json: bool, outside: bool) -> ExitCode {
                     r.outside = Some(secaudit::outside(template, r));
                 }
             }
-            None => eprintln!(
-                "--outside: no [audit] outside command in config.toml; nothing was checked \
-                 from outside"
-            ),
+            None => OUTSIDE_HOW.iter().for_each(|l| eprintln!("{l}")),
         }
     }
     let (report, path) = match Report::finish(&facts) {
