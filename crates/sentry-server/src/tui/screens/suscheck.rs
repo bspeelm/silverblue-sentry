@@ -828,6 +828,7 @@ fn tag(code: &str) -> String {
         "picture_only" => "the address was only read from a picture",
         "link_text_mismatch" => "a link's text is an address, and it leads to another",
         "link_lookalike" => "a link imitates the real address",
+        "link_mailto_mismatch" => "a link's text is an email address, and it writes to another",
         "link_odd_target" => "a link that doesn't lead to an ordinary named site",
         "links_unchecked" => "more links than SusCheck analyses",
         "reply_to_differs" => "replies go to another domain",
@@ -868,7 +869,7 @@ fn compared(result: &str) -> String {
         "match_search" => "the address web search agrees is the brand's own",
         "lookalike" => "it imitates a genuine address",
         "mismatch" => {
-            "clearly another address than the confirmed genuine one, or a public IP address"
+            "not the genuine address: another one, a public IP, a shared platform or related service"
         }
         "unknown" => "nothing could be confirmed either way",
         "local" => "a private or loopback address on the home network",
@@ -905,6 +906,35 @@ fn unconfirmed(kind: Option<&str>) -> &'static str {
         }
         _ => UNCONFIRMED,
     }
+}
+
+/// A kind of strong evidence SusCheck's code found (`final.strong_evidence`): what alone
+/// makes its rules say "don't trust this".
+fn strong(kind: &str) -> String {
+    match kind {
+        "close_imitation" => {
+            "the address is a character away from a genuine one, or hides behind real@other"
+        }
+        "link_close_imitation" => "a link leads to such an imitation of a genuine address",
+        "link_text_close_imitation" => "a link shows a web address and leads to an imitation of it",
+        "sender_cannot_exist" => {
+            "the sender's domain can't exist, and something else is wrong with the message"
+        }
+        "freemail_throwaway_invoice" => "a bill as an attachment from a throwaway personal address",
+        _ => return kind.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// What decided that the address belongs with the company it was compared to
+/// (`domain.related_by`), in words.
+fn related_by(what: &str) -> String {
+    match what {
+        "family" => "SusCheck's fixed table of related domains and list hosts",
+        "search" => "the search for the domain",
+        _ => return what.replace('_', " "),
+    }
+    .to_string()
 }
 
 /// The one word the model was given for how the comparison came out (`domain.judge_word`),
@@ -952,9 +982,19 @@ fn why(code: &str) -> String {
         "confusable" => {
             "it is the genuine address once look-alike characters are read as what they imitate"
         }
-        "edit_distance" => "within two added, dropped or changed characters of the genuine address",
+        "edit_distance" => {
+            "a character or two changed, added, dropped, doubled or swapped from the genuine address"
+        }
         "brand_in_subdomain" => "the genuine name is used as a subdomain of another domain",
-        "brand_in_label" => "the genuine name is a word inside another domain's name",
+        "brand_in_label" => "the genuine name is a word inside another domain's name, or at its start or end",
+        "shared_platform" => {
+            "a platform where anyone can have an address or a page: it is whoever set it up"
+        }
+        "same_owner" => "another of the confirmed company's own domains, and the mail system confirmed it",
+        "same_owner_unconfirmed" => {
+            "another domain of the confirmed company, but not one of its mail domains, or unconfirmed"
+        }
+        "related_service" => "search found the company's own site talking about or hosting this domain",
         "match_unconfirmed" => {
             "it equals the one search result found, and one result isn't confirmation"
         }
@@ -994,6 +1034,7 @@ fn link_flag(code: &str) -> String {
     match code {
         "text_mismatch" => "its text is another address",
         "imitates_text" => "imitates the address in its text",
+        "mailto_mismatch" => "its text is an email address, and it writes to another",
         "lookalike" => "imitates the real address",
         "close_imitation" => "one small change from the real one",
         "userinfo" => "a name and an @ in front of the address",
@@ -1060,6 +1101,7 @@ fn signal(key: &str) -> String {
         "name_matches_address" => {
             "the sender's name is its own domain's name (and it passed DMARC)"
         }
+        "mailing_list" => "it has a mailing-list header (anyone can write one)",
         _ => return key.replace('_', " "),
     }
     .to_string()
@@ -1070,7 +1112,7 @@ fn query(kind: &str) -> String {
     match kind {
         "official" => "the official site",
         "official2" => "the official site, by the sender's name",
-        "domain" => "scam reports about the domain",
+        "domain" => "what the domain is",
         "phone" => "the phone number",
         _ => return kind.replace('_', " "),
     }
@@ -1394,6 +1436,29 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 ));
             }
         }
+        // Who said "don't trust this": SusCheck's rules do only on strong evidence, so
+        // with none it is the model's own verdict. (A record from before doesn't say:
+        // older rules applied.)
+        match &l.strong_evidence {
+            Some(kinds) if !kinds.is_empty() => {
+                out.push(row(
+                    t,
+                    "Strong evidence",
+                    "found by SusCheck's own rules, which alone say \"don't trust this\":".into(),
+                ));
+                out.extend(bullets(
+                    t,
+                    &kinds.iter().map(|k| strong(k)).collect::<Vec<_>>(),
+                ));
+            }
+            Some(_) if Verdict::of(lv) == Some(Verdict::Malicious) => out.push(row(
+                t,
+                "Strong evidence",
+                "none found by SusCheck's rules: \"don't trust this\" is the model's own verdict"
+                    .into(),
+            )),
+            _ => {}
+        }
         if l.trusted_sender {
             out.push(Line::from(vec![
                 Span::styled(format!("{:<18}", "Trusted sender"), t.dim()),
@@ -1695,14 +1760,18 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 },
             ));
         }
+        if let Some(what) = &d.related_by {
+            out.push(row(
+                t,
+                "  related by",
+                format!("{} (what related them)", related_by(what)),
+            ));
+        }
         if let Some(w) = &d.judge_word {
             out.push(row(
                 t,
                 "  put to model",
-                format!(
-                    "as {} (how it was told, not a second result)",
-                    judge_word(w)
-                ),
+                format!("as {} (as told: not a second result)", judge_word(w)),
             ));
         }
         if d.shown.is_some() || d.real.is_some() {
@@ -1736,6 +1805,12 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         ));
         if s.queries.is_empty() {
             out.push(none());
+        }
+        if s.domain_vouched == Some(true) {
+            out.push(Line::styled(
+                "  the company's own site talks about or hosts the sender's domain (this only softens the check)",
+                t.dim(),
+            ));
         }
         let failed = s.failed.as_deref().unwrap_or(&[]);
         if !failed.is_empty() {

@@ -1,0 +1,313 @@
+{
+ "schema": 1,
+ "id": "20261105T115952Z-y5z7",
+ "time": "2026-11-05T11:59:52Z",
+ "device": "Hallway PC",
+ "client": "web",
+ "app_version": "",
+ "duration_ms": 13630,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "6",
+ "stages_ms": {
+  "extract": 3120,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": 1860,
+  "judge": 8650
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Lumora Groups",
+  "sender_name": null,
+  "sender_address": "hillside-gardeners@lumoragroups.test",
+  "address_bar_domain": null,
+  "link_texts": [
+   "View all topics",
+   "group membership page"
+  ],
+  "phone_numbers": [],
+  "asks_for": [],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": null,
+  "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "clear",
+  "check": {
+   "result": "mismatch",
+   "shown": "lumoragroups.test",
+   "real": null,
+   "why": "shared_platform"
+  },
+  "first_reading_from": null,
+  "source": "email_header",
+  "exact": "lumoragroups.test",
+  "judge_word": "other_domain",
+  "related_by": "family"
+ },
+ "search": {
+  "domain_vouched": true,
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Lumora Groups\" official website"
+   ],
+   [
+    "domain",
+    "\"lumoragroups.test\""
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Lumora - official site",
+     "snippet": "Search, mail, groups and video from Lumora.",
+     "domain": "lumora.test",
+     "engines": 2
+    },
+    {
+     "title": "Lumora account help",
+     "snippet": "Help with your Lumora account.",
+     "domain": "lumora.test",
+     "engines": 2
+    }
+   ],
+   "domain": [
+    {
+     "title": "Lumora Groups Help",
+     "snippet": "Addresses ending in lumoragroups.test belong to groups hosted by Lumora Groups.",
+     "domain": "lumora.test",
+     "engines": 2
+    },
+    {
+     "title": "About Lumora Groups",
+     "snippet": "Anyone can create a group. Each group gets an address at lumoragroups.test.",
+     "domain": "lumora.test",
+     "engines": 2
+    },
+    {
+     "title": "What is this domain?",
+     "snippet": "lumoragroups.test is the mailing-list domain of Lumora.",
+     "domain": "webfacts.test",
+     "engines": 1
+    }
+   ]
+  },
+  "failed": []
+ },
+ "judgement": {
+  "red_flags": [],
+  "looks_normal": [
+   "It is a summary of messages from a discussion group and asks for nothing."
+  ],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "likely_safe",
+  "advice": [
+   "no_action_needed"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"claimed_brand\": \"Lumora Groups\", \"link_texts\": [\"View all topics\", \"group membership page\"], \"phone_numbers\": [], \"asks_for\": [], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [], \"looks_normal\": [\"It is a summary of messages from a discussion group and asks for nothing.\"], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"likely_safe\", \"advice\": [\"no_action_needed\"]}"
+ },
+ "final": {
+  "verdict": "suspicious",
+  "confidence": "low",
+  "incomplete": false,
+  "reasons": [
+   "It was sent through a mailing-list or shared service, where anyone can set up an address. That is normal for group mail, but I can't confirm who is behind it."
+  ],
+  "advice": [
+   "do_not_click",
+   "ask_for_help"
+  ],
+  "floors": [
+   "sender_not_brand_domain"
+  ],
+  "floors_changed_verdict": true,
+  "unconfirmed_only": true,
+  "trusted_sender": false,
+  "unconfirmed_kind": "other_domain",
+  "strong_evidence": []
+ },
+ "input": [
+  "email"
+ ],
+ "email": {
+  "from_name": "",
+  "from_address": "hillside-gardeners@lumoragroups.test",
+  "reply_to": "hillside-gardeners@lumoragroups.test",
+  "return_path": "hillside-gardeners+bncBCQ7XK5VYEHRB2OQ6DFAMGQEKTN3L7A@lumoragroups.test",
+  "subject": "[hillside-gardeners] Abridged summary of hillside-gardeners@lumoragroups.test - 4 updates in 2 topics",
+  "date": "Mon, 23 Nov 2026 18:40:00 +0000",
+  "auth": {
+   "spf": "pass",
+   "dkim": "pass",
+   "dmarc": "pass"
+  },
+  "attachments": [],
+  "attachments_total": 0,
+  "links_total": 25,
+  "aimed_at_ai": false,
+  "from_written": null,
+  "signals": {
+   "body_nearly_empty": false,
+   "random_address": false,
+   "names_disagree": false,
+   "money_wording": false,
+   "return_path_differs": false,
+   "body_is_one_link": false,
+   "display_name_is_recipient": false,
+   "name_matches_address": false,
+   "mailing_list": true
+  },
+  "freemail": null,
+  "defects": [],
+  "defects_notable": []
+ },
+ "links": [
+  {
+   "text": "hillside-gardeners@lumoragroups[.]test",
+   "scheme": "https",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "Lumora Groups Logo",
+   "scheme": "https",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "Lumora Groups",
+   "scheme": "https",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "View all topics",
+   "scheme": "https",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "\ud83c\udf31 Seed swap on Saturday",
+   "scheme": "none",
+   "target_domain": null,
+   "flags": []
+  },
+  {
+   "text": "\ud83d\udee0 Shed roof repair rota",
+   "scheme": "none",
+   "target_domain": null,
+   "flags": []
+  },
+  {
+   "text": "Seed swap on Saturday",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "Priya Raman",
+   "scheme": "mailto",
+   "target_domain": "postbox[.]test",
+   "flags": []
+  },
+  {
+   "text": "Tom Okafor",
+   "scheme": "mailto",
+   "target_domain": "oakfieldprimary[.]test",
+   "flags": []
+  },
+  {
+   "text": "Greta Lindqvist",
+   "scheme": "mailto",
+   "target_domain": "postbox[.]test",
+   "flags": []
+  },
+  {
+   "text": "lumotube[.]test",
+   "scheme": "https",
+   "target_domain": "lumotube[.]test",
+   "flags": []
+  },
+  {
+   "text": "...more",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "Back to top",
+   "scheme": "none",
+   "target_domain": null,
+   "flags": []
+  },
+  {
+   "text": "Shed roof repair rota",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "...more",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "group membership page",
+   "scheme": "https",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "hillside-gardeners+unsubscribe@lumoragroups[.]test",
+   "scheme": "mailto",
+   "target_domain": "lumoragroups[.]test",
+   "flags": []
+  },
+  {
+   "text": "lumora[.]test",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "lumora[.]test",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "lumora[.]test",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  },
+  {
+   "text": "lumora[.]test",
+   "scheme": "http",
+   "target_domain": "lumora[.]test",
+   "flags": []
+  }
+ ],
+ "links_total": 25,
+ "links_merged": 4,
+ "page": null,
+ "acquired_by": null,
+ "mail_label": null,
+ "screenshot": false,
+ "message": true
+}

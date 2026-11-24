@@ -8,7 +8,7 @@
  "duration_ms": 15930,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "5",
+ "prompt_version": "6",
  "stages_ms": {
   "extract": 3280,
   "reread": null,
@@ -52,9 +52,11 @@
   "first_reading_from": "address_bar",
   "source": "window",
   "exact": "examp1e-pay.test",
-  "judge_word": "lookalike"
+  "judge_word": "lookalike",
+  "related_by": null
  },
  "search": {
+  "domain_vouched": null,
   "ok": true,
   "queries": [
    [
@@ -63,7 +65,7 @@
    ],
    [
     "domain",
-    "\"examp1e-pay.test\" scam phishing"
+    "\"examp1e-pay.test\""
    ]
   ],
   "results": {
@@ -129,7 +131,11 @@
   "floors_changed_verdict": true,
   "unconfirmed_only": false,
   "trusted_sender": false,
-  "unconfirmed_kind": null
+  "unconfirmed_kind": null,
+  "strong_evidence": [
+   "close_imitation",
+   "link_close_imitation"
+  ]
  },
  "input": [
   "image",

@@ -5,28 +5,28 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Oct 30 18:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Oct 30 18:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           no obvious warning signs  (medium confidence)                                            │
-│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
-│  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 17 s                                                     │
-│  be careful                       3        3 ││ Made from         picture                                                                                  │
-│   of them only unconfirmed        1        1 ││                                                                                                            │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Kitchen iMac (app 0.1.0) · took 17 s                                                     │
+│  be careful                       5        5 ││ Made from         picture                                                                                  │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
 │  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
 │   from a trusted sender           1        1 ││   · The address bar matches the company's real site.                                                       │
 │  failed                           1        1 ││   · It only shows a shopping basket.                                                                       │
-│ from: picture 7/7 · email 4/4 · page 2/2     ││ Advice shown      no action needed · ask for help                                                          │
-│ incomplete        1 of 10 (10%)              ││                                                                                                            │
-│ rules overrode    the model 4 of 10 (40%)    ││ The model against what counted                                                                             │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││ Advice shown      no action needed · ask for help                                                          │
+│ incomplete        1 of 11 (9%)               ││                                                                                                            │
+│ rules overrode    the model 4 of 11 (36%)    ││ The model against what counted                                                                             │
 │ typical time      14 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
 │ you marked        none yet (m on a check)    ││ What counted      no obvious warning signs (medium)                                                        │
-│ model example-vision:1b · prompts 5          ││ SusCheck's rules  none applied                                                                             │
+│ model example-vision:1b · prompts 6          ││ SusCheck's rules  none applied                                                                             │
 │ by extension: 1 original                     ││   what it found normal                                                                                     │
 │ ● alive 2m ago · keeps checks 30 days        ││   · The address bar matches the company's real site.                                                       │
 │                                              ││   · It only shows a shopping basket.                                                                       │
 └──────────────────────────────────────────────┘│                                                                                                            │
 ┌ Computers · 3 paired ────────────────────────┐│ What it read from the picture                                                                              │
 │ Name           Client    Checks  Last seen   ││   kind            web page                                                                                 │
-│ Hallway PC     web            3  3h ago      ││   claims to be    Example                                                                                  │
+│ Hallway PC     web            4  3h ago      ││   claims to be    Example                                                                                  │
 │   ↳ a browser profile: no extension seen yet ││   address bar     shop.example.com                                                                         │
 │ Kitchen iMac   app 0.1.0      7  2m ago      ││   links           Basket · Checkout                                                                        │
 │   ↳ owner: may change the trusted senders    ││   asks for        nothing                                                                                  │

@@ -8,7 +8,7 @@
  "duration_ms": 120450,
  "error": "model",
  "model": "example-vision:1b",
- "prompt_version": "5",
+ "prompt_version": "6",
  "stages_ms": {
   "extract": 120010,
   "reread": null,

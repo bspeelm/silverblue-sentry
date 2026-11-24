@@ -1353,6 +1353,10 @@ pub struct Domain {
     /// out (`match`, `lookalike`, `mismatch`, `unknown`, `local_device`, `unconfirmed`,
     /// `personal_address`, `other_domain`). Not a second result.
     pub judge_word: Option<String>,
+    /// What decided that the checked address belongs with the company it was compared
+    /// to: `family` (SusCheck's fixed table of related domains and list hosts), `search`
+    /// (the search for the domain), or a value this sentry doesn't know. None: neither.
+    pub related_by: Option<String>,
     /// Where the address the verdict rests on came from: `email_header`, `window`,
     /// `screenshot`, or a value this sentry doesn't know. None: an older record (a picture).
     pub source: Option<String>,
@@ -1391,6 +1395,10 @@ pub struct Search {
     /// The kind of each query that failed or timed out. None: a record from before that
     /// was written.
     pub failed: Option<Vec<String>>,
+    /// The company's own site talks about or hosts the sender's domain (at least two of
+    /// the domain query's top results are on the brand's agreed domain). It can only
+    /// soften the comparison. None: not looked at, or a record from before.
+    pub domain_vouched: Option<bool>,
 }
 
 /// The model's own answer, before SusCheck's rules.
@@ -1423,6 +1431,11 @@ pub struct Final {
     /// The sender was on the owner's trusted list, the mail system confirmed it, and that
     /// is what the check rests on. Only a literal `true`.
     pub trusted_sender: bool,
+    /// Which kinds of strong evidence SusCheck's code found: code alone says "don't trust
+    /// this" exactly when there is one, so an empty list beside that verdict means it is
+    /// the model's own. None: not recorded (a record from before, when older rules
+    /// applied).
+    pub strong_evidence: Option<Vec<String>>,
 }
 
 /// One attachment as the message declared it. Nothing else of it exists anywhere: SusCheck
@@ -1494,7 +1507,7 @@ impl Email {
 }
 
 /// `email.signals` as the format names them, in its order.
-pub const SIGNALS: [&str; 8] = [
+pub const SIGNALS: [&str; 9] = [
     "body_nearly_empty",
     "random_address",
     "names_disagree",
@@ -1503,6 +1516,7 @@ pub const SIGNALS: [&str; 8] = [
     "body_is_one_link",
     "display_name_is_recipient",
     "name_matches_address",
+    "mailing_list",
 ];
 /// The most signals of one record that are kept.
 pub const SIGNALS_MAX: usize = 16;
@@ -1715,6 +1729,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             shuffled_reading: t(&d["shuffled_reading"]),
             digit_rule: text(&d["digit_rule"], 30),
             judge_word: text(&d["judge_word"], 24),
+            related_by: text(&d["related_by"], 24),
             source: text(&d["source"], 30),
             exact: text(&d["exact"], 260),
             result: t(&d["check"]["result"]),
@@ -1755,6 +1770,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             ok: s["ok"].as_bool(),
             queries,
             failed: s["failed"].is_array().then(|| texts(&s["failed"], 20, 6)),
+            domain_vouched: s["domain_vouched"].as_bool(),
         }
     });
     let judgement = obj(&v["judgement"]).then(|| {
@@ -1781,6 +1797,9 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             unconfirmed_only: f["unconfirmed_only"].as_bool() == Some(true),
             unconfirmed_kind: text(&f["unconfirmed_kind"], 24),
             trusted_sender: f["trusted_sender"].as_bool() == Some(true),
+            strong_evidence: f["strong_evidence"]
+                .is_array()
+                .then(|| texts(&f["strong_evidence"], 40, 8)),
         }
     });
     let count = |x: &Value| x.as_u64().map(|n| n.min(1_000_000));
@@ -2037,7 +2056,7 @@ pub(crate) mod tests {
     #[test]
     fn the_samples_parse_to_what_the_format_says() {
         let s = sample();
-        assert_eq!(s.checks.len(), 11);
+        assert_eq!(s.checks.len(), 12);
         assert_eq!((s.skipped, s.index_newer, s.newer()), (0, None, None));
         // The oldest is a line in the old shape (it ends at `error`): a picture's.
         let old = &s.checks[0];
@@ -2089,6 +2108,7 @@ pub(crate) mod tests {
                 said("email + page address"),
                 said("email"),
                 said("email"),
+                said("email"),
             ]
         );
         assert_eq!(
@@ -2100,7 +2120,7 @@ pub(crate) mod tests {
         assert_eq!(s.checks[7].pictureless(), None);
         assert_eq!(s.checks[5].pictureless(), None);
         let st = s.status.ok().unwrap();
-        assert_eq!(st.version.as_deref(), Some("0.1.0"));
+        assert_eq!(st.version.as_deref(), Some("0.1.1"));
         assert_eq!(st.retention_days, Some(30));
         assert_eq!(s.heartbeat_age(), Some(120));
         let d = s.devices.ok().unwrap();
@@ -2136,24 +2156,31 @@ pub(crate) mod tests {
         assert_eq!(known[3], Some(true));
         assert_eq!(known[5], None);
         assert_eq!(
+            known.iter().filter(|k| **k == Some(true)).count(),
+            2,
+            "{known:?}"
+        );
+        assert_eq!(
             known.iter().filter(|k| **k == Some(false)).count(),
             8,
             "{known:?}"
         );
         assert!(s.checks[3].mild() && s.checks[3].outcome() == "be careful (picture only)");
         assert!(!s.checks[2].mild() && s.checks[2].outcome() == "be careful");
-        assert!(s.checks.iter().filter(|c| c.mild()).count() == 1);
+        // (The picture alone, and the mailing list's digest: "other domain".)
+        assert!(s.checks.iter().filter(|c| c.mild()).count() == 2);
+        assert_eq!(s.checks[11].outcome(), "be careful (other domain)");
         // Counts: by the server's clock, the last day has the failed check and the four
         // of that morning.
         let c = s.counts();
         assert_eq!(
             c.week,
             Tally {
-                total: 11,
-                malicious: 3,
+                total: 12,
+                malicious: 2,
                 trusted: 1,
-                suspicious: 3,
-                unconfirmed: 1,
+                suspicious: 5,
+                unconfirmed: 2,
                 safe: 4,
                 other: 0,
                 errors: 1,
@@ -2161,22 +2188,22 @@ pub(crate) mod tests {
                 floors: 4,
             }
         );
-        assert_eq!((c.day.total, c.day.errors, c.computers), (6, 1, 3));
+        assert_eq!((c.day.total, c.day.errors, c.computers), (7, 1, 3));
         assert_eq!(c.trusted, 2);
         assert!(!c.down());
         // Since the first lookalike was looked at: two more said "don't trust this", one
         // failed.
-        assert_eq!(s.unseen(None), (3, 1));
-        assert_eq!(s.unseen(Some("20261030T184512Z-b0a1")), (3, 1));
-        assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (2, 1));
-        assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (2, 0));
+        assert_eq!(s.unseen(None), (2, 1));
+        assert_eq!(s.unseen(Some("20261030T184512Z-b0a1")), (2, 1));
+        assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (1, 1));
+        assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (1, 0));
         assert_eq!(s.unseen(Some("20261105T103045Z-p6q8")), (0, 0));
         // What needs a look is what said "don't trust this" or failed: a "be careful",
         // the milder kind included, never is.
-        assert_eq!(s.unseen(Some("20261102T143027Z-c3d4")), (2, 1));
+        assert_eq!(s.unseen(Some("20261102T143027Z-c3d4")), (1, 1));
         assert_eq!(
             s.newest().map(|i| i.to_string()).as_deref(),
-            Some("20261105T115934Z-w8x2")
+            Some("20261105T115952Z-y5z7")
         );
     }
 
@@ -2460,6 +2487,13 @@ pub(crate) mod tests {
         }
         if let Some(d) = o.get_mut("domain").and_then(Value::as_object_mut) {
             d.remove("judge_word");
+            d.remove("related_by");
+        }
+        if let Some(f) = o.get_mut("final").and_then(Value::as_object_mut) {
+            f.remove("strong_evidence");
+        }
+        if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
+            f.remove("domain_vouched");
         }
         if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
             f.remove("failed");
@@ -2558,6 +2592,10 @@ pub(crate) mod tests {
             "\"trusted_sender\":",
             "\"unconfirmed_kind\":",
             "\"defects",
+            "\"related_by\":",
+            "\"domain_vouched\":",
+            "\"strong_evidence\":",
+            "\"mailing_list\":",
         ] {
             assert!(!old_text.contains(later), "{later}");
         }
@@ -2661,6 +2699,7 @@ pub(crate) mod tests {
             "20261105T114502Z-r3s5",
             "20261105T115821Z-t4v6",
             "20261105T115934Z-w8x2",
+            "20261105T115952Z-y5z7",
         ] {
             let text = fixture(&format!("suscheck/{id}/incident.json"));
             let mut now = sample_incident(id);
@@ -2670,9 +2709,11 @@ pub(crate) mod tests {
                 l.unconfirmed_only = false;
                 l.unconfirmed_kind = None;
                 l.trusted_sender = false;
+                l.strong_evidence = None;
             }
             if let Some(s) = &mut now.search {
                 s.failed = None;
+                s.domain_vouched = None;
             }
             let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
             assert_eq!(then.input, ["image"], "{id}");
@@ -2688,6 +2729,7 @@ pub(crate) mod tests {
                     && d.shuffled_reading.is_none()
                     && d.first_reading_from.is_none()
                     && d.judge_word.is_none()
+                    && d.related_by.is_none()
             }));
             assert!(
                 then.stages
@@ -3034,7 +3076,7 @@ pub(crate) mod tests {
             (Some("address_bar"), Some("fired"))
         );
         assert_eq!(w.search.as_ref().unwrap().failed.as_deref(), Some(&[][..]));
-        assert_eq!(w.prompt_version.as_deref(), Some("5"));
+        assert_eq!(w.prompt_version.as_deref(), Some("6"));
         // An email checked with the mail window it was open in: both supply links, and
         // three were exact repeats. Nothing was left out at a limit.
         let both = sample_incident("20261105T114502Z-r3s5");
@@ -3068,7 +3110,7 @@ pub(crate) mod tests {
             .iter()
             .map(|q| q.kind.as_str())
             .collect();
-        assert_eq!(kinds, ["official", "official2", "domain"]);
+        assert_eq!(kinds, ["official", "domain", "official2"]);
         assert_eq!(news.last.as_ref().unwrap().floors, ["mail_label_spam"]);
         assert_eq!(news.links_left(), Some((0, 0)));
 
@@ -3136,11 +3178,8 @@ pub(crate) mod tests {
         // The milder verdict is said only by a literal `true`, and only of "be careful".
         assert!(!i.last.as_ref().unwrap().unconfirmed_only && !i.unconfirmed_only());
         v["final"]["unconfirmed_only"] = true.into();
+        v["final"]["verdict"] = "likely_malicious".into();
         let i = parse_incident(&v.to_string(), id).unwrap();
-        assert_eq!(
-            i.last.as_ref().unwrap().verdict.as_deref(),
-            Some("likely_malicious")
-        );
         assert!(i.last.as_ref().unwrap().unconfirmed_only && !i.unconfirmed_only());
         // The format's own sum: 500 in all, 120 exact repeats, 2 listed: 378 at a limit.
         assert_eq!(i.links_left(), Some((378, 120)));
@@ -3533,13 +3572,13 @@ pub(crate) mod tests {
         // it is still a "be careful", and never something to look at.
         let s = sample();
         let week = s.tally(7);
-        assert_eq!((week.suspicious, week.unconfirmed), (3, 1));
+        assert_eq!((week.suspicious, week.unconfirmed), (5, 2));
         let mut older = s.clone();
         for c in &mut older.checks {
             c.unconfirmed_only = None;
         }
         let then = older.tally(7);
-        assert_eq!((then.suspicious, then.unconfirmed), (3, 0));
+        assert_eq!((then.suspicious, then.unconfirmed), (5, 0));
         assert_eq!(s.unseen(None), older.unseen(None));
         // A stored report from before the count reads back.
         let old: Tally = serde_json::from_str(
@@ -4116,6 +4155,22 @@ pub(crate) mod tests {
         let strip = |text: &str, generation: u8| {
             let mut v: Value = serde_json::from_str(text).unwrap();
             v["prompt_version"] = "9".into();
+            // (What generation 7 added goes for every one of them.)
+            v["domain"].as_object_mut().unwrap().remove("related_by");
+            v["search"]
+                .as_object_mut()
+                .unwrap()
+                .remove("domain_vouched");
+            v["final"]
+                .as_object_mut()
+                .unwrap()
+                .remove("strong_evidence");
+            if let Some(sig) = v["email"]["signals"].as_object_mut() {
+                sig.remove("mailing_list");
+            }
+            if generation == 6 {
+                return v.to_string();
+            }
             v["email"]
                 .as_object_mut()
                 .unwrap()
@@ -4180,6 +4235,24 @@ pub(crate) mod tests {
             club5.email.as_ref().unwrap().defects.as_deref(),
             Some(&[][..])
         );
+        // Generation 6 (message faults): its own word on which faults were notable, the
+        // remark, and nothing of what came after: no word on strong evidence (older rules
+        // applied), on what related the address, on what search said of the domain.
+        let g6 = parse_incident(&strip(&text, 6), id).unwrap();
+        let (l, d, e) = (
+            g6.last.as_ref().unwrap(),
+            g6.domain.as_ref().unwrap(),
+            g6.email.as_ref().unwrap(),
+        );
+        assert_eq!(e.notable(), (vec!["no_closing_boundary"], true));
+        assert!(l.floors.contains(&"message_faults".to_string()));
+        assert_eq!((&l.strong_evidence, &d.related_by), (&None, &None));
+        assert_eq!(g6.search.as_ref().unwrap().domain_vouched, None);
+        assert!(!e.signals.contains(&"mailing_list".to_string()));
+        for g in [&g4, &g5] {
+            assert_eq!(g.last.as_ref().unwrap().strong_evidence, None);
+            assert_eq!(g.domain.as_ref().unwrap().related_by, None);
+        }
         // And the script reads the list in the same one exec.
         let sh = script("/srv/x", 50, MARK);
         assert!(
@@ -4190,6 +4263,136 @@ pub(crate) mod tests {
             sh.contains("echo \"${m}trusted\"; [ ! -f \"$d/trusted.json\" ] || head -c 524288"),
             "{sh}"
         );
+    }
+
+    /// Related domains, shared platforms and strong evidence (the format's seventh
+    /// generation): who said "don't trust this", what related an address to a company,
+    /// what search said of the sender's domain, and the mailing-list signal.
+    #[test]
+    fn strong_evidence_related_domains_and_shared_platforms() {
+        // The group's digest: sent through a list on a shared platform, so "be careful"
+        // only because the sender isn't at a company's own address.
+        let list = sample_incident("20261105T115952Z-y5z7");
+        let (l, d) = (list.last.as_ref().unwrap(), list.domain.as_ref().unwrap());
+        assert!(list.unconfirmed_only());
+        assert_eq!(l.unconfirmed_kind.as_deref(), Some("other_domain"));
+        assert_eq!(l.floors, ["sender_not_brand_domain"]);
+        assert_eq!(l.strong_evidence.as_deref(), Some(&[][..]));
+        assert_eq!(
+            (
+                d.result.as_deref(),
+                d.why.as_deref(),
+                d.real.as_deref(),
+                d.related_by.as_deref(),
+                d.judge_word.as_deref()
+            ),
+            (
+                Some("mismatch"),
+                Some("shared_platform"),
+                None,
+                Some("family"),
+                Some("other_domain")
+            )
+        );
+        assert_eq!(list.search.as_ref().unwrap().domain_vouched, Some(true));
+        assert_eq!(list.email.as_ref().unwrap().signals, ["mailing_list"]);
+        // More links than are listed: none repeated, the rest left out at the limit or
+        // merged, by the record's own counts.
+        let listed = list.links.as_ref().unwrap().len() as u64;
+        let (cut, repeats) = list.links_left().unwrap();
+        assert_eq!(
+            listed + cut + repeats,
+            list.links_total.unwrap(),
+            "{listed} {cut} {repeats}"
+        );
+        // Who said "don't trust this": SusCheck's rules, on strong evidence.
+        let strong = |id: &str| sample_incident(id).last.unwrap().strong_evidence;
+        assert_eq!(
+            strong("20261101T091500Z-a1b2").as_deref(),
+            Some(&["close_imitation".to_string()][..])
+        );
+        assert_eq!(
+            strong("20261105T103045Z-p6q8").as_deref(),
+            Some(
+                &[
+                    "close_imitation".to_string(),
+                    "link_close_imitation".to_string()
+                ][..]
+            )
+        );
+        // The email with a mismatching link is "be careful" now: no rule alone says more.
+        let mail = sample_incident("20261105T081233Z-k2m4");
+        let l = mail.last.as_ref().unwrap();
+        assert_eq!(
+            (l.verdict.as_deref(), l.strong_evidence.as_deref()),
+            (Some("suspicious"), Some(&[][..]))
+        );
+        assert_eq!(mail.search.as_ref().unwrap().domain_vouched, Some(false));
+        // Not looked at (no email file), not recorded (the old shape, a failed check).
+        assert_eq!(
+            sample_incident("20261101T091500Z-a1b2")
+                .search
+                .unwrap()
+                .domain_vouched,
+            None
+        );
+        assert_eq!(strong("20261030T184512Z-b0a1"), None);
+        assert!(sample_incident("20261104T194103Z-j9k0").last.is_none());
+        // Hostile and broken, field by field.
+        let id = Id::parse("20261105T115952Z-y5z7").unwrap();
+        let text = fixture("suscheck/20261105T115952Z-y5z7/incident.json");
+        let long = "x".repeat(900);
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["domain"]["related_by"] = format!("fam\u{1b}[2Jily\u{202e} {long}").into();
+        v["search"]["domain_vouched"] = "true".into();
+        v["final"]["strong_evidence"] = Value::Array(
+            [
+                "close_imitation".into(),
+                3.into(),
+                "ev\u{7}idence_from_next_year".into(),
+                Value::Null,
+                long.clone().into(),
+            ]
+            .into_iter()
+            .chain((0..20).map(|n| format!("k{n}").into()))
+            .collect(),
+        );
+        v["email"]["signals"]["mailing_list"] = "true".into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        let (l, d) = (i.last.as_ref().unwrap(), i.domain.as_ref().unwrap());
+        assert!(d.related_by.as_ref().unwrap().starts_with("family x"));
+        assert_eq!(d.related_by.as_ref().unwrap().chars().count(), 25);
+        assert_eq!(i.search.as_ref().unwrap().domain_vouched, None);
+        let kinds = l.strong_evidence.as_ref().unwrap();
+        assert_eq!(kinds.len(), 8);
+        assert_eq!(kinds[..2], ["close_imitation", "evidence_from_next_year"]);
+        assert_eq!(kinds[2].chars().count(), 41);
+        assert!(i.email.as_ref().unwrap().signals.is_empty());
+        let all = format!("{i:?}");
+        assert!(
+            !all.chars()
+                .any(|c| c == '\u{1b}' || c == '\u{7}' || invisible(c))
+        );
+        for (block, key) in [
+            ("domain", "related_by"),
+            ("search", "domain_vouched"),
+            ("final", "strong_evidence"),
+        ] {
+            for wrong in [Value::Null, 3.into(), serde_json::json!({"a": 1})] {
+                let mut w: Value = serde_json::from_str(&text).unwrap();
+                w[block][key] = wrong;
+                let i = parse_incident(&w.to_string(), id).unwrap();
+                match key {
+                    "related_by" => assert!(i.domain.as_ref().unwrap().related_by.is_none()),
+                    "domain_vouched" => {
+                        assert!(i.search.as_ref().unwrap().domain_vouched.is_none())
+                    }
+                    // (Not recorded isn't "none found".)
+                    _ => assert!(i.last.as_ref().unwrap().strong_evidence.is_none()),
+                }
+                assert!(i.last.is_some() && i.unconfirmed_only());
+            }
+        }
     }
 
     #[test]

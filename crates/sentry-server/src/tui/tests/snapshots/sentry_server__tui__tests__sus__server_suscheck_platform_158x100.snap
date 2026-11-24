@@ -1,0 +1,103 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Nov 05 11:59 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
+│                              7 days  30 days ││ It said           be careful: a confirmed sender, but not at the company's own address  (low confidence)   │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Hallway PC (web) · took 13 s                                                             │
+│  be careful                       5        5 ││ Made from         email                                                                                    │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · It was sent through a mailing-list or shared service, where anyone can set up an address. That is      │
+│  failed                           1        1 ││ normal for group mail, but I can't confirm who is behind it.                                               │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││ Advice shown      do not click · ask for help                                                              │
+│ incomplete        1 of 11 (9%)               ││                                                                                                            │
+│ rules overrode    the model 4 of 11 (36%)    ││ The model against what counted                                                                             │
+│ typical time      14 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
+│ you marked        none yet (m on a check)    ││ What counted      be careful: a confirmed sender, but not at the company's own address (low)               │
+│ model example-vision:1b · prompts 6          ││ SusCheck's rules  a confirmed sender, but not at the company's own address: raised the verdict             │
+│ by extension: 1 original                     ││   what it found normal                                                                                     │
+│ ● alive 2m ago · keeps checks 30 days        ││   · It is a summary of messages from a discussion group and asks for nothing.                              │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘│ What it read from the message                                                                              │
+┌ Computers · 3 paired ────────────────────────┐│   kind            email                                                                                    │
+│ Name           Client    Checks  Last seen   ││   claims to be    Lumora Groups                                                                            │
+│ Hallway PC     web            4  3h ago      ││   sender          – <hillside-gardeners@lumoragroups.test> (the header's exact values)                     │
+│   ↳ a browser profile: no extension seen yet ││   links           View all topics · group membership page (the model's reading: go by Links below)         │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   asks for        nothing                                                                                  │
+│   ↳ owner: may change the trusted senders    ││   pressure        urgency: no · text addressed to an AI: no                                                │
+│ Study laptop   ext 0.2.0      1  3m ago      ││                                                                                                            │
+└──────────────────────────────────────────────┘│ Where the address came from                                                                                │
+┌ Trusted senders · 2 now ─────────────────────┐│   source          the email's own header: exact text, not a reading                                        │
+│ riverside-allotments.test (domain)           ││   exact address   lumoragroups.test                                                                        │
+│   ↳ Riverside Allotments                     ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
+│     added Nov 04 18:20 by Kitchen iMac       ││                                                                                                            │
+│ jo-bloggs@freemail.test (address)            ││ The email (its headers, read by SusCheck's code)                                                           │
+│   ↳ Jo Bloggs                                ││   from            – <hillside-gardeners@lumoragroups.test>                                                 │
+│     added Nov 04 18:31 by the command line   ││   bounces go to   hillside-gardeners+bncBCQ7XK5VYEHRB2OQ6DFAMGQEKTN3L7A@lumoragroups.test                  │
+│                                              ││   subject         [hillside-gardeners] Abridged summary of hillside-gardeners@lumoragroups.test - 4        │
+│                                              ││ updates in 2 topics                                                                                        │
+│                                              ││   date            Mon, 23 Nov 2026 18:40:00 +0000                                                          │
+│                                              ││   authentication  spf pass · dkim pass · dmarc pass (as the message reports it)                            │
+│                                              ││   attachments     none                                                                                     │
+│                                              ││   links           25                                                                                       │
+│                                              ││   faults          none in how the message was put together                                                 │
+│                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
+│                                              ││   · it has a mailing-list header (anyone can write one)                                                    │
+│                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
+│                                              ││                                                                                                            │
+│                                              ││ Links (text only: never open one)                                                                          │
+│                                              ││   · hillside-gardeners@lumoragroups[.]test → lumora[.]test · https                                         │
+│                                              ││   · Lumora Groups Logo → lumora[.]test · https                                                             │
+│                                              ││   · Lumora Groups → lumora[.]test · https                                                                  │
+│                                              ││   · View all topics → lumora[.]test · https                                                                │
+│                                              ││   · 🌱  Seed swap on Saturday → no address · no scheme                                                      │
+│                                              ││   · 🛠 Shed roof repair rota → no address · no scheme                                                       │
+│                                              ││   · Seed swap on Saturday → lumora[.]test · http                                                           │
+│                                              ││   · Priya Raman → postbox[.]test · mailto                                                                  │
+│                                              ││   · Tom Okafor → oakfieldprimary[.]test · mailto                                                           │
+│                                              ││   · Greta Lindqvist → postbox[.]test · mailto                                                              │
+│                                              ││   · lumotube[.]test → lumotube[.]test · https                                                              │
+│                                              ││   · ...more → lumora[.]test · http                                                                         │
+│                                              ││   · Back to top → no address · no scheme                                                                   │
+│                                              ││   · Shed roof repair rota → lumora[.]test · http                                                           │
+│                                              ││   · ...more → lumora[.]test · http                                                                         │
+│                                              ││   · group membership page → lumora[.]test · https                                                          │
+│                                              ││   · hillside-gardeners+unsubscribe@lumoragroups[.]test → lumoragroups[.]test · mailto                      │
+│                                              ││   · lumora[.]test → lumora[.]test · http                                                                   │
+│                                              ││   · lumora[.]test → lumora[.]test · http                                                                   │
+│                                              ││   · lumora[.]test → lumora[.]test · http                                                                   │
+│                                              ││   · lumora[.]test → lumora[.]test · http                                                                   │
+│                                              ││   4 more were exact repeats of a link already listed or counted                                            │
+│                                              ││                                                                                                            │
+│                                              ││ The domain (text only: never open it)                                                                      │
+│                                              ││   compared        not the genuine address: another one, a public IP, a shared platform or related service  │
+│                                              ││   because         a platform where anyone can have an address or a page: it is whoever set it up           │
+│                                              ││   related by      SusCheck's fixed table of related domains and list hosts (what related them)             │
+│                                              ││   put to model    as sent through another address than the company's own (as told: not a second result)    │
+│                                              ││   addresses       on screen lumoragroups.test                                                              │
+│                                              ││                                                                                                            │
+│                                              ││ Searches SusCheck ran                                                                                      │
+│                                              ││   the company's own site talks about or hosts the sender's domain (this only softens the check)            │
+│                                              ││   official        "Lumora Groups" official website                                                         │
+│                                              ││       Lumora - official site · lumora.test · 2 engines                                                     │
+│                                              ││         Search, mail, groups and video from Lumora.                                                        │
+│                                              ││       Lumora account help · lumora.test · 2 engines                                                        │
+│                                              ││         Help with your Lumora account.                                                                     │
+│                                              ││   domain          "lumoragroups.test"                                                                      │
+│                                              ││       Lumora Groups Help · lumora.test · 2 engines                                                         │
+│                                              ││         Addresses ending in lumoragroups.test belong to groups hosted by Lumora Groups.                    │
+│                                              ││       About Lumora Groups · lumora.test · 2 engines                                                        │
+│                                              ││         Anyone can create a group. Each group gets an address at lumoragroups.test.                        │
+│                                              ││       What is this domain? · webfacts.test · 1 engine                                                      │
+│                                              ││         lumoragroups.test is the mailing-list domain of Lumora.                                            │
+│                                              ││                                                                                                            │
+│                                              ││ How it ran                                                                                                 │
+│                                              ││   model           example-vision:1b · prompts 6                                                            │
+└──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit

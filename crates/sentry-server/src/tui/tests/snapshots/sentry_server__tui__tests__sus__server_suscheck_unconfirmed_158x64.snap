@@ -5,28 +5,28 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 03 08:05 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Nov 03 08:05 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           be careful: the address was only read from a picture  (low confidence)                   │
-│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
-│  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
-│  be careful                       3        3 ││ Made from         picture                                                                                  │
-│   of them only unconfirmed        1        1 ││                                                                                                            │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
+│  be careful                       5        5 ││ Made from         picture                                                                                  │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
 │  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
 │   from a trusted sender           1        1 ││   · I could only read the address from a picture, and look-alike addresses can fool me in pictures. Check  │
 │  failed                           1        1 ││ the address yourself, letter by letter.                                                                    │
-│ from: picture 7/7 · email 4/4 · page 2/2     ││ Advice shown      do not click · check with file or app · type address yourself · ask for help             │
-│ incomplete        1 of 10 (10%)              ││                                                                                                            │
-│ rules overrode    the model 4 of 10 (40%)    ││ The model against what counted                                                                             │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││ Advice shown      do not click · check with file or app · type address yourself · ask for help             │
+│ incomplete        1 of 11 (9%)               ││                                                                                                            │
+│ rules overrode    the model 4 of 11 (36%)    ││ The model against what counted                                                                             │
 │ typical time      14 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
 │ you marked        none yet (m on a check)    ││ What counted      be careful: the address was only read from a picture (low)                               │
-│ model example-vision:1b · prompts 5          ││ SusCheck's rules  the address was only read from a picture: raised the verdict                             │
+│ model example-vision:1b · prompts 6          ││ SusCheck's rules  the address was only read from a picture: raised the verdict                             │
 │ by extension: 1 original                     ││   what it found normal                                                                                     │
 │ ● alive 2m ago · keeps checks 30 days        ││   · The address bar matches the company's real site.                                                       │
 │                                              ││   · Nothing asks for a password, a code or money.                                                          │
 └──────────────────────────────────────────────┘│                                                                                                            │
 ┌ Computers · 3 paired ────────────────────────┐│ What it read from the picture                                                                              │
 │ Name           Client    Checks  Last seen   ││   kind            web page                                                                                 │
-│ Hallway PC     web            3  3h ago      ││   claims to be    Example                                                                                  │
+│ Hallway PC     web            4  3h ago      ││   claims to be    Example                                                                                  │
 │   ↳ a browser profile: no extension seen yet ││   address bar     www.example.com                                                                          │
 │ Kitchen iMac   app 0.1.0      7  2m ago      ││   links           Products · Contact us                                                                    │
 │   ↳ owner: may change the trusted senders    ││   asks for        nothing                                                                                  │
@@ -42,7 +42,7 @@ expression: s
 │                                              ││   second reading  www.example.com                                                                          │
 │                                              ││   compared        one the owner listed for this brand, or a trusted sender the mail system confirmed       │
 │                                              ││   because         exactly the genuine domain                                                               │
-│                                              ││   put to model    as a match (how it was told, not a second result)                                        │
+│                                              ││   put to model    as a match (as told: not a second result)                                                │
 │                                              ││   addresses       on screen example.com · the real one example.com                                         │
 │                                              ││                                                                                                            │
 │                                              ││ Searches SusCheck ran                                                                                      │
@@ -53,7 +53,7 @@ expression: s
 │                                              ││         Answers to common questions.                                                                       │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 5                                                            │
+│                                              ││   model           example-vision:1b · prompts 6                                                            │
 │                                              ││   time            15 s in all · extract 3.1 s · reread 2.6 s · search 1.4 s · judge 8.0 s                  │
 │                                              ││   not run         ocr, shapes, shuffle                                                                     │
 │                                              ││   picture         kept: o fetches it to a private cache here and opens it (gone when sentry closes)        │

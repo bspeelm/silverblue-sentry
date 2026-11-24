@@ -5,40 +5,40 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 01 09:15 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Nov 01 09:15 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
-│  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 21 s                                                     │
-│  be careful                       3        3 ││ Made from         picture                                                                                  │
-│   of them only unconfirmed        1        1 ││                                                                                                            │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Kitchen iMac (app 0.1.0) · took 21 s                                                     │
+│  be careful                       5        5 ││ Made from         picture                                                                                  │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
 │  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
 │   from a trusted sender           1        1 ││   · The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.                        │
 │  failed                           1        1 ││   · The page asks for a password.                                                                          │
-│ from: picture 7/7 · email 4/4 · page 2/2     ││   · It says the account will be locked today.                                                              │
-│ incomplete        1 of 10 (10%)              ││ Advice shown      do not enter password · type address yourself · close window                             │
-│ rules overrode    the model 4 of 10┌ Mark this check · pick one (1–4, n cancels) ─────────────────────────────────────┐                                    │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││   · It says the account will be locked today.                                                              │
+│ incomplete        1 of 11 (9%)               ││ Advice shown      do not enter password · type address yourself · close window                             │
+│ rules overrode    the model 4 of 11┌ Mark this check · pick one (1–4, n cancels) ─────────────────────────────────────┐                                    │
 │ typical time      14 s (longest 21 │                                                                                  │                                    │
 │ you marked        none yet (m on a │ 1  SusCheck was right                                                            │                                    │
-│ model example-vision:1b · prompts 5│ 2  wrong: it should have said "no obvious warning signs"                         │                                    │
+│ model example-vision:1b · prompts 6│ 2  wrong: it should have said "no obvious warning signs"                         │                                    │
 │ by extension: 1 original           │ 3  wrong: it should have said "be careful"                                       │                                    │
-│ ● alive 2m ago · keeps checks 30 da│ 4  wrong: it should have said "don't trust this"                                 │                                    │
-│                                    │                                                                                  │                                    │
+│ ● alive 2m ago · keeps checks 30 da│ 4  wrong: it should have said "don't trust this"                                 │ trust this":                       │
+│                                    │                                                                                  │ real@other                         │
 └────────────────────────────────────│ Kept on this machine (the server's suscheck.toml): nothing is written to the     │                                    │
 ┌ Computers · 3 paired ──────────────│ server, and SusCheck isn't told. x clears a mark.                                │                                    │
 │ Name           Client    Checks  La│                                                                                  │                                    │
-│ Hallway PC     web            3  3h│  Enter  close                                                                    │                                    │
+│ Hallway PC     web            4  3h│  Enter  close                                                                    │                                    │
 │   ↳ a browser profile: no extension└──────────────────────────────────────────────────────────────────────────────────┘                                    │
-│ Kitchen iMac   app 0.1.0      7  2m ago      ││   address bar     examp1e-pay.test                                                                         │
-│   ↳ owner: may change the trusted senders    ││   links           Sign in · Forgot password?                                                               │
-│ Study laptop   ext 0.2.0      1  3m ago      ││   asks for        password                                                                                 │
-└──────────────────────────────────────────────┘│   pressure        urgency: yes · text addressed to an AI: no                                               │
-┌ Trusted senders · 2 now ─────────────────────┐│                                                                                                            │
-│ riverside-allotments.test (domain)           ││ Where the address came from                                                                                │
-│   ↳ Riverside Allotments                     ││   source          read from the picture: a reading by the model, not exact text                            │
-│     added Nov 04 18:20 by Kitchen iMac       ││   first read in   the address bar (the model's reading of the picture)                                     │
-│ jo-bloggs@freemail.test (address)            ││   digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against         │
-│   ↳ Jo Bloggs                                ││                                                                                                            │
-│     added Nov 04 18:31 by the command line   ││ The domain (text only: never open it)                                                                      │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   kind            web page                                                                                 │
+│   ↳ owner: may change the trusted senders    ││   claims to be    Example Pay                                                                              │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   address bar     examp1e-pay.test                                                                         │
+└──────────────────────────────────────────────┘│   links           Sign in · Forgot password?                                                               │
+┌ Trusted senders · 2 now ─────────────────────┐│   asks for        password                                                                                 │
+│ riverside-allotments.test (domain)           ││   pressure        urgency: yes · text addressed to an AI: no                                               │
+│   ↳ Riverside Allotments                     ││                                                                                                            │
+│     added Nov 04 18:20 by Kitchen iMac       ││ Where the address came from                                                                                │
+│ jo-bloggs@freemail.test (address)            ││   source          read from the picture: a reading by the model, not exact text                            │
+│   ↳ Jo Bloggs                                ││   first read in   the address bar (the model's reading of the picture)                                     │
+│     added Nov 04 18:31 by the command line   ││   digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against         │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  1–9  choose   Esc  cancel

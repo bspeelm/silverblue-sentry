@@ -5,28 +5,28 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Checks · 11 shown, newest first ───────────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Checks · 12 shown, newest first ───────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││   When         Computer       It said                    From                   Domain                     │
-│ checks                           11       11 ││ ● Nov 05 11:59 Kitchen iMac   no obvious warning signs   email                  trusted: riverside-allot   │
-│  don't trust this                 3        3 ││ ● Nov 05 11:58 Study laptop   no obvious warning signs   email                  example-pay.test           │
-│  be careful                       3        3 ││ ● Nov 05 11:45 Kitchen iMac   no obvious warning signs   email + page address   example-pay.test           │
-│   of them only unconfirmed        1        1 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
-│  no obvious warning signs         4        4 ││ ● Nov 05 08:12 Hallway PC     don't trust this           email                  account-alerts.test        │
-│   from a trusted sender           1        1 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             picture                                           │
-│  failed                           1        1 ││ ● Nov 03 17:20 Hallway PC     be careful ?               picture                                           │
-│ from: picture 7/7 · email 4/4 · page 2/2     ││ ● Nov 03 08:05 Kitchen iMac   be careful (picture only)  picture                example.com                │
-│ incomplete        1 of 10 (10%)              ││ ● Nov 02 14:30 Hallway PC     be careful                 picture                example.net                │
-│ rules overrode    the model 4 of 10 (40%)    ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
-│ typical time      14 s (longest 21 s)        ││ ● Oct 30 18:45 Kitchen iMac   no obvious warning signs   picture                example.com                │
-│ you marked        none yet (m on a check)    ││                                                                                                            │
-│ model example-vision:1b · prompts 5          ││                                                                                                            │
+│ checks                           12       12 ││ ● Nov 05 11:59 Hallway PC     be careful (other domain)  email                  lumoragroups.test          │
+│  don't trust this                 2        2 ││ ● Nov 05 11:59 Kitchen iMac   no obvious warning signs   email                  trusted: riverside-allot   │
+│  be careful                       5        5 ││ ● Nov 05 11:58 Study laptop   no obvious warning signs   email                  example-pay.test           │
+│   of them only unconfirmed        2        2 ││ ● Nov 05 11:45 Kitchen iMac   no obvious warning signs   email + page address   example-pay.test           │
+│  no obvious warning signs         4        4 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
+│   from a trusted sender           1        1 ││ ● Nov 05 08:12 Hallway PC     be careful                 email                  account-alerts.test        │
+│  failed                           1        1 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             picture                                           │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││ ● Nov 03 17:20 Hallway PC     be careful ?               picture                                           │
+│ incomplete        1 of 11 (9%)               ││ ● Nov 03 08:05 Kitchen iMac   be careful (picture only)  picture                example.com                │
+│ rules overrode    the model 4 of 11 (36%)    ││ ● Nov 02 14:30 Hallway PC     be careful                 picture                example.net                │
+│ typical time      14 s (longest 21 s)        ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
+│ you marked        none yet (m on a check)    ││ ● Oct 30 18:45 Kitchen iMac   no obvious warning signs   picture                example.com                │
+│ model example-vision:1b · prompts 6          ││                                                                                                            │
 │ by extension: 1 original                     ││                                                                                                            │
 │ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘│                                                                                                            │
 ┌ Computers · 3 paired ────────────────────────┐│                                                                                                            │
 │ Name           Client    Checks  Last seen   ││                                                                                                            │
-│ Hallway PC     web            3  3h ago      ││                                                                                                            │
+│ Hallway PC     web            4  3h ago      ││                                                                                                            │
 │   ↳ a browser profile: no extension seen yet ││                                                                                                            │
 │ Kitchen iMac   app 0.1.0      7  2m ago      ││                                                                                                            │
 │   ↳ owner: may change the trusted senders    ││                                                                                                            │

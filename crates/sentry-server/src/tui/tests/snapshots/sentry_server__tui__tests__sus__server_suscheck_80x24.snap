@@ -5,23 +5,23 @@ expression: s
  1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   8 SusCheck   0 Upg
 ────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────────────────────────────────────┐
-│ 7 days   11 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │
-│          3 don't trust this · 3 be careful · 4 no obvious warning signs      │
-│ 30 days  11 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │
-│          3 don't trust this · 3 be careful · 4 no obvious warning signs      │
-│          of the be careful, only unconfirmed: 1/1 (7/30 days)                │
+┌ SusCheck · 0.1.1 ────────────────────────────────────────────────────────────┐
+│ 7 days   12 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │
+│          2 don't trust this · 5 be careful · 4 no obvious warning signs      │
+│ 30 days  12 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │
+│          2 don't trust this · 5 be careful · 4 no obvious warning signs      │
+│          of the be careful, only unconfirmed: 2/2 (7/30 days)                │
 │          from a trusted sender: 1/1 (7/30 days)                              │
-│ made from  picture 7/7 · email 4/4 · page address 2/2 (7/30 days)            │
+│ made from  picture 7/7 · email 5/5 · page address 2/2 (7/30 days)            │
 │ 3 computer(s) · typical time 14 s · you marked 0 wrong of 0                  │
 │ by extension: 1 original                                                     │
 │ ● alive 2m ago · keeps checks 30 days                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ Checks · 11 shown, newest first ─────────────────────────────────────────────┐
+┌ Checks · 12 shown, newest first ─────────────────────────────────────────────┐
 │   When         Computer      It said                    Domain               │
+│ ● Nov 05 11:59 Hallway PC    be careful (other domain)  lumoragroups.test    │
 │ ● Nov 05 11:59 Kitchen iMac  no obvious warning signs   trusted: riverside   │
 │ ● Nov 05 11:58 Study laptop  no obvious warning signs   example-pay.test     │
-│ ● Nov 05 11:45 Kitchen iMac  no obvious warning signs   example-pay.test     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  j/k  select   Enter  the check   o  picture   m  mark   ?  help   q  quit

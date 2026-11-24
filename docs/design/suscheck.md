@@ -407,7 +407,7 @@ Eleven samples (the new one a club's notice from a sender the owner trusts) and 
   them under "no obvious warning signs". The open check has a row "Trusted sender: on the
   owner's trusted list when it was checked, and confirmed by the mail system", and
   `match_trusted` is worded for both of its meanings.
-- **`domain.judge_word`**: `put to model  as a match (how it was told, not a second result)`.
+- **`domain.judge_word`**: `put to model  as a match (as told: not a second result)`.
 - **Message faults.** `email.defects` is an `Option`: a record without it doesn't say, which
   is unknown and not "no faults", so nothing is drawn; an empty list is "none". The words are
   SusCheck's own; one this sentry doesn't know is shown as its cleaned text. The notable ones
@@ -416,6 +416,49 @@ Eleven samples (the new one a club's notice from a sender the owner trusts) and 
   of faults against verdicts was built: it would need every record fetched.
 - **Generations**: six now. Nothing is read off `prompt_version`. The tests' records of
   generations 4 and 5 are the newest samples with what came after taken away.
+
+### Related domains, shared platforms, strong evidence (generation 7)
+
+Twelve samples (the new one a discussion group's digest, sent through a list on a shared
+platform) and prompts 6. The service's own version in the samples moved too.
+
+- **Who said "don't trust this".** `final.strong_evidence` lists the kinds of strong evidence
+  SusCheck's code found; its rules alone say `likely_malicious` exactly when there is one. The
+  open check has a row `Strong evidence`: the kinds in words where there are some; beside
+  "don't trust this" with an empty list, that it is the model's own verdict; nothing for
+  another verdict with none, and nothing for a record that doesn't have the field (older
+  rules applied, and the record doesn't say which). The index doesn't carry it, so the list
+  says nothing of it.
+- **What related an address to a company.** `domain.related_by` (`family`: the fixed table of
+  related domains and list hosts; `search`: the search for the domain) is a row `related by`
+  in the comparison; `search.domain_vouched`, when true, one line under the searches saying
+  the company's own site talks about or hosts the sender's domain and that this only softens
+  the check.
+- **Words.** `check.why` has 24 tags now: `shared_platform`, `same_owner`,
+  `same_owner_unconfirmed` and `related_service` are new, and `edit_distance` and
+  `brand_in_label` follow the format's new lines. `mismatch` is worded for a shared platform
+  or a related service too. The rule `link_mailto_mismatch`, the link flag `mailto_mismatch`,
+  the signal `mailing_list` ("it has a mailing-list header (anyone can write one)"). The
+  `domain` search is now "what the domain is".
+- **The samples' verdicts moved**: the email whose link shows one address and leads to another
+  is "be careful" now, since no rule alone says more without strong evidence. The tallies,
+  what is to look at and the snapshots follow.
+- **Generations**: seven. The tests gained a record of generation 6 the same way as 4 and 5.
+
+What the format said it would address and, as read here, has not changed: the index's
+`trusted_sender` still says "when a record from before the list is indexed again"; "not
+written for a trusted sender" is on the `freemail_sender` row and in the paragraph that lists
+the five, not on the other four rows; there is no field saying whether `reply_to_differs` was
+a remark or a warning; `judge_word` is `match` for both kinds of match; the remark
+`message_faults` is still in `final.floors`. Nothing was built for those.
+
+**A real install.** This module has now read a real install's folder: the counts through
+`collect`, and every index line and every record parsed. Not seen by the developer's session:
+the screen on real data, and `o` on a desktop.
+
+Assumed, not seen: that a "don't trust this" with a `strong_evidence` list that isn't empty is
+SusCheck's rules' doing even when the model said the same; that a `strong_evidence` beside
+another verdict (the format has none) is still worth showing.
 
 Assumed, not seen: that a `trusted_sender: true` beside an error should not count (the format
 says null there); that "the command line" is the only `added_by` that isn't a computer's name
@@ -436,4 +479,5 @@ ordinary login is refused by the server; the same through a copy the test login 
 picture fetched, private, byte for byte, gone at shutdown; nothing written in the folder; the
 check made from an email file read with no picture and its text not shown; `message.txt`
 refused to the server's ordinary login by the server and by both gateways).
-Not verified anywhere: a real SusCheck install, and the desktop's opener (no test starts it).
+Not verified by this session: the screen on a real install's data, and the desktop's opener
+(no test starts it).
