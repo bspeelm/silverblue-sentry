@@ -8,7 +8,7 @@
  "duration_ms": 12410,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "3",
+ "prompt_version": "5",
  "stages_ms": {
   "extract": 2610,
   "reread": null,
@@ -48,7 +48,8 @@
   },
   "first_reading_from": null,
   "source": "email_header",
-  "exact": "example-pay.test"
+  "exact": "example-pay.test",
+  "judge_word": "match"
  },
  "search": {
   "ok": true,
@@ -118,7 +119,9 @@
    "mail_label_spam"
   ],
   "floors_changed_verdict": false,
-  "unconfirmed_only": false
+  "unconfirmed_only": false,
+  "trusted_sender": false,
+  "unconfirmed_kind": null
  },
  "input": [
   "email"
@@ -150,7 +153,9 @@
    "display_name_is_recipient": false,
    "name_matches_address": false
   },
-  "freemail": null
+  "freemail": null,
+  "defects": [],
+  "defects_notable": []
  },
  "links": [
   {

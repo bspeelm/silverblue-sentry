@@ -1,0 +1,19 @@
+{
+ "schema": 1,
+ "senders": [
+  {
+   "kind": "domain",
+   "value": "riverside-allotments.test",
+   "label": "Riverside Allotments",
+   "added_at": "2026-11-04T18:20:05Z",
+   "added_by": "Kitchen iMac"
+  },
+  {
+   "kind": "address",
+   "value": "jo-bloggs@freemail.test",
+   "label": "Jo Bloggs",
+   "added_at": "2026-11-04T18:31:40Z",
+   "added_by": "command line"
+  }
+ ]
+}

@@ -7,7 +7,8 @@
    "client": "web",
    "app_version": "web",
    "paired_at": "2026-10-31T09:15:40Z",
-   "last_seen_at": "2026-11-05T08:12:47Z"
+   "last_seen_at": "2026-11-05T08:12:47Z",
+   "owner": false
   },
   {
    "name": "Kitchen iMac",
@@ -15,7 +16,8 @@
    "client": "app",
    "app_version": "0.1.0",
    "paired_at": "2026-10-30T18:02:11Z",
-   "last_seen_at": "2026-11-04T19:41:10Z"
+   "last_seen_at": "2026-11-05T11:59:47Z",
+   "owner": true
   },
   {
    "name": "Study laptop",
@@ -23,7 +25,8 @@
    "client": "web",
    "app_version": "0.2.0",
    "paired_at": "2026-11-05T11:50:12Z",
-   "last_seen_at": "2026-11-05T11:58:33Z"
+   "last_seen_at": "2026-11-05T11:58:33Z",
+   "owner": false
   }
  ]
 }

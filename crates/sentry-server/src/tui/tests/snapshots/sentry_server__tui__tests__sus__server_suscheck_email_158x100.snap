@@ -7,35 +7,38 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 08:12 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
+│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Hallway PC (web) · took 14 s                                                             │
 │  be careful                       3        3 ││ Made from         email                                                                                    │
 │   of them only unconfirmed        1        1 ││                                                                                                            │
-│  no obvious warning signs         3        3 ││ Reasons shown                                                                                              │
-│  failed                           1        1 ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
-│ incomplete        1 of 9 (11%)               ││   · The sender's name is written to look like an address, but the message really comes from a different    │
-│ rules overrode    the model 4 of 9 (44%)     ││ one.                                                                                                       │
-│ typical time      15 s (longest 21 s)        ││   · The mail system could not confirm that this message really comes from the address it shows.            │
-│ you marked        none yet (m on a check)    ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
-│ model example-vision:1b · prompts 3          ││   · Replies to this message would go to a different address from the one it was sent from.                 │
-│ by extension: 1 original                     ││   · It asks the reader to sign in with a password today.                                                   │
-│ ● alive 2m ago · keeps checks 30 days        ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
-│                                              ││                                                                                                            │
-└──────────────────────────────────────────────┘│ The model against what counted                                                                             │
-┌ Computers · 3 paired ────────────────────────┐│ The model         be careful (medium)                                                                      │
-│ Name           Client    Checks  Last seen   ││ What counted      don't trust this (high)                                                                  │
-│ Hallway PC     web            3  3h ago      ││ SusCheck's rules  raised the verdict:                                                                      │
-│   ↳ a browser profile: no extension seen yet ││   · a different address, and it asks for something risky                                                   │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││   · a link's text is an address, and it leads to another                                                   │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
+│  failed                           1        1 ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
+│ from: picture 7/7 · email 4/4 · page 2/2     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
+│ incomplete        1 of 10 (10%)              ││ one.                                                                                                       │
+│ rules overrode    the model 4 of 10 (40%)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
+│ typical time      14 s (longest 21 s)        ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
+│ you marked        none yet (m on a check)    ││   · Replies to this message would go to a different address from the one it was sent from.                 │
+│ model example-vision:1b · prompts 5          ││   · It is put together in a broken way that ordinary mail programs don't produce. Scam mail is often like  │
+│ by extension: 1 original                     ││ that, but some genuine mail is too.                                                                        │
+│ ● alive 2m ago · keeps checks 30 days        ││   · It asks the reader to sign in with a password today.                                                   │
+│                                              ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Computers · 3 paired ────────────────────────┐│ The model against what counted                                                                             │
+│ Name           Client    Checks  Last seen   ││ The model         be careful (medium)                                                                      │
+│ Hallway PC     web            3  3h ago      ││ What counted      don't trust this (high)                                                                  │
+│   ↳ a browser profile: no extension seen yet ││ SusCheck's rules  raised the verdict:                                                                      │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   · a different address, and it asks for something risky                                                   │
+│   ↳ owner: may change the trusted senders    ││   · a link's text is an address, and it leads to another                                                   │
 │ Study laptop   ext 0.2.0      1  3m ago      ││   · the sender's name shows another address                                                                │
-│                                              ││   · the mail's reported checks failed                                                                      │
-│                                              ││   · an attachment named like a program or a script                                                         │
-│                                              ││   · replies go to another domain                                                                           │
-│                                              ││   its red flags                                                                                            │
-│                                              ││   · It asks the reader to sign in with a password today.                                                   │
-│                                              ││                                                                                                            │
-│                                              ││ What it read from the message                                                                              │
+└──────────────────────────────────────────────┘│   · the mail's reported checks failed                                                                      │
+┌ Trusted senders · 2 now ─────────────────────┐│   · an attachment named like a program or a script                                                         │
+│ riverside-allotments.test (domain)           ││   · replies go to another domain                                                                           │
+│   ↳ Riverside Allotments                     ││   · put together in a broken way ordinary mail programs don't produce (a remark)                           │
+│     added Nov 04 18:20 by Kitchen iMac       ││   its red flags                                                                                            │
+│ jo-bloggs@freemail.test (address)            ││   · It asks the reader to sign in with a password today.                                                   │
+│   ↳ Jo Bloggs                                ││                                                                                                            │
+│     added Nov 04 18:31 by the command line   ││ What it read from the message                                                                              │
 │                                              ││   kind            email                                                                                    │
 │                                              ││   claims to be    Example Pay                                                                              │
 │                                              ││   sender          service@example-pay.test <notice@account-alerts.test> (the header's exact values)        │
@@ -57,6 +60,8 @@ expression: s
 │                                              ││   attachments     1 (declared; none is kept)                                                               │
 │                                              ││   · statement.pdf.htm (text/html, 92 B)                                                                    │
 │                                              ││   links           2                                                                                        │
+│                                              ││   faults          no closing boundary (in how the message was put together; recorded only)                 │
+│                                              ││   notable         no closing boundary (ordinary mail programs don't write these; the model was told)       │
 │                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
 │                                              ││   · words about money (payment, invoice, order…)                                                           │
 │                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
@@ -68,6 +73,7 @@ expression: s
 │                                              ││ The domain (text only: never open it)                                                                      │
 │                                              ││   compared        clearly another address than the confirmed genuine one, or a public IP address           │
 │                                              ││   because         unrelated to the confirmed genuine address                                               │
+│                                              ││   put to model    as a different address (how it was told, not a second result)                            │
 │                                              ││   addresses       on screen account-alerts.test · the real one example-pay.test                            │
 │                                              ││                                                                                                            │
 │                                              ││ Searches SusCheck ran                                                                                      │
@@ -80,10 +86,14 @@ expression: s
 │                                              ││       nothing came back                                                                                    │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 3                                                            │
+│                                              ││   model           example-vision:1b · prompts 5                                                            │
 │                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s                                 │
 │                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         none: this check was made without one                                                    │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │

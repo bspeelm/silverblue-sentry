@@ -7,38 +7,38 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 10:30 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
+│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
 │  be careful                       3        3 ││ Made from         picture + page address                                                                   │
 │   of them only unconfirmed        1        1 ││                                                                                                            │
-│  no obvious warning signs         3        3 ││ Reasons shown                                                                                              │
-│  failed                           1        1 ││   · The address has a number in the middle of a word, which is a common trick.                             │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││   · The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.    │
-│ incomplete        1 of 9 (11%)               ││   · The address is one small change away from the real one. That is done on purpose to fool people.        │
-│ rules overrode    the model 4 of 9 (44%)     ││   · A link in it leads to an address that is one small change away from the real one. That is done on      │
-│ typical time      15 s (longest 21 s)        ││ purpose to fool people.                                                                                    │
-│ you marked        none yet (m on a check)    ││   · The page asks for a password.                                                                          │
-│ model example-vision:1b · prompts 3          ││ Advice shown      do not click · do not enter password · type address yourself                             │
-│ by extension: 1 original                     ││                                                                                                            │
-│ ● alive 2m ago · keeps checks 30 days        ││ The model against what counted                                                                             │
-│                                              ││ The model         be careful (medium)                                                                      │
-└──────────────────────────────────────────────┘│ What counted      don't trust this (high)                                                                  │
-┌ Computers · 3 paired ────────────────────────┐│ SusCheck's rules  raised the verdict:                                                                      │
-│ Name           Client    Checks  Last seen   ││   · a digit where the name has a letter                                                                    │
-│ Hallway PC     web            3  3h ago      ││   · the address imitates the real one                                                                      │
-│   ↳ a browser profile: no extension seen yet ││   · one small change from the real address                                                                 │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││   · a link imitates the real address                                                                       │
-│ Study laptop   ext 0.2.0      1  3m ago      ││   its red flags                                                                                            │
-│                                              ││   · The page asks for a password.                                                                          │
-│                                              ││   what it found normal                                                                                     │
-│                                              ││   · The page looks like an ordinary sign-in page.                                                          │
-│                                              ││                                                                                                            │
-│                                              ││ What it read from the picture                                                                              │
-│                                              ││   kind            web page                                                                                 │
-│                                              ││   claims to be    Example Pay                                                                              │
-│                                              ││   address bar     examp1e-pay.test (the window's exact address)                                            │
-│                                              ││   links           Sign in · Forgot password? (the model's reading: go by Links below)                      │
-│                                              ││   asks for        password                                                                                 │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · The address has a number in the middle of a word, which is a common trick.                             │
+│  failed                           1        1 ││   · The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.    │
+│ from: picture 7/7 · email 4/4 · page 2/2     ││   · The address is one small change away from the real one. That is done on purpose to fool people.        │
+│ incomplete        1 of 10 (10%)              ││   · A link in it leads to an address that is one small change away from the real one. That is done on      │
+│ rules overrode    the model 4 of 10 (40%)    ││ purpose to fool people.                                                                                    │
+│ typical time      14 s (longest 21 s)        ││   · The page asks for a password.                                                                          │
+│ you marked        none yet (m on a check)    ││ Advice shown      do not click · do not enter password · type address yourself                             │
+│ model example-vision:1b · prompts 5          ││                                                                                                            │
+│ by extension: 1 original                     ││ The model against what counted                                                                             │
+│ ● alive 2m ago · keeps checks 30 days        ││ The model         be careful (medium)                                                                      │
+│                                              ││ What counted      don't trust this (high)                                                                  │
+└──────────────────────────────────────────────┘│ SusCheck's rules  raised the verdict:                                                                      │
+┌ Computers · 3 paired ────────────────────────┐│   · a digit where the name has a letter                                                                    │
+│ Name           Client    Checks  Last seen   ││   · the address imitates the real one                                                                      │
+│ Hallway PC     web            3  3h ago      ││   · one small change from the real address                                                                 │
+│   ↳ a browser profile: no extension seen yet ││   · a link imitates the real address                                                                       │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   its red flags                                                                                            │
+│   ↳ owner: may change the trusted senders    ││   · The page asks for a password.                                                                          │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   what it found normal                                                                                     │
+└──────────────────────────────────────────────┘│   · The page looks like an ordinary sign-in page.                                                          │
+┌ Trusted senders · 2 now ─────────────────────┐│                                                                                                            │
+│ riverside-allotments.test (domain)           ││ What it read from the picture                                                                              │
+│   ↳ Riverside Allotments                     ││   kind            web page                                                                                 │
+│     added Nov 04 18:20 by Kitchen iMac       ││   claims to be    Example Pay                                                                              │
+│ jo-bloggs@freemail.test (address)            ││   address bar     examp1e-pay.test (the window's exact address)                                            │
+│   ↳ Jo Bloggs                                ││   links           Sign in · Forgot password? (the model's reading: go by Links below)                      │
+│     added Nov 04 18:31 by the command line   ││   asks for        password                                                                                 │
 │                                              ││   pressure        urgency: no · text addressed to an AI: no                                                │
 │                                              ││                                                                                                            │
 │                                              ││ Where the address came from                                                                                │
@@ -64,6 +64,7 @@ expression: s
 │                                              ││   second reading  none read                                                                                │
 │                                              ││   compared        it imitates a genuine address                                                            │
 │                                              ││   because         it is the genuine address once look-alike characters are read as what they imitate       │
+│                                              ││   put to model    as an imitation (how it was told, not a second result)                                   │
 │                                              ││   addresses       on screen examp1e-pay.test · the real one example-pay.test                               │
 │                                              ││                                                                                                            │
 │                                              ││ Searches SusCheck ran                                                                                      │
@@ -76,11 +77,10 @@ expression: s
 │                                              ││       nothing came back                                                                                    │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 3                                                            │
+│                                              ││   model           example-vision:1b · prompts 5                                                            │
 │                                              ││   time            15 s in all · extract 3.3 s · search 1.5 s · judge 11 s                                  │
 │                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         kept: o fetches it to a private cache here and opens it (gone when sentry closes)        │
-│                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

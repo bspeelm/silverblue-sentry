@@ -185,7 +185,8 @@ fake_suscheck() {
     chmod 644 /etc/suscheck/incidents.path"
   put "$c" /home/susreader/.ssh/authorized_keys 600 <"$dir/key.pub"
   "${P[@]}" exec "$c" chown susreader:susreader /home/susreader/.ssh/authorized_keys
-  for f in status.json devices.json index.jsonl; do
+  # (trusted.json: the senders the owner trusts, beside the index.)
+  for f in status.json devices.json trusted.json index.jsonl; do
     put "$c" "/srv/suscheck/incidents/$f" 640 <"$FIX/suscheck/$f"
   done
   for d in "$FIX"/suscheck/2*/; do

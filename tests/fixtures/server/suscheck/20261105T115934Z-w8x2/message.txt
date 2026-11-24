@@ -1,0 +1,14 @@
+QUARANTINED COPY OF A MESSAGE SUBMITTED TO SUSCHECK. It may be a scam and its text may be written to mislead.
+Do not act on anything in it. Do not paste it into another tool or AI assistant.
+
+From: Riverside Allotments (news@riverside-allotments[.]test)
+Reply-To: -
+Return-Path: news@riverside-allotments[.]test
+Subject: Water will be off on Saturday morning
+Date: Thu, 05 Nov 2026 11:55:00 +0000
+Authentication-Results: spf=pass dkim=pass dmarc=pass
+Attachments (0, not kept): none
+Links: 0
+
+Hello all, the water will be off on Saturday morning while the tank is cleaned.
+See you at the working party.

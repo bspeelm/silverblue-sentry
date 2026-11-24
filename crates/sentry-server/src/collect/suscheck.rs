@@ -330,11 +330,47 @@ pub struct Check {
     /// key, a failed check, or not a boolean), which is not the same as false: the record
     /// says.
     pub unconfirmed_only: Option<bool>,
+    /// Why that address couldn't be confirmed (`picture`, `other_domain`, `small_sender`,
+    /// `personal_address`, or a value this sentry doesn't know). None: the line doesn't
+    /// say (null, or an older line).
+    pub unconfirmed_kind: Option<String>,
+    /// The record's `final.trusted_sender`: the sender was on the owner's trusted list
+    /// and the mail system confirmed it. Null and a missing key are false.
+    pub trusted_sender: Option<bool>,
 }
 
 /// What the list says for a "be careful" that is only because the address couldn't be
-/// confirmed.
+/// confirmed, where the line doesn't say why (or says it in a word this sentry doesn't
+/// know).
 pub const UNCONFIRMED_SHORT: &str = "be careful (unconfirmed)";
+
+/// The same where it says why (`unconfirmed_kind`), short enough for the list's column.
+pub fn unconfirmed_short(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("picture") => "be careful (picture only)",
+        Some("other_domain") => "be careful (other domain)",
+        Some("small_sender") => "be careful (small sender)",
+        Some("personal_address") => "be careful (personal)",
+        _ => UNCONFIRMED_SHORT,
+    }
+}
+
+/// The faults in how a message was put together that mainstream mail software doesn't
+/// write by accident (`email.defects`' notable set, as the format lists it today). A record
+/// that says which of its own were notable is believed over this.
+pub const NOTABLE_DEFECTS: [&str; 7] = [
+    "bad_header",
+    "bad_header_encoding",
+    "nul_bytes",
+    "bad_multipart",
+    "no_closing_boundary",
+    "text_outside_parts",
+    "bad_base64",
+];
+/// The most fault words of one record that are kept.
+pub const DEFECTS_MAX: usize = 20;
+/// The most trusted senders that are kept (the format's own limit is 500).
+pub const TRUSTED_MAX: usize = 200;
 
 /// How the browser extension can have got a message (`acquired_by`), each in a word for
 /// the summary: the original, then its fallbacks in decreasing strength.
@@ -428,11 +464,19 @@ impl Check {
             && self.verdict() == Some(Verdict::Suspicious)
     }
 
+    /// The check rests on a sender the owner trusts and the mail system confirmed. Only a
+    /// literal `true` on a completed check; a line that doesn't say is false.
+    pub fn trusted(&self) -> bool {
+        self.trusted_sender == Some(true) && self.error.is_none()
+    }
+
     /// What the list says in the verdict's column.
     pub fn outcome(&self) -> String {
         match (&self.error, &self.verdict) {
             (Some(e), _) => format!("failed ({e})"),
-            (None, Some(_)) if self.mild() => UNCONFIRMED_SHORT.into(),
+            (None, Some(_)) if self.mild() => {
+                unconfirmed_short(self.unconfirmed_kind.as_deref()).into()
+            }
             (None, Some(v)) => said(v).to_string(),
             (None, None) => "no verdict".into(),
         }
@@ -482,6 +526,38 @@ pub struct Device {
     pub app_version: Option<String>,
     pub paired_at: Option<i64>,
     pub last_seen_at: Option<i64>,
+    /// An owner computer: one that may add to and remove from the trusted senders list.
+    /// Only a literal `true`; a file from before doesn't say, which is false.
+    pub owner: bool,
+}
+
+/// One sender the owner has chosen to trust (`trusted.json`: the list as it is now, never
+/// a history). The label may be a display name from a message: attacker-influenced text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trusted {
+    /// `domain` (every address there) or `address` (one), or a value this sentry doesn't
+    /// know.
+    pub kind: Option<String>,
+    /// The domain or the address. Not defanged: text, never resolved, looked up or opened.
+    pub value: String,
+    pub label: Option<String>,
+    pub added_at: Option<i64>,
+    /// The owner computer that added it, or `command line`.
+    pub added_by: Option<String>,
+}
+
+/// The trusted senders as read: at most [`TRUSTED_MAX`], and how many more the file had.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrustedList {
+    pub senders: Vec<Trusted>,
+    pub more: u32,
+}
+
+impl TrustedList {
+    /// How many the file lists.
+    pub fn total(&self) -> u32 {
+        self.senders.len() as u32 + self.more
+    }
 }
 
 /// One of the folder's files, as far as it could be read.
@@ -520,6 +596,9 @@ pub struct Suscheck {
     pub now: i64,
     pub status: Part<Status>,
     pub devices: Part<Vec<Device>>,
+    /// The senders the owner trusts now. Missing: no list (none was ever trusted here, or
+    /// a SusCheck from before there was one), which is not an error.
+    pub trusted: Part<TrustedList>,
     /// The latest checks, oldest first (the index's own order).
     pub checks: Vec<Check>,
     /// The index has lines of a schema this sentry doesn't know: none of it is shown.
@@ -595,6 +674,9 @@ impl Read {
 pub struct Tally {
     pub total: u32,
     pub malicious: u32,
+    /// Completed, and resting on a sender the owner trusts (where the index says so).
+    #[serde(default)]
+    pub trusted: u32,
     pub suspicious: u32,
     /// Of the suspicious, those the index says are only because the address couldn't be
     /// confirmed (older lines don't say: not counted here).
@@ -630,6 +712,7 @@ impl Tally {
             Some(Verdict::Safe) => self.safe += 1,
             None => self.other += 1,
         }
+        self.trusted += u32::from(c.trusted());
         self.incomplete += u32::from(c.incomplete == Some(true));
         self.floors += u32::from(c.floors_changed == Some(true));
     }
@@ -656,6 +739,8 @@ pub struct Counts {
     pub week: Tally,
     pub month: Tally,
     pub computers: u32,
+    /// How many senders the owner trusts now (the number alone: never who).
+    pub trusted: u32,
     /// Index lines skipped as damaged.
     pub skipped: u32,
     /// The browser extension is falling back from the original mail (the format's own
@@ -696,6 +781,7 @@ impl Suscheck {
         self.index_newer
             .or(self.status.newer())
             .or(self.devices.newer())
+            .or(self.trusted.newer())
     }
 
     /// Every read took as many lines as were asked for: older checks may not be counted.
@@ -761,6 +847,7 @@ impl Suscheck {
             week: self.tally(7),
             month: self.tally(30),
             computers: self.devices.ok().map_or(0, |d| d.len() as u32),
+            trusted: self.trusted.ok().map_or(0, TrustedList::total),
             skipped: self.skipped,
             fallback: self.fallback(),
         }
@@ -829,10 +916,43 @@ pub fn parse_devices(body: &str) -> Part<Vec<Device>> {
                     app_version: text(&d["app_version"], 20),
                     paired_at: time(&d["paired_at"]),
                     last_seen_at: time(&d["last_seen_at"]),
+                    owner: d["owner"].as_bool() == Some(true),
                 })
             })
             .collect(),
     )
+}
+
+/// `trusted.json`. An entry without a value isn't one; what is past [`TRUSTED_MAX`] is
+/// counted, not kept.
+pub fn parse_trusted(body: &str) -> Part<TrustedList> {
+    let v = match object(body) {
+        Ok(v) => v,
+        Err(p) => return p,
+    };
+    if let Err(p) = schema_of(&v) {
+        return p;
+    }
+    let Some(list) = v["senders"].as_array() else {
+        return Part::Damaged;
+    };
+    let senders: Vec<Trusted> = list
+        .iter()
+        .take(TRUSTED_MAX)
+        .filter_map(|x| {
+            Some(Trusted {
+                value: text(&x["value"], 260)?,
+                kind: text(&x["kind"], 16),
+                label: text(&x["label"], 84),
+                added_at: time(&x["added_at"]),
+                added_by: text(&x["added_by"], 40),
+            })
+        })
+        .collect();
+    Part::Ok(TrustedList {
+        more: list.len().saturating_sub(TRUSTED_MAX).min(100_000) as u32,
+        senders,
+    })
 }
 
 /// One index line. `Err(Some(n))`: a schema this sentry doesn't know; `Err(None)`: damaged
@@ -875,8 +995,10 @@ pub fn parse_line(line: &str) -> Result<Check, Option<i64>> {
         },
         // The last key, added with the browser extension: missing is the same as null.
         acquired_by: text(&v["acquired_by"], 16),
-        // The last key: a boolean, null on a failed check, absent on an older line.
+        // A boolean, null on a failed check, absent on an older line.
         unconfirmed_only: v["unconfirmed_only"].as_bool(),
+        unconfirmed_kind: text(&v["unconfirmed_kind"], 24),
+        trusted_sender: v["trusted_sender"].as_bool(),
     })
 }
 
@@ -930,6 +1052,7 @@ pub fn parse(out: &str, mark: &str, recent: u32) -> Result<Read, String> {
         now,
         status: parse_status(part("status").unwrap_or("")),
         devices: parse_devices(part("devices").unwrap_or("")),
+        trusted: parse_trusted(part("trusted").unwrap_or("")),
         checks,
         index_newer,
         skipped,
@@ -948,11 +1071,12 @@ pub fn script(dir: &str, recent: u32, mark: &str) -> String {
          echo \"${{m}}now\"; date -u +%s\n\
          [ -d \"$d\" ] || {{ echo \"${{m}}nofolder\"; exit 0; }}\n\
          [ -r \"$d\" ] && [ -x \"$d\" ] || {{ echo \"${{m}}denied\"; exit 0; }}\n\
-         for f in status.json devices.json index.jsonl; do\n\
+         for f in status.json devices.json trusted.json index.jsonl; do\n\
          [ ! -e \"$d/$f\" ] || [ -r \"$d/$f\" ] || {{ echo \"${{m}}denied\"; exit 0; }}\n\
          done\n\
          echo \"${{m}}status\"; [ ! -f \"$d/status.json\" ] || head -c 65536 \"$d/status.json\"; echo\n\
          echo \"${{m}}devices\"; [ ! -f \"$d/devices.json\" ] || head -c 262144 \"$d/devices.json\"; echo\n\
+         echo \"${{m}}trusted\"; [ ! -f \"$d/trusted.json\" ] || head -c 524288 \"$d/trusted.json\"; echo\n\
          echo \"${{m}}index\"; [ ! -f \"$d/index.jsonl\" ] || tail -n {recent} \"$d/index.jsonl\" | head -c {most}; echo\n\
          true"
     )
@@ -1225,6 +1349,10 @@ pub struct Domain {
     /// Whether the digit rule could look, and what it found: `fired`, `clear`,
     /// `not_evaluated`. None: a record from before the rule was reworked.
     pub digit_rule: Option<String>,
+    /// The one word the model was given, in its second pass, for how the comparison came
+    /// out (`match`, `lookalike`, `mismatch`, `unknown`, `local_device`, `unconfirmed`,
+    /// `personal_address`, `other_domain`). Not a second result.
+    pub judge_word: Option<String>,
     /// Where the address the verdict rests on came from: `email_header`, `window`,
     /// `screenshot`, or a value this sentry doesn't know. None: an older record (a picture).
     pub source: Option<String>,
@@ -1290,6 +1418,11 @@ pub struct Final {
     /// nothing looked wrong: the person was shown a milder "be careful". Only a literal
     /// `true` says so; a record without it (from before) doesn't.
     pub unconfirmed_only: bool,
+    /// Why the address couldn't be confirmed, where that is all the verdict rests on.
+    pub unconfirmed_kind: Option<String>,
+    /// The sender was on the owner's trusted list, the mail system confirmed it, and that
+    /// is what the check rests on. Only a literal `true`.
+    pub trusted_sender: bool,
 }
 
 /// One attachment as the message declared it. Nothing else of it exists anywhere: SusCheck
@@ -1332,6 +1465,32 @@ pub struct Email {
     /// a literal `true` counts), by their keys: those the format names, in its order, then
     /// any other, as cleaned text. Hints, never proof. At most [`SIGNALS_MAX`].
     pub signals: Vec<String>,
+    /// Faults in how the message was put together, as SusCheck's own fixed words (a word
+    /// this sentry doesn't know is kept as cleaned text). At most [`DEFECTS_MAX`]. None:
+    /// not recorded, which is unknown and not the same as no faults.
+    pub defects: Option<Vec<String>>,
+    /// Those of them the record itself calls notable (the model was told, and the remark
+    /// `message_faults` written). None: the record doesn't say.
+    pub defects_notable: Option<Vec<String>>,
+}
+
+impl Email {
+    /// The notable faults: the record's own list where it has one (the split as it was
+    /// for that record), else those of its faults in today's notable set; a word in
+    /// neither set is minor. The bool: the record said so itself.
+    pub fn notable(&self) -> (Vec<&str>, bool) {
+        match (&self.defects_notable, &self.defects) {
+            (Some(n), _) => (n.iter().map(String::as_str).collect(), true),
+            (None, Some(d)) => (
+                d.iter()
+                    .map(String::as_str)
+                    .filter(|w| NOTABLE_DEFECTS.contains(w))
+                    .collect(),
+                false,
+            ),
+            (None, None) => (Vec::new(), false),
+        }
+    }
 }
 
 /// `email.signals` as the format names them, in its order.
@@ -1555,6 +1714,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             shape_fit: text(&d["shape_fit"], 30),
             shuffled_reading: t(&d["shuffled_reading"]),
             digit_rule: text(&d["digit_rule"], 30),
+            judge_word: text(&d["judge_word"], 24),
             source: text(&d["source"], 30),
             exact: text(&d["exact"], 260),
             result: t(&d["check"]["result"]),
@@ -1619,6 +1779,8 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             floors: texts(&f["floors"], 40, 12),
             floors_changed: f["floors_changed_verdict"].as_bool(),
             unconfirmed_only: f["unconfirmed_only"].as_bool() == Some(true),
+            unconfirmed_kind: text(&f["unconfirmed_kind"], 24),
+            trusted_sender: f["trusted_sender"].as_bool() == Some(true),
         }
     });
     let count = |x: &Value| x.as_u64().map(|n| n.min(1_000_000));
@@ -1670,6 +1832,12 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             from_written: text(&e["from_written"], 260),
             freemail: text(&e["freemail"], 24),
             signals,
+            defects: e["defects"]
+                .is_array()
+                .then(|| texts(&e["defects"], 30, DEFECTS_MAX)),
+            defects_notable: e["defects_notable"]
+                .is_array()
+                .then(|| texts(&e["defects_notable"], 30, DEFECTS_MAX)),
         }
     });
     let links = v["links"].as_array().map(|list| {
@@ -1751,10 +1919,11 @@ pub(crate) mod tests {
     pub(crate) fn sample_out(now: &str) -> String {
         let now: jiff::Timestamp = now.parse().unwrap();
         format!(
-            "@@{MARK}:now\n{}\n@@{MARK}:status\n{}\n@@{MARK}:devices\n{}\n@@{MARK}:index\n{}\n",
+            "@@{MARK}:now\n{}\n@@{MARK}:status\n{}\n@@{MARK}:devices\n{}\n@@{MARK}:trusted\n{}\n@@{MARK}:index\n{}\n",
             now.as_second(),
             fixture("suscheck/status.json"),
             fixture("suscheck/devices.json"),
+            fixture("suscheck/trusted.json"),
             fixture("suscheck/index.jsonl")
         )
     }
@@ -1868,7 +2037,7 @@ pub(crate) mod tests {
     #[test]
     fn the_samples_parse_to_what_the_format_says() {
         let s = sample();
-        assert_eq!(s.checks.len(), 10);
+        assert_eq!(s.checks.len(), 11);
         assert_eq!((s.skipped, s.index_newer, s.newer()), (0, None, None));
         // The oldest is a line in the old shape (it ends at `error`): a picture's.
         let old = &s.checks[0];
@@ -1919,6 +2088,7 @@ pub(crate) mod tests {
                 said("picture + page address"),
                 said("email + page address"),
                 said("email"),
+                said("email"),
             ]
         );
         assert_eq!(
@@ -1967,10 +2137,10 @@ pub(crate) mod tests {
         assert_eq!(known[5], None);
         assert_eq!(
             known.iter().filter(|k| **k == Some(false)).count(),
-            7,
+            8,
             "{known:?}"
         );
-        assert!(s.checks[3].mild() && s.checks[3].outcome() == UNCONFIRMED_SHORT);
+        assert!(s.checks[3].mild() && s.checks[3].outcome() == "be careful (picture only)");
         assert!(!s.checks[2].mild() && s.checks[2].outcome() == "be careful");
         assert!(s.checks.iter().filter(|c| c.mild()).count() == 1);
         // Counts: by the server's clock, the last day has the failed check and the four
@@ -1979,18 +2149,20 @@ pub(crate) mod tests {
         assert_eq!(
             c.week,
             Tally {
-                total: 10,
+                total: 11,
                 malicious: 3,
+                trusted: 1,
                 suspicious: 3,
                 unconfirmed: 1,
-                safe: 3,
+                safe: 4,
                 other: 0,
                 errors: 1,
                 incomplete: 1,
                 floors: 4,
             }
         );
-        assert_eq!((c.day.total, c.day.errors, c.computers), (5, 1, 3));
+        assert_eq!((c.day.total, c.day.errors, c.computers), (6, 1, 3));
+        assert_eq!(c.trusted, 2);
         assert!(!c.down());
         // Since the first lookalike was looked at: two more said "don't trust this", one
         // failed.
@@ -2004,7 +2176,7 @@ pub(crate) mod tests {
         assert_eq!(s.unseen(Some("20261102T143027Z-c3d4")), (2, 1));
         assert_eq!(
             s.newest().map(|i| i.to_string()).as_deref(),
-            Some("20261105T115821Z-t4v6")
+            Some("20261105T115934Z-w8x2")
         );
     }
 
@@ -2282,7 +2454,12 @@ pub(crate) mod tests {
             }
         }
         if let Some(f) = o.get_mut("final").and_then(Value::as_object_mut) {
-            f.remove("unconfirmed_only");
+            for k in ["unconfirmed_only", "unconfirmed_kind", "trusted_sender"] {
+                f.remove(k);
+            }
+        }
+        if let Some(d) = o.get_mut("domain").and_then(Value::as_object_mut) {
+            d.remove("judge_word");
         }
         if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
             f.remove("failed");
@@ -2377,6 +2554,10 @@ pub(crate) mod tests {
             "\"signals\":",
             "\"acquired_by\":",
             "\"mail_label\":",
+            "\"judge_word\":",
+            "\"trusted_sender\":",
+            "\"unconfirmed_kind\":",
+            "\"defects",
         ] {
             assert!(!old_text.contains(later), "{later}");
         }
@@ -2479,6 +2660,7 @@ pub(crate) mod tests {
             "20261105T103045Z-p6q8",
             "20261105T114502Z-r3s5",
             "20261105T115821Z-t4v6",
+            "20261105T115934Z-w8x2",
         ] {
             let text = fixture(&format!("suscheck/{id}/incident.json"));
             let mut now = sample_incident(id);
@@ -2486,6 +2668,8 @@ pub(crate) mod tests {
             // failed.)
             if let Some(l) = &mut now.last {
                 l.unconfirmed_only = false;
+                l.unconfirmed_kind = None;
+                l.trusted_sender = false;
             }
             if let Some(s) = &mut now.search {
                 s.failed = None;
@@ -2503,6 +2687,7 @@ pub(crate) mod tests {
                     && d.shape_fit.is_none()
                     && d.shuffled_reading.is_none()
                     && d.first_reading_from.is_none()
+                    && d.judge_word.is_none()
             }));
             assert!(
                 then.stages
@@ -2839,6 +3024,7 @@ pub(crate) mod tests {
         ] {
             assert!(!sample_incident(id).unconfirmed_only(), "{id}");
         }
+        assert!(!sample_incident("20261105T115934Z-w8x2").unconfirmed_only());
         // The window's address: which field the model's own reading came from, and the
         // digit rule firing on the exact text.
         let w = sample_incident("20261105T103045Z-p6q8");
@@ -2848,7 +3034,7 @@ pub(crate) mod tests {
             (Some("address_bar"), Some("fired"))
         );
         assert_eq!(w.search.as_ref().unwrap().failed.as_deref(), Some(&[][..]));
-        assert_eq!(w.prompt_version.as_deref(), Some("3"));
+        assert_eq!(w.prompt_version.as_deref(), Some("5"));
         // An email checked with the mail window it was open in: both supply links, and
         // three were exact repeats. Nothing was left out at a limit.
         let both = sample_incident("20261105T114502Z-r3s5");
@@ -3035,6 +3221,7 @@ pub(crate) mod tests {
         let how: Vec<Option<&str>> = s.checks.iter().map(|c| c.acquired_by.as_deref()).collect();
         assert_eq!(how[..9], [None; 9]);
         assert_eq!(how[9], Some("original"));
+        assert_eq!(how[10], None);
         let news = sample_incident("20261105T115821Z-t4v6");
         assert_eq!(
             (news.acquired_by.as_deref(), news.mail_label.as_deref()),
@@ -3150,7 +3337,7 @@ pub(crate) mod tests {
         // From the index: null, a missing key and a value the format doesn't name are
         // left out, wherever they stand; a failed check says how it was got and counts.
         let index = fixture("suscheck/index.jsonl");
-        let last = index.lines().last().unwrap();
+        let last = index.lines().nth(9).unwrap();
         let line = |n: u32, how: &str| {
             let at = format!("202611{:02}T1200{:02}Z-aaaa", 1 + n / 60, n % 60);
             let l = last.replacen("20261105T115821Z-t4v6", &at, 1);
@@ -3276,30 +3463,64 @@ pub(crate) mod tests {
     fn the_index_says_which_be_careful_is_only_an_unconfirmed_address() {
         let index = fixture("suscheck/index.jsonl");
         let line = index.lines().nth(3).unwrap();
-        assert!(line.ends_with(",\"unconfirmed_only\":true}"));
-        let with =
-            |to: &str| parse_line(&line.replacen(",\"unconfirmed_only\":true}", to, 1)).unwrap();
-        for (to, want, mild) in [
-            (",\"unconfirmed_only\":true}", Some(true), true),
-            (",\"unconfirmed_only\":false}", Some(false), false),
+        const TAIL: &str =
+            ",\"unconfirmed_only\":true,\"unconfirmed_kind\":\"picture\",\"trusted_sender\":false}";
+        assert!(line.ends_with(TAIL));
+        let with = |to: &str| parse_line(&line.replacen(TAIL, to, 1)).unwrap();
+        for (to, want, said) in [
+            (TAIL, Some(true), "be careful (picture only)"),
+            // The other kinds, each short enough for the list; none, or a word this
+            // sentry doesn't know, is the plain "unconfirmed".
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":\"other_domain\"}",
+                Some(true),
+                "be careful (other domain)",
+            ),
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":\"small_sender\"}",
+                Some(true),
+                "be careful (small sender)",
+            ),
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":\"personal_address\"}",
+                Some(true),
+                "be careful (personal)",
+            ),
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":null}",
+                Some(true),
+                UNCONFIRMED_SHORT,
+            ),
+            (",\"unconfirmed_only\":true}", Some(true), UNCONFIRMED_SHORT),
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":\"by_owl\"}",
+                Some(true),
+                UNCONFIRMED_SHORT,
+            ),
+            (
+                ",\"unconfirmed_only\":true,\"unconfirmed_kind\":[\"picture\"]}",
+                Some(true),
+                UNCONFIRMED_SHORT,
+            ),
+            // A kind beside a "be careful" that isn't the milder one says nothing.
+            (
+                ",\"unconfirmed_only\":false,\"unconfirmed_kind\":\"picture\"}",
+                Some(false),
+                "be careful",
+            ),
             // Unknown, never false: null, no key, and what isn't a boolean.
-            (",\"unconfirmed_only\":null}", None, false),
-            ("}", None, false),
-            (",\"unconfirmed_only\":\"true\"}", None, false),
-            (",\"unconfirmed_only\":1}", None, false),
-            (",\"unconfirmed_only\":[true]}", None, false),
+            (",\"unconfirmed_only\":null}", None, "be careful"),
+            ("}", None, "be careful"),
+            (",\"unconfirmed_only\":\"true\"}", None, "be careful"),
+            (",\"unconfirmed_only\":1}", None, "be careful"),
+            (",\"unconfirmed_only\":[true]}", None, "be careful"),
         ] {
             let c = with(to);
-            assert_eq!((c.unconfirmed_only, c.mild()), (want, mild), "{to}");
-            assert_eq!(
-                c.outcome(),
-                if mild {
-                    UNCONFIRMED_SHORT
-                } else {
-                    "be careful"
-                },
-                "{to}"
-            );
+            assert_eq!(c.unconfirmed_only, want, "{to}");
+            assert_eq!(c.mild(), said != "be careful", "{to}");
+            assert_eq!(c.outcome(), said, "{to}");
+            // (Every word fits the list's column of 26.)
+            assert!(said.chars().count() <= 26, "{said}");
         }
         // Beside another verdict, or on a check that failed, the line isn't believed.
         let other =
@@ -3540,6 +3761,435 @@ pub(crate) mod tests {
         let j = parse_incident(&other.to_string(), id3).unwrap();
         assert_eq!(j.stages[3], ("shapes", None));
         assert_eq!(j.input, ["image"]);
+    }
+
+    /// The senders the owner trusts (`trusted.json`: the list as it is now), the owner
+    /// computers, and what a record says of a trusted sender, of why an address couldn't
+    /// be confirmed, of how the comparison was put to the model and of a message's faults.
+    #[test]
+    fn trusted_senders_owners_and_what_the_latest_records_add() {
+        let s = sample();
+        let list = s.trusted.ok().unwrap();
+        assert_eq!((list.senders.len(), list.more, list.total()), (2, 0, 2));
+        let at = |t: &str| Some(t.parse::<jiff::Timestamp>().unwrap().as_second());
+        assert_eq!(
+            list.senders,
+            [
+                Trusted {
+                    kind: Some("domain".into()),
+                    value: "riverside-allotments.test".into(),
+                    label: Some("Riverside Allotments".into()),
+                    added_at: at("2026-11-04T18:20:05Z"),
+                    added_by: Some("Kitchen iMac".into()),
+                },
+                Trusted {
+                    kind: Some("address".into()),
+                    value: "jo-bloggs@freemail.test".into(),
+                    label: Some("Jo Bloggs".into()),
+                    added_at: at("2026-11-04T18:31:40Z"),
+                    added_by: Some("command line".into()),
+                },
+            ]
+        );
+        // What leaves for a report is how many, never who.
+        let counts = serde_json::to_string(&s.counts()).unwrap();
+        assert!(counts.contains("\"trusted\":2"), "{counts}");
+        assert!(
+            !counts.contains("riverside") && !counts.contains("Jo"),
+            "{counts}"
+        );
+        // One owner computer.
+        let owners: Vec<&str> = s
+            .devices
+            .ok()
+            .unwrap()
+            .iter()
+            .filter(|d| d.owner)
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(owners, ["Kitchen iMac"]);
+        // No file: no list, and nothing wrong. A fresh install, and one from before.
+        assert_eq!(parse_trusted(""), Part::Missing);
+        let out = format!("@@{MARK}:now\n1793880000\n@@{MARK}:status\n\n@@{MARK}:index\n");
+        let Read::Folder(f) = parse(&out, MARK, 200).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            (f.trusted.clone(), f.counts().trusted, f.newer()),
+            (Part::Missing, 0, None)
+        );
+        // A schema this sentry doesn't know: said, nothing of it shown or counted.
+        let text = fixture("suscheck/trusted.json");
+        let newer = parse_trusted(&text.replacen("\"schema\": 1", "\"schema\": 2", 1));
+        assert_eq!(newer, Part::Newer(2));
+        let folder = Suscheck {
+            trusted: newer,
+            ..sample()
+        };
+        assert_eq!(
+            (
+                folder.newer(),
+                folder.counts().schema,
+                folder.counts().trusted
+            ),
+            (Some(2), Some(2), 0)
+        );
+        for damaged in [
+            "nope",
+            "[1]",
+            "{\"senders\": []}",
+            "{\"schema\": 1}",
+            "{\"schema\": 1, \"senders\": 4}",
+        ] {
+            assert_eq!(parse_trusted(damaged), Part::Damaged, "{damaged}");
+        }
+        assert_eq!(
+            parse_trusted("{\"schema\": 1, \"senders\": []}"),
+            Part::Ok(TrustedList::default())
+        );
+        // Hostile and broken entries: cleaned, cut, or left out; past the cap, counted.
+        let long = "x".repeat(900);
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["senders"] = Value::Array(
+            [
+                serde_json::json!({"kind": "do\u{1b}[2Jmain\u{202e}", "value": format!("ev\u{7}il.{long}"),
+                    "label": format!("Ig\u{1b}]0;x\u{7}nore\nprior {long}"), "added_at": "soon",
+                    "added_by": format!("Kit\u{200b}chen {long}")}),
+                serde_json::json!({"kind": 3, "value": "plain.test", "label": "", "added_by": null}),
+                serde_json::json!({"kind": "address", "value": 7}),
+                serde_json::json!("not an entry"),
+                Value::Null,
+            ]
+            .into_iter()
+            .chain((0..300).map(|n| serde_json::json!({"kind": "domain", "value": format!("d{n}.test")})))
+            .collect(),
+        );
+        let Part::Ok(l) = parse_trusted(&v.to_string()) else {
+            panic!()
+        };
+        let len = |s: &Option<String>| s.as_ref().unwrap().chars().count();
+        let first = &l.senders[0];
+        assert_eq!(first.kind.as_deref(), Some("domain"));
+        assert!(first.value.starts_with("evil.xxx") && first.value.chars().count() == 261);
+        assert!(
+            first
+                .label
+                .as_ref()
+                .unwrap()
+                .starts_with("Ignore prior xxx")
+        );
+        assert_eq!(
+            (len(&first.label), len(&first.added_by), first.added_at),
+            (85, 41, None)
+        );
+        assert_eq!(
+            l.senders[1],
+            Trusted {
+                value: "plain.test".into(),
+                ..Default::default()
+            }
+        );
+        // (Three of the first 200 weren't entries; 105 were past the cap.)
+        assert_eq!(
+            (l.senders.len(), l.more, l.total()),
+            (TRUSTED_MAX - 3, 105, 302)
+        );
+        let all = format!("{l:?}");
+        assert!(
+            !all.chars()
+                .any(|c| c == '\u{1b}' || c == '\u{7}' || invisible(c))
+        );
+        // An owner is said only by a literal `true`; a file from before doesn't say.
+        let devices = fixture("suscheck/devices.json");
+        for (to, want) in [
+            ("true", true),
+            ("false", false),
+            ("\"true\"", false),
+            ("1", false),
+            ("null", false),
+        ] {
+            let d =
+                parse_devices(&devices.replacen("\"owner\": true", &format!("\"owner\": {to}"), 1));
+            assert_eq!(d.ok().unwrap()[1].owner, want, "{to}");
+        }
+        let before = devices
+            .replace(",\n   \"owner\": true", "")
+            .replace(",\n   \"owner\": false", "");
+        assert!(!before.contains("owner"));
+        assert!(
+            parse_devices(&before)
+                .ok()
+                .unwrap()
+                .iter()
+                .all(|d| !d.owner)
+        );
+
+        // The index: a trusted sender on the newest line; null (the failed check) and a
+        // missing key (the oldest line) are false.
+        let trusted: Vec<bool> = s.checks.iter().map(Check::trusted).collect();
+        assert_eq!(trusted.iter().filter(|t| **t).count(), 1);
+        assert!(trusted[10] && s.checks[10].outcome() == "no obvious warning signs");
+        assert_eq!(
+            (s.checks[5].trusted_sender, s.checks[0].trusted_sender),
+            (None, None)
+        );
+        assert_eq!(s.checks[3].unconfirmed_kind.as_deref(), Some("picture"));
+        assert!(s.checks[..3].iter().all(|c| c.unconfirmed_kind.is_none()));
+        let index = fixture("suscheck/index.jsonl");
+        let line = index.lines().nth(10).unwrap();
+        assert!(line.ends_with("\"trusted_sender\":true}"));
+        for bad in ["\"true\"", "1", "null", "[true]"] {
+            let l = line.replacen(
+                "\"trusted_sender\":true",
+                &format!("\"trusted_sender\":{bad}"),
+                1,
+            );
+            assert!(!parse_line(&l).unwrap().trusted(), "{bad}");
+        }
+        let failed = line.replacen("\"error\":null", "\"error\":\"model\"", 1);
+        assert!(!parse_line(&failed).unwrap().trusted());
+
+        // The record of the club's notice: trusted, and that is what it rests on.
+        let club = sample_incident("20261105T115934Z-w8x2");
+        let last = club.last.as_ref().unwrap();
+        assert!(last.trusted_sender && last.unconfirmed_kind.is_none());
+        assert_eq!(last.verdict.as_deref(), Some("likely_safe"));
+        let d = club.domain.as_ref().unwrap();
+        assert_eq!(
+            (
+                d.result.as_deref(),
+                d.why.as_deref(),
+                d.judge_word.as_deref()
+            ),
+            (Some("match_trusted"), Some("trusted_sender"), Some("match"))
+        );
+        let e = club.email.as_ref().unwrap();
+        assert_eq!(
+            (e.defects.as_deref(), e.defects_notable.as_deref()),
+            (Some(&[][..]), Some(&[][..]))
+        );
+        assert!(club.message && !club.screenshot);
+        // The picture-only check says why it couldn't be confirmed.
+        let alone = sample_incident("20261103T080542Z-e5f6");
+        assert_eq!(
+            alone.last.as_ref().unwrap().unconfirmed_kind.as_deref(),
+            Some("picture")
+        );
+        assert_eq!(
+            alone.domain.as_ref().unwrap().judge_word.as_deref(),
+            Some("match")
+        );
+        // The badly built email: one notable fault, as the record says, and the remark.
+        let bad = sample_incident("20261105T081233Z-k2m4");
+        let e = bad.email.as_ref().unwrap();
+        assert_eq!(
+            e.defects.as_deref(),
+            Some(&["no_closing_boundary".to_string()][..])
+        );
+        assert_eq!(e.notable(), (vec!["no_closing_boundary"], true));
+        assert_eq!(
+            bad.last.as_ref().unwrap().floors.last().map(String::as_str),
+            Some("message_faults")
+        );
+        // A failed check and a picture have neither; the old shape has none of it.
+        assert!(
+            sample_incident("20261104T194103Z-j9k0")
+                .domain
+                .is_none_or(|d| d.judge_word.is_none())
+        );
+        let old = sample_incident("20261030T184512Z-b0a1");
+        assert!(
+            old.domain.as_ref().unwrap().judge_word.is_none()
+                && !old.last.as_ref().unwrap().trusted_sender
+        );
+
+        // Hostile and broken, field by field.
+        let id = Id::parse("20261105T081233Z-k2m4").unwrap();
+        let text = fixture("suscheck/20261105T081233Z-k2m4/incident.json");
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["final"]["trusted_sender"] = "true".into();
+        v["final"]["unconfirmed_kind"] = format!("pic\u{1b}[2Jture_{long}").into();
+        v["domain"]["judge_word"] = format!("ma\u{7}tch\u{202e} {long}").into();
+        v["email"]["defects"] = Value::Array(
+            [
+                "bad_base64".into(),
+                4.into(),
+                "ot\u{7}her".into(),
+                Value::Null,
+                "fault_from_next_year".into(),
+                long.clone().into(),
+            ]
+            .into_iter()
+            .chain((0..40).map(|n| format!("f{n}").into()))
+            .collect(),
+        );
+        v.as_object_mut().unwrap()["email"]
+            .as_object_mut()
+            .unwrap()
+            .remove("defects_notable");
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        let last = i.last.as_ref().unwrap();
+        assert!(!last.trusted_sender);
+        assert_eq!(last.unconfirmed_kind.as_ref().unwrap().chars().count(), 25);
+        assert!(
+            last.unconfirmed_kind
+                .as_ref()
+                .unwrap()
+                .starts_with("picture_x")
+        );
+        let d = i.domain.as_ref().unwrap();
+        assert!(d.judge_word.as_ref().unwrap().starts_with("match x"));
+        assert_eq!(d.judge_word.as_ref().unwrap().chars().count(), 25);
+        let e = i.email.as_ref().unwrap();
+        let faults = e.defects.as_ref().unwrap();
+        assert_eq!(faults.len(), DEFECTS_MAX);
+        assert_eq!(faults[..3], ["bad_base64", "other", "fault_from_next_year"]);
+        assert_eq!(faults[3].chars().count(), 31);
+        // A record with faults and no word on which were notable (the last builds before
+        // the split): today's notable set says, and a word in neither set is minor.
+        assert_eq!(e.defects_notable, None);
+        assert_eq!(e.notable(), (vec!["bad_base64"], false));
+        // The record's own split is believed over today's sets.
+        v["email"]["defects_notable"] = serde_json::json!(["other"]);
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!(i.email.as_ref().unwrap().notable(), (vec!["other"], true));
+        for (block, key) in [
+            ("email", "defects"),
+            ("email", "defects_notable"),
+            ("domain", "judge_word"),
+            ("final", "unconfirmed_kind"),
+            ("final", "trusted_sender"),
+        ] {
+            for wrong in [Value::Null, 3.into(), serde_json::json!({"a": 1})] {
+                let mut w: Value = serde_json::from_str(&text).unwrap();
+                w[block][key] = wrong;
+                let i = parse_incident(&w.to_string(), id).unwrap();
+                let (e, d, l) = (
+                    i.email.as_ref().unwrap(),
+                    i.domain.as_ref().unwrap(),
+                    i.last.as_ref().unwrap(),
+                );
+                match key {
+                    // (Not recorded is unknown: not "no faults".)
+                    "defects" => {
+                        assert!(e.defects.is_none() && e.notable().0 == ["no_closing_boundary"])
+                    }
+                    "defects_notable" => assert!(
+                        e.defects_notable.is_none()
+                            && e.notable() == (vec!["no_closing_boundary"], false)
+                    ),
+                    "judge_word" => assert!(d.judge_word.is_none()),
+                    "unconfirmed_kind" => assert!(l.unconfirmed_kind.is_none()),
+                    _ => assert!(!l.trusted_sender),
+                }
+            }
+        }
+        let mut w: Value = serde_json::from_str(&text).unwrap();
+        w["email"].as_object_mut().unwrap().remove("defects");
+        w["email"]
+            .as_object_mut()
+            .unwrap()
+            .remove("defects_notable");
+        let e = parse_incident(&w.to_string(), id).unwrap().email.unwrap();
+        assert_eq!(
+            (e.defects.clone(), e.notable()),
+            (None, (Vec::new(), false))
+        );
+
+        // The two later generations the samples don't hold, made by hand from the newest
+        // records by taking away what came after each (the earlier two are in
+        // `the_generations_between_the_first_and_today_read_field_by_field`). Field by
+        // field: nothing is read off `prompt_version`.
+        // Generation 4 (the browser extension): no trusted senders, kinds or faults.
+        let index = fixture("suscheck/index.jsonl");
+        let line4 = index.lines().nth(9).unwrap().replacen(
+            ",\"unconfirmed_kind\":null,\"trusted_sender\":false",
+            "",
+            1,
+        );
+        assert!(line4.ends_with("\"unconfirmed_only\":false}"));
+        let c = parse_line(&line4).unwrap();
+        assert_eq!(
+            (c.acquired_by.as_deref(), c.trusted(), &c.unconfirmed_kind),
+            (Some("original"), false, &None)
+        );
+        let strip = |text: &str, generation: u8| {
+            let mut v: Value = serde_json::from_str(text).unwrap();
+            v["prompt_version"] = "9".into();
+            v["email"]
+                .as_object_mut()
+                .unwrap()
+                .remove("defects_notable");
+            v["final"]["floors"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|f| f != "message_faults");
+            if generation == 4 {
+                v["email"].as_object_mut().unwrap().remove("defects");
+                v["domain"].as_object_mut().unwrap().remove("judge_word");
+                for k in ["trusted_sender", "unconfirmed_kind"] {
+                    v["final"].as_object_mut().unwrap().remove(k);
+                }
+            }
+            v.to_string()
+        };
+        let news = Id::parse("20261105T115821Z-t4v6").unwrap();
+        let g4 = parse_incident(
+            &strip(&fixture("suscheck/20261105T115821Z-t4v6/incident.json"), 4),
+            news,
+        )
+        .unwrap();
+        assert_eq!(
+            (g4.acquired_by.as_deref(), g4.mail_label.as_deref()),
+            (Some("original"), Some("spam"))
+        );
+        let (l, d, e) = (
+            g4.last.as_ref().unwrap(),
+            g4.domain.as_ref().unwrap(),
+            g4.email.as_ref().unwrap(),
+        );
+        assert!(!l.trusted_sender && l.unconfirmed_kind.is_none() && d.judge_word.is_none());
+        assert_eq!(
+            (e.defects.clone(), e.notable()),
+            (None, (Vec::new(), false))
+        );
+        assert_eq!(e.signals, ["money_wording"]);
+        // Generation 5 (trusted senders and kinds; in its last builds, faults recorded
+        // with no word on which were notable, and no remark).
+        let g5 = parse_incident(&strip(&text, 5), id).unwrap();
+        let e = g5.email.as_ref().unwrap();
+        assert_eq!(e.notable(), (vec!["no_closing_boundary"], false));
+        assert!(
+            !g5.last
+                .as_ref()
+                .unwrap()
+                .floors
+                .contains(&"message_faults".to_string())
+        );
+        assert_eq!(
+            g5.domain.as_ref().unwrap().judge_word.as_deref(),
+            Some("mismatch")
+        );
+        let club5 = parse_incident(
+            &strip(&fixture("suscheck/20261105T115934Z-w8x2/incident.json"), 5),
+            Id::parse("20261105T115934Z-w8x2").unwrap(),
+        )
+        .unwrap();
+        assert!(club5.last.as_ref().unwrap().trusted_sender);
+        assert_eq!(
+            club5.email.as_ref().unwrap().defects.as_deref(),
+            Some(&[][..])
+        );
+        // And the script reads the list in the same one exec.
+        let sh = script("/srv/x", 50, MARK);
+        assert!(
+            sh.contains("for f in status.json devices.json trusted.json index.jsonl"),
+            "{sh}"
+        );
+        assert!(
+            sh.contains("echo \"${m}trusted\"; [ ! -f \"$d/trusted.json\" ] || head -c 524288"),
+            "{sh}"
+        );
     }
 
     #[test]

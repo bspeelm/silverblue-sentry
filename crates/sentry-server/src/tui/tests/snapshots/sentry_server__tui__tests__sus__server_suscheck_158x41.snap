@@ -5,20 +5,21 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Checks · 10 shown, newest first ───────────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Checks · 11 shown, newest first ───────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││   When         Computer       It said                    From                   Domain                     │
-│ checks                           10       10 ││ ● Nov 05 11:58 Study laptop   no obvious warning signs   email                  example-pay.test           │
-│  don't trust this                 3        3 ││ ● Nov 05 11:45 Kitchen iMac   no obvious warning signs   email + page address   example-pay.test           │
-│  be careful                       3        3 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
-│   of them only unconfirmed        1        1 ││ ● Nov 05 08:12 Hallway PC     don't trust this           email                  account-alerts.test        │
-│  no obvious warning signs         3        3 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             picture                                           │
+│ checks                           11       11 ││ ● Nov 05 11:59 Kitchen iMac   no obvious warning signs   email                  trusted: riverside-allot   │
+│  don't trust this                 3        3 ││ ● Nov 05 11:58 Study laptop   no obvious warning signs   email                  example-pay.test           │
+│  be careful                       3        3 ││ ● Nov 05 11:45 Kitchen iMac   no obvious warning signs   email + page address   example-pay.test           │
+│   of them only unconfirmed        1        1 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
+│  no obvious warning signs         4        4 ││ ● Nov 05 08:12 Hallway PC     don't trust this           email                  account-alerts.test        │
+│   from a trusted sender           1        1 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             picture                                           │
 │  failed                           1        1 ││ ● Nov 03 17:20 Hallway PC     be careful ?               picture                                           │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││ ● Nov 03 08:05 Kitchen iMac   be careful (unconfirmed)   picture                example.com                │
-│ incomplete        1 of 9 (11%)               ││ ● Nov 02 14:30 Hallway PC     be careful                 picture                example.net                │
-│ rules overrode    the model 4 of 9 (44%)     ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
-│ typical time      15 s (longest 21 s)        ││ ● Oct 30 18:45 Kitchen iMac   no obvious warning signs   picture                example.com                │
+│ from: picture 7/7 · email 4/4 · page 2/2     ││ ● Nov 03 08:05 Kitchen iMac   be careful (picture only)  picture                example.com                │
+│ incomplete        1 of 10 (10%)              ││ ● Nov 02 14:30 Hallway PC     be careful                 picture                example.net                │
+│ rules overrode    the model 4 of 10 (40%)    ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
+│ typical time      14 s (longest 21 s)        ││ ● Oct 30 18:45 Kitchen iMac   no obvious warning signs   picture                example.com                │
 │ you marked        none yet (m on a check)    ││                                                                                                            │
-│ model example-vision:1b · prompts 3          ││                                                                                                            │
+│ model example-vision:1b · prompts 5          ││                                                                                                            │
 │ by extension: 1 original                     ││                                                                                                            │
 │ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
 │                                              ││                                                                                                            │
@@ -27,18 +28,17 @@ expression: s
 │ Name           Client    Checks  Last seen   ││                                                                                                            │
 │ Hallway PC     web            3  3h ago      ││                                                                                                            │
 │   ↳ a browser profile: no extension seen yet ││                                                                                                            │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││                                                                                                            │
+│   ↳ owner: may change the trusted senders    ││                                                                                                            │
 │ Study laptop   ext 0.2.0      1  3m ago      ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Trusted senders · 2 now ─────────────────────┐│                                                                                                            │
+│ riverside-allotments.test (domain)           ││                                                                                                            │
+│   ↳ Riverside Allotments                     ││                                                                                                            │
+│     added Nov 04 18:20 by Kitchen iMac       ││                                                                                                            │
+│ jo-bloggs@freemail.test (address)            ││                                                                                                            │
+│   ↳ Jo Bloggs                                ││                                                                                                            │
+│     added Nov 04 18:31 by the command line   ││                                                                                                            │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  j/k  select   Enter  the check   o  picture   m  mark   x  clear mark   /  filter   r  read again   ?  help   q  quit

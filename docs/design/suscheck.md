@@ -371,6 +371,57 @@ its end after a dot (a host such as `example.co.test.other.test` would pass for
 of generation 2 never has `input` and still the first release's 0 for a stage that did not
 run (the format puts both in the same generation and says fields arrived over several builds).
 
+### Trusted senders, kinds of "couldn't confirm", message faults (the revision after)
+
+Eleven samples (the new one a club's notice from a sender the owner trusts) and a new file,
+`trusted.json`. The format document already had `email.defects_notable`, the remark
+`message_faults` and prompts 5 when this was built, so they are in.
+
+- **`trusted.json`** is read in the collector's one exec, as one more marked section (the
+  readability test covers it too). No file is `Part::Missing`: no list, never an error (an
+  install from before, or nobody trusted yet). A schema other than 1 is said and nothing of
+  the file shown, like the other parts. Every string through `clean()` at a cap; an entry
+  without a value isn't one; at most 200 are kept and the rest counted.
+- **The panel "Trusted senders"**: under Computers in the wide layout, between Computers and
+  the checks in the narrow one when the window has 36 rows for the screen; only where there
+  is a list. Per entry: what it is and whether a domain or one address, its label, and
+  `added <when> by <computer>` or `by the command line`. Where they don't all fit, "and N
+  more". It is the list as it is now: a removed sender is simply gone, and whether a check
+  predates an entry is for the reader to see from the two dates. Text only.
+- **Counts** gained the number of entries (`trusted`) and, in each tally, the checks that
+  rested on a trusted sender. Numbers; never a sender.
+- **The gateway.** The bare word `trusted.json` is deliberately NOT in the refused words: it
+  is too generic a file name and would refuse lines that have nothing to do with SusCheck. A
+  line that names the file under the folder is refused by the folder-path match; `cd` into
+  the folder and a relative name get past the word match, as they do for every other name,
+  and the folder's own login (`suscheck.ssh`) is what stops those.
+- **Owner computers** (`devices[].owner`, only a literal `true`): the Computers note "owner:
+  may change the trusted senders".
+- **Why it couldn't be confirmed.** The index's `unconfirmed_kind` gives the list's milder
+  verdict its word: `be careful (picture only)`, `(other domain)`, `(small sender)`,
+  `(personal)`; null or a word without one stays `(unconfirmed)`. The open check says its own
+  record's kind in a sentence, in both places its verdict is said.
+- **A trusted sender** (`trusted_sender` on the index: a literal `true` on a completed check;
+  null and no key are false). The list says `trusted` in the Domain check column, and
+  `trusted: <domain>` in the Domain cell where that column has given way; the summary counts
+  them under "no obvious warning signs". The open check has a row "Trusted sender: on the
+  owner's trusted list when it was checked, and confirmed by the mail system", and
+  `match_trusted` is worded for both of its meanings.
+- **`domain.judge_word`**: `put to model  as a match (how it was told, not a second result)`.
+- **Message faults.** `email.defects` is an `Option`: a record without it doesn't say, which
+  is unknown and not "no faults", so nothing is drawn; an empty list is "none". The words are
+  SusCheck's own; one this sentry doesn't know is shown as its cleaned text. The notable ones
+  are the record's own `defects_notable` where it has it ("the model was told"), else those in
+  today's notable set ("by today's list; then they were recorded and had no effect"). No tally
+  of faults against verdicts was built: it would need every record fetched.
+- **Generations**: six now. Nothing is read off `prompt_version`. The tests' records of
+  generations 4 and 5 are the newest samples with what came after taken away.
+
+Assumed, not seen: that a `trusted_sender: true` beside an error should not count (the format
+says null there); that "the command line" is the only `added_by` that isn't a computer's name
+(another word is shown as it is); that a fault word in neither of today's sets is minor (the
+format says so for a record without `defects_notable`).
+
 Assumed, not seen: that "starts with a digit" is what a version looks like (the format doesn't
 define it). (That a word in `acquired_by` the format doesn't name is left out of the test was
 a guess when built; the format has since said so.)

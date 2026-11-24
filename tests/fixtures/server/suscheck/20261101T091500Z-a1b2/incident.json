@@ -8,7 +8,7 @@
  "duration_ms": 21480,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "3",
+ "prompt_version": "5",
  "stages_ms": {
   "extract": 3310,
   "reread": 2890,
@@ -51,7 +51,8 @@
   },
   "first_reading_from": "address_bar",
   "source": "screenshot",
-  "exact": null
+  "exact": null,
+  "judge_word": "lookalike"
  },
  "search": {
   "ok": true,
@@ -120,7 +121,9 @@
    "lookalike"
   ],
   "floors_changed_verdict": true,
-  "unconfirmed_only": false
+  "unconfirmed_only": false,
+  "trusted_sender": false,
+  "unconfirmed_kind": null
  },
  "input": [
   "image"

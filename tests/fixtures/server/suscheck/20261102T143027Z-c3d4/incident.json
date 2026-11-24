@@ -8,7 +8,7 @@
  "duration_ms": 18920,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "3",
+ "prompt_version": "5",
  "stages_ms": {
   "extract": 3540,
   "reread": 2710,
@@ -50,7 +50,8 @@
   },
   "first_reading_from": "sender_address",
   "source": "screenshot",
-  "exact": null
+  "exact": null,
+  "judge_word": "mismatch"
  },
  "search": {
   "ok": true,
@@ -117,7 +118,9 @@
    "mismatch_risky"
   ],
   "floors_changed_verdict": false,
-  "unconfirmed_only": false
+  "unconfirmed_only": false,
+  "trusted_sender": false,
+  "unconfirmed_kind": null
  },
  "input": [
   "image"

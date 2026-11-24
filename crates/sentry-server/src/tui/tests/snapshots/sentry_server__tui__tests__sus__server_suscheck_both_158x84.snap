@@ -7,41 +7,42 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 11:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           no obvious warning signs  (medium confidence)                                            │
-│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
+│ checks                           11       11 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 12 s                                                     │
 │  be careful                       3        3 ││ Made from         email + page address                                                                     │
 │   of them only unconfirmed        1        1 ││                                                                                                            │
-│  no obvious warning signs         3        3 ││ Reasons shown                                                                                              │
-│  failed                           1        1 ││   · It tells the reader a statement is ready and asks for nothing.                                         │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││ Advice shown      no action needed · ask for help                                                          │
-│ incomplete        1 of 9 (11%)               ││                                                                                                            │
-│ rules overrode    the model 4 of 9 (44%)     ││ The model against what counted                                                                             │
-│ typical time      15 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
-│ you marked        none yet (m on a check)    ││ What counted      no obvious warning signs (medium)                                                        │
-│ model example-vision:1b · prompts 3          ││ SusCheck's rules  none applied                                                                             │
-│ by extension: 1 original                     ││   what it found normal                                                                                     │
-│ ● alive 2m ago · keeps checks 30 days        ││   · It tells the reader a statement is ready and asks for nothing.                                         │
-│                                              ││                                                                                                            │
-└──────────────────────────────────────────────┘│ What it read from the message                                                                              │
-┌ Computers · 3 paired ────────────────────────┐│   kind            email                                                                                    │
-│ Name           Client    Checks  Last seen   ││   claims to be    Example Pay                                                                              │
-│ Hallway PC     web            3  3h ago      ││   sender          Example Pay <service@example-pay.test> (the header's exact values)                       │
-│   ↳ a browser profile: no extension seen yet ││   links           View statement · contact us (the model's reading: go by Links below)                     │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││   asks for        nothing                                                                                  │
-│ Study laptop   ext 0.2.0      1  3m ago      ││   pressure        urgency: no · text addressed to an AI: no                                                │
-│                                              ││                                                                                                            │
-│                                              ││ Where the address came from                                                                                │
-│                                              ││   source          the email's own header: exact text, not a reading                                        │
-│                                              ││   exact address   example-pay.test                                                                         │
-│                                              ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
-│                                              ││                                                                                                            │
-│                                              ││ The email (its headers, read by SusCheck's code)                                                           │
-│                                              ││   from            Example Pay <service@example-pay.test>                                                   │
-│                                              ││   subject         Your November statement                                                                  │
-│                                              ││   date            Thu, 05 Nov 2026 11:40:00 +0000                                                          │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · It tells the reader a statement is ready and asks for nothing.                                         │
+│  failed                           1        1 ││ Advice shown      no action needed · ask for help                                                          │
+│ from: picture 7/7 · email 4/4 · page 2/2     ││                                                                                                            │
+│ incomplete        1 of 10 (10%)              ││ The model against what counted                                                                             │
+│ rules overrode    the model 4 of 10 (40%)    ││ The model         no obvious warning signs (medium)                                                        │
+│ typical time      14 s (longest 21 s)        ││ What counted      no obvious warning signs (medium)                                                        │
+│ you marked        none yet (m on a check)    ││ SusCheck's rules  none applied                                                                             │
+│ model example-vision:1b · prompts 5          ││   what it found normal                                                                                     │
+│ by extension: 1 original                     ││   · It tells the reader a statement is ready and asks for nothing.                                         │
+│ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
+│                                              ││ What it read from the message                                                                              │
+└──────────────────────────────────────────────┘│   kind            email                                                                                    │
+┌ Computers · 3 paired ────────────────────────┐│   claims to be    Example Pay                                                                              │
+│ Name           Client    Checks  Last seen   ││   sender          Example Pay <service@example-pay.test> (the header's exact values)                       │
+│ Hallway PC     web            3  3h ago      ││   links           View statement · contact us (the model's reading: go by Links below)                     │
+│   ↳ a browser profile: no extension seen yet ││   asks for        nothing                                                                                  │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   pressure        urgency: no · text addressed to an AI: no                                                │
+│   ↳ owner: may change the trusted senders    ││                                                                                                            │
+│ Study laptop   ext 0.2.0      1  3m ago      ││ Where the address came from                                                                                │
+└──────────────────────────────────────────────┘│   source          the email's own header: exact text, not a reading                                        │
+┌ Trusted senders · 2 now ─────────────────────┐│   exact address   example-pay.test                                                                         │
+│ riverside-allotments.test (domain)           ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
+│   ↳ Riverside Allotments                     ││                                                                                                            │
+│     added Nov 04 18:20 by Kitchen iMac       ││ The email (its headers, read by SusCheck's code)                                                           │
+│ jo-bloggs@freemail.test (address)            ││   from            Example Pay <service@example-pay.test>                                                   │
+│   ↳ Jo Bloggs                                ││   subject         Your November statement                                                                  │
+│     added Nov 04 18:31 by the command line   ││   date            Thu, 05 Nov 2026 11:40:00 +0000                                                          │
 │                                              ││   authentication  spf pass · dkim pass · dmarc pass (as the message reports it)                            │
 │                                              ││   attachments     none                                                                                     │
 │                                              ││   links           3                                                                                        │
+│                                              ││   faults          none in how the message was put together                                                 │
 │                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
 │                                              ││   · words about money (payment, invoice, order…)                                                           │
 │                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
@@ -62,6 +63,7 @@ expression: s
 │                                              ││ The domain (text only: never open it)                                                                      │
 │                                              ││   compared        the address web search agrees is the brand's own                                         │
 │                                              ││   because         exactly the genuine domain                                                               │
+│                                              ││   put to model    as a match (how it was told, not a second result)                                        │
 │                                              ││   addresses       on screen example-pay.test · the real one example-pay.test                               │
 │                                              ││                                                                                                            │
 │                                              ││ Searches SusCheck ran                                                                                      │
@@ -74,12 +76,10 @@ expression: s
 │                                              ││       nothing came back                                                                                    │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 3                                                            │
+│                                              ││   model           example-vision:1b · prompts 5                                                            │
 │                                              ││   time            12 s in all · extract 2.7 s · search 1.5 s · judge 8.3 s                                 │
 │                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         none: this check was made without one                                                    │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

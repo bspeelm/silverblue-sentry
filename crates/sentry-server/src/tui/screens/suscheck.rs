@@ -12,8 +12,8 @@
 
 use super::*;
 use crate::collect::suscheck::{
-    ACQUIRED, Check, Device, Fetched, INPUTS, Id, Incident, Part, Read, Suscheck, Tally, Verdict,
-    input_parts, said,
+    ACQUIRED, Check, Device, Fetched, INPUTS, Id, Incident, Part, Read, Suscheck, Tally,
+    TrustedList, Verdict, input_parts, said,
 };
 use crate::suscheck::RIGHT;
 
@@ -65,10 +65,7 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Check> {
                 c.brand.as_deref().unwrap_or(""),
                 c.domain.as_deref().unwrap_or(""),
                 c.domain_check.as_deref().unwrap_or(""),
-                &c.domain_check
-                    .as_deref()
-                    .map(compared_short)
-                    .unwrap_or_default(),
+                &compared_cell(c),
                 c.kind.as_deref().unwrap_or(""),
                 c.sent().as_deref().unwrap_or(""),
             ])
@@ -343,15 +340,32 @@ impl Sus {
         let wide = area.width >= 120;
         let open = self.open.filter(|_| v.s.sus_open.is_some());
         // (The summary is as tall as what it has to say about the extension.)
-        let extra =
-            extension_lines(t, s, 200).len() as u16 + u16::from(s.tally(30).unconfirmed > 0);
+        let month = s.tally(30);
+        let extra = extension_lines(t, s, 200).len() as u16
+            + u16::from(month.unconfirmed > 0)
+            + u16::from(month.trusted > 0);
+        // (The trusted senders have a panel where there is a list: up to three rows an entry.)
+        let listed = s.trusted.ok().map(|l| l.senders.len() as u16);
+        let newer = matches!(s.trusted, Part::Newer(_) | Part::Damaged);
         if wide {
             let [left, right] =
                 Layout::horizontal([Constraint::Length(48), Constraint::Min(40)]).areas(area);
             let [top, bottom] =
                 Layout::vertical([Constraint::Length(16 + extra), Constraint::Min(4)]).areas(left);
             summary(f, top, v, s, false);
-            computers(f, bottom, v, s);
+            if listed.is_some() || newer {
+                let rows = device_rows(s);
+                let n = (rows.len() + rows.iter().filter(|d| !d.note.is_empty()).count()) as u16;
+                let [mid, low] = Layout::vertical([
+                    Constraint::Length((n + 3).min(bottom.height.saturating_sub(5))),
+                    Constraint::Min(4),
+                ])
+                .areas(bottom);
+                computers(f, mid, v, s);
+                trusted(f, low, v, s);
+            } else {
+                computers(f, bottom, v, s);
+            }
             match open {
                 Some(id) => self.incident(f, right, v, s, id),
                 None => self.checks(f, right, v, s, true),
@@ -362,15 +376,24 @@ impl Sus {
             let rows = device_rows(s);
             let n = (rows.len() + rows.iter().filter(|d| !d.note.is_empty()).count()) as u16;
             let roomy = area.height >= 30;
-            let [top, mid, rest] = Layout::vertical([
+            // (And the trusted senders where the window is tall enough for all four.)
+            let tall = area.height >= 36 && (listed.is_some() || newer);
+            let [top, mid, low, rest] = Layout::vertical([
                 Constraint::Length(9 + extra),
                 Constraint::Length(if roomy { (n + 3).min(9) } else { 0 }),
+                Constraint::Length(match tall {
+                    true => (listed.unwrap_or(1) * 3 + 2).clamp(3, 8),
+                    false => 0,
+                }),
                 Constraint::Min(4),
             ])
             .areas(area);
             summary(f, top, v, s, true);
             if roomy {
                 computers(f, mid, v, s);
+            }
+            if tall {
+                trusted(f, low, v, s);
             }
             self.checks(f, rest, v, s, false);
         }
@@ -462,17 +485,18 @@ impl Sus {
                 if wide && brand {
                     cells.push(Cell::from(c.brand.clone().unwrap_or_default()).style(t.fg()));
                 }
-                cells.push(Cell::from(c.domain.clone().unwrap_or_default()).style(t.fg()));
+                // A sender the owner trusts is marked in the comparison's column, and
+                // beside the domain where that column has given way.
+                let mut domain = c.domain.clone().unwrap_or_default();
+                if c.trusted() && !(wide && compared) {
+                    domain = format!("trusted: {domain}");
+                }
+                cells.push(Cell::from(domain).style(t.fg()));
                 if wide && compared {
-                    cells.push(
-                        Cell::from(
-                            c.domain_check
-                                .as_deref()
-                                .map(compared_short)
-                                .unwrap_or_default(),
-                        )
-                        .style(t.dim()),
-                    );
+                    cells.push(Cell::from(compared_cell(c)).style(match c.trusted() {
+                        true => t.s(t.green),
+                        false => t.dim(),
+                    }));
                 }
                 cells.push(Cell::from(yours.0).style(t.s(yours.1)));
                 Row::new(cells)
@@ -540,7 +564,7 @@ impl Sus {
         let got = v.s.sus_open.as_ref().filter(|o| o.id == id).map(|o| &o.got);
         // (The index doesn't say a verdict is the milder one: the record does, once in.)
         let mild = match got {
-            Some(Some(Ok(Fetched::Ok(i)))) => Some(i.unconfirmed_only()),
+            Some(Some(Ok(Fetched::Ok(i)))) => Some(i.unconfirmed_only().then(|| kind_of(i))),
             _ => None,
         };
         if let Some(c) = check {
@@ -610,17 +634,23 @@ fn row(t: &Theme, label: &str, text: String) -> Line<'static> {
     ])
 }
 
+/// Why a record's "be careful" couldn't be confirmed, where it says.
+fn kind_of(i: &Incident) -> Option<&str> {
+    i.last.as_ref()?.unconfirmed_kind.as_deref()
+}
+
 /// What the index says of the check: shown at once, before its record is in.
 ///
-/// `mild`: what the check's own record says of its "be careful" (only because the address
-/// couldn't be confirmed, or not), once it is in; until then the index's word stands.
-fn check_lines(v: &View, c: &Check, mild: Option<bool>) -> Vec<Line<'static>> {
+/// `mild`: what the check's own record says of its "be careful", once it is in (`Some`):
+/// only because the address couldn't be confirmed (`Some`, with why where it says), or
+/// not (`None`). Until then the index's word stands.
+fn check_lines(v: &View, c: &Check, mild: Option<Option<Option<&str>>>) -> Vec<Line<'static>> {
     let t = v.t;
     let mut out = Vec::new();
     let plain = c.error.is_none() && c.verdict() == Some(Verdict::Suspicious);
     let said = match mild {
-        Some(true) if plain => UNCONFIRMED.to_string(),
-        Some(false) if plain => Verdict::Suspicious.said().to_string(),
+        Some(Some(kind)) if plain => unconfirmed(kind).to_string(),
+        Some(None) if plain => Verdict::Suspicious.said().to_string(),
         _ => c.outcome(),
     };
     let mut verdict = vec![
@@ -804,6 +834,13 @@ fn tag(code: &str) -> String {
         "display_name_address" => "the sender's name shows another address",
         "auth_failed" => "the mail's reported checks failed",
         "risky_attachment" => "an attachment named like a program or a script",
+        "trusted_unauthenticated" => {
+            "claims a sender you trust, which the mail server couldn't confirm"
+        }
+        "sender_not_brand_domain" => "a confirmed sender, but not at the company's own address",
+        "message_faults" => {
+            "put together in a broken way ordinary mail programs don't produce (a remark)"
+        }
         "mail_label_spam" => "the mail site had already put it in spam",
         "mail_label_phishing" => "the mail site itself warned of phishing",
         "sender_domain_not_real" => "the sender's domain can't exist",
@@ -825,7 +862,9 @@ fn tag(code: &str) -> String {
 /// by the format's one line for each. One this sentry has no words for is shown as it is.
 fn compared(result: &str) -> String {
     match result {
-        "match_trusted" => "an address the owner listed for this brand",
+        "match_trusted" => {
+            "one the owner listed for this brand, or a trusted sender the mail system confirmed"
+        }
         "match_search" => "the address web search agrees is the brand's own",
         "lookalike" => "it imitates a genuine address",
         "mismatch" => {
@@ -834,6 +873,53 @@ fn compared(result: &str) -> String {
         "unknown" => "nothing could be confirmed either way",
         "local" => "a private or loopback address on the home network",
         _ => return result.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// What the list's Domain check column says of a check: a sender the owner trusts (and
+/// the mail system confirmed) is `trusted`, anything else the comparison in a word or two.
+fn compared_cell(c: &Check) -> String {
+    match c.trusted() {
+        true => "trusted".into(),
+        false => c
+            .domain_check
+            .as_deref()
+            .map(compared_short)
+            .unwrap_or_default(),
+    }
+}
+
+/// The milder "be careful" as the open check says it, by why the address couldn't be
+/// confirmed (`final.unconfirmed_kind`); a kind this sentry has no words for, or none, is
+/// [`UNCONFIRMED`].
+fn unconfirmed(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("picture") => "be careful: the address was only read from a picture",
+        Some("other_domain") => {
+            "be careful: a confirmed sender, but not at the company's own address"
+        }
+        Some("small_sender") => "be careful: nobody could confirm this sender independently",
+        Some("personal_address") => {
+            "be careful: a personal mailbox; only you know if you know them"
+        }
+        _ => UNCONFIRMED,
+    }
+}
+
+/// The one word the model was given for how the comparison came out (`domain.judge_word`),
+/// in words.
+fn judge_word(word: &str) -> String {
+    match word {
+        "match" => "a match",
+        "lookalike" => "an imitation",
+        "mismatch" => "a different address",
+        "unknown" => "unknown",
+        "local_device" => "a device on the home network",
+        "unconfirmed" => "unconfirmed: a small sender nobody could confirm",
+        "personal_address" => "a personal mailbox",
+        "other_domain" => "sent through another address than the company's own",
+        _ => return word.replace('_', " "),
     }
     .to_string()
 }
@@ -857,6 +943,10 @@ fn compared_short(result: &str) -> String {
 fn why(code: &str) -> String {
     match code {
         "exact" => "exactly the genuine domain",
+        "trusted_sender" => "on the owner's trusted senders list, and the mail system confirmed it",
+        "trusted_unauthenticated" => {
+            "on the trusted senders list, but the mail system didn't confirm it: not treated as trusted"
+        }
         "punycode" => "part of it is written in punycode, which draws look-alike letters",
         "userinfo" => "a name and an @ before the host, which hides where it goes",
         "confusable" => {
@@ -1091,6 +1181,42 @@ fn email_lines(
     if let Some(label) = label {
         out.push(row(t, "  mail site", mail_label(label)));
     }
+    // Faults in how the message was put together: SusCheck's own fixed words, recorded
+    // only. A record that doesn't have them doesn't say (which isn't "none").
+    if let Some(faults) = &e.defects {
+        let said = |w: &[&str]| {
+            w.iter()
+                .map(|x| x.replace('_', " "))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        out.push(row(
+            t,
+            "  faults",
+            match faults.is_empty() {
+                true => "none in how the message was put together".into(),
+                false => format!(
+                    "{} (in how the message was put together; recorded only)",
+                    said(&faults.iter().map(String::as_str).collect::<Vec<_>>())
+                ),
+            },
+        ));
+        let (notable, own) = e.notable();
+        if !notable.is_empty() {
+            out.push(row(
+                t,
+                "  notable",
+                format!(
+                    "{} ({})",
+                    said(&notable),
+                    match own {
+                        true => "ordinary mail programs don't write these; the model was told",
+                        false => "by today's list; then they were recorded and had no effect",
+                    }
+                ),
+            ));
+        }
+    }
     if !e.signals.is_empty() {
         out.push(Line::styled(
             "  what SusCheck's code noticed (hints, never proof)",
@@ -1231,7 +1357,7 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             Span::styled(format!("{:<18}", "What counted"), t.dim()),
             Span::styled(
                 match i.unconfirmed_only() {
-                    true => UNCONFIRMED.to_string(),
+                    true => unconfirmed(kind_of(i)).to_string(),
                     false => said(lv).to_string(),
                 },
                 t.s(word_color(t, lv)),
@@ -1267,6 +1393,15 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                     &l.floors.iter().map(|f| rule(f, i)).collect::<Vec<_>>(),
                 ));
             }
+        }
+        if l.trusted_sender {
+            out.push(Line::from(vec![
+                Span::styled(format!("{:<18}", "Trusted sender"), t.dim()),
+                Span::styled(
+                    "on the owner's trusted list when it was checked, and confirmed by the mail system",
+                    t.s(t.green),
+                ),
+            ]));
         }
         if !j.red_flags.is_empty() {
             out.push(Line::styled("  its red flags", t.dim()));
@@ -1560,6 +1695,16 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 },
             ));
         }
+        if let Some(w) = &d.judge_word {
+            out.push(row(
+                t,
+                "  put to model",
+                format!(
+                    "as {} (how it was told, not a second result)",
+                    judge_word(w)
+                ),
+            ));
+        }
         if d.shown.is_some() || d.real.is_some() {
             out.push(row(
                 t,
@@ -1845,6 +1990,15 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
                 t.dim(),
             ));
         }
+        if month.trusted > 0 {
+            lines.push(Line::styled(
+                format!(
+                    "         from a trusted sender: {}/{} (7/30 days)",
+                    week.trusted, month.trusted
+                ),
+                t.dim(),
+            ));
+        }
         lines.push(sent);
         lines.push(Line::styled(
             format!(
@@ -1885,6 +2039,13 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
                 of(&month),
                 c,
             ));
+            if verdict == Verdict::Safe && month.trusted > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<26}", "  from a trusted sender"), t.dim()),
+                    Span::styled(num(week.trusted), t.dim()),
+                    Span::styled(num(month.trusted), t.dim()),
+                ]));
+            }
             // (Where the index says so: older lines don't.)
             if verdict == Verdict::Suspicious && month.unconfirmed > 0 {
                 lines.push(Line::from(vec![
@@ -2022,6 +2183,13 @@ fn device_rows(s: &Suscheck) -> Vec<DeviceRow> {
                 }
                 _ => (String::new(), false),
             };
+            // An owner computer may change the trusted senders: said beside whatever
+            // else stands out about it.
+            let note = match (d.owner, note.is_empty()) {
+                (true, true) => "owner: may change the trusted senders".to_string(),
+                (true, false) => format!("owner; {note}"),
+                (false, _) => note,
+            };
             DeviceRow {
                 name: d.name.clone(),
                 client: match (d.client.as_deref(), ver(d).is_some()) {
@@ -2067,6 +2235,99 @@ fn device_rows(s: &Suscheck) -> Vec<DeviceRow> {
         });
     }
     out
+}
+
+/// The senders the owner trusts now: what, its label, when it was added and by which
+/// computer (or the command line). The list as it is, never a history; text and nothing
+/// else (a domain or an address here is never resolved, opened or copied).
+fn trusted(f: &mut Frame, area: Rect, v: &View, s: &Suscheck) {
+    let t = v.t;
+    let list: Option<&TrustedList> = s.trusted.ok();
+    let b = panel(
+        t,
+        "Trusted senders",
+        match list {
+            Some(l) => format!("{} now", l.total()),
+            None => "not shown".into(),
+        },
+    );
+    let r = inner(&b, area);
+    f.render_widget(b, area);
+    let Some(list) = list else {
+        let why = match &s.trusted {
+            Part::Newer(n) => {
+                format!("trusted.json is in schema {n}, which this sentry doesn't know.")
+            }
+            _ => "trusted.json isn't what the format says.".into(),
+        };
+        return f.render_widget(
+            Paragraph::new(Line::styled(why, t.s(t.yellow))).wrap(Wrap { trim: false }),
+            r,
+        );
+    };
+    if list.senders.is_empty() {
+        return f.render_widget(
+            Paragraph::new(Line::styled("No sender is trusted now.", t.dim())),
+            r,
+        );
+    }
+    let width = r.width as usize;
+    // An entry is what it is, its label where it has one, and when and by whom it was
+    // added. Where they don't all fit, the last row says how many more there are.
+    let entries: Vec<Vec<Line>> = list
+        .senders
+        .iter()
+        .map(|x| {
+            let what = match x.kind.as_deref() {
+                Some(other) => other.replace('_', " "),
+                None => "?".into(),
+            };
+            let mut rows = vec![Line::from(vec![
+                Span::styled(
+                    trunc(&x.value, width.saturating_sub(what.chars().count() + 3)),
+                    t.fg(),
+                ),
+                Span::styled(format!(" ({what})"), t.dim()),
+            ])];
+            if let Some(label) = &x.label {
+                rows.push(Line::styled(trunc(&format!("  ↳ {label}"), width), t.dim()));
+            }
+            rows.push(Line::styled(
+                trunc(
+                    &format!(
+                        "    added {} by {}",
+                        when(x.added_at),
+                        match x.added_by.as_deref() {
+                            Some("command line") => "the command line",
+                            Some(who) => who,
+                            None => "?",
+                        }
+                    ),
+                    width,
+                ),
+                t.dim(),
+            ));
+            rows
+        })
+        .collect();
+    let room = (r.height as usize).max(1);
+    let all: usize = entries.iter().map(Vec::len).sum();
+    let whole = all <= room && list.more == 0;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut shown = 0;
+    for rows in entries {
+        // (One row is kept for "and N more" when not everything fits.)
+        if !whole && lines.len() + rows.len() + 1 > room {
+            break;
+        }
+        lines.extend(rows);
+        shown += 1;
+    }
+    let rest = (list.total() as usize).saturating_sub(shown);
+    if rest > 0 {
+        lines.push(Line::styled(format!("and {rest} more"), t.dim()));
+    }
+    f.render_widget(Paragraph::new(lines), r);
 }
 
 fn computers(f: &mut Frame, area: Rect, v: &View, s: &Suscheck) {
