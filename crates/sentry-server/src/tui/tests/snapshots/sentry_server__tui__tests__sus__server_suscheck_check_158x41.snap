@@ -10,35 +10,35 @@ expression: s
 │ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 21 s                                                     │
 │  be careful                       3        3 ││ Made from         picture                                                                                  │
-│  no obvious warning signs         3        3 ││                                                                                                            │
-│  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││   · The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.                        │
-│ incomplete        1 of 9 (11%)               ││   · The page asks for a password.                                                                          │
-│ rules overrode    the model 4 of 9 (44%)     ││   · It says the account will be locked today.                                                              │
-│ typical time      15 s (longest 21 s)        ││ Advice shown      do not enter password · type address yourself · close window                             │
-│ you marked        none yet (m on a check)    ││                                                                                                            │
-│ model example-vision:1b · prompts 3          ││ The model against what counted                                                                             │
-│ by extension: 1 original                     ││ The model         be careful (medium)                                                                      │
-│ ● alive 2m ago · keeps checks 30 days        ││ What counted      don't trust this (high)                                                                  │
-│                                              ││ SusCheck's rules  the address imitates the real one: raised the verdict                                    │
-└──────────────────────────────────────────────┘│   its red flags                                                                                            │
-┌ Computers · 2 paired ────────────────────────┐│   · The page asks for a password.                                                                          │
-│ Name           Client    Checks  Last seen   ││   · It says the account will be locked today.                                                              │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
-│ Study laptop   web            4  1d ago      ││ What it read from the picture                                                                              │
+│   of them only unconfirmed        1        1 ││                                                                                                            │
+│  no obvious warning signs         3        3 ││ Reasons shown                                                                                              │
+│  failed                           1        1 ││   · The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.                        │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││   · The page asks for a password.                                                                          │
+│ incomplete        1 of 9 (11%)               ││   · It says the account will be locked today.                                                              │
+│ rules overrode    the model 4 of 9 (44%)     ││ Advice shown      do not enter password · type address yourself · close window                             │
+│ typical time      15 s (longest 21 s)        ││                                                                                                            │
+│ you marked        none yet (m on a check)    ││ The model against what counted                                                                             │
+│ model example-vision:1b · prompts 3          ││ The model         be careful (medium)                                                                      │
+│ by extension: 1 original                     ││ What counted      don't trust this (high)                                                                  │
+│ ● alive 2m ago · keeps checks 30 days        ││ SusCheck's rules  the address imitates the real one: raised the verdict                                    │
+│                                              ││   its red flags                                                                                            │
+└──────────────────────────────────────────────┘│   · The page asks for a password.                                                                          │
+┌ Computers · 3 paired ────────────────────────┐│   · It says the account will be locked today.                                                              │
+│ Name           Client    Checks  Last seen   ││                                                                                                            │
+│ Hallway PC     web            3  3h ago      ││ What it read from the picture                                                                              │
 │   ↳ a browser profile: no extension seen yet ││   kind            web page                                                                                 │
-│                                              ││   claims to be    Example Pay                                                                              │
-│                                              ││   address bar     examp1e-pay.test                                                                         │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││   claims to be    Example Pay                                                                              │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   address bar     examp1e-pay.test                                                                         │
 │                                              ││   links           Sign in · Forgot password?                                                               │
 │                                              ││   asks for        password                                                                                 │
 │                                              ││   pressure        urgency: yes · text addressed to an AI: no                                               │
 │                                              ││                                                                                                            │
 │                                              ││ Where the address came from                                                                                │
 │                                              ││   source          read from the picture: a reading by the model, not exact text                            │
+│                                              ││   first read in   the address bar (the model's reading of the picture)                                     │
 │                                              ││   digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against         │
 │                                              ││                                                                                                            │
 │                                              ││ The domain (text only: never open it)                                                                      │
-│                                              ││   first reading   examp1e-pay.test                                                                         │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit

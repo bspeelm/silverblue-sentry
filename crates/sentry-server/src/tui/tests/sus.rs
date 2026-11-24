@@ -150,13 +150,13 @@ fn help_lists_its_keys_and_the_filter_narrows_the_list() {
     key(&mut a, KeyCode::Esc);
     // `/` filters by anything the row says.
     key(&mut a, KeyCode::Char('/'));
-    for c in "study".chars() {
+    for c in "hallway".chars() {
         key(&mut a, KeyCode::Char(c));
     }
     key(&mut a, KeyCode::Enter);
     let s = screen(&mut a, 158, 41);
     assert!(
-        s.contains("4 shown") && !s.contains("examp1e-pay.test"),
+        s.contains("3 shown") && !s.contains("examp1e-pay.test"),
         "{s}"
     );
     // With no row saying more than "picture" or "email" there is room for the domain's
@@ -329,8 +329,8 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
     );
     key(&mut a, KeyCode::Enter);
     incident(&mut a, "20261105T081233Z-k2m4");
-    let s = screen(&mut a, 158, 84);
-    insta::assert_snapshot!("server_suscheck_email_158x84", s);
+    let s = screen(&mut a, 158, 90);
+    insta::assert_snapshot!("server_suscheck_email_158x90", s);
     for said in [
         "Made from         email",
         "What it read from the message",
@@ -551,7 +551,9 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         "address bar     shop.example.com",
         "links           Basket · Checkout",
         "read from the picture: a reading by the model, not exact text",
-        "compared        match search (exact) · on screen example.com · the real one example.com",
+        "compared        the address web search agrees is the brand's own",
+        "because         exactly the genuine domain",
+        "addresses       on screen example.com · the real one example.com",
         "model           example-vision:1b · prompts 1",
         "17 s in all · extract 3.2 s · reread 2.7 s · search 1.5 s · judge 9.8 s",
         "kept: o fetches it",
@@ -604,7 +606,7 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
     // Until its record is in, the index's word: it doesn't say which kind.
     let s = screen(&mut a, 158, 64);
     assert!(
-        s.contains("It said           be careful  (low confidence)"),
+        s.contains("It said           be careful (unconfirmed)  (low confidence)"),
         "{s}"
     );
     assert!(!s.contains("couldn't be confirmed"), "{s}");
@@ -617,7 +619,9 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
         "The model         no obvious warning signs (medium)",
         "SusCheck's rules  the address was only read from a picture: raised the verdict",
         "do not click · check with file or app · type address yourself",
-        "compared        match trusted (exact) · on screen example.com · the real one example.com",
+        "compared        an address the owner listed for this brand",
+        "because         exactly the genuine domain",
+        "addresses       on screen example.com · the real one example.com",
         "digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against",
         "not run         ocr, shapes, shuffle",
     ] {
@@ -631,7 +635,15 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
     let s = screen(&mut a, 158, 41);
     assert!(!s.contains("couldn't be confirmed"), "{s}");
     let row = s.lines().find(|l| l.contains("Nov 03 08:05")).unwrap();
-    assert!(row.contains("be careful"), "{row}");
+    assert!(row.contains(" be careful (unconfirmed) "), "{row}");
+    // The summary tells the two kinds apart, where the index does.
+    assert!(
+        s.contains("of them only unconfirmed        1        1"),
+        "{s}"
+    );
+    assert!(
+        screen(&mut a, 80, 30).contains("of the be careful, only unconfirmed: 1/1 (7/30 days)")
+    );
     assert_eq!(
         srv(&a)
             .store
@@ -643,6 +655,53 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
             .map(|f| f.unseen(Some("20261103T080000Z-0000"))),
         Some((2, 1))
     );
+    // An index line from before it said (unknown, not false): the list has the plain
+    // word and the summary doesn't count it, and the open check goes by its own record.
+    let mut older = sc::tests::sample();
+    older.checks[3].unconfirmed_only = None;
+    data(
+        &mut a,
+        Kind::Suscheck,
+        Payload::Suscheck(Some(Read::Folder(Box::new(older)))),
+    );
+    let s = screen(&mut a, 158, 41);
+    let row = s.lines().find(|l| l.contains("Nov 03 08:05")).unwrap();
+    assert!(
+        row.contains(" be careful  ") && !s.contains("unconfirmed"),
+        "{s}"
+    );
+    at(&mut a, 6);
+    key(&mut a, KeyCode::Enter);
+    let s = screen(&mut a, 158, 64);
+    assert!(
+        s.contains("It said           be careful  (low confidence)"),
+        "{s}"
+    );
+    incident(&mut a, alone);
+    let s = screen(&mut a, 158, 64);
+    assert_eq!(s.matches(sc_screen::UNCONFIRMED).count(), 2, "{s}");
+    // And the other way: the index says the milder kind, its record doesn't; the open
+    // check says what the record says.
+    let mut plain = sc::tests::sample_incident(alone);
+    plain.last.as_mut().unwrap().unconfirmed_only = false;
+    data(
+        &mut a,
+        Kind::Suscheck,
+        Payload::Suscheck(Some(Read::Folder(Box::new(sc::tests::sample())))),
+    );
+    data(
+        &mut a,
+        Kind::SusIncident(plain.id),
+        Payload::SusIncident(Fetched::Ok(Box::new(plain))),
+    );
+    let s = screen(&mut a, 158, 64);
+    assert!(
+        s.contains("It said           be careful  (low confidence)")
+            && !s.contains("(unconfirmed)")
+            && !s.contains("couldn't be confirmed"),
+        "{s}"
+    );
+    key(&mut a, KeyCode::Esc);
     // A record that claims the milder kind beside another verdict isn't believed.
     let mut odd = sc::tests::sample_incident("20261101T091500Z-a1b2");
     odd.last.as_mut().unwrap().unconfirmed_only = true;
@@ -741,7 +800,7 @@ fn what_came_through_the_browser_extension() {
     // site's, and the mail site was showing its own warning.
     let mut folder = sc::tests::sample();
     folder.checks[9].acquired_by = Some("page".into());
-    folder.checks[9].input = Some("page".into());
+    folder.checks[9].input = Some("image+page".into());
     data(
         &mut a,
         Kind::Suscheck,
@@ -752,7 +811,8 @@ fn what_came_through_the_browser_extension() {
     let mut i = sc::tests::sample_incident("20261105T115821Z-t4v6");
     i.acquired_by = Some("page".into());
     i.mail_label = Some("phishing_warning".into());
-    i.input = vec!["page".into()];
+    i.input = vec!["image".into(), "page".into()];
+    i.screenshot = true;
     i.email = None;
     i.message = false;
     i.page = Some(sc::Page {
@@ -773,14 +833,14 @@ fn what_came_through_the_browser_extension() {
     };
     let s = feed(&mut a, &i);
     for said in [
-        "Made from         page address",
         "Obtained          by the browser extension: only the sender, subject and links, read off the mail",
         "the mail site itself warned of phishing · the address couldn't be compared",
         "Mail site         the mail site showed a phishing warning (the extension's word: not checked)",
         "The page (the mail site's window, as the browser extension read it)",
         "address         mail[.]example (the mail site's own: never the sender's, never compared)",
         "read through    the browser extension",
-        "address bar     mail.example\u{20}",
+        "address bar     mail.example (read in the picture: the mail site's own, not the sender's)",
+        "Made from         picture + page address",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
     }
@@ -818,6 +878,185 @@ fn what_came_through_the_browser_extension() {
         let s = feed(&mut a, &i);
         assert!(s.contains(said), "{said}:\n{s}");
     }
+    // As today's extension sends it: no address of the window at all, and without a
+    // picture nothing in the address bar either.
+    i.page.as_mut().unwrap().url_domain = None;
+    i.input = vec!["page".into()];
+    i.screenshot = false;
+    i.facts.as_mut().unwrap().address_bar_domain = None;
+    let s = feed(&mut a, &i);
+    assert!(
+        s.contains(
+            "address         not sent (it would be the mail site's own, never the sender's)"
+        ),
+        "{s}"
+    );
+    assert!(
+        !s.contains("address bar") && !s.contains("none usable"),
+        "{s}"
+    );
+    // Every comparison the format lists, each by its one line; the readings held
+    // against each other as SusCheck holds them. Never the word "safe".
+    let mut all = String::new();
+    for (result, short, said) in [
+        (
+            "match_trusted",
+            "owner's list",
+            "an address the owner listed for this brand",
+        ),
+        (
+            "match_search",
+            "search agrees",
+            "the address web search agrees is the brand's own",
+        ),
+        ("lookalike", "imitation", "it imitates a genuine address"),
+        (
+            "mismatch",
+            "different",
+            "clearly another address than the confirmed genuine one",
+        ),
+        (
+            "unknown",
+            "unconfirmed",
+            "nothing could be confirmed either way",
+        ),
+        (
+            "local",
+            "home network",
+            "a private or loopback address on the home network",
+        ),
+        ("held_twice", "held twice", "compared        held twice"),
+    ] {
+        i.domain.as_mut().unwrap().result = Some(result.into());
+        let s = feed(&mut a, &i);
+        assert!(s.contains(said), "{said}:\n{s}");
+        all += &s;
+        let mut folder = sc::tests::sample();
+        folder.checks[9].domain_check = Some(result.into());
+        key(&mut a, KeyCode::Esc);
+        data(
+            &mut a,
+            Kind::Suscheck,
+            Payload::Suscheck(Some(Read::Folder(Box::new(folder)))),
+        );
+        let list = screen(&mut a, 200, 41);
+        let row = list.lines().find(|l| l.contains("Nov 05 11:58")).unwrap();
+        assert!(row.contains(&format!(" {short} ")), "{short}:\n{list}");
+        all += &list;
+        at(&mut a, 0);
+        key(&mut a, KeyCode::Enter);
+    }
+    for (code, said) in [
+        ("exact", "exactly the genuine domain"),
+        (
+            "punycode",
+            "part of it is written in punycode, which draws look-alike letters",
+        ),
+        (
+            "userinfo",
+            "a name and an @ before the host, which hides where it goes",
+        ),
+        (
+            "confusable",
+            "once look-alike characters are read as what they imitate",
+        ),
+        (
+            "edit_distance",
+            "within two added, dropped or changed characters of the genuine address",
+        ),
+        (
+            "brand_in_subdomain",
+            "the genuine name is used as a subdomain of another domain",
+        ),
+        (
+            "brand_in_label",
+            "the genuine name is a word inside another domain's name",
+        ),
+        (
+            "match_unconfirmed",
+            "it equals the one search result found, and one result isn't confirmation",
+        ),
+        ("different", "unrelated to the confirmed genuine address"),
+        (
+            "public_ip",
+            "because         a public IP address, not a name",
+        ),
+        ("private_ip", "a private or loopback IP address"),
+        ("no_domain", "no usable address was read or supplied"),
+        (
+            "no_candidates",
+            "nothing to compare it with: no owner's entry, no search result for the brand",
+        ),
+        (
+            "no_confirmed_candidate",
+            "search confirmed no candidate, and it matches none of them",
+        ),
+        (
+            "readings_differ",
+            "two readings of the address in the picture disagreed",
+        ),
+        (
+            "ocr_differs",
+            "a match withdrawn: the text recogniser read another address",
+        ),
+        (
+            "shapes_differ",
+            "a match withdrawn: the letter shapes in the picture can't spell the address read",
+        ),
+        (
+            "digit_in_name",
+            "a search match withdrawn: a digit stands where the brand has a letter",
+        ),
+        (
+            "freemail",
+            "a free personal mailbox: there is no company address to compare with",
+        ),
+        (
+            "not_a_real_domain",
+            "because         the sender's domain can't exist",
+        ),
+        ("by_owl", "because         by owl"),
+    ] {
+        i.domain.as_mut().unwrap().why = Some(code.into());
+        let s = feed(&mut a, &i);
+        assert!(s.contains(said), "{said}:\n{s}");
+        all += &s;
+    }
+    assert!(!all.to_lowercase().contains("safe"), "{all}");
+    // The two readings of a picture are full hosts, the same only as the same text; the
+    // recogniser's and the shuffled one are domains, the first reading's own or not.
+    i.input = vec!["image".into()];
+    i.page = None;
+    let d = i.domain.as_mut().unwrap();
+    d.source = Some("screenshot".into());
+    d.first_reading = Some("www.example-pay.test".into());
+    d.second_reading = Some("example-pay.test".into());
+    d.ocr_reading = Some("example-pay.test".into());
+    d.shuffled_reading = Some("example-pay.test".into());
+    d.shown = Some("examp1e-pay.test".into());
+    let s = feed(&mut a, &i);
+    assert!(
+        s.contains("second reading  example-pay.test (differs from the first)"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("text recogniser") && !s.contains("  shuffled  "),
+        "{s}"
+    );
+    let d = i.domain.as_mut().unwrap();
+    d.second_reading = Some("WWW.example-pay.test".into());
+    d.ocr_reading = Some("examp1e-pay.test".into());
+    d.shuffled_reading = Some("exarnple-pay.test".into());
+    d.shown = Some("example-pay.test".into());
+    let s = feed(&mut a, &i);
+    for said in [
+        "second reading  WWW.example-pay.test\u{20}",
+        "text recogniser read examp1e-pay.test",
+        "shuffled        read exarnple-pay.test",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    assert!(!s.contains("differs from the first"), "{s}");
     key(&mut a, KeyCode::Esc);
 
     // The extension keeps falling back: after an original, the latest three weren't.
@@ -1070,7 +1309,8 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
         "· rule from next year",
         "source          carrier pigeon",
         "text recogniser read accaunt-alerts.test",
-        "(the text recogniser read another address)",
+        "compared        clearly another address than the confirmed genuine one, or a public IP address",
+        "because         a match withdrawn: the text recogniser read another address",
         "<no readable address>",
         "replies go to   NOTICE@account-alerts.test",
         "bounces go to   bounce@elsewhere.test",
@@ -1150,7 +1390,7 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
     for said in [
         "letter shapes   fit only with letters drawn touching (common at small sizes: it means nothing)",
         "a digit inside a word of the address: raised the verdict",
-        "(a digit inside a word of the address)",
+        "because         a digit inside a word of the address",
         "Searches SusCheck ran (one failed or timed out)",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
@@ -1524,6 +1764,9 @@ const CANARIES: &[&str] = &[
     "Gmail",
     "in spam",
     "phishing",
+    "Hallway",
+    "windows",
+    "0.2.0",
 ];
 
 /// A stored report built from the samples holds counts and nothing else of them.
@@ -1968,11 +2211,14 @@ fn live_suscheck() {
     for word in CANARIES {
         assert!(!printed.contains(word), "{word} in collect's output");
     }
-    assert!(printed.contains("\"computers\": 2"), "{printed}");
+    assert!(printed.contains("\"computers\": 3"), "{printed}");
     assert_eq!(f.checks[0].device.as_deref(), Some("Kitchen iMac"));
     assert_eq!(f.checks[0].verdict(), Some(sc::Verdict::Safe));
     assert_eq!(f.checks[1].verdict(), Some(sc::Verdict::Malicious));
-    assert_eq!(f.devices.ok().map(Vec::len), Some(2));
+    assert_eq!(f.devices.ok().map(Vec::len), Some(3));
+    // The index says which "be careful" is only an unconfirmed address.
+    assert!(f.checks[3].mild() && f.checks.iter().filter(|c| c.mild()).count() == 1);
+    assert_eq!(f.checks[9].app_version.as_deref(), Some("0.2.0"));
     assert_eq!(
         f.status.ok().and_then(|x| x.version.as_deref()),
         Some("0.1.0")

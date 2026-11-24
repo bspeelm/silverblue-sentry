@@ -2,6 +2,14 @@
  "schema": 1,
  "devices": [
   {
+   "name": "Hallway PC",
+   "os": "windows",
+   "client": "web",
+   "app_version": "web",
+   "paired_at": "2026-10-31T09:15:40Z",
+   "last_seen_at": "2026-11-05T08:12:47Z"
+  },
+  {
    "name": "Kitchen iMac",
    "os": "macOS 26.1",
    "client": "app",
@@ -13,9 +21,9 @@
    "name": "Study laptop",
    "os": "Linux",
    "client": "web",
-   "app_version": "",
-   "paired_at": "2026-10-31T09:15:40Z",
-   "last_seen_at": "2026-11-03T17:20:31Z"
+   "app_version": "0.2.0",
+   "paired_at": "2026-11-05T11:50:12Z",
+   "last_seen_at": "2026-11-05T11:58:33Z"
   }
  ]
 }

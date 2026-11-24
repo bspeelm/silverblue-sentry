@@ -329,12 +329,51 @@ extension"); the format document now describes it.
   format gives no field that tells one profile from another on the same computer but the name
   the owner chose, so the panel stays "Computers".
 
-Assumed, not seen: that a word in `acquired_by` the format doesn't name should be left out of
-the test, like null (the format's "not `original`" would count it as a fallback, and it also
-says no other word is ever written); that "starts with a digit" is what a version looks like
-(the format doesn't define it). In the samples the newsletter came through the extension from a
-computer whose entry has no version yet (the document says there would be one): the panel
-says what `devices.json` says.
+### The revision after that (still schema 1)
+
+The format answered what the earlier readings left open. The samples: three computers now (a
+browser only ever used by hand, the desktop app, the browser the extension's check came
+from, with the extension's version), every newer record at prompts 3.
+
+- **Every comparison in words.** The six results (`compared()`) and the twenty tags of how
+  each was reached (`why()`), by the format's one line for each. The check's comparison is
+  three rows: `compared`, `because`, `addresses` (on screen · the real one). The list's Domain
+  check column has a word or two for each (`owner's list`, `search agrees`, `imitation`,
+  `different`, `unconfirmed`, `home network`); `/` matches both the format's word and that.
+- **The index says which "be careful" is the milder one.** `unconfirmed_only`, the line's last
+  key: a boolean says, and null, a missing key or anything else is unknown, never false. The
+  list then says "be careful (unconfirmed)" (it fits the column, with the `?` of an incomplete
+  check too); the tallies count them (`Tally.unconfirmed`, read as 0 from a stored report
+  that hasn't it) and the summary has `of them only unconfirmed` under "be careful" when
+  there is one. The open check says what its own record says once that is in, whichever way
+  the two differ; before, the index's word. What is to look at is unchanged.
+- **Generations.** The format lists four and says to decide by the field, never by
+  `prompt_version` or the date. sentry reads neither for anything. Its one generation test is
+  the first release's "no `input` key", which is what the format still says marks it, and all
+  it decides is how a 0 in `stages_ms` is read. Generations 2 and 3 have no sample; the tests
+  hold a hand-made record of each (synthetic), read field by field as the format's table of
+  missing fields says, and unchanged when they claim another prompt version.
+- **Readings.** The two readings of a picture are full hosts and the same only as the same
+  text: the second says "(differs from the first)" otherwise. The text recogniser's and the
+  shuffled reading are registrable domains, held against the first reading's own domain: each
+  has a row only when it isn't that (`Incident::same_domain`: the same text, or the first
+  reading ends with a dot and it).
+- **The mail site's window.** `page.url_domain` is then the mail site's domain when the
+  extension sent it, which today's doesn't: "not sent (it would be the mail site's own, never
+  the sender's)". The address bar is never set from that window; with a picture it is the
+  model's reading, said as "read in the picture: the mail site's own, not the sender's".
+- **The fallback rule** was confirmed as built: only `page`, `paste` and `picture` are
+  fallbacks, and null, a missing key and an unknown word are left out altogether.
+
+Assumed, not seen: that "the registrable domain of the first reading" is the first reading or
+its end after a dot (a host such as `example.co.test.other.test` would pass for
+`other.test`'s; without a public-suffix list sentry can't tell); that a record from the middle
+of generation 2 never has `input` and still the first release's 0 for a stage that did not
+run (the format puts both in the same generation and says fields arrived over several builds).
+
+Assumed, not seen: that "starts with a digit" is what a version looks like (the format doesn't
+define it). (That a word in `acquired_by` the format doesn't name is left out of the test was
+a guess when built; the format has since said so.)
 
 Assumed, not seen: that in a record from before `links_total` the email's and the page's totals
 add up to the list's (`links_more` adds the two only there); that a 0 in an old-shape record's

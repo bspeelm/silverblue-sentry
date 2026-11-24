@@ -2,13 +2,13 @@
  "schema": 1,
  "id": "20261102T143027Z-c3d4",
  "time": "2026-11-02T14:30:27Z",
- "device": "Study laptop",
+ "device": "Hallway PC",
  "client": "web",
  "app_version": "",
  "duration_ms": 18920,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "1",
+ "prompt_version": "3",
  "stages_ms": {
   "extract": 3540,
   "reread": 2710,
@@ -48,6 +48,7 @@
    "real": "example-pay.test",
    "why": "different"
   },
+  "first_reading_from": "sender_address",
   "source": "screenshot",
   "exact": null
  },
@@ -79,7 +80,8 @@
     }
    ],
    "domain": []
-  }
+  },
+  "failed": []
  },
  "judgement": {
   "red_flags": [

@@ -65,6 +65,10 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Check> {
                 c.brand.as_deref().unwrap_or(""),
                 c.domain.as_deref().unwrap_or(""),
                 c.domain_check.as_deref().unwrap_or(""),
+                &c.domain_check
+                    .as_deref()
+                    .map(compared_short)
+                    .unwrap_or_default(),
                 c.kind.as_deref().unwrap_or(""),
                 c.sent().as_deref().unwrap_or(""),
             ])
@@ -339,7 +343,8 @@ impl Sus {
         let wide = area.width >= 120;
         let open = self.open.filter(|_| v.s.sus_open.is_some());
         // (The summary is as tall as what it has to say about the extension.)
-        let extra = extension_lines(t, s, 200).len() as u16;
+        let extra =
+            extension_lines(t, s, 200).len() as u16 + u16::from(s.tally(30).unconfirmed > 0);
         if wide {
             let [left, right] =
                 Layout::horizontal([Constraint::Length(48), Constraint::Min(40)]).areas(area);
@@ -460,8 +465,13 @@ impl Sus {
                 cells.push(Cell::from(c.domain.clone().unwrap_or_default()).style(t.fg()));
                 if wide && compared {
                     cells.push(
-                        Cell::from(c.domain_check.as_deref().unwrap_or("").replace('_', " "))
-                            .style(t.dim()),
+                        Cell::from(
+                            c.domain_check
+                                .as_deref()
+                                .map(compared_short)
+                                .unwrap_or_default(),
+                        )
+                        .style(t.dim()),
                     );
                 }
                 cells.push(Cell::from(yours.0).style(t.s(yours.1)));
@@ -529,7 +539,10 @@ impl Sus {
         let mut lines = Vec::new();
         let got = v.s.sus_open.as_ref().filter(|o| o.id == id).map(|o| &o.got);
         // (The index doesn't say a verdict is the milder one: the record does, once in.)
-        let mild = matches!(got, Some(Some(Ok(Fetched::Ok(i)))) if i.unconfirmed_only());
+        let mild = match got {
+            Some(Some(Ok(Fetched::Ok(i)))) => Some(i.unconfirmed_only()),
+            _ => None,
+        };
         if let Some(c) = check {
             lines.extend(check_lines(v, c, mild));
         }
@@ -598,12 +611,17 @@ fn row(t: &Theme, label: &str, text: String) -> Line<'static> {
 }
 
 /// What the index says of the check: shown at once, before its record is in.
-fn check_lines(v: &View, c: &Check, mild: bool) -> Vec<Line<'static>> {
+///
+/// `mild`: what the check's own record says of its "be careful" (only because the address
+/// couldn't be confirmed, or not), once it is in; until then the index's word stands.
+fn check_lines(v: &View, c: &Check, mild: Option<bool>) -> Vec<Line<'static>> {
     let t = v.t;
     let mut out = Vec::new();
-    let said = match mild && c.verdict() == Some(Verdict::Suspicious) {
-        true => UNCONFIRMED.to_string(),
-        false => c.outcome(),
+    let plain = c.error.is_none() && c.verdict() == Some(Verdict::Suspicious);
+    let said = match mild {
+        Some(true) if plain => UNCONFIRMED.to_string(),
+        Some(false) if plain => Verdict::Suspicious.said().to_string(),
+        _ => c.outcome(),
     };
     let mut verdict = vec![
         Span::styled(format!("{:<18}", "It said"), t.dim()),
@@ -761,13 +779,11 @@ fn words(codes: &[String]) -> String {
         .join(" · ")
 }
 
-/// A rule of SusCheck's (`final.floors`) or the tag of a comparison (`check.why`) as a
-/// short phrase, by what the format says each means. One this sentry has no words for (a
-/// tag the format lists without saying what it means among them) is shown as it is
-/// (already cleaned), its underscores as spaces.
+/// A rule of SusCheck's (`final.floors`) as a short phrase, by what the format says each
+/// means. One this sentry has no words for is shown as it is (already cleaned), its
+/// underscores as spaces. (The tag of a comparison is [`why`]'s.)
 fn tag(code: &str) -> String {
     match code {
-        // The rules.
         "digit_in_name" => "a digit where the name has a letter",
         "talks_to_ai" => "text written to steer an AI",
         "lookalike" => "the address imitates the real one",
@@ -800,16 +816,74 @@ fn tag(code: &str) -> String {
         "freemail_invoice_mild" => "a bill as an attachment from a personal address",
         "return_path_differs" => "bounces go to another domain",
         "display_name_is_recipient" => "the sender's name is the start of the recipient's address",
-        // The comparison's own tags, where the format says what they mean.
-        "readings_differ" => "the readings of the address disagree",
-        "ocr_differs" => "the text recogniser read another address",
-        "shapes_differ" => "the letter shapes in the picture can't spell the address read",
-        "no_confirmed_candidate" => "search agreed on no address to compare it with",
-        "freemail" => "a free personal mailbox: no company address to compare it with",
+        _ => return code.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// How the address compared with the brand's real one (`domain_check`, `check.result`),
+/// by the format's one line for each. One this sentry has no words for is shown as it is.
+fn compared(result: &str) -> String {
+    match result {
+        "match_trusted" => "an address the owner listed for this brand",
+        "match_search" => "the address web search agrees is the brand's own",
+        "lookalike" => "it imitates a genuine address",
+        "mismatch" => {
+            "clearly another address than the confirmed genuine one, or a public IP address"
+        }
+        "unknown" => "nothing could be confirmed either way",
+        "local" => "a private or loopback address on the home network",
+        _ => return result.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// The same in a word or two, for the list's column.
+fn compared_short(result: &str) -> String {
+    match result {
+        "match_trusted" => "owner's list",
+        "match_search" => "search agrees",
+        "lookalike" => "imitation",
+        "mismatch" => "different",
+        "unknown" => "unconfirmed",
+        "local" => "home network",
+        _ => return result.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// How that result was reached (`check.why`), by the format's one line for each of its
+/// twenty tags. `digit_in_name` is also a rule's name: there it is [`rule`]'s to word.
+fn why(code: &str) -> String {
+    match code {
+        "exact" => "exactly the genuine domain",
+        "punycode" => "part of it is written in punycode, which draws look-alike letters",
+        "userinfo" => "a name and an @ before the host, which hides where it goes",
+        "confusable" => {
+            "it is the genuine address once look-alike characters are read as what they imitate"
+        }
+        "edit_distance" => "within two added, dropped or changed characters of the genuine address",
+        "brand_in_subdomain" => "the genuine name is used as a subdomain of another domain",
+        "brand_in_label" => "the genuine name is a word inside another domain's name",
+        "match_unconfirmed" => {
+            "it equals the one search result found, and one result isn't confirmation"
+        }
+        "different" => "unrelated to the confirmed genuine address",
+        "public_ip" => "a public IP address, not a name",
+        "private_ip" => "a private or loopback IP address",
+        "no_domain" => "no usable address was read or supplied",
+        "no_candidates" => {
+            "nothing to compare it with: no owner's entry, no search result for the brand"
+        }
+        "no_confirmed_candidate" => "search confirmed no candidate, and it matches none of them",
+        "readings_differ" => "two readings of the address in the picture disagreed",
+        "ocr_differs" => "a match withdrawn: the text recogniser read another address",
+        "shapes_differ" => {
+            "a match withdrawn: the letter shapes in the picture can't spell the address read"
+        }
+        "digit_in_name" => "a search match withdrawn: a digit stands where the brand has a letter",
+        "freemail" => "a free personal mailbox: there is no company address to compare with",
         "not_a_real_domain" => "the sender's domain can't exist",
-        "no_domain" => "no address could be read",
-        "no_candidates" => "nothing to compare it with",
-        "private_ip" => "a private address, such as a router's page",
         _ => return code.replace('_', " "),
     }
     .to_string()
@@ -1237,10 +1311,13 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 format!(
                     "{}{}",
                     or(&x.address_bar_domain),
-                    // (The mail site's window isn't the sender's: nothing is said of it.)
-                    match i.sent_page() && !i.mail_window() {
-                        true => " (the window's exact address)",
-                        false => "",
+                    // (From the mail site's window nothing is put here: with a picture it
+                    // is the model's reading of the address bar, the mail site's own.)
+                    match (i.mail_window(), i.sent_page()) {
+                        (true, _) =>
+                            " (read in the picture: the mail site's own, not the sender's)",
+                        (false, true) => " (the window's exact address)",
+                        (false, false) => "",
                     }
                 ),
             ));
@@ -1326,10 +1403,12 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 format!("{read} in the picture (not used)"),
             ));
         }
+        // (A registrable domain, held against the first reading's own, as the shuffled
+        // reading below.)
         if let Some(ocr) = d
             .ocr_reading
             .as_ref()
-            .filter(|o| d.shown.as_ref() != Some(*o))
+            .filter(|o| Incident::same_domain(d.first_reading.as_deref(), o) != Some(true))
         {
             out.push(row(t, "  text recogniser", format!("read {ocr}")));
         }
@@ -1362,12 +1441,7 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         if let Some(read) = d
             .shuffled_reading
             .as_ref()
-            // (It is a registrable domain; the first reading may be a longer host of it.)
-            .filter(|r| {
-                d.first_reading
-                    .as_ref()
-                    .is_none_or(|f| f != *r && !f.ends_with(&format!(".{r}")))
-            })
+            .filter(|r| Incident::same_domain(d.first_reading.as_deref(), r) != Some(true))
         {
             out.push(row(
                 t,
@@ -1409,14 +1483,17 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         out.push(row(
             t,
             "  address",
-            format!(
-                "{}{}",
-                p.url_domain.as_deref().unwrap_or("none usable"),
-                match mail {
-                    true => " (the mail site's own: never the sender's, never compared)",
-                    false => "",
+            match (mail, p.url_domain.as_deref()) {
+                (true, Some(d)) => {
+                    format!("{d} (the mail site's own: never the sender's, never compared)")
                 }
-            ),
+                // (Today's extension leaves it out.)
+                (true, None) => {
+                    "not sent (it would be the mail site's own, never the sender's)".into()
+                }
+                (false, Some(d)) => d.to_string(),
+                (false, None) => "none usable".into(),
+            },
         ));
         out.push(row(
             t,
@@ -1447,25 +1524,56 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         // (No picture, no readings of one.)
         if i.sent_picture() != Some(false) {
             out.push(row(t, "  first reading", or(&d.first_reading)));
-            out.push(row(t, "  second reading", or(&d.second_reading)));
+            // (Both are full hosts, and the same only when they are the same text.)
+            let differ = match (&d.first_reading, &d.second_reading) {
+                (Some(a), Some(b)) => !a.eq_ignore_ascii_case(b),
+                _ => false,
+            };
+            out.push(row(
+                t,
+                "  second reading",
+                format!(
+                    "{}{}",
+                    or(&d.second_reading),
+                    if differ {
+                        " (differs from the first)"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
         }
         out.push(row(
             t,
             "  compared",
-            format!(
-                "{}{}{}{}",
-                d.result.as_deref().unwrap_or("?").replace('_', " "),
-                d.why
-                    .as_ref()
-                    .map_or(String::new(), |w| format!(" ({})", rule(w, i))),
-                d.shown
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(" · on screen {s}")),
-                d.real
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(" · the real one {s}")),
-            ),
+            d.result.as_deref().map_or("?".into(), compared),
         ));
+        if let Some(w) = &d.why {
+            out.push(row(
+                t,
+                "  because",
+                match (w.as_str(), d.result.as_deref()) {
+                    // (As a comparison's tag it is a search match withdrawn; a record
+                    // from before the rule was reworked gets the old rule's words.)
+                    ("digit_in_name", _) if d.digit_rule.is_none() => rule(w, i),
+                    _ => why(w),
+                },
+            ));
+        }
+        if d.shown.is_some() || d.real.is_some() {
+            out.push(row(
+                t,
+                "  addresses",
+                [
+                    d.shown.as_ref().map(|s| format!("on screen {s}")),
+                    d.real.as_ref().map(|s| format!("the real one {s}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · "),
+            ));
+        }
     }
     if let Some(s) = &i.search {
         out.push(Line::raw(""));
@@ -1728,6 +1836,15 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
                 Span::styled(format!("{} {}", x.safe, Verdict::Safe.said()), t.s(t.green)),
             ]));
         }
+        if month.unconfirmed > 0 {
+            lines.push(Line::styled(
+                format!(
+                    "         of the be careful, only unconfirmed: {}/{} (7/30 days)",
+                    week.unconfirmed, month.unconfirmed
+                ),
+                t.dim(),
+            ));
+        }
         lines.push(sent);
         lines.push(Line::styled(
             format!(
@@ -1768,6 +1885,14 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
                 of(&month),
                 c,
             ));
+            // (Where the index says so: older lines don't.)
+            if verdict == Verdict::Suspicious && month.unconfirmed > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<26}", "  of them only unconfirmed"), t.dim()),
+                    Span::styled(num(week.unconfirmed), t.dim()),
+                    Span::styled(num(month.unconfirmed), t.dim()),
+                ]));
+            }
         }
         if week.other + month.other > 0 {
             lines.push(line(" another verdict", week.other, month.other, t.fg));

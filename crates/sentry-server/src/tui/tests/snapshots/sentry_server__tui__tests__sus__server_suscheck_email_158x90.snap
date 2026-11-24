@@ -5,30 +5,30 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 08:12 · Study laptop ───────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 08:12 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
 │ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
-│  don't trust this                 3        3 ││ From              Study laptop (web) · took 14 s                                                           │
+│  don't trust this                 3        3 ││ From              Hallway PC (web) · took 14 s                                                             │
 │  be careful                       3        3 ││ Made from         email                                                                                    │
-│  no obvious warning signs         3        3 ││                                                                                                            │
-│  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
-│ incomplete        1 of 9 (11%)               ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
-│ rules overrode    the model 4 of 9 (44%)     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
-│ typical time      15 s (longest 21 s)        ││ one.                                                                                                       │
-│ you marked        none yet (m on a check)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
-│ model example-vision:1b · prompts 3          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
-│ by extension: 1 original                     ││   · Replies to this message would go to a different address from the one it was sent from.                 │
-│ ● alive 2m ago · keeps checks 30 days        ││   · It asks the reader to sign in with a password today.                                                   │
-│                                              ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
-└──────────────────────────────────────────────┘│                                                                                                            │
-┌ Computers · 2 paired ────────────────────────┐│ The model against what counted                                                                             │
-│ Name           Client    Checks  Last seen   ││ The model         be careful (medium)                                                                      │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││ What counted      don't trust this (high)                                                                  │
-│ Study laptop   web            4  1d ago      ││ SusCheck's rules  raised the verdict:                                                                      │
+│   of them only unconfirmed        1        1 ││                                                                                                            │
+│  no obvious warning signs         3        3 ││ Reasons shown                                                                                              │
+│  failed                           1        1 ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
+│ incomplete        1 of 9 (11%)               ││   · The sender's name is written to look like an address, but the message really comes from a different    │
+│ rules overrode    the model 4 of 9 (44%)     ││ one.                                                                                                       │
+│ typical time      15 s (longest 21 s)        ││   · The mail system could not confirm that this message really comes from the address it shows.            │
+│ you marked        none yet (m on a check)    ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
+│ model example-vision:1b · prompts 3          ││   · Replies to this message would go to a different address from the one it was sent from.                 │
+│ by extension: 1 original                     ││   · It asks the reader to sign in with a password today.                                                   │
+│ ● alive 2m ago · keeps checks 30 days        ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘│ The model against what counted                                                                             │
+┌ Computers · 3 paired ────────────────────────┐│ The model         be careful (medium)                                                                      │
+│ Name           Client    Checks  Last seen   ││ What counted      don't trust this (high)                                                                  │
+│ Hallway PC     web            3  3h ago      ││ SusCheck's rules  raised the verdict:                                                                      │
 │   ↳ a browser profile: no extension seen yet ││   · a different address, and it asks for something risky                                                   │
-│                                              ││   · a link's text is an address, and it leads to another                                                   │
-│                                              ││   · the sender's name shows another address                                                                │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││   · a link's text is an address, and it leads to another                                                   │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   · the sender's name shows another address                                                                │
 │                                              ││   · the mail's reported checks failed                                                                      │
 │                                              ││   · an attachment named like a program or a script                                                         │
 │                                              ││   · replies go to another domain                                                                           │
@@ -66,7 +66,9 @@ expression: s
 │                                              ││   · Contact us → example-pay[.]test · https                                                                │
 │                                              ││                                                                                                            │
 │                                              ││ The domain (text only: never open it)                                                                      │
-│                                              ││   compared        mismatch (different) · on screen account-alerts.test · the real one example-pay.test     │
+│                                              ││   compared        clearly another address than the confirmed genuine one, or a public IP address           │
+│                                              ││   because         unrelated to the confirmed genuine address                                               │
+│                                              ││   addresses       on screen account-alerts.test · the real one example-pay.test                            │
 │                                              ││                                                                                                            │
 │                                              ││ Searches SusCheck ran                                                                                      │
 │                                              ││   official        "Example Pay" official website                                                           │
@@ -82,6 +84,10 @@ expression: s
 │                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s                                 │
 │                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         none: this check was made without one                                                    │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit            this check was made from the email itself: there is no picture

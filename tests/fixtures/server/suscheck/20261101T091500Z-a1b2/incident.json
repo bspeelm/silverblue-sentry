@@ -8,7 +8,7 @@
  "duration_ms": 21480,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "1",
+ "prompt_version": "3",
  "stages_ms": {
   "extract": 3310,
   "reread": 2890,
@@ -49,6 +49,7 @@
    "real": "example-pay.test",
    "why": "confusable"
   },
+  "first_reading_from": "address_bar",
   "source": "screenshot",
   "exact": null
  },
@@ -80,7 +81,8 @@
     }
    ],
    "domain": []
-  }
+  },
+  "failed": []
  },
  "judgement": {
   "red_flags": [

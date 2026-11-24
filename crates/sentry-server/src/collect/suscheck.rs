@@ -325,7 +325,16 @@ pub struct Check {
     /// made by hand on the page or sent by the desktop app (null), or a line from before
     /// the key was written. The extension's own account of what it did.
     pub acquired_by: Option<String>,
+    /// The record's `final.unconfirmed_only`, copied to the index: the "be careful" is only
+    /// because the address couldn't be confirmed. None: unknown (an older line without the
+    /// key, a failed check, or not a boolean), which is not the same as false: the record
+    /// says.
+    pub unconfirmed_only: Option<bool>,
 }
+
+/// What the list says for a "be careful" that is only because the address couldn't be
+/// confirmed.
+pub const UNCONFIRMED_SHORT: &str = "be careful (unconfirmed)";
 
 /// How the browser extension can have got a message (`acquired_by`), each in a word for
 /// the summary: the original, then its fallbacks in decreasing strength.
@@ -410,10 +419,20 @@ impl Check {
         self.verdict.as_deref().and_then(Verdict::of)
     }
 
+    /// The index says this "be careful" is only because the address couldn't be
+    /// confirmed. Never for another verdict, whatever the line says; false where the
+    /// line doesn't say (the record does).
+    pub fn mild(&self) -> bool {
+        self.unconfirmed_only == Some(true)
+            && self.error.is_none()
+            && self.verdict() == Some(Verdict::Suspicious)
+    }
+
     /// What the list says in the verdict's column.
     pub fn outcome(&self) -> String {
         match (&self.error, &self.verdict) {
             (Some(e), _) => format!("failed ({e})"),
+            (None, Some(_)) if self.mild() => UNCONFIRMED_SHORT.into(),
             (None, Some(v)) => said(v).to_string(),
             (None, None) => "no verdict".into(),
         }
@@ -577,6 +596,10 @@ pub struct Tally {
     pub total: u32,
     pub malicious: u32,
     pub suspicious: u32,
+    /// Of the suspicious, those the index says are only because the address couldn't be
+    /// confirmed (older lines don't say: not counted here).
+    #[serde(default)]
+    pub unconfirmed: u32,
     pub safe: u32,
     /// A verdict this sentry doesn't know, or none.
     pub other: u32,
@@ -600,7 +623,10 @@ impl Tally {
         }
         match c.verdict() {
             Some(Verdict::Malicious) => self.malicious += 1,
-            Some(Verdict::Suspicious) => self.suspicious += 1,
+            Some(Verdict::Suspicious) => {
+                self.suspicious += 1;
+                self.unconfirmed += u32::from(c.mild());
+            }
             Some(Verdict::Safe) => self.safe += 1,
             None => self.other += 1,
         }
@@ -849,6 +875,8 @@ pub fn parse_line(line: &str) -> Result<Check, Option<i64>> {
         },
         // The last key, added with the browser extension: missing is the same as null.
         acquired_by: text(&v["acquired_by"], 16),
+        // The last key: a boolean, null on a failed check, absent on an older line.
+        unconfirmed_only: v["unconfirmed_only"].as_bool(),
     })
 }
 
@@ -1455,6 +1483,17 @@ impl Incident {
         self.sent("page") == Some(true) || self.page.is_some()
     }
 
+    /// Whether a reading that is a registrable domain (the text recogniser's, the shuffled
+    /// letter shapes') is the first reading's own: SusCheck compares it with the
+    /// registrable domain of the first reading, which is a full host. Without a list of
+    /// public suffixes here: the same text, or the first reading ends with a dot and it.
+    /// None: there is no first reading to hold it against.
+    pub fn same_domain(first: Option<&str>, domain: &str) -> Option<bool> {
+        let first = first?.to_ascii_lowercase();
+        let domain = domain.to_ascii_lowercase();
+        Some(first == domain || first.ends_with(&format!(".{domain}")))
+    }
+
     /// The window was the mail site's, read by the browser extension: its address is the
     /// mail site's own and never the one the verdict rests on.
     pub fn mail_window(&self) -> bool {
@@ -1895,11 +1934,45 @@ pub(crate) mod tests {
         assert_eq!(st.retention_days, Some(30));
         assert_eq!(s.heartbeat_age(), Some(120));
         let d = s.devices.ok().unwrap();
-        assert_eq!(d.len(), 2);
+        // Three computers: a browser only ever used by hand (it says `web`, which is no
+        // version), the desktop app, and the browser the extension's check came from.
+        assert_eq!(d.len(), 3);
+        let seen: Vec<(&str, Option<&str>, Option<&str>)> = d
+            .iter()
+            .map(|x| {
+                (
+                    x.name.as_str(),
+                    x.client.as_deref(),
+                    x.app_version.as_deref(),
+                )
+            })
+            .collect();
         assert_eq!(
-            (d[1].name.as_str(), d[1].app_version.as_deref()),
-            ("Study laptop", None)
+            seen,
+            [
+                ("Hallway PC", Some("web"), Some("web")),
+                ("Kitchen iMac", Some("app"), Some("0.1.0")),
+                ("Study laptop", Some("web"), Some("0.2.0")),
+            ]
         );
+        // A check made by hand on the page reports no version; the extension's has its own.
+        assert_eq!(s.checks[2].device.as_deref(), Some("Hallway PC"));
+        assert_eq!(s.checks[9].app_version.as_deref(), Some("0.2.0"));
+        // The index says which "be careful" is only an unconfirmed address: true on one
+        // line, false on the other completed ones, null on the failed one, and no key at
+        // all on the oldest (unknown, which is not false).
+        let known: Vec<Option<bool>> = s.checks.iter().map(|c| c.unconfirmed_only).collect();
+        assert_eq!(known[0], None);
+        assert_eq!(known[3], Some(true));
+        assert_eq!(known[5], None);
+        assert_eq!(
+            known.iter().filter(|k| **k == Some(false)).count(),
+            7,
+            "{known:?}"
+        );
+        assert!(s.checks[3].mild() && s.checks[3].outcome() == UNCONFIRMED_SHORT);
+        assert!(!s.checks[2].mild() && s.checks[2].outcome() == "be careful");
+        assert!(s.checks.iter().filter(|c| c.mild()).count() == 1);
         // Counts: by the server's clock, the last day has the failed check and the four
         // of that morning.
         let c = s.counts();
@@ -1909,6 +1982,7 @@ pub(crate) mod tests {
                 total: 10,
                 malicious: 3,
                 suspicious: 3,
+                unconfirmed: 1,
                 safe: 3,
                 other: 0,
                 errors: 1,
@@ -1916,7 +1990,7 @@ pub(crate) mod tests {
                 floors: 4,
             }
         );
-        assert_eq!((c.day.total, c.day.errors, c.computers), (5, 1, 2));
+        assert_eq!((c.day.total, c.day.errors, c.computers), (5, 1, 3));
         assert!(!c.down());
         // Since the first lookalike was looked at: two more said "don't trust this", one
         // failed.
@@ -2748,7 +2822,7 @@ pub(crate) mod tests {
                 Some("not_evaluated"),
                 None,
                 None,
-                None
+                Some("address_bar")
             )
         );
         // Every other sample says it isn't the milder kind.
@@ -3194,6 +3268,278 @@ pub(crate) mod tests {
             assert_eq!((&i.acquired_by, &i.mail_label), (&None, &None));
             assert!(i.last.is_some());
         }
+    }
+
+    /// The index's `unconfirmed_only`: a boolean says, anything else is unknown; and it
+    /// is believed only beside a completed "be careful".
+    #[test]
+    fn the_index_says_which_be_careful_is_only_an_unconfirmed_address() {
+        let index = fixture("suscheck/index.jsonl");
+        let line = index.lines().nth(3).unwrap();
+        assert!(line.ends_with(",\"unconfirmed_only\":true}"));
+        let with =
+            |to: &str| parse_line(&line.replacen(",\"unconfirmed_only\":true}", to, 1)).unwrap();
+        for (to, want, mild) in [
+            (",\"unconfirmed_only\":true}", Some(true), true),
+            (",\"unconfirmed_only\":false}", Some(false), false),
+            // Unknown, never false: null, no key, and what isn't a boolean.
+            (",\"unconfirmed_only\":null}", None, false),
+            ("}", None, false),
+            (",\"unconfirmed_only\":\"true\"}", None, false),
+            (",\"unconfirmed_only\":1}", None, false),
+            (",\"unconfirmed_only\":[true]}", None, false),
+        ] {
+            let c = with(to);
+            assert_eq!((c.unconfirmed_only, c.mild()), (want, mild), "{to}");
+            assert_eq!(
+                c.outcome(),
+                if mild {
+                    UNCONFIRMED_SHORT
+                } else {
+                    "be careful"
+                },
+                "{to}"
+            );
+        }
+        // Beside another verdict, or on a check that failed, the line isn't believed.
+        let other =
+            parse_line(&line.replacen("\"suspicious\"", "\"likely_malicious\"", 1)).unwrap();
+        assert!(!other.mild() && other.outcome() == "don't trust this");
+        let failed =
+            parse_line(&line.replacen("\"error\":null", "\"error\":\"model\"", 1)).unwrap();
+        assert!(!failed.mild() && failed.outcome() == "failed (model)");
+        // The tallies tell the two apart where the index does, and nothing else moves:
+        // it is still a "be careful", and never something to look at.
+        let s = sample();
+        let week = s.tally(7);
+        assert_eq!((week.suspicious, week.unconfirmed), (3, 1));
+        let mut older = s.clone();
+        for c in &mut older.checks {
+            c.unconfirmed_only = None;
+        }
+        let then = older.tally(7);
+        assert_eq!((then.suspicious, then.unconfirmed), (3, 0));
+        assert_eq!(s.unseen(None), older.unseen(None));
+        // A stored report from before the count reads back.
+        let old: Tally = serde_json::from_str(
+            "{\"total\":2,\"malicious\":0,\"suspicious\":2,\"safe\":0,\"other\":0,\"errors\":0,\"incomplete\":0,\"floors\":0}",
+        )
+        .unwrap();
+        assert_eq!((old.suspicious, old.unconfirmed), (2, 0));
+        // Which readings are held against which: the two readings of the picture are full
+        // hosts; the text recogniser's and the shuffled one are registrable domains, the
+        // first reading's own when it is that text or the end of it after a dot.
+        for (first, domain, want) in [
+            (Some("www.example-pay.test"), "example-pay.test", Some(true)),
+            (Some("example-pay.test"), "example-pay.test", Some(true)),
+            (Some("WWW.Example-Pay.test"), "example-pay.TEST", Some(true)),
+            (
+                Some("www.example-pay.test"),
+                "examp1e-pay.test",
+                Some(false),
+            ),
+            (Some("notexample-pay.test"), "example-pay.test", Some(false)),
+            (
+                Some("example-pay.test"),
+                "www.example-pay.test",
+                Some(false),
+            ),
+            (None, "example-pay.test", None),
+        ] {
+            assert_eq!(
+                Incident::same_domain(first, domain),
+                want,
+                "{first:?} {domain}"
+            );
+        }
+    }
+
+    /// The two generations the samples don't hold, each as a record made by hand from the
+    /// format's list of what it added (synthetic values). A reader decides field by field:
+    /// nothing is inferred from `prompt_version` or the date.
+    #[test]
+    fn the_generations_between_the_first_and_today_read_field_by_field() {
+        // Generation 2 (exact text): the index line ends at `input`.
+        let line2 = r#"{"schema":1,"id":"20260901T101010Z-g2g2","time":"2026-09-01T10:10:10Z","device":"Den PC","client":"web","app_version":"","kind":"email","brand":"Example Pay","domain":"example-pay.test","domain_check":"match_search","verdict":"suspicious","confidence":"medium","incomplete":false,"floors_changed_verdict":true,"duration_ms":9000,"error":null,"input":"email"}"#;
+        let c = parse_line(line2).unwrap();
+        assert_eq!(c.input.as_deref(), Some("email"));
+        assert_eq!(
+            (&c.acquired_by, c.unconfirmed_only, c.mild()),
+            (&None, None, false)
+        );
+        assert_eq!(c.outcome(), "be careful");
+        let gen2 = serde_json::json!({
+            "schema": 1, "id": "20260901T101010Z-g2g2", "time": "2026-09-01T10:10:10Z",
+            "device": "Den PC", "client": "web", "app_version": "", "duration_ms": 9000,
+            "error": null, "model": "example-vision:1b",
+            // (Whatever it says: nothing is read off it.)
+            "prompt_version": "3",
+            "stages_ms": {"extract": 2000, "reread": null, "ocr": 0, "search": 1500, "judge": 5500},
+            "facts": {"kind": "email", "claimed_brand": "Example Pay", "sender_name": "Example Pay",
+                "sender_address": "service@examp1e-pay.test", "address_bar_domain": null,
+                "link_texts": ["Pay now"], "phone_numbers": [], "asks_for": ["payment"],
+                "urgency": false, "talks_to_ai": false},
+            "domain": {"first_reading": null, "second_reading": null, "ocr_reading": null,
+                "ocr_available": false,
+                "check": {"result": "unknown", "shown": "examp1e-pay.test",
+                    "real": "example-pay.test", "why": "digit_in_name"},
+                "source": "email_header", "exact": "examp1e-pay.test"},
+            "search": {"ok": false, "queries": [["official", "\"Example Pay\" official website"]],
+                "results": {"official": []}},
+            "judgement": {"red_flags": [], "looks_normal": [], "incomplete": false,
+                "confidence": "medium", "verdict": "likely_safe", "advice": []},
+            "model_raw": {"extract": "{}", "judge": "{}"},
+            "final": {"verdict": "suspicious", "confidence": "medium", "incomplete": true,
+                "reasons": ["The address has a number in the middle of a word."],
+                "advice": ["do_not_pay", "ask_for_help"],
+                "floors": ["digit_in_name", "unknown", "search_down"],
+                "floors_changed_verdict": true},
+            "input": ["email"],
+            "email": {"from_name": "Example Pay", "from_address": "service@examp1e-pay.test",
+                "reply_to": null, "return_path": null, "subject": "Invoice",
+                "date": "Tue, 01 Sep 2026 10:00:00 +0000",
+                "auth": {"spf": "pass", "dkim": null, "dmarc": "none"},
+                "attachments": [], "attachments_total": 0, "links_total": 3, "aimed_at_ai": false},
+            "links": [{"text": "Pay now", "scheme": "https",
+                "target_domain": "examp1e-pay[.]test", "flags": []}],
+            "links_total": 3, "page": null, "screenshot": false, "message": true
+        });
+        let id2 = Id::parse("20260901T101010Z-g2g2").unwrap();
+        let i = parse_incident(&gen2.to_string(), id2).unwrap();
+        assert_eq!(i.input, ["email"]);
+        assert!(i.message && !i.screenshot && i.sent_email());
+        // Null is a stage that did not run, 0 one that ran (not the first release's 0);
+        // the later stages aren't named at all.
+        assert_eq!(
+            i.stages,
+            [
+                ("extract", Some(2000)),
+                ("reread", None),
+                ("ocr", Some(0)),
+                ("search", Some(1500)),
+                ("judge", Some(5500))
+            ]
+        );
+        let d = i.domain.as_ref().unwrap();
+        assert_eq!(
+            (d.source.as_deref(), d.exact.as_deref(), d.ocr_available),
+            (Some("email_header"), Some("examp1e-pay.test"), Some(false))
+        );
+        // What generation 3 added isn't there: each missing field as the format says.
+        assert_eq!(
+            (
+                &d.shape_fit,
+                &d.shuffled_reading,
+                &d.digit_rule,
+                &d.first_reading_from
+            ),
+            (&None, &None, &None, &None)
+        );
+        assert!(!i.unconfirmed_only());
+        assert_eq!(
+            (i.links_merged, i.links_left(), i.links_more()),
+            (None, None, 2)
+        );
+        let search = i.search.as_ref().unwrap();
+        assert_eq!((search.ok, &search.failed), (Some(false), &None));
+        let e = i.email.as_ref().unwrap();
+        assert!(e.signals.is_empty() && e.from_written.is_none() && e.freemail.is_none());
+        assert_eq!(e.auth[0].as_deref(), Some("pass"));
+        assert_eq!((&i.acquired_by, &i.mail_label), (&None, &None));
+
+        // Generation 3 (the picture cap and the extra readings): the index line still ends
+        // at `input`, so whether its "be careful" is the milder kind is unknown there, and
+        // the record says.
+        let line3 = r#"{"schema":1,"id":"20261001T101010Z-g3g3","time":"2026-10-01T10:10:10Z","device":"Den PC","client":"app","app_version":"0.1.0","kind":"web_page","brand":"Example","domain":"example.com","domain_check":"match_search","verdict":"suspicious","confidence":"low","incomplete":false,"floors_changed_verdict":true,"duration_ms":16000,"error":null,"input":"image"}"#;
+        let c = parse_line(line3).unwrap();
+        assert_eq!((c.unconfirmed_only, c.mild()), (None, false));
+        assert_eq!(
+            (c.outcome(), &c.acquired_by),
+            ("be careful".to_string(), &None)
+        );
+        let gen3 = serde_json::json!({
+            "schema": 1, "id": "20261001T101010Z-g3g3", "time": "2026-10-01T10:10:10Z",
+            "device": "Den PC", "client": "app", "app_version": "0.1.0", "duration_ms": 16000,
+            "error": null, "model": "example-vision:1b",
+            // (A build from the middle of the generation: nothing is read off this.)
+            "prompt_version": "2",
+            "stages_ms": {"extract": 3000, "reread": 2500, "ocr": 40, "shapes": 0,
+                "shuffle": 2100, "search": 1400, "judge": 7000},
+            "facts": {"kind": "web_page", "claimed_brand": "Example", "sender_name": null,
+                "sender_address": null, "address_bar_domain": "www.example.com",
+                "link_texts": [], "phone_numbers": [], "asks_for": [], "urgency": false,
+                "talks_to_ai": false},
+            "domain": {"first_reading": "www.example.com", "second_reading": "www.example.com",
+                "ocr_reading": "example.com", "ocr_available": true, "shape_fit": "touching",
+                "shuffled_reading": "example.com", "digit_rule": "clear",
+                "check": {"result": "match_search", "shown": "example.com",
+                    "real": "example.com", "why": "exact"},
+                "first_reading_from": "address_bar", "source": "screenshot", "exact": null},
+            "search": {"ok": true,
+                "queries": [["official", "\"Example\" official website"],
+                    ["official2", "\"Example Shop\" official website"]],
+                "results": {"official": [], "official2": []}, "failed": ["official2"]},
+            "judgement": {"red_flags": [], "looks_normal": [], "incomplete": false,
+                "confidence": "medium", "verdict": "likely_safe", "advice": ["no_action_needed"]},
+            "model_raw": {"extract": "{}", "judge": "{}"},
+            "final": {"verdict": "suspicious", "confidence": "low", "incomplete": false,
+                "reasons": ["I could only read the address from a picture."],
+                "advice": ["check_with_file_or_app", "type_address_yourself"],
+                "floors": ["picture_only"], "floors_changed_verdict": true,
+                "unconfirmed_only": true},
+            "input": ["image"], "email": null, "links": null, "links_total": null,
+            "links_merged": null, "page": null, "screenshot": true, "message": false
+        });
+        let id3 = Id::parse("20261001T101010Z-g3g3").unwrap();
+        let i = parse_incident(&gen3.to_string(), id3).unwrap();
+        assert!(
+            i.unconfirmed_only(),
+            "the record says what its index line doesn't"
+        );
+        let d = i.domain.as_ref().unwrap();
+        assert_eq!(
+            (
+                d.shape_fit.as_deref(),
+                d.shuffled_reading.as_deref(),
+                d.digit_rule.as_deref(),
+                d.first_reading_from.as_deref()
+            ),
+            (
+                Some("touching"),
+                Some("example.com"),
+                Some("clear"),
+                Some("address_bar")
+            )
+        );
+        // The shuffled and the recogniser's readings are the first reading's own domain.
+        for reading in [&d.shuffled_reading, &d.ocr_reading] {
+            assert_eq!(
+                Incident::same_domain(d.first_reading.as_deref(), reading.as_deref().unwrap()),
+                Some(true)
+            );
+        }
+        assert_eq!(i.stages.len(), 7);
+        assert_eq!(i.stages[3], ("shapes", Some(0)));
+        assert_eq!(
+            i.search.as_ref().unwrap().failed.as_deref(),
+            Some(&["official2".to_string()][..])
+        );
+        assert_eq!((i.links_merged, i.links_left()), (None, None));
+        assert_eq!((&i.acquired_by, &i.mail_label), (&None, &None));
+        // The same record claiming another prompt version or id date reads the same.
+        let mut other = gen3.clone();
+        other["prompt_version"] = "1".into();
+        let j = parse_incident(&other.to_string(), id3).unwrap();
+        assert_eq!(
+            (&j.stages, &j.domain, &j.last),
+            (&i.stages, &i.domain, &i.last)
+        );
+        // And the first release's shape is told by the missing `input` key alone: this one
+        // without it has its 0 read as "did not run".
+        other.as_object_mut().unwrap().remove("input");
+        let j = parse_incident(&other.to_string(), id3).unwrap();
+        assert_eq!(j.stages[3], ("shapes", None));
+        assert_eq!(j.input, ["image"]);
     }
 
     #[test]

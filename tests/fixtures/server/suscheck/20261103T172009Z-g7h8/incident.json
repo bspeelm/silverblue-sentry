@@ -2,13 +2,13 @@
  "schema": 1,
  "id": "20261103T172009Z-g7h8",
  "time": "2026-11-03T17:20:09Z",
- "device": "Study laptop",
+ "device": "Hallway PC",
  "client": "web",
  "app_version": "",
  "duration_ms": 11340,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "1",
+ "prompt_version": "3",
  "stages_ms": {
   "extract": 3400,
   "reread": null,
@@ -46,6 +46,7 @@
    "real": null,
    "why": "no_domain"
   },
+  "first_reading_from": null,
   "source": "screenshot",
   "exact": null
  },
@@ -72,7 +73,8 @@
      "engines": 1
     }
    ]
-  }
+  },
+  "failed": []
  },
  "judgement": {
   "red_flags": [

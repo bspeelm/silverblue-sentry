@@ -10,25 +10,25 @@ expression: s
 │ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 2m 0s                                                    │
 │  be careful                       3        3 ││ Made from         picture                                                                                  │
-│  no obvious warning signs         3        3 ││                                                                                                            │
-│  failed                           1        1 ││ The check failed (model): nobody was shown a verdict.                                                      │
-│ from: picture 7/7 · email 3/3 · page 2/2     ││                                                                                                            │
-│ incomplete        1 of 9 (11%)               ││ How it ran                                                                                                 │
-│ rules overrode    the model 4 of 9 (44%)     ││   model           example-vision:1b · prompts 1                                                            │
-│ typical time      15 s (longest 21 s)        ││   time            2m 0s in all · extract 2m 0s                                                             │
-│ you marked        none yet (m on a check)    ││   not run         reread, ocr, shapes, shuffle, search, judge                                              │
-│ model example-vision:1b · prompts 3          ││   picture         none was kept                                                                            │
+│   of them only unconfirmed        1        1 ││                                                                                                            │
+│  no obvious warning signs         3        3 ││ The check failed (model): nobody was shown a verdict.                                                      │
+│  failed                           1        1 ││                                                                                                            │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││ How it ran                                                                                                 │
+│ incomplete        1 of 9 (11%)               ││   model           example-vision:1b · prompts 3                                                            │
+│ rules overrode    the model 4 of 9 (44%)     ││   time            2m 0s in all · extract 2m 0s                                                             │
+│ typical time      15 s (longest 21 s)        ││   not run         reread, ocr, shapes, shuffle, search, judge                                              │
+│ you marked        none yet (m on a check)    ││   picture         none was kept                                                                            │
+│ model example-vision:1b · prompts 3          ││                                                                                                            │
 │ by extension: 1 original                     ││                                                                                                            │
 │ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘│                                                                                                            │
-┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
+┌ Computers · 3 paired ────────────────────────┐│                                                                                                            │
 │ Name           Client    Checks  Last seen   ││                                                                                                            │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
-│ Study laptop   web            4  1d ago      ││                                                                                                            │
+│ Hallway PC     web            3  3h ago      ││                                                                                                            │
 │   ↳ a browser profile: no extension seen yet ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
+│ Study laptop   ext 0.2.0      1  3m ago      ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
