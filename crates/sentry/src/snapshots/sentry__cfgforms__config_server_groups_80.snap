@@ -7,7 +7,6 @@ expression: "render_to_string(&mut a, 80, 30)"
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ myserver · server · 1 changed ───────────────────────────────────────────────┐
-│  * Items             1 entry                                                 │
 │                                                                              │
 │  Notes Claude may read                                                       │
 │    Notes             (none)                                                  │
@@ -21,13 +20,14 @@ expression: "render_to_string(&mut a, 80, 30)"
 │  ▸ Container rules    all defaults  Which may be stopped; what counts as r…  │
 │  ▸ Expected findings  all defaults  Findings that are fine as they are her…  │
 │  ▸ Custom actions     all defaults  Your own commands, behind a confirm bo…  │
+│  ▸ SusCheck           all defaults  Where it keeps a household's checks, a…  │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ Custom actions ──────────────────────────────────────────────────────────────┐
+┌ SusCheck ────────────────────────────────────────────────────────────────────┐
 │ a group of settings · Enter opens it                                         │
 │                                                                              │
-│ Your own commands, behind a confirm box.                                     │
+│ Where it keeps a household's checks, and the login that reads them.          │
 │                                                                              │
-│ In it: Actions.                                                              │
+│ In it: Incidents folder, Login that reads it, Checks read.                   │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────

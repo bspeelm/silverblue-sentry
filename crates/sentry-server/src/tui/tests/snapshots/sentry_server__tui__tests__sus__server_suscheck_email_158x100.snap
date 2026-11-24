@@ -1,0 +1,103 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ SusCheck · 0.1.2 ────────────────────────────┐┌ Check · Nov 05 08:12 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
+│                              7 days  30 days ││ It said           be careful  (medium confidence)                                                          │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Hallway PC (web) · took 14 s                                                             │
+│  be careful                       5        5 ││ Made from         email                                                                                    │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
+│  failed                           1        1 ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
+│ incomplete        1 of 11 (9%)               ││ one.                                                                                                       │
+│ rules overrode    the model 4 of 11 (36%)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
+│ typical time      14 s (longest 21 s)        ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
+│ you marked        none yet (m on a check)    ││   · Replies to this message would go to a different address from the one it was sent from.                 │
+│ model example-vision:1b · prompts 7          ││   · It is put together in a broken way that ordinary mail programs don't produce. Scam mail is often like  │
+│ by extension: 1 original                     ││ that, but some genuine mail is too.                                                                        │
+│ ● alive 2m ago · keeps checks 30 days        ││   · It asks the reader to sign in with a password today.                                                   │
+│                                              ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Computers · 3 paired ────────────────────────┐│ The model against what counted                                                                             │
+│ Name           Client    Checks  Last seen   ││ The model         be careful (medium)                                                                      │
+│ Hallway PC     web            4  3h ago      ││ What counted      be careful (medium)                                                                      │
+│   ↳ a browser profile: no extension seen yet ││ SusCheck's rules  the verdict stood:                                                                       │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   · a different address, and it asks for something risky                                                   │
+│   ↳ owner: may change the trusted senders    ││   · a link's text is an address, and it leads to another                                                   │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   · the sender's name shows another address                                                                │
+└──────────────────────────────────────────────┘│   · the mail's reported checks failed                                                                      │
+┌ Trusted senders · 2 now ─────────────────────┐│   · an attachment named like a program or a script                                                         │
+│ riverside-allotments.test (domain)           ││   · replies go to another domain (a warning)                                                               │
+│   ↳ Riverside Allotments                     ││   · put together in a broken way ordinary mail programs don't produce (a remark)                           │
+│     added Nov 04 18:20 by Kitchen iMac       ││   its red flags                                                                                            │
+│ jo-bloggs@freemail.test (address)            ││   · It asks the reader to sign in with a password today.                                                   │
+│   ↳ Jo Bloggs                                ││                                                                                                            │
+│     added Nov 04 18:31 by the command line   ││ What it read from the message                                                                              │
+│                                              ││   kind            email                                                                                    │
+│                                              ││   claims to be    Example Pay                                                                              │
+│                                              ││   sender          service@example-pay.test <notice@account-alerts.test> (the header's exact values)        │
+│                                              ││   links           Contact us (the model's reading: go by Links below)                                      │
+│                                              ││   asks for        password                                                                                 │
+│                                              ││   pressure        urgency: yes · text addressed to an AI: no                                               │
+│                                              ││                                                                                                            │
+│                                              ││ Where the address came from                                                                                │
+│                                              ││   source          the email's own header: exact text, not a reading                                        │
+│                                              ││   exact address   account-alerts.test                                                                      │
+│                                              ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
+│                                              ││                                                                                                            │
+│                                              ││ The email (its headers, read by SusCheck's code)                                                           │
+│                                              ││   from            service@example-pay.test <notice@account-alerts.test>                                    │
+│                                              ││   replies go to   desk@billing-desk.test                                                                   │
+│                                              ││   subject         Your Example Pay statement is ready                                                      │
+│                                              ││   date            Thu, 05 Nov 2026 08:10:00 +0000                                                          │
+│                                              ││   authentication  spf fail · dkim none · dmarc fail (as the message reports it)                            │
+│                                              ││   attachments     1 (declared; none is kept)                                                               │
+│                                              ││   · statement.pdf.htm (text/html, 92 B)                                                                    │
+│                                              ││   links           2                                                                                        │
+│                                              ││   faults          no closing boundary (in how the message was put together; recorded only)                 │
+│                                              ││   notable         no closing boundary (ordinary mail programs don't write these; the model was told)       │
+│                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
+│                                              ││   · words about money (payment, invoice, order…)                                                           │
+│                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
+│                                              ││                                                                                                            │
+│                                              ││ Links (text only: never open one)                                                                          │
+│                                              ││   · example-pay[.]test → account-alerts[.]test · https · its text is another address                       │
+│                                              ││   · Contact us → example-pay[.]test · https                                                                │
+│                                              ││                                                                                                            │
+│                                              ││ The domain (text only: never open it)                                                                      │
+│                                              ││   compared        not the genuine address: another one, a public IP, a shared platform or related service  │
+│                                              ││   because         unrelated to the confirmed genuine address                                               │
+│                                              ││   put to model    as a different address (as told: not a second result)                                    │
+│                                              ││   addresses       on screen account-alerts.test · the real one example-pay.test                            │
+│                                              ││                                                                                                            │
+│                                              ││ Searches SusCheck ran                                                                                      │
+│                                              ││   official        "Example Pay" official website                                                           │
+│                                              ││       Example Pay - official site · example-pay.test · 2 engines                                           │
+│                                              ││         Sign in to your Example Pay account.                                                               │
+│                                              ││       Example Pay help centre · example-pay.test · 1 engine                                                │
+│                                              ││         Answers to common questions.                                                                       │
+│                                              ││   domain          "account-alerts.test"                                                                    │
+│                                              ││       answered, and found nothing                                                                          │
+│                                              ││                                                                                                            │
+│                                              ││ How it ran                                                                                                 │
+│                                              ││   model           example-vision:1b · prompts 7                                                            │
+│                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s                                 │
+│                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
+│                                              ││   picture         none: this check was made without one                                                    │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit            this check was made from the email itself: there is no picture

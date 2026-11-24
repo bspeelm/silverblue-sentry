@@ -18,7 +18,7 @@ use ratatui::text::Line;
 mod upkeep;
 
 use super::SCREENS;
-use super::data::{Data, Kind, Store};
+use super::data::{Data, Kind, Payload, Store};
 use super::planview;
 use super::screens::{Screens, View};
 use crate::maint::tracked::{self, Tracked};
@@ -99,6 +99,14 @@ pub enum Own {
     AfterInventory,
     /// Claude's reads ran: their output comes back with this.
     AfterReads(Vec<Vec<String>>, ReadsFor),
+    /// SusCheck: read this check's record (Enter on it).
+    SusOpen(crate::collect::suscheck::Id),
+    /// Its record is closed (Esc).
+    SusClose,
+    /// Fetch its picture into the private cache and open it (`o`).
+    SusPicture(crate::collect::suscheck::Id),
+    /// Mark the check (`right`, or the verdict it should have had), or clear the mark.
+    SusMark(crate::collect::suscheck::Id, Option<String>),
 }
 
 impl From<Own> for Effect {
@@ -194,6 +202,15 @@ pub struct ServerTarget {
     sec_stale: std::collections::BTreeSet<String>,
     /// What needs root is being read again first, for that audit.
     reaudit_reads: bool,
+    /// SusCheck: how far you have looked and your marks (`servers/<name>/suscheck.toml`).
+    pub(crate) sus: crate::suscheck::Records,
+    /// That file as it was when read (changed by something else: read again on `enter`).
+    sus_stamp: Option<std::time::SystemTime>,
+    /// A fetched picture is opened in the desktop's viewer. Off: it is only said where it
+    /// is (tests never start a viewer).
+    pub(crate) sus_viewer: bool,
+    /// The picture last fetched and handed to the viewer (or that would have been).
+    pub(crate) sus_shown: Option<std::path::PathBuf>,
     /// Tests: every fetch asked for, in order (nothing is fetched offline).
     #[cfg(any(test, feature = "testing"))]
     pub asked: Vec<Kind>,
@@ -251,6 +268,10 @@ impl ServerTarget {
             reaudit: false,
             sec_stale: Default::default(),
             reaudit_reads: false,
+            sus: Default::default(),
+            sus_stamp: None,
+            sus_viewer: true,
+            sus_shown: None,
             #[cfg(any(test, feature = "testing"))]
             asked: Vec::new(),
         }
@@ -271,7 +292,14 @@ impl ServerTarget {
 
     /// The view with `cur` as the row selected on the screen in view.
     fn view_at<'a>(&'a self, sh: &'a Shared, cx: &'a Cx, cur: usize) -> View<'a> {
-        view_of(&self.store, &self.remote, self.inventory_at, sh, cx, cur)
+        view_of(
+            &self.store,
+            &self.remote,
+            (self.inventory_at, &self.sus),
+            sh,
+            cx,
+            cur,
+        )
     }
 
     /// The view with no `/` filter: a review is about everything on the list.
@@ -291,7 +319,14 @@ impl ServerTarget {
         f: impl FnOnce(&mut Screens, &View, &Remote) -> R,
     ) -> R {
         let cur = self.screens.cur(cx.screen);
-        let v = view_of(&self.store, &self.remote, self.inventory_at, sh, cx, cur);
+        let v = view_of(
+            &self.store,
+            &self.remote,
+            (self.inventory_at, &self.sus),
+            sh,
+            cx,
+            cur,
+        );
         f(&mut self.screens, &v, &self.remote)
     }
 
@@ -355,7 +390,116 @@ impl ServerTarget {
             .iter()
             .copied()
             .filter(|s| *s != ScreenId::Hist || self.has_ring || screen == ScreenId::Hist)
+            // SusCheck only where the server's config names its folder.
+            .filter(|s| *s != ScreenId::Sus || self.remote.cfg.suscheck.on().is_some())
             .collect()
+    }
+
+    /// SusCheck's records as they are on disk, when the file changed since it was read.
+    fn sus_read(&mut self, cx: &Cx) {
+        if cx.offline {
+            return;
+        }
+        let stamp = std::fs::metadata(crate::suscheck::path(&self.remote.name))
+            .and_then(|m| m.modified())
+            .ok();
+        if stamp != self.sus_stamp {
+            self.sus = crate::suscheck::Records::load(&self.remote.name);
+            self.sus_stamp = stamp;
+        }
+    }
+
+    /// They changed here: marks past keeping go, and the file is written (whole, renamed
+    /// into place). Tests write nothing.
+    fn sus_save(&mut self, cx: &Cx) -> Result<(), String> {
+        self.sus.prune(cx.now);
+        if cx.offline {
+            return Ok(());
+        }
+        let name = &self.remote.name;
+        self.sus.save(name).map_err(|e| e.to_string())?;
+        self.sus_stamp = std::fs::metadata(crate::suscheck::path(name))
+            .and_then(|m| m.modified())
+            .ok();
+        Ok(())
+    }
+
+    /// The list of checks is on screen: the newest of them is the newest you have seen, so
+    /// the badge and Maintenance's row go.
+    fn sus_seen(&mut self, cx: &Cx) {
+        if cx.screen != ScreenId::Sus || !cx.focused {
+            return;
+        }
+        let newest = self
+            .store
+            .suscheck
+            .value
+            .as_ref()
+            .and_then(|r| r.as_ref())
+            .and_then(|r| r.folder())
+            .and_then(|s| s.newest());
+        if let Some(id) = newest
+            && self.sus.see(id)
+        {
+            let _ = self.sus_save(cx);
+        }
+    }
+
+    /// `m` and `x` on a check: your word on it, kept on this machine.
+    fn sus_mark(
+        &mut self,
+        id: crate::collect::suscheck::Id,
+        verdict: Option<&str>,
+        cx: &Cx,
+    ) -> Vec<Effect> {
+        let before = self.sus.clone();
+        let said = match verdict {
+            Some(v) => {
+                let m = crate::suscheck::Mark {
+                    verdict: v.to_string(),
+                    at: cx.now,
+                };
+                let said = format!("marked {}", m.said());
+                self.sus.marks.insert(id.as_str().to_string(), m);
+                said
+            }
+            None => {
+                self.sus.marks.remove(id.as_str());
+                "mark cleared".to_string()
+            }
+        };
+        match self.sus_save(cx) {
+            Ok(()) => vec![Effect::Toast(said)],
+            Err(e) => {
+                self.sus = before;
+                vec![Effect::Toast(format!("couldn't save the mark: {e}"))]
+            }
+        }
+    }
+
+    /// A check's picture is in the private cache: the desktop's opener shows it. The one
+    /// program sentry starts and doesn't wait for: the user's own viewer, asked for by `o`.
+    fn sus_show(&mut self, path: std::path::PathBuf, cx: &Cx) -> Vec<Effect> {
+        let shown = sentry_core::tui::widgets::short_home(&path);
+        self.sus_shown = Some(path.clone());
+        if cx.offline || !self.sus_viewer {
+            return vec![Effect::Toast(format!("the picture is at {shown}"))];
+        }
+        let opener = Cmd::host("xdg-open").arg(&path);
+        if !opener.available() {
+            return vec![Effect::Toast(format!(
+                "no xdg-open on this machine to open it with: the picture is at {shown} \
+                 until sentry closes"
+            ))];
+        }
+        match opener.detach() {
+            Ok(()) => vec![Effect::Toast(
+                "opened in your viewer · the copy here goes when sentry closes".into(),
+            )],
+            Err(e) => vec![Effect::Toast(format!(
+                "couldn't start the viewer ({e}): the picture is at {shown}"
+            ))],
+        }
     }
 
     /// While rebooting: a probe with a new boot id means it's back.
@@ -408,6 +552,9 @@ impl ServerTarget {
             // with the watching, not at the next audit.
             r.findings
                 .retain(|f| crate::watch::still_watched(cfg, &f.id));
+            // SusCheck's findings go with its block.
+            r.findings
+                .retain(|f| cfg.suscheck.on().is_some() || !f.id.starts_with("srv:suscheck:"));
             sentry_app::remote::audit::mark_expected(&mut r.findings, &cfg.findings, &sh.baseline);
         }
     }
@@ -545,7 +692,15 @@ impl ServerTarget {
         let said = match loaded {
             Ok((s, warnings)) => {
                 let problems = crate::config::lint(&self.remote.name, &s);
+                let sus = self.remote.cfg.suscheck.clone();
                 self.remote = Remote::new(&self.remote.name, &s).with_inventory();
+                // SusCheck's block went, or names another folder or login: what was read
+                // isn't that any more.
+                if sus != self.remote.cfg.suscheck {
+                    self.store.suscheck = Default::default();
+                    self.store.sus_open = None;
+                    self.screens.sus.open = None;
+                }
                 self.fetch(Kind::Maint, cx);
                 match warnings.iter().chain(&problems).next() {
                     Some(p) => format!("reloaded · {p}"),
@@ -723,7 +878,7 @@ impl ServerTarget {
 fn view_of<'a>(
     store: &'a Store,
     remote: &'a Remote,
-    inventory_at: Option<jiff::Timestamp>,
+    (inventory_at, sus): (Option<jiff::Timestamp>, &'a crate::suscheck::Records),
     sh: &'a Shared,
     cx: &'a Cx,
     cur: usize,
@@ -750,6 +905,7 @@ fn view_of<'a>(
         plans: &sh.plans,
         wf: cx.run.and_then(|r| r.as_any().downcast_ref::<Session>()),
         wf_list: &sh.wf_list,
+        sus,
     }
 }
 
@@ -781,9 +937,12 @@ impl Target for ServerTarget {
                 self.store.upstream_eol = c.data.eol.into_keys().collect();
             }
             self.has_ring = sentry_core::recorder::ring::path(name).exists();
+            // Whatever an earlier window left of a household's pictures goes first.
+            crate::collect::suscheck::empty_cache(name);
             // After the review dates were read: the old plans' file also held them.
             crate::maint::migrate_plans(name);
         }
+        self.sus_read(cx);
         Vec::new()
     }
 
@@ -792,6 +951,29 @@ impl Target for ServerTarget {
         // Arriving at Maintenance from elsewhere: its list, not a view left open.
         if id == ScreenId::Maint && from != ScreenId::Maint {
             self.screens.maint.view = None;
+        }
+        // SusCheck isn't set up here: its key leads nowhere.
+        if id == ScreenId::Sus && self.remote.cfg.suscheck.on().is_none() {
+            let back = if from == ScreenId::Sus {
+                ScreenId::Dash
+            } else {
+                from
+            };
+            return vec![
+                Effect::Goto(back),
+                Effect::Toast(format!(
+                    "SusCheck isn't set up for {} (suscheck: in server_config.yaml)",
+                    self.remote.name
+                )),
+            ];
+        }
+        self.sus_read(cx);
+        if id == ScreenId::Sus && from != ScreenId::Sus {
+            // What is new to you stays marked for as long as the screen is in view.
+            self.screens.sus.after = self.sus.seen.clone();
+            self.screens.sus.open = None;
+            self.store.sus_open = None;
+            self.sus_seen(cx);
         }
         self.due.clear();
         for p in Screens::polls(id, &self.remote.cfg) {
@@ -858,7 +1040,30 @@ impl Target for ServerTarget {
         }
         let ok = res.is_ok();
         let failed = res.as_ref().as_ref().err().map(|e| e.to_string());
+        // A check's picture: shown, or said why not. Nothing of it is kept in the store.
+        if let Kind::SusPicture(_) = k {
+            use crate::collect::suscheck::Fetched;
+            let res = match *res {
+                Ok(Payload::SusPicture(p)) => Ok(p),
+                Ok(_) => return fx,
+                Err(e) => Err(e),
+            };
+            self.store.inflight.remove(&k);
+            return match res {
+                Ok(Fetched::Ok(path)) => self.sus_show(path, cx),
+                Ok(Fetched::Expired) => vec![Effect::Toast(
+                    "there is no picture for this check: none was sent or kept, or SusCheck has \
+                     removed it since"
+                        .into(),
+                )],
+                Err(e) => vec![Effect::Toast(format!("the picture wasn't fetched: {e}"))],
+            };
+        }
         self.store.apply(k, *res);
+        if k == Kind::Suscheck {
+            self.sus_seen(cx);
+            self.clamp(sh, cx);
+        }
         if matches!(k, Kind::Audit | Kind::Report | Kind::ReportAt(_)) {
             self.remark(sh);
         }
@@ -1137,6 +1342,22 @@ impl Target for ServerTarget {
                     "… waiting for the server to come back".into(),
                 )]
             }
+            Own::SusOpen(id) => {
+                self.store.sus_open = Some(super::data::Opened { id: *id, got: None });
+                // (Asked for again each time: a check may have been pruned since.)
+                self.store.inflight.remove(&Kind::SusIncident(*id));
+                self.fetch(Kind::SusIncident(*id), cx);
+                Vec::new()
+            }
+            Own::SusClose => {
+                self.store.sus_open = None;
+                Vec::new()
+            }
+            Own::SusPicture(id) => {
+                self.fetch(Kind::SusPicture(*id), cx);
+                toast("fetching the picture…".into())
+            }
+            Own::SusMark(id, verdict) => self.sus_mark(*id, verdict.as_deref(), cx),
             // These come back through `root_read`.
             Own::AfterInventory | Own::AfterReads(..) => Vec::new(),
         }
@@ -1197,6 +1418,9 @@ impl Target for ServerTarget {
             }
             return keys;
         }
+        if cx.screen == ScreenId::Sus {
+            return super::screens::suscheck::help();
+        }
         // Maintenance: every row key, not only the selected row's.
         if cx.screen == ScreenId::Maint {
             let row = ["Enter", "p", "P", "t", "d", "e", "m", "x", "B", "z", "A"];
@@ -1241,7 +1465,7 @@ impl Target for ServerTarget {
                     self.screens.maint.sel = super::screens::maint::row_key(&view_of(
                         &self.store,
                         &self.remote,
-                        self.inventory_at,
+                        (self.inventory_at, &self.sus),
                         sh,
                         cx,
                         self.screens.cur(cx.screen),
@@ -1278,6 +1502,12 @@ impl Target for ServerTarget {
         (facts, state)
     }
 
+    /// The window closes: the pictures fetched for it go with it.
+    fn shutdown(&mut self) {
+        crate::collect::suscheck::empty_cache(&self.remote.name);
+        self.sus_shown = None;
+    }
+
     fn colon(
         &mut self,
         _line: &str,
@@ -1296,7 +1526,17 @@ impl Target for ServerTarget {
 }
 
 impl Host for ServerTarget {
+    /// A line that names SusCheck's incidents (a plan's step, a request the user allowed,
+    /// a sudo step) is never sent: it becomes a command that only says why, here.
     fn command(&self, line: &str) -> Cmd {
+        if let Some(why) = crate::gateway::suscheck_private(&self.remote.cfg, line) {
+            return Cmd::local("sh").args([
+                "-c",
+                "printf '%s\\n' \"$1\" >&2; exit 126",
+                "sh",
+                &format!("sentry-server: not run: {why}"),
+            ]);
+        }
         self.remote.sh(line)
     }
 

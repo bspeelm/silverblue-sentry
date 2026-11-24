@@ -122,6 +122,17 @@ impl Slot {
         true
     }
 
+    /// Tests: the target with what it is asked with (its records, the view), to see what
+    /// it would make for Claude.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn asks_for_test<R>(
+        &self,
+        w: &Win,
+        f: impl FnOnce(&dyn crate::target::Target, &crate::shared::Shared, &crate::target::Cx) -> R,
+    ) -> R {
+        f(self.target.as_ref(), &self.shared, &cx!(self, w))
+    }
+
     /// Tests: the keys of every row Maintenance lists (what can wait too).
     #[cfg(any(test, feature = "testing"))]
     pub fn rows_for_test(&self, w: &Win) -> Vec<String> {

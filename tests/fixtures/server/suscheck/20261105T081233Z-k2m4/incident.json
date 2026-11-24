@@ -1,0 +1,218 @@
+{
+ "schema": 1,
+ "id": "20261105T081233Z-k2m4",
+ "time": "2026-11-05T08:12:33Z",
+ "device": "Hallway PC",
+ "client": "web",
+ "app_version": "",
+ "duration_ms": 14620,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "7",
+ "stages_ms": {
+  "extract": 2950,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": 1710,
+  "judge": 9840
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Example Pay",
+  "sender_name": "service@example-pay.test",
+  "sender_address": "notice@account-alerts.test",
+  "address_bar_domain": null,
+  "link_texts": [
+   "Contact us"
+  ],
+  "phone_numbers": [],
+  "asks_for": [
+   "password"
+  ],
+  "urgency": true,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": null,
+  "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "clear",
+  "check": {
+   "result": "mismatch",
+   "shown": "account-alerts.test",
+   "real": "example-pay.test",
+   "why": "different"
+  },
+  "first_reading_from": null,
+  "source": "email_header",
+  "exact": "account-alerts.test",
+  "judge_word": "mismatch",
+  "related_by": null
+ },
+ "search": {
+  "domain_vouched": false,
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "domain",
+    "\"account-alerts.test\""
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  },
+  "failed": [],
+  "empty": [
+   "domain"
+  ],
+  "unresponsive": []
+ },
+ "judgement": {
+  "red_flags": [
+   "It asks the reader to sign in with a password today."
+  ],
+  "looks_normal": [],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "suspicious",
+  "advice": [
+   "do_not_enter_password",
+   "type_address_yourself"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"claimed_brand\": \"Example Pay\", \"link_texts\": [\"Contact us\"], \"phone_numbers\": [], \"asks_for\": [\"password\"], \"urgency\": true, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [\"It asks the reader to sign in with a password today.\"], \"looks_normal\": [], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"suspicious\", \"advice\": [\"do_not_enter_password\", \"type_address_yourself\"]}"
+ },
+ "final": {
+  "verdict": "suspicious",
+  "confidence": "medium",
+  "incomplete": false,
+  "reasons": [
+   "It asks for a password, a code or a payment, but the address does not belong to who it claims to be.",
+   "A link in it shows one address but really leads to a different one. That is a common trick.",
+   "The sender's name is written to look like an address, but the message really comes from a different one.",
+   "The mail system could not confirm that this message really comes from the address it shows.",
+   "It carries an attachment of a kind that can run a program or show a fake sign-in page.",
+   "Replies to this message would go to a different address from the one it was sent from.",
+   "It is put together in a broken way that ordinary mail programs don't produce. Scam mail is often like that, but some genuine mail is too.",
+   "It asks the reader to sign in with a password today."
+  ],
+  "advice": [
+   "do_not_open_attachment",
+   "do_not_click",
+   "do_not_reply",
+   "do_not_enter_password"
+  ],
+  "floors": [
+   "mismatch_risky",
+   "link_text_mismatch",
+   "display_name_address",
+   "auth_failed",
+   "risky_attachment",
+   "reply_to_differs",
+   "message_faults"
+  ],
+  "floors_changed_verdict": false,
+  "unconfirmed_only": false,
+  "trusted_sender": false,
+  "unconfirmed_kind": null,
+  "strong_evidence": [],
+  "reply_to_differs": "warning",
+  "model_capped": false,
+  "model_softened": false
+ },
+ "input": [
+  "email"
+ ],
+ "email": {
+  "from_name": "service@example-pay.test",
+  "from_address": "notice@account-alerts.test",
+  "reply_to": "desk@billing-desk.test",
+  "return_path": null,
+  "subject": "Your Example Pay statement is ready",
+  "date": "Thu, 05 Nov 2026 08:10:00 +0000",
+  "auth": {
+   "spf": "fail",
+   "dkim": "none",
+   "dmarc": "fail"
+  },
+  "attachments": [
+   {
+    "name": "statement.pdf.htm",
+    "type": "text/html",
+    "size": 92
+   }
+  ],
+  "attachments_total": 1,
+  "links_total": 2,
+  "aimed_at_ai": false,
+  "from_written": null,
+  "signals": {
+   "body_nearly_empty": false,
+   "random_address": false,
+   "names_disagree": false,
+   "money_wording": true,
+   "return_path_differs": false,
+   "body_is_one_link": false,
+   "display_name_is_recipient": false,
+   "name_matches_address": false,
+   "mailing_list": false
+  },
+  "freemail": null,
+  "defects": [
+   "no_closing_boundary"
+  ],
+  "defects_notable": [
+   "no_closing_boundary"
+  ]
+ },
+ "links": [
+  {
+   "text": "example-pay[.]test",
+   "scheme": "https",
+   "target_domain": "account-alerts[.]test",
+   "flags": [
+    "text_mismatch"
+   ],
+   "notes": []
+  },
+  {
+   "text": "Contact us",
+   "scheme": "https",
+   "target_domain": "example-pay[.]test",
+   "flags": [],
+   "notes": []
+  }
+ ],
+ "links_total": 2,
+ "links_merged": 0,
+ "page": null,
+ "acquired_by": null,
+ "mail_label": null,
+ "screenshot": false,
+ "message": true
+}

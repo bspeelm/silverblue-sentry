@@ -468,6 +468,9 @@ pub fn derive(
     if let Some(c) = &s.crowdsec {
         out.extend(crowdsec(c));
     }
+    if let Some(c) = s.suscheck.as_ref().filter(|_| cfg.suscheck.on().is_some()) {
+        out.extend(suscheck(c, cfg.suscheck.ssh.is_some()));
+    }
     for j in s.journal.iter().flatten() {
         out.push(
             f(
@@ -498,6 +501,127 @@ pub fn derive(
             .any(|g| glob(g, &x.id));
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.id.cmp(&b.id)));
+    out
+}
+
+/// SusCheck, where the config names its folder: the service stopped, the folder not
+/// readable, checks failing, its browser extension falling back from the original mail, a
+/// format this sentry doesn't know. From counts alone: a
+/// finding never holds a check's text, a brand, a domain or a computer's name.
+fn suscheck(c: &super::collect::suscheck::Counts, own_login: bool) -> Vec<Finding> {
+    use super::collect::suscheck::{ERRORS_A_DAY, Unreadable};
+    let mut out = Vec::new();
+    if let Some(u) = c.unreadable {
+        out.push(
+            f(
+                "srv:suscheck:unreadable".into(),
+                Sev::Medium,
+                "suscheck",
+                match u {
+                    Unreadable::NoFolder => "SusCheck's incidents folder isn't there".into(),
+                    Unreadable::NotInGroup => {
+                        "SusCheck's incidents folder can't be read: the login isn't in its group"
+                            .to_string()
+                    }
+                },
+            )
+            .explain(
+                "The folder server_config.yaml names for SusCheck couldn't be read.",
+                "Its screen is empty, and nothing here can say whether SusCheck works.",
+                &u.said(own_login),
+            ),
+        );
+        return out;
+    }
+    if let Some(age) = c.heartbeat_age_s.filter(|_| c.down()) {
+        out.push(
+            f(
+                "srv:suscheck:down".into(),
+                Sev::Medium,
+                "suscheck",
+                format!(
+                    "SusCheck has no heartbeat for {}",
+                    sentry_core::fmt::age(age)
+                ),
+            )
+            .explain(
+                "SusCheck rewrites its heartbeat every two minutes; by the server's own clock \
+                 it is more than five minutes old.",
+                "The service is stopped or stuck: a household member who sends a screenshot \
+                 gets no answer.",
+                "Look at its service on the server (systemctl status, its journal) and start \
+                 it again.",
+            ),
+        );
+    }
+    if c.day.errors >= ERRORS_A_DAY {
+        out.push(
+            f(
+                "srv:suscheck:errors".into(),
+                Sev::Medium,
+                "suscheck",
+                format!("SusCheck: {} checks failed in 24 h", c.day.errors),
+            )
+            .explain(
+                "Checks ended with an error instead of a verdict.",
+                "Whoever asked got no answer; several in a day point at the model or the \
+                 service, not at one bad picture.",
+                "The SusCheck screen (8) lists them with why each failed; its service's \
+                 journal says more.",
+            )
+            .evidence(format!(
+                "{} of {} checks in the last 24 hours",
+                c.day.errors, c.day.total
+            )),
+        );
+    }
+    if let Some(fb) = c.fallback {
+        let checks = |n: u32| format!("{n} check{}", if n == 1 { "" } else { "s" });
+        out.push(
+            f(
+                "srv:suscheck:fallback".into(),
+                Sev::Medium,
+                "suscheck",
+                "SusCheck's browser extension is falling back from the original mail".into(),
+            )
+            .explain(
+                "The extension used to fetch the original message from the mail site; its \
+                 latest checks could only read the mail page, ask for a paste, or take a \
+                 picture of the tab.",
+                "The mail site's pages have probably changed. Checks made that way rest on \
+                 less: without the original message its headers aren't read, and from a \
+                 picture alone an address is never confirmed.",
+                "Update the extension's rules for the mail site (a newer SusCheck or \
+                 extension has them). One fallback by itself means little; this is several.",
+            )
+            .evidence(match fb.day {
+                0 => format!(
+                    "the latest {} through the extension weren't the original mail",
+                    checks(fb.run)
+                ),
+                day => format!(
+                    "the latest {} through the extension weren't the original mail (all {day} \
+                     of the last 24 hours)",
+                    checks(fb.run)
+                ),
+            }),
+        );
+    }
+    if let Some(n) = c.schema {
+        out.push(
+            f(
+                "srv:suscheck:format".into(),
+                Sev::Low,
+                "suscheck",
+                format!("SusCheck writes its folder in schema {n}, which this sentry doesn't know"),
+            )
+            .explain(
+                "A file in the incidents folder has a newer format than this sentry reads.",
+                "What it can't read it doesn't show, rather than guess.",
+                "Update sentry.",
+            ),
+        );
+    }
     out
 }
 

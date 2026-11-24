@@ -9,6 +9,7 @@ pub mod health;
 pub use sentry_app::remote::probe;
 pub mod procs;
 pub mod sockets;
+pub mod suscheck;
 pub mod units;
 
 use jiff::Timestamp;
@@ -159,6 +160,10 @@ pub struct Snapshot {
     /// CrowdSec, where the server has it (absent otherwise, and in older reports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crowdsec: Option<crowdsec::Crowdsec>,
+    /// SusCheck, where the server's config names its folder: counts only, never a check's
+    /// text, a brand, a domain or a computer's name (absent otherwise, and in older reports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suscheck: Option<suscheck::Counts>,
     pub disks: Option<Vec<disk::Mount>>,
     pub listeners: Option<Vec<net::Listener>>,
     pub journal: Option<Vec<JournalUnit>>,
@@ -205,6 +210,7 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         let gpu_ = sc.spawn(|| gpu(r));
         let jails = sc.spawn(|| health::fail2ban(r));
         let crowdsec_ = sc.spawn(|| crowdsec::collect(r));
+        let suscheck_ = sc.spawn(|| suscheck::collect(r));
         let disks_ = sc.spawn(|| disks(r));
         let listen = sc.spawn(|| listeners(r));
         let journal_ = sc.spawn(|| journal(r));
@@ -232,6 +238,10 @@ pub fn snapshot(r: &Remote) -> Result<Snapshot, SrvError> {
         for (part, why) in s.crowdsec.iter().flat_map(|c| &c.unread) {
             errors.push((format!("crowdsec {part}"), why.clone()));
         }
+        // Not configured: nothing. Configured: its counts, and nothing else of it.
+        s.suscheck = keep(&mut errors, "suscheck", join(suscheck_))
+            .flatten()
+            .map(|read| read.counts());
         s.disks = keep(&mut errors, "disks", join(disks_));
         s.listeners = keep(&mut errors, "listeners", join(listen));
         s.journal = keep(&mut errors, "journal", join(journal_));
@@ -316,6 +326,11 @@ pub fn collect_json(r: &Remote, kind: &str) -> Result<serde_json::Value, SrvErro
         "gpu" => j(serde_json::to_value(gpu(r)?)),
         "fail2ban" => j(serde_json::to_value(health::fail2ban(r)?)),
         "crowdsec" => j(serde_json::to_value(crowdsec::collect(r)?)),
+        // Counts only: a check's text, brand, domain and computer are a household's own,
+        // and what this prints may be read by anything (a script, an agent).
+        "suscheck" => j(serde_json::to_value(
+            suscheck::collect(r)?.map(|read| read.counts()),
+        )),
         "disks" => j(serde_json::to_value(disks(r)?)),
         "listeners" => j(serde_json::to_value(listeners(r)?)),
         "sockets" => j(serde_json::to_value(sockets::collect(r)?)),
@@ -340,6 +355,7 @@ pub const KINDS: &[&str] = &[
     "gpu",
     "fail2ban",
     "crowdsec",
+    "suscheck",
     "disks",
     "listeners",
     "sockets",

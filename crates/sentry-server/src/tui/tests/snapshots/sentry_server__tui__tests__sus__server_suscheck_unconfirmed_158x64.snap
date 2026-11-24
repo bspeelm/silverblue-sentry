@@ -1,0 +1,67 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ SusCheck · 0.1.2 ────────────────────────────┐┌ Check · Nov 03 08:05 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+│                              7 days  30 days ││ It said           be careful: the address was only read from a picture  (low confidence)                   │
+│ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 2        2 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
+│  be careful                       5        5 ││ Made from         picture                                                                                  │
+│   of them only unconfirmed        2        2 ││                                                                                                            │
+│  no obvious warning signs         4        4 ││ Reasons shown                                                                                              │
+│   from a trusted sender           1        1 ││   · I could only read the address from a picture, and look-alike addresses can fool me in pictures. Check  │
+│  failed                           1        1 ││ the address yourself, letter by letter.                                                                    │
+│ from: picture 7/7 · email 5/5 · page 2/2     ││ Advice shown      do not click · check with file or app · type address yourself · ask for help             │
+│ incomplete        1 of 11 (9%)               ││                                                                                                            │
+│ rules overrode    the model 4 of 11 (36%)    ││ The model against what counted                                                                             │
+│ typical time      14 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
+│ you marked        none yet (m on a check)    ││ What counted      be careful: the address was only read from a picture (low)                               │
+│ model example-vision:1b · prompts 7          ││ SusCheck's rules  the address was only read from a picture: raised the verdict                             │
+│ by extension: 1 original                     ││   what it found normal                                                                                     │
+│ ● alive 2m ago · keeps checks 30 days        ││   · The address bar matches the company's real site.                                                       │
+│                                              ││   · Nothing asks for a password, a code or money.                                                          │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Computers · 3 paired ────────────────────────┐│ What it read from the picture                                                                              │
+│ Name           Client    Checks  Last seen   ││   kind            web page                                                                                 │
+│ Hallway PC     web            4  3h ago      ││   claims to be    Example                                                                                  │
+│   ↳ a browser profile: no extension seen yet ││   address bar     www.example.com                                                                          │
+│ Kitchen iMac   app 0.1.0      7  2m ago      ││   links           Products · Contact us                                                                    │
+│   ↳ owner: may change the trusted senders    ││   asks for        nothing                                                                                  │
+│ Study laptop   ext 0.2.0      1  3m ago      ││   pressure        urgency: no · text addressed to an AI: no                                                │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Trusted senders · 2 now ─────────────────────┐│ Where the address came from                                                                                │
+│ riverside-allotments.test (domain)           ││   source          read from the picture: a reading by the model, not exact text                            │
+│   ↳ Riverside Allotments                     ││   first read in   the address bar (the model's reading of the picture)                                     │
+│     added Nov 04 18:20 by Kitchen iMac       ││   digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against         │
+│ jo-bloggs@freemail.test (address)            ││                                                                                                            │
+│   ↳ Jo Bloggs                                ││ The domain (text only: never open it)                                                                      │
+│     added Nov 04 18:31 by the command line   ││   first reading   www.example.com                                                                          │
+│                                              ││   second reading  www.example.com                                                                          │
+│                                              ││   compared        one the owner listed for this brand, or a trusted sender the mail system confirmed       │
+│                                              ││   because         exactly the genuine domain                                                               │
+│                                              ││   put to model    as a match (as told: not a second result)                                                │
+│                                              ││   addresses       on screen example.com · the real one example.com                                         │
+│                                              ││                                                                                                            │
+│                                              ││ Searches SusCheck ran                                                                                      │
+│                                              ││   official        "Example" official website                                                               │
+│                                              ││       Example - official site · example.com · 2 engines                                                    │
+│                                              ││         Sign in to your Example account.                                                                   │
+│                                              ││       Example help centre · example.com · 1 engine                                                         │
+│                                              ││         Answers to common questions.                                                                       │
+│                                              ││                                                                                                            │
+│                                              ││ How it ran                                                                                                 │
+│                                              ││   model           example-vision:1b · prompts 7                                                            │
+│                                              ││   time            15 s in all · extract 3.1 s · reread 2.6 s · search 1.4 s · judge 8.0 s                  │
+│                                              ││   not run         ocr, shapes, shuffle                                                                     │
+│                                              ││   picture         kept: o fetches it to a private cache here and opens it (gone when sentry closes)        │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit

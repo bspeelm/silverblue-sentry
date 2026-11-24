@@ -85,12 +85,15 @@ pub enum ScreenId {
     Svc,
     Maint,
     Clean,
+    /// A server's SusCheck (`8` in sentry-server, in the strip only where it is configured):
+    /// how a household's checks of suspicious mail and pages went.
+    Sus,
     Upgrade,
     Hist,
 }
 
 impl ScreenId {
-    pub const ALL: [ScreenId; 12] = [
+    pub const ALL: [ScreenId; 13] = [
         ScreenId::Dash,
         ScreenId::Proc,
         ScreenId::Clients,
@@ -101,6 +104,7 @@ impl ScreenId {
         ScreenId::Svc,
         ScreenId::Maint,
         ScreenId::Clean,
+        ScreenId::Sus,
         ScreenId::Upgrade,
         ScreenId::Hist,
     ];
@@ -114,6 +118,7 @@ impl ScreenId {
             ScreenId::Flat | ScreenId::Svc => '5',
             ScreenId::Maint => '6',
             ScreenId::Clean => '7',
+            ScreenId::Sus => '8',
             ScreenId::Upgrade => '0',
             ScreenId::Hist => 'H',
         }
@@ -131,6 +136,7 @@ impl ScreenId {
             ScreenId::Svc => "Services",
             ScreenId::Maint => "Maintenance",
             ScreenId::Clean => "Cleanup",
+            ScreenId::Sus => "SusCheck",
             ScreenId::Upgrade => "Upgrade",
             ScreenId::Hist => "History",
         }
@@ -148,6 +154,7 @@ impl ScreenId {
             ScreenId::Svc => "Svc",
             ScreenId::Maint => "Maint",
             ScreenId::Clean => "Clean",
+            ScreenId::Sus => "Sus",
             ScreenId::Upgrade => "Upgr",
             ScreenId::Hist => "Hist",
         }
@@ -166,6 +173,7 @@ impl ScreenId {
             ScreenId::Svc => "services",
             ScreenId::Maint => "maintenance",
             ScreenId::Clean => "cleanup",
+            ScreenId::Sus => "suscheck",
             ScreenId::Upgrade => "upgrade",
             ScreenId::Hist => "history",
         }
@@ -439,6 +447,18 @@ mod tests {
             aliases: &[],
         };
         assert_eq!(net.from_name("sec"), Some(Security));
-        assert_eq!(ScreenId::ALL.len(), 12);
+        // A server's SusCheck has a key of its own, and is found by its start.
+        assert_eq!(
+            (Sus.key(), Sus.slug(), Sus.short()),
+            ('8', "suscheck", "Sus")
+        );
+        let srv = ScreenSet {
+            ids: &[Dash, Svc, Maint, Sus],
+            aliases: &[],
+        };
+        assert_eq!(srv.from_name("sus"), Some(Sus));
+        assert_eq!(srv.from_name("SusCheck"), Some(Sus));
+        assert_eq!(set.from_name("suscheck"), None);
+        assert_eq!(ScreenId::ALL.len(), 13);
     }
 }

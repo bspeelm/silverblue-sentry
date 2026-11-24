@@ -30,6 +30,7 @@ pub struct ServersKind;
 /// file and a notes file by their names only. What stays: the names of what is watched
 /// (units, timers, mounts, containers, items and where their versions come from),
 /// thresholds, and listeners with any address that isn't loopback or "any" masked.
+/// SusCheck's folder and the login that reads it are hidden too.
 pub fn for_agent(file: &ServerFile) -> ServerFile {
     use sentry_core::cfg::hide;
     let mut f = file.clone();
@@ -53,6 +54,14 @@ pub fn for_agent(file: &ServerFile) -> ServerFile {
             if i.version_cmd.is_some() {
                 i.version_cmd = Some(hide::HIDDEN.to_string());
             }
+        }
+        // Where a household's checks are kept and who reads them: that there is a block
+        // is all an agent sees of it.
+        if s.suscheck.dir.is_some() {
+            s.suscheck.dir = Some(hide::HIDDEN.to_string());
+        }
+        if s.suscheck.ssh.is_some() {
+            s.suscheck.ssh = Some(hide::HIDDEN.to_string());
         }
     }
     f
@@ -334,6 +343,15 @@ impl Kind for ServersKind {
                 "Your own commands, behind a confirm box.",
                 &[("actions", "none")],
             ),
+            folded(
+                "SusCheck",
+                "Where it keeps a household's checks, and the login that reads them.",
+                &[
+                    ("suscheck.dir", "off: no SusCheck screen"),
+                    ("suscheck.ssh", "this server's own login reads it"),
+                    ("suscheck.recent", ""),
+                ],
+            ),
         ]
     }
 
@@ -444,6 +462,8 @@ impl Kind for ServersKind {
                     .into_iter()
                     .map(|p| CheckLine::bad(Problem::of(FileId::Servers, Some(&name), &p).text)),
             );
+            // What is worth saying and isn't wrong.
+            lines.extend(config::notes(&name, &s).into_iter().map(CheckLine::note));
             lines
         }))
     }

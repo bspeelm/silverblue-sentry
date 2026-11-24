@@ -29,6 +29,9 @@ pub enum Action {
     Remove(String),
     /// Look at the item (its details; nothing to run).
     Look(String),
+    /// Look at SusCheck's screen: checks you haven't seen that said "don't trust this",
+    /// or that failed.
+    Sus,
     /// An audit finding: ask Claude how to fix it (finding id).
     Fix(String),
     /// Audit the server now.
@@ -74,6 +77,45 @@ pub struct Inputs<'a> {
     pub audited: Option<jiff::Timestamp>,
     /// Tasks taken from reviews (`servers/<name>/tasks.toml`).
     pub tasks: &'a [sentry_core::maint::tasks::Task],
+    /// SusCheck's checks since you last looked: (said "don't trust this", failed). Counts
+    /// only: nothing else of a check is ever a row's text.
+    pub suscheck: (u32, u32),
+}
+
+/// The row for what SusCheck's screen has that you haven't seen. None: nothing.
+pub fn suscheck_row((bad, failed): (u32, u32)) -> Option<Rec> {
+    let n = |n: u32, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    };
+    let title = match (bad, failed) {
+        (0, 0) => return None,
+        (b, 0) => format!(
+            "{} said \"don't trust this\" since you last looked",
+            n(b, "check", "checks")
+        ),
+        (0, f) => format!(
+            "{} since you last looked",
+            n(f, "check failed", "checks failed")
+        ),
+        (b, f) => format!(
+            "{} said \"don't trust this\" and {} failed since you last looked",
+            n(b, "check", "checks"),
+            f
+        ),
+    };
+    Some(Rec {
+        level: if bad > 0 { Level::Soon } else { Level::Routine },
+        key: "suscheck".into(),
+        title,
+        why: "SusCheck checked something a household member wasn't sure about. Its screen \
+              shows what it was and how SusCheck came to its answer; looking at the list \
+              is all it takes for this row to go."
+            .into(),
+        action: Action::Sus,
+        item: None,
+        can_wait: false,
+    })
 }
 
 /// An audit older than this is due again.
@@ -341,6 +383,7 @@ pub fn recommend(i: &Inputs) -> Vec<Rec> {
             can_wait: f.id == "srv:crowdsec:hub",
         });
     }
+    out.extend(suscheck_row(i.suscheck));
     // The audit itself: due again after a week.
     let age = i.audited.map(|t| days(i.now.as_second() - t.as_second()));
     if age.is_none_or(|d| d >= AUDIT_EVERY_DAYS) {
@@ -529,6 +572,7 @@ mod tests {
             findings: &findings,
             audited: Some(now),
             tasks: &cadence,
+            suscheck: (0, 0),
         };
         let r = recommend(&inputs);
         let got: Vec<(Level, &str)> = r.iter().map(|x| (x.level, x.title.as_str())).collect();
@@ -671,6 +715,7 @@ mod tests {
             findings: &[],
             audited: Some(now),
             tasks: &tasks,
+            suscheck: (0, 0),
         };
         let r = recommend(&i);
         let apt_rows: Vec<&Rec> = r

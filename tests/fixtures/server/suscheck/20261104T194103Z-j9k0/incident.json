@@ -1,0 +1,42 @@
+{
+ "schema": 1,
+ "id": "20261104T194103Z-j9k0",
+ "time": "2026-11-04T19:41:03Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 120450,
+ "error": "model",
+ "model": "example-vision:1b",
+ "prompt_version": "7",
+ "stages_ms": {
+  "extract": 120010,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": null,
+  "judge": null
+ },
+ "facts": null,
+ "domain": null,
+ "search": null,
+ "judgement": null,
+ "model_raw": {
+  "extract": "",
+  "judge": ""
+ },
+ "final": null,
+ "input": [
+  "image"
+ ],
+ "email": null,
+ "links": null,
+ "links_total": null,
+ "links_merged": null,
+ "page": null,
+ "acquired_by": null,
+ "mail_label": null,
+ "screenshot": false,
+ "message": false
+}

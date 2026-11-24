@@ -46,6 +46,46 @@ pub struct Server {
     pub actions: Vec<CustomAction>,
     /// What's pinned or held deliberately, and when to look at it again (Maintenance).
     pub maintenance: Maintenance,
+    /// SusCheck's incidents folder on this server, read for the SusCheck screen. Off
+    /// without a `dir`.
+    pub suscheck: Suscheck,
+}
+
+/// Where SusCheck (a home service that checks screenshots of suspicious mail and pages)
+/// keeps its incidents on this server, and who reads them. Only ever read, as an
+/// unprivileged login, and never by sentry's agent.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Suscheck {
+    /// The incidents folder (absolute). Not set: off, no screen, no findings.
+    pub dir: Option<String>,
+    /// A login of its own for reading the folder (an ssh alias or `user@host`), in the
+    /// folder's group; the server's ordinary login then isn't, and can't read it.
+    pub ssh: Option<String>,
+    /// How many of the latest checks are read (the end of the index).
+    pub recent: u32,
+}
+
+/// `suscheck.recent` when the file doesn't say.
+pub const SUSCHECK_RECENT: u32 = 200;
+/// The most `suscheck.recent` may be (one read, kept in memory).
+pub const SUSCHECK_RECENT_MAX: u32 = 2000;
+
+impl Default for Suscheck {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            ssh: None,
+            recent: SUSCHECK_RECENT,
+        }
+    }
+}
+
+impl Suscheck {
+    /// The folder, when the block is there: SusCheck is on for this server.
+    pub fn on(&self) -> Option<&str> {
+        self.dir.as_deref().filter(|d| !d.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -650,6 +690,34 @@ pub const FIELDS: &[Field] = &[
         true,
         "How often a routine workflow should run (`apt-maintenance: 30d`): recommended when the maintenance log says it last ran longer ago than that.",
     ),
+    f(
+        "servers.*.suscheck",
+        "SusCheck",
+        Kind::Section,
+        false,
+        "SusCheck's incidents on this server (a home service that checks screenshots of suspicious mail and pages), for the SusCheck screen. Read only, never by sentry's agent. Off without a folder.",
+    ),
+    f(
+        "servers.*.suscheck.dir",
+        "Incidents folder",
+        Kind::Text,
+        false,
+        "The incidents folder on the server (an absolute path; SusCheck writes it in /etc/suscheck/incidents.path). Empty: off.",
+    ),
+    f(
+        "servers.*.suscheck.ssh",
+        "Login that reads it",
+        Kind::Text,
+        false,
+        "A login of its own for reading the folder (an ssh alias or user@host), in the folder's group while the server's ordinary login is not: then nothing sentry's agent runs there can read a check. Empty: the server's own login reads it.",
+    ),
+    f(
+        "servers.*.suscheck.recent",
+        "Checks read",
+        Kind::Number,
+        false,
+        "How many of the latest checks are read each time (200; at most 2000).",
+    ),
 ];
 
 impl Server {
@@ -837,7 +905,53 @@ pub fn lint(name: &str, s: &Server) -> Vec<String> {
             ));
         }
     }
+    let sus = &s.suscheck;
+    match sus.on() {
+        Some(d) => {
+            if !d.starts_with('/') || d.chars().any(char::is_control) {
+                p.push(format!(
+                    "{name}: suscheck.dir `{}` isn't an absolute path",
+                    d.escape_debug()
+                ));
+            } else if d.trim_end_matches('/').is_empty() {
+                p.push(format!("{name}: suscheck.dir can't be `/`"));
+            }
+            if sus.recent == 0 || sus.recent > SUSCHECK_RECENT_MAX {
+                p.push(format!(
+                    "{name}: suscheck.recent is {}: 1 to {SUSCHECK_RECENT_MAX}",
+                    sus.recent
+                ));
+            }
+            if sus.ssh.as_deref().is_some_and(|h| {
+                h.trim().is_empty() || h.starts_with('-') || h.contains(char::is_whitespace)
+            }) {
+                p.push(format!(
+                    "{name}: suscheck.ssh should be an ssh alias or user@host"
+                ));
+            }
+        }
+        None if sus.ssh.is_some() => p.push(format!(
+            "{name}: suscheck.ssh is set without suscheck.dir (the incidents folder)"
+        )),
+        None => {}
+    }
     p
+}
+
+/// What is worth saying about a server's entry that isn't wrong: advice, never a problem.
+/// `sentry-server lint` and `sentry config check` print these without failing, and the
+/// Config area's check shows them as notes.
+pub fn notes(name: &str, s: &Server) -> Vec<String> {
+    let mut n = Vec::new();
+    if s.suscheck.on().is_some() && s.suscheck.ssh.is_none() {
+        n.push(format!(
+            "{name}: suscheck has no login of its own (suscheck.ssh): the folder is read as \
+             this server's ordinary login, the same one sentry's sessions run commands as, so \
+             a session could read a household's checks. Give the folder a login of its own: a \
+             second user in the folder's group, with the ordinary login left out of it"
+        ));
+    }
+    n
 }
 
 #[cfg(test)]
@@ -874,6 +988,11 @@ mod tests {
         };
         let server = Server {
             ssh: Some("admin@myserver.example".into()),
+            suscheck: Suscheck {
+                dir: Some("/srv/suscheck/incidents".into()),
+                ssh: Some("suscheck-reader@myserver.example".into()),
+                recent: 50,
+            },
             sudo: vec!["docker ps".into(), "no".into()],
             disks: vec![
                 DiskRule {
@@ -1059,6 +1178,46 @@ mod tests {
         let p = lint("x", &bad);
         assert_eq!(p.len(), 2, "{p:?}");
         assert!(p[0].contains("`up`") && p[1].contains("`sh`"));
+    }
+
+    #[test]
+    fn suscheck_is_off_without_a_folder_and_linted_when_on() {
+        let (f, w) = parse("servers:\n  a: {}\n").unwrap();
+        assert!(w.is_empty());
+        let a = &f.servers["a"];
+        assert_eq!((a.suscheck.on(), a.suscheck.recent), (None, 200));
+        assert!(lint("a", a).is_empty() && notes("a", a).is_empty());
+        let on = |text: &str| {
+            let (f, w) = parse(&format!("servers:\n  a:\n    suscheck: {text}\n")).unwrap();
+            assert!(w.is_empty(), "{w:?}");
+            f.servers["a"].clone()
+        };
+        // On, with a login of its own: nothing to say.
+        let s = on("{dir: /srv/suscheck/incidents, ssh: reader@myserver.example, recent: 50}");
+        assert_eq!(s.suscheck.on(), Some("/srv/suscheck/incidents"));
+        assert!(lint("a", &s).is_empty() && notes("a", &s).is_empty());
+        // The same login as the sessions': a note, never a problem.
+        let s = on("{dir: /srv/suscheck/incidents}");
+        assert!(lint("a", &s).is_empty(), "{:?}", lint("a", &s));
+        let n = notes("a", &s);
+        assert_eq!(n.len(), 1);
+        assert!(
+            n[0].contains("the same one sentry's sessions run commands as")
+                && n[0].contains("Give the folder a login of its own"),
+            "{n:?}"
+        );
+        for (bad, why) in [
+            ("{dir: srv/incidents}", "isn't an absolute path"),
+            ("{dir: \"/srv/a\\nb\"}", "isn't an absolute path"),
+            ("{dir: /}", "can't be `/`"),
+            ("{dir: /srv/x, recent: 0}", "1 to 2000"),
+            ("{dir: /srv/x, recent: 5000}", "1 to 2000"),
+            ("{dir: /srv/x, ssh: \"-oProxyCommand=x\"}", "ssh alias"),
+            ("{ssh: reader}", "without suscheck.dir"),
+        ] {
+            let p = lint("a", &on(bad));
+            assert!(p.len() == 1 && p[0].contains(why), "{bad}: {p:?}");
+        }
     }
 
     #[test]

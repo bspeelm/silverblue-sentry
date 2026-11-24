@@ -479,6 +479,9 @@ pub trait Target: Upkeep + Asks + Host {
     fn settle(&mut self, why: Settle, sh: &Shared, cx: &Cx);
     /// The top bar: facts about the host, and the state of the connection.
     fn top(&self, cx: &Cx) -> (Vec<String>, (String, Color));
+    /// The window is closing: whatever of the target's must not outlive it goes now (a
+    /// private cache). Called for every slot, whether it ever had the window or not.
+    fn shutdown(&mut self) {}
     /// A `:` command only this target has (`line`: all of it, as typed).
     fn colon(
         &mut self,
@@ -572,6 +575,11 @@ pub trait Asks {
     /// started and followed. As `offered`, unless a target has workflows and no Claude yet.
     fn auto_offered(&self) -> bool {
         self.offered()
+    }
+    /// Whether `A` is named in the key bar on this screen. A screen whose content must
+    /// never reach Claude says no (and its `ask` says why when the key is pressed anyway).
+    fn asks_here(&self, _screen: ScreenId) -> bool {
+        true
     }
     /// About the screen in view (its selected row, the run), or why there's nothing.
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String>;

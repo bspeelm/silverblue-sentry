@@ -590,6 +590,7 @@ impl Slot {
 
     /// Don't leave a streamed command running on the host, nor the password in memory.
     pub(crate) fn shutdown(&mut self) {
+        self.target.shutdown();
         self.forget();
         self.unlock = None;
         if self.ways.exit_kills_run {

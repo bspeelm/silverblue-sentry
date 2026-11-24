@@ -1,0 +1,183 @@
+{
+ "schema": 1,
+ "id": "20261105T103045Z-p6q8",
+ "time": "2026-11-05T10:30:45Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 15930,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "7",
+ "stages_ms": {
+  "extract": 3280,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": 1540,
+  "judge": 11020
+ },
+ "facts": {
+  "kind": "web_page",
+  "claimed_brand": "Example Pay",
+  "sender_name": null,
+  "sender_address": null,
+  "address_bar_domain": "examp1e-pay.test",
+  "link_texts": [
+   "Sign in",
+   "Forgot password?"
+  ],
+  "phone_numbers": [],
+  "asks_for": [
+   "password"
+  ],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": "example-pay.test",
+  "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "fired",
+  "check": {
+   "result": "lookalike",
+   "shown": "examp1e-pay.test",
+   "real": "example-pay.test",
+   "why": "confusable"
+  },
+  "first_reading_from": "address_bar",
+  "source": "window",
+  "exact": "examp1e-pay.test",
+  "judge_word": "lookalike",
+  "related_by": null
+ },
+ "search": {
+  "domain_vouched": null,
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "domain",
+    "\"examp1e-pay.test\""
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  },
+  "failed": [],
+  "empty": [
+   "domain"
+  ],
+  "unresponsive": []
+ },
+ "judgement": {
+  "red_flags": [
+   "The page asks for a password."
+  ],
+  "looks_normal": [
+   "The page looks like an ordinary sign-in page."
+  ],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "suspicious",
+  "advice": [
+   "do_not_enter_password",
+   "type_address_yourself"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"kind\": \"web_page\", \"claimed_brand\": \"Example Pay\", \"sender_name\": null, \"sender_address\": null, \"address_bar_domain\": \"example-pay.test\", \"link_texts\": [\"Sign in\", \"Forgot password?\"], \"phone_numbers\": [], \"asks_for\": [\"password\"], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [\"The page asks for a password.\"], \"looks_normal\": [\"The page looks like an ordinary sign-in page.\"], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"suspicious\", \"advice\": [\"do_not_enter_password\", \"type_address_yourself\"]}"
+ },
+ "final": {
+  "verdict": "likely_malicious",
+  "confidence": "high",
+  "incomplete": false,
+  "reasons": [
+   "The address has a number in the middle of a word, which is a common trick.",
+   "The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.",
+   "The address is one small change away from the real one. That is done on purpose to fool people.",
+   "A link in it leads to an address that is one small change away from the real one. That is done on purpose to fool people.",
+   "The page asks for a password."
+  ],
+  "advice": [
+   "do_not_click",
+   "do_not_enter_password",
+   "type_address_yourself"
+  ],
+  "floors": [
+   "digit_in_name",
+   "lookalike",
+   "close_imitation",
+   "link_lookalike"
+  ],
+  "floors_changed_verdict": true,
+  "unconfirmed_only": false,
+  "trusted_sender": false,
+  "unconfirmed_kind": null,
+  "strong_evidence": [
+   "close_imitation",
+   "link_close_imitation"
+  ],
+  "reply_to_differs": null,
+  "model_capped": false,
+  "model_softened": false
+ },
+ "input": [
+  "image",
+  "page"
+ ],
+ "email": null,
+ "links": [
+  {
+   "text": "Forgot password?",
+   "scheme": "https",
+   "target_domain": "examp1e-pay[.]test",
+   "flags": [
+    "lookalike",
+    "close_imitation"
+   ],
+   "notes": []
+  },
+  {
+   "text": "Help",
+   "scheme": "https",
+   "target_domain": "example-pay[.]test",
+   "flags": [],
+   "notes": []
+  }
+ ],
+ "links_total": 2,
+ "links_merged": 0,
+ "page": {
+  "source": "accessibility",
+  "url_domain": "examp1e-pay[.]test",
+  "title": "Example Pay - Sign in",
+  "links_total": 2
+ },
+ "acquired_by": null,
+ "mail_label": null,
+ "screenshot": true,
+ "message": false
+}

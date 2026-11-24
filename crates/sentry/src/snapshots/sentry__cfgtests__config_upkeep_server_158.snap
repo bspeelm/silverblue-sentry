@@ -39,7 +39,7 @@ expression: screen(&mut a)
 │  ▸ Container rules    all defaults  Which may be stopped; what counts as restarte…  ││                                                                     │
 │  ▸ Expected findings  all defaults  Findings that are fine as they are here.        ││                                                                     │
 │  ▸ Custom actions     all defaults  Your own commands, behind a confirm box.        ││                                                                     │
-│                                                                                     ││                                                                     │
+│  ▸ SusCheck           all defaults  Where it keeps a household's checks, and the …  ││                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Enter  edit   Esc  back   o  its own copy   s  save…   A  wizard   c  check   e  editor   u  undo   ?  help   q  quit

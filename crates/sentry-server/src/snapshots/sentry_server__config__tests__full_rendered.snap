@@ -80,6 +80,10 @@ servers:
         - id: bare
       cadence:
         apt-maintenance: 30d
+    suscheck:
+      dir: /srv/suscheck/incidents
+      ssh: suscheck-reader@myserver.example
+      recent: 50
   "on":
     maintenance:
       notes:

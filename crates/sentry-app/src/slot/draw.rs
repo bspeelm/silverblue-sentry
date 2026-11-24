@@ -316,7 +316,13 @@ impl Slot {
                             .filter(|c| c.hidden)
                             .map(|c| c.hidden_word())
                     });
-                frame::with_globals(h, hidden, self.target.offered() && claude::available())
+                frame::with_globals(
+                    h,
+                    hidden,
+                    self.target.offered()
+                        && self.target.asks_here(self.screen)
+                        && claude::available(),
+                )
             }
         };
         frame::draw_keybar(f, area, &w.theme, &frame::KeyBar::Hints(hints), toast);

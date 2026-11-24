@@ -327,7 +327,15 @@ impl Asks for ServerTarget {
         }
     }
 
+    /// Not on SusCheck's screen: nothing of a check is ever sent.
+    fn asks_here(&self, screen: ScreenId) -> bool {
+        screen != ScreenId::Sus
+    }
+
     fn ask(&self, sh: &Shared, cx: &Cx) -> Result<Ask, String> {
+        if cx.screen == ScreenId::Sus {
+            return Err(super::super::screens::suscheck::NO_CLAUDE.to_string());
+        }
         let v = self.view(sh, cx);
         if cx.screen == ScreenId::Upgrade
             && let Some(s) = v.wf
@@ -467,7 +475,7 @@ impl Asks for ServerTarget {
         if cx.offline {
             return Vec::new();
         }
-        let reads = crate::gateway::take_reads(&self.remote.name);
+        let reads = crate::gateway::take_reads(&self.remote);
         if !reads.is_empty() {
             return self.root_reads(reads, to);
         }

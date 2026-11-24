@@ -26,6 +26,8 @@ use crate::config::{DiskRule, Server, TimerRule};
 use crate::remote::Remote;
 use sentry_core::config::Dur;
 
+mod sus;
+
 fn cfg() -> Server {
     Server {
         services: vec!["app.service".into(), "backup.service".into()],
@@ -227,8 +229,13 @@ fn audited(a: &mut App, still: bool) {
 }
 
 fn app() -> App {
+    app_with(cfg())
+}
+
+/// The same server, with this config (the data is derived from `cfg()` all the same).
+fn app_with(config: Server) -> App {
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut a = super::app(Remote::new("myserver", &cfg()), tx);
+    let mut a = super::app(Remote::new("myserver", &config), tx);
     a.win.offline = true;
     a.win.theme = sentry_core::tui::theme::Theme::truecolor();
     a.win.now_override = Some("2026-10-26T12:00:00Z".parse().unwrap());

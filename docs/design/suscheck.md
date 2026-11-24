@@ -1,0 +1,528 @@
+# SusCheck in sentry: reviewing how a household's checks went
+
+## Context
+
+SusCheck is a separate project: a home service on a server that looks at a screenshot of a
+suspicious email or web page with a local vision model and answers "don't trust this / be careful /
+no obvious warning signs". It runs for several computers in a household. It keeps every check as an
+**incident** (a record and the picture) in one folder on the server, and publishes that folder's
+format as a contract (`incident-format.md`, schema 1, with synthetic samples).
+
+Sentry's part is the owner's view: how SusCheck is being used and how it is behaving. It only reads.
+Decisions made with the owner: nothing alerts by itself (it is seen when sentry is next opened);
+SusCheck's own name for a computer is enough (no joining to network devices); retention is
+SusCheck's (30 days); this module is built in sentry against the published format.
+
+## The one thing that must hold: sentry's Claude never reads an incident
+
+Incident text was written by a model that had just read attacker content, and the pictures are a
+household's private mail. A sentry session on that server runs commands as the server's ssh login,
+so "the folder is readable by the login" would mean a cloud model can read it.
+
+Two layers, in this order of strength:
+
+1. **A login of its own (the real control).** `suscheck.ssh` names a second ssh login that is in the
+   incidents folder's group; the server's ordinary login is not. Sentry's collector reads through
+   it; sessions, chats and reviews keep using the ordinary login and get "permission denied" from
+   the server itself. Without `suscheck.ssh` the collector uses the server's own login, and the
+   config lints a warning that says exactly this.
+2. **The gateways refuse the folder (best effort).** `sentry-server exec` and `run` refuse any line
+   that names the configured folder, its pointer file, or `incident.json` / `screenshot.png` /
+   `index.jsonl`. A shell line can be written to dodge a word match, which is why this is the second
+   layer and not the first.
+
+And in sentry itself: nothing of an incident (text, brand, domain, device name, picture) is ever put
+into a brief, a session, a review, a stored audit report, a log entry or a fixture. `A` is not
+offered on the screen. The stored snapshot keeps counts only.
+
+## Shape
+
+```
+config: servers.<name>.suscheck { dir, ssh?, recent=200 }      absent = off
+collect/suscheck.rs   one exec, no sudo, through `ssh?`:
+      date -u · status.json · devices.json · tail -n <recent> index.jsonl
+      parse() pure: strict ids, 1024-byte lines, schema, every string stripped
+   -> data::Kind::Suscheck -> Store.suscheck
+   -> on demand: Kind::SusIncident(id)  (cat <dir>/<id>/incident.json, size-capped)
+   -> on demand: the picture, raw bytes to a private cache, opened in the desktop's viewer
+screen `8 SusCheck` (only where configured)
+audit: srv:suscheck:* findings from counts
+records: servers/<name>/suscheck.toml on this machine: marks, and how far you have looked
+```
+
+### Reading (`crates/sentry-server/src/collect/suscheck.rs`)
+- One command with `@@` sections; the folder path is single-quoted from config after `lint` proved
+  it absolute. Exit 127-style "not there" and "permission denied" are told apart and said plainly
+  (`Unreadable::{NoFolder, NotInGroup}`), never retried another way.
+- `parse()`: an index line over 1024 bytes, not JSON, or with an id outside
+  `[0-9]{8}T[0-9]{6}Z-[a-z0-9]{4}` (whole string, ASCII) is skipped and counted. `schema` other
+  than 1 → `Format::Newer(n)`: the screen says so and shows nothing else from that file. Unknown
+  fields ignored; unknown enum values kept as text. Every string goes through one `clean()` (control
+  and format characters, escape sequences) before it is stored.
+- An id is validated again wherever a path is built from it (`incident(id)`, `picture(id)`).
+- Fetched on entering the screen, on `r`, and once when the server's Dashboard is first entered (so
+  the badge and the Status row are right); never on a timer.
+
+### What it shows (`tui/screens/suscheck.rs`, `ScreenId::Sus`, key `8`)
+- **Summary**: checks in the last 7 and 30 days by verdict; errors; share incomplete; how often
+  SusCheck's fixed rules overrode the model; typical time; how many you marked wrong; the service
+  (version, model, prompt version, heartbeat by the SERVER's clock).
+- **Computers** (from `devices.json` joined with the index): name, app or web, version, checks,
+  last seen; "never used", "not seen for N days", "older app than the others".
+- **Checks**: time, computer, verdict, brand, domain, domain check; unseen ones marked; `/` filters.
+  Enter loads that incident: reasons, the advice shown, extracted facts, both domain readings,
+  searches and what came back, what the model said against what counted, time per stage.
+- `o`: the picture. Fetched with `Cmd::bytes_to` into `<cache>/suscheck/<server>/` (0700, file
+  0600), refused over 16 MB or without a PNG signature, opened with the desktop's opener through
+  `exec::Cmd` detached. The cache is emptied at start and at exit. This is the one place sentry
+  starts a program it does not wait for; it is the user's viewer, asked for by a key.
+- `m`: mark it right, or wrong and what it should have been. `x` clears the mark.
+- Domains are shown as text, never resolved, looked up or opened.
+
+### Seen next time you open sentry
+`suscheck.toml` keeps `seen` (the newest id you have had on screen). Checks newer than it rated
+`likely_malicious`, and errors, are a Maintenance row ("2 checks said don't trust this since you
+last looked", Enter goes to the screen) and the screen's badge; looking at the list moves `seen`.
+
+### Findings (counts only; `srv:suscheck:*`)
+`down` (heartbeat older than 5 min by the server's clock: medium), `unreadable` (configured, folder
+not there or this login not in its group: medium), `errors` (3 or more failed checks in 24 h:
+medium), `format` (a schema this sentry doesn't know: low).
+
+### Config
+`suscheck: { dir, ssh, recent }` on a server: the `Server` struct, `FIELDS`, `lint` (absolute `dir`;
+the same-login warning), one folded group in the server's form, the forms round-trip test, the
+example YAML. `suscheck.dir` and `suscheck.ssh` join `cfg::changes::NEVER` and are hidden from the
+wizard. Discovery reads `/etc/suscheck/incidents.path` (first line, absolute, no control characters)
+and proposes the block.
+
+## Not in this work
+Alerts. Joining a computer to a network device. Deleting or changing anything in the folder.
+Showing pictures in the terminal. Anything of SusCheck's on this machine or a router.
+
+## Verification
+- Fixtures: the published synthetic samples, copied to `tests/fixtures/server/suscheck/`.
+- `parse()` table tests: the samples; a bad id; an over-long line; a newer schema; hostile strings
+  (escape sequences, direction overrides) cleaned; unknown enum values kept.
+- Gateway: every refused spelling, for `exec` and `run`; nothing else newly refused.
+- Canary: with a store full of incident text, no brief, profile, session prompt, stored report or
+  log entry contains any of it.
+- Window: the screen from the samples (158 and 80), marks survive a restart, `seen` moves, the
+  Maintenance row comes and goes, the block removed → no screen, no findings.
+- Config: lint, forms round trip, the wizard cannot propose `dir`/`ssh`, discovery proposes the block.
+- Live (disposable container only): the samples copied into the container under a group the test
+  login is in; the collector, an incident and a picture fetched for real; a second login without
+  the group gets the plain "not in its group" message.
+
+## As built
+
+Built as designed, with these differences (each for the reason given):
+
+- **`suscheck` is a section, not an optional block.** `Server.suscheck: Suscheck { dir:
+  Option, ssh: Option, recent: u32 }`, on when `dir` is set (`Suscheck::on`). The config's
+  writer leaves out whatever is at its default, so a server without it still has no key in the
+  file, and the forms get plain fields (an optional block at an entry's top would have needed a
+  new kind of form field). `ssh` without `dir` is a lint error.
+- **The same-login warning is a note, a new and small notion.** Every lint line was an error.
+  `config::notes(name, &Server)` returns advice that is never a problem: `sentry-server lint`,
+  `sentry-server check`, `sentry config check` and the Config area's `c` print it with `·`, and
+  no exit code or problem count changes. `lint` is untouched.
+- **Section marks carry a per-call mark** (`@@<16 hex>:status`), not a bare `@@status`: a file
+  whose text has a line that looks like a section line stays that file's text.
+- **A check's time is its id's**, not the `time` field: the id's grammar is already proven, and
+  ids are what sort. The `time` field isn't read.
+- **Format characters are a written-out list.** `clean()` removes escape sequences, controls,
+  Cf ranges (direction marks, zero-width, the BOM, tags, variation selectors), private use and
+  noncharacters. There is no table of Unicode categories in the workspace, so code points
+  Unicode has not assigned (Cn) are not caught; a terminal draws those as a box.
+- **`Kind::SusPicture(id)` beside `Kind::SusIncident(id)`**: the picture is a fetch like any
+  other (its own thread), and nothing of it is kept in the store; the target opens it when it
+  arrives.
+- **The model's raw replies (`model_raw`) are not shown and not kept.** The detail shows the
+  model's validated answer against what counted; the raw text adds up to 16 000 characters of
+  attacker-influenced output for no judgement the rest doesn't allow.
+- **The records file is read by its own stamp**, on `Target::enter` (which follows the app's
+  `look`), not through `Target::files`: a change in one of those files means "the user edited
+  the target's config" (the YAML is read again and said so), which sentry's own save of a mark
+  would have triggered.
+- **The gateway rule also covers `Host::command` and the queued root reads**, not only `exec`
+  and `run`: a plan's step, a request the user (or auto) allowed, and a read queued for the
+  sudo password would otherwise have reached the folder as root. A sudo step of the user's own
+  workflow that names the folder is refused by the same rule (sentry never touches the folder
+  but through its reader); a plain step of a workflow isn't a session's command and isn't
+  looked at.
+- **Without the block, `8` goes back** to the screen it came from and says SusCheck isn't set
+  up: every key of a program's screen set is bound, so "no screen" is that plus no tab.
+- **`A` on the screen**: a new default-true hook (`Asks::asks_here(screen)`) keeps it out of
+  the key bar; pressed, the toast says why. `Target::shutdown` is new too (default: nothing):
+  where the cache is emptied.
+- **A Maintenance finding's Enter is still a session with Claude** (`srv:suscheck:*` are
+  findings like any other): its brief holds the finding, which is made of counts.
+- **`sentry-server collect <name> suscheck`** prints `Counts` as JSON, never a check.
+
+What the gateway's word match doesn't stop (and the folder's own login does): `cd` into the
+parent and a relative path, a glob (`inc*`), a variable or a name put together by a command,
+a symlink that leads there, `find <parent> -exec`, a tool that reads a list of paths. With no
+`suscheck.ssh` those reach the folder; `sentry config check` says so.
+
+### Email files and page addresses (the format's later additions)
+
+SusCheck's format grew without a schema change: a check can be made from an email file, from
+the page's address as its desktop app reads it out of the window, from a screenshot, or from a
+combination. The fixtures were then the eight published samples, byte for byte (ten now: see
+the later revision below): one in the old shape
+(the first release's: no `input`, `message`, `domain.source` or text-recogniser fields), five in
+today's full shape, an email file with `message.txt` and no picture, a picture beside the
+window's exact address.
+
+- **Parsing.** An index line's `input` is kept as cleaned text (`Check.input`): a line without
+  the key is `image` (older lines), null is "nothing recorded", an unknown combination is shown
+  as it is. `Incident` gained `input`, `email`, `links`, `page`, `message` and, in `domain`,
+  `source`, `exact`, `ocr_reading`, `ocr_available`; `stages_ms.ocr`. Every block may be null,
+  not an object, or empty; every string goes through `clean()` and is cut at sentry's own cap, a
+  little over the format's (nothing fails for being long); attachments stop at 20 and links at
+  50, and what was beyond them is counted from the totals. The published record in the old
+  shape parses as a picture's (`input = ["image"]`), and every newer one stripped of the new
+  fields still parses (both tested).
+- **After the format's revision** (still schema 1). "And N more" under Links is the record's
+  own `links_total` less the list; that count is from before exact repeats were merged, so the
+  line says "exact repeats of these included". A record without it falls back to the email's
+  and the page's totals. `stages_ms`: null is a stage that did not run, a number one that ran
+  (0: in under a millisecond); "How it ran" gives the times, then what did not run (`reread, ocr`; a row of its own since the later revision). The
+  old shape wrote 0 for a stage that did not run, so a 0 there is read as not run. The format's
+  caps are on the plain value, which is stored defanged: sentry's are a little over the stored
+  sizes (a link's text 410, a target and the page's address 210). A failed check's index line
+  says what it was given, so its From is `picture`, not `–`. In what the model read, one clause
+  says whose value it is where the format does: the sender (the header's exact values), the
+  address bar (the window's exact address), the link texts (the model's reading: go by Links).
+- **The list** has a From column in plain words (`picture`, `email`, `picture + email`,
+  `picture + page address`), as wide as the widest. At 158 columns there is no room for it
+  beside Brand and Domain check and a readable domain (18 columns), so those two give way,
+  Brand first: with the longest word in the list both go, with `picture + email` only Brand.
+  Both are in the check itself. The narrow list has no From column: the check says "Made from".
+- **The summary** has one line by kind over 7 and 30 days. A check made from two inputs counts
+  under both.
+- **The check**, after what the model read, and only where the record has them: where the
+  address came from (the email's own header / read out of the window by the app / read from
+  the picture; exact text or a reading; what the model read in the picture all the same, when
+  it differs; the text recogniser's reading when it differs), the email's headers (reply-to
+  and return-path only when they differ from the sender; authentication as the message reports
+  it; attachments by declared name, type and size), the links (text → target domain, scheme,
+  what code found, in words), the page. Link targets and the page's address are drawn exactly
+  as SusCheck stored them, defanged; `domain`, `email` and the index are not defanged by
+  SusCheck and are drawn as they are. Nothing is resolved, opened or copied to a clipboard.
+- **The message's text is deliberately not shown.** `message.txt` is a household member's mail
+  and possibly a scammer's words. The format lets a reader show it when a person asks; sentry
+  doesn't: where `message` is true the check says "The email's text is kept on the server with
+  this check (quarantined). sentry doesn't show it.", no key fetches it, `path_of` makes a path
+  only to `incident.json` and `screenshot.png`, and there is no `Kind` for it. Whoever wants to
+  read it does so on the server, as the folder's own login. The gateways refuse its name like
+  the folder's other names, and the profiles' off-limits sentence names the quarantined copies.
+- **`o` without a picture** asks the server nothing where it is already known there is none
+  (the index says the check was made from the email itself or the page's address; or the open
+  record says none was kept) and says which. From the list, a failed check's `o` still asks
+  (its index line says a picture was sent; none was kept) and gets the same plain answer.
+- **Wording.** Every rule the format then listed but `lookalike`, and the tag `ocr_differs`, had
+  a short phrase by the format's own line for it (`tag()`); any other
+  value is its own text with spaces for underscores. Three or more rules are listed one a line
+  (a check of an email file has six).
+- **The detail scrolls by wrapped rows.** It used to stop at the count of unwrapped lines, which
+  on a narrow window left the end of a long check out of reach.
+
+### The format's later revision (prompts 3, still schema 1)
+
+The fixtures are the ten published samples, byte for byte. New among them: a genuine page seen
+only in a picture (now "be careful", never more), an email checked beside the mail window it
+was open in (both supply links, three exact repeats), a newsletter with a second search for
+the official site.
+
+- **The milder "be careful".** A verdict that rests on an address read from a picture is never
+  `likely_safe`: the rule `picture_only` makes it `suspicious` and `final.unconfirmed_only` says
+  that this is the only reason. Only a literal `true` counts, and only beside the verdict
+  `suspicious` (`Incident::unconfirmed_only`). The open check then says "be careful: only because
+  the address couldn't be confirmed" in both places its verdict is said ("It said", "What
+  counted"); the model's own verdict beside it stays the model's. The index doesn't carry the
+  field, so the list, the summary's tallies, the badge, the Dashboard's row and Maintenance's
+  row are unchanged: what is to look at is still only "don't trust this" and failed checks.
+  Until the record is in, "It said" is the index's plain "be careful".
+- **Links that aren't listed, split.** With `links_merged`, `Incident::links_left` gives (left
+  out at a limit, exact repeats merged) by the format's own sum, `links_total - links_merged -
+  len(links)`; a count of repeats larger than what the total leaves beyond the list is cut to
+  that. The check says "and N more, left out at a limit" and "M more were exact repeats of a
+  link already listed or counted", each only when it isn't zero. A record without
+  `links_merged` keeps "and N more, exact repeats of these included".
+- **The email.** `signals` is kept as the keys that are literally `true`: the format's eight
+  first, in its order, then any other as cleaned text (at most 16), and drawn in words under
+  "what SusCheck's code noticed (hints, never proof)". `from_written` is a row `written as`
+  whenever it is there (the format writes it only where no address could be read);
+  `freemail` is `sent from  a free personal mail address (<provider>), not a company's`.
+- **Where the address came from** gained: `first read in` (which field of the picture the
+  model's reading came from), `letter shapes` (only for `differs`, in yellow: it takes a match
+  away; `touching` as "it means nothing"; `fits` says nothing; another value as its words),
+  `shuffled` (the reading of the shuffled letter shapes, only when it is neither the first
+  reading nor that host's own domain), `digit rule` (fired / looked and found none, which is
+  never "genuine" / couldn't look).
+- **Searches.** `search.failed` is an `Option`: a record without it is from before, where
+  `ok: false` meant any search failed, and keeps "(one failed or timed out)". With it, a
+  `failed` row says which, by what each was for (the official site; the official site, by the
+  sender's name; scam reports about the domain; the phone number), the query itself says
+  "failed or timed out" instead of "nothing came back", and `ok: false` is said as the
+  official site's search.
+- **How it ran.** `shapes` and `shuffle` are stages between `ocr` and `search`. The stages
+  that did not run have a row of their own (`not run  reread, ocr, shapes, shuffle`): with
+  seven stages the one line no longer fitted 158 columns.
+- **Wording.** `tag()` has a phrase for every rule the format lists, `lookalike` now too, and
+  for the comparison tags the format gives a meaning (`readings_differ`, `ocr_differs`,
+  `shapes_differ`, `no_confirmed_candidate`, `freemail`, `not_a_real_domain`, `no_domain`,
+  `no_candidates`, `private_ip`). The tags it lists without one (`exact`, `punycode`,
+  `userinfo`, `confusable`, `edit_distance`, `brand_in_subdomain`, `brand_in_label`,
+  `match_unconfirmed`, `different`) stay their own words. `digit_in_name` is "a digit where
+  the name has a letter", and in a record without `domain.digit_rule` (the older, wider rule)
+  still "a digit inside a word of the address". `search_down` is now the official site's
+  search. Advice codes are their own words as before (`check with file or app`).
+- **Not in the format document then, in its samples:** `acquired_by` (index and record),
+  `mail_label`, and the rule `mail_label_spam`: unknown fields were ignored and the rule
+  shown as its own words. The next revision published them (below).
+
+Assumed, not seen: that a shuffled reading equal to the end of the first reading's host is the
+same address (no public-suffix list here); that `from_written` never needs showing beside a
+readable address (it is shown whenever present).
+
+### The browser extension (the revision after, still schema 1)
+
+SusCheck's browser extension hands a message open on the mail site to the SusCheck page. The
+samples didn't change with this revision (the newsletter already came "through the
+extension"); the format document now describes it.
+
+- **How the mail was obtained.** `acquired_by` on the index line and the record: `original`
+  (the raw message, fetched from the mail site), or the fallbacks `page`, `paste`, `picture`.
+  Null and a missing key are the same: by hand on the page, the desktop app, an older
+  writer. The open check has an `Obtained` row in words, only when there is a value; an
+  unknown word is shown as it is. It is the extension's own account, and the row says "by the
+  browser extension".
+- **What the mail site showed.** `mail_label` (the record only): "the mail site had it in
+  spam" / "the mail site showed a phishing warning", each with "(the extension's word: not
+  checked)", since the format calls it the client's claim; `none` is "the extension saw
+  neither…". In the email section, or a row of its own where there is no email block. The
+  rules `mail_label_spam` (a remark) and `mail_label_phishing` have their phrases.
+- **The mail site's window.** `page.source: extension`: the page section's heading says so,
+  its address is "the mail site's own: never the sender's, never compared", and what the model
+  read as the address bar isn't called "the window's exact address".
+- **`srv:suscheck:fallback`** (medium). The format's section "How a reader can notice the mail
+  site has changed", exactly: among index lines whose `acquired_by` is not null, the latest
+  three are all not `original`, or every one of the last 24 hours is not and there are at
+  least two, while some earlier line is `original`. `fallback_of(now, &[(when, original)])`
+  is pure and table-tested; the 24 hours are by the server's clock against the id's time.
+  `Counts` gained `fallback: Option<Fallback { run, day }>`: how many of the latest in a row
+  weren't the original, and how many of the last day when that part of the test holds. Two
+  numbers; the finding's words are sentry's own. `remark` drops it with the block (it goes by
+  the `srv:suscheck:` prefix).
+- **The summary** says `by extension: 1 original · 3 fell back` (and how each fell back where
+  there is room), only when a check came through the extension, and "extension falling back:
+  update its rules" when the test holds. The panel is that many rows taller.
+- **Computers.** `devices.json` has one entry per paired browser profile for `web`, whose
+  `app_version` is `web` (or empty) until a check has come through the extension in it, then
+  the extension's version. Only a value that starts with a digit is a version, and versions
+  are compared among entries of the same client: "older app than the others" and "older
+  extension than the others" (the Client column says `ext 1.3.9`). A `web` entry without one
+  is `web` with a dim note, "a browser profile: no extension seen yet": never "older". The
+  format gives no field that tells one profile from another on the same computer but the name
+  the owner chose, so the panel stays "Computers".
+
+### The revision after that (still schema 1)
+
+The format answered what the earlier readings left open. The samples: three computers now (a
+browser only ever used by hand, the desktop app, the browser the extension's check came
+from, with the extension's version), every newer record at prompts 3.
+
+- **Every comparison in words.** The six results (`compared()`) and the twenty tags of how
+  each was reached (`why()`), by the format's one line for each. The check's comparison is
+  three rows: `compared`, `because`, `addresses` (on screen · the real one). The list's Domain
+  check column has a word or two for each (`owner's list`, `search agrees`, `imitation`,
+  `different`, `unconfirmed`, `home network`); `/` matches both the format's word and that.
+- **The index says which "be careful" is the milder one.** `unconfirmed_only`, the line's last
+  key: a boolean says, and null, a missing key or anything else is unknown, never false. The
+  list then says "be careful (unconfirmed)" (it fits the column, with the `?` of an incomplete
+  check too); the tallies count them (`Tally.unconfirmed`, read as 0 from a stored report
+  that hasn't it) and the summary has `of them only unconfirmed` under "be careful" when
+  there is one. The open check says what its own record says once that is in, whichever way
+  the two differ; before, the index's word. What is to look at is unchanged.
+- **Generations.** The format lists four and says to decide by the field, never by
+  `prompt_version` or the date. sentry reads neither for anything. Its one generation test is
+  the first release's "no `input` key", which is what the format still says marks it, and all
+  it decides is how a 0 in `stages_ms` is read. Generations 2 and 3 have no sample; the tests
+  hold a hand-made record of each (synthetic), read field by field as the format's table of
+  missing fields says, and unchanged when they claim another prompt version.
+- **Readings.** The two readings of a picture are full hosts and the same only as the same
+  text: the second says "(differs from the first)" otherwise. The text recogniser's and the
+  shuffled reading are registrable domains, held against the first reading's own domain: each
+  has a row only when it isn't that (`Incident::same_domain`: the same text, or the first
+  reading ends with a dot and it).
+- **The mail site's window.** `page.url_domain` is then the mail site's domain when the
+  extension sent it, which today's doesn't: "not sent (it would be the mail site's own, never
+  the sender's)". The address bar is never set from that window; with a picture it is the
+  model's reading, said as "read in the picture: the mail site's own, not the sender's".
+- **The fallback rule** was confirmed as built: only `page`, `paste` and `picture` are
+  fallbacks, and null, a missing key and an unknown word are left out altogether.
+
+Assumed, not seen: that "the registrable domain of the first reading" is the first reading or
+its end after a dot (a host such as `example.co.test.other.test` would pass for
+`other.test`'s; without a public-suffix list sentry can't tell); that a record from the middle
+of generation 2 never has `input` and still the first release's 0 for a stage that did not
+run (the format puts both in the same generation and says fields arrived over several builds).
+
+### Trusted senders, kinds of "couldn't confirm", message faults (the revision after)
+
+Eleven samples (the new one a club's notice from a sender the owner trusts) and a new file,
+`trusted.json`. The format document already had `email.defects_notable`, the remark
+`message_faults` and prompts 5 when this was built, so they are in.
+
+- **`trusted.json`** is read in the collector's one exec, as one more marked section (the
+  readability test covers it too). No file is `Part::Missing`: no list, never an error (an
+  install from before, or nobody trusted yet). A schema other than 1 is said and nothing of
+  the file shown, like the other parts. Every string through `clean()` at a cap; an entry
+  without a value isn't one; at most 200 are kept and the rest counted.
+- **The panel "Trusted senders"**: under Computers in the wide layout, between Computers and
+  the checks in the narrow one when the window has 36 rows for the screen; only where there
+  is a list. Per entry: what it is and whether a domain or one address, its label, and
+  `added <when> by <computer>` or `by the command line`. Where they don't all fit, "and N
+  more". It is the list as it is now: a removed sender is simply gone, and whether a check
+  predates an entry is for the reader to see from the two dates. Text only.
+- **Counts** gained the number of entries (`trusted`) and, in each tally, the checks that
+  rested on a trusted sender. Numbers; never a sender.
+- **The gateway.** The bare word `trusted.json` is deliberately NOT in the refused words: it
+  is too generic a file name and would refuse lines that have nothing to do with SusCheck. A
+  line that names the file under the folder is refused by the folder-path match; `cd` into
+  the folder and a relative name get past the word match, as they do for every other name,
+  and the folder's own login (`suscheck.ssh`) is what stops those.
+- **Owner computers** (`devices[].owner`, only a literal `true`): the Computers note "owner:
+  may change the trusted senders".
+- **Why it couldn't be confirmed.** The index's `unconfirmed_kind` gives the list's milder
+  verdict its word: `be careful (picture only)`, `(other domain)`, `(small sender)`,
+  `(personal)`; null or a word without one stays `(unconfirmed)`. The open check says its own
+  record's kind in a sentence, in both places its verdict is said.
+- **A trusted sender** (`trusted_sender` on the index: a literal `true` on a completed check;
+  null and no key are false). The list says `trusted` in the Domain check column, and
+  `trusted: <domain>` in the Domain cell where that column has given way; the summary counts
+  them under "no obvious warning signs". The open check has a row "Trusted sender: on the
+  owner's trusted list when it was checked, and confirmed by the mail system", and
+  `match_trusted` is worded for both of its meanings.
+- **`domain.judge_word`**: `put to model  as a match (as told: not a second result)`.
+- **Message faults.** `email.defects` is an `Option`: a record without it doesn't say, which
+  is unknown and not "no faults", so nothing is drawn; an empty list is "none". The words are
+  SusCheck's own; one this sentry doesn't know is shown as its cleaned text. The notable ones
+  are the record's own `defects_notable` where it has it ("the model was told"), else those in
+  today's notable set ("by today's list; then they were recorded and had no effect"). No tally
+  of faults against verdicts was built: it would need every record fetched.
+- **Generations**: six now. Nothing is read off `prompt_version`. The tests' records of
+  generations 4 and 5 are the newest samples with what came after taken away.
+
+### Related domains, shared platforms, strong evidence (generation 7)
+
+Twelve samples (the new one a discussion group's digest, sent through a list on a shared
+platform) and prompts 6. The service's own version in the samples moved too.
+
+- **Who said "don't trust this".** `final.strong_evidence` lists the kinds of strong evidence
+  SusCheck's code found; its rules alone say `likely_malicious` exactly when there is one. The
+  open check has a row `Strong evidence`: the kinds in words where there are some; beside
+  "don't trust this" with an empty list, that it is the model's own verdict; nothing for
+  another verdict with none, and nothing for a record that doesn't have the field (older
+  rules applied, and the record doesn't say which). The index doesn't carry it, so the list
+  says nothing of it.
+- **What related an address to a company.** `domain.related_by` (`family`: the fixed table of
+  related domains and list hosts; `search`: the search for the domain) is a row `related by`
+  in the comparison; `search.domain_vouched`, when true, one line under the searches saying
+  the company's own site talks about or hosts the sender's domain and that this only softens
+  the check.
+- **Words.** `check.why` has 24 tags now: `shared_platform`, `same_owner`,
+  `same_owner_unconfirmed` and `related_service` are new, and `edit_distance` and
+  `brand_in_label` follow the format's new lines. `mismatch` is worded for a shared platform
+  or a related service too. The rule `link_mailto_mismatch`, the link flag `mailto_mismatch`,
+  the signal `mailing_list` ("it has a mailing-list header (anyone can write one)"). The
+  `domain` search is now "what the domain is".
+- **The samples' verdicts moved**: the email whose link shows one address and leads to another
+  is "be careful" now, since no rule alone says more without strong evidence. The tallies,
+  what is to look at and the snapshots follow.
+- **Generations**: seven. The tests gained a record of generation 6 the same way as 4 and 5.
+
+### Verdicts the rules lower, searches judged per check, notes on links (generations 8 to 10)
+
+The samples are generation 10 now (prompts 7); their index lines did not change. None of them
+has a lowered verdict, a link note, the kind `platform_sender` or an engine that didn't
+answer: those are tested on records changed by hand.
+
+- **Lowered as well as raised.** `floors_changed_verdict` now also means the rules lowered the
+  model's verdict for want of a ground. The rules row says which way by the two verdicts
+  (`raised the verdict`, `lowered the verdict`, `changed the verdict` when one of them is a
+  value without a rank). `final.model_capped` and `final.model_softened` (only a literal
+  `true`) are two rows: "Model lowered: it said "don't trust this" with no concrete ground:
+  lowered to "be careful"" and "Model set aside: its worry had no warning-level ground: judged
+  as if it had seen nothing wrong". The summary's "rules overrode the model" was already
+  either way.
+- **No tally of lowerings.** The index line gained nothing in these generations, and its
+  `floors_changed_verdict` doesn't say which way; a count would need every record fetched,
+  which the screen never does.
+- **How a Reply-To was treated** (`final.reply_to_differs`): "(a remark)" or "(a warning)"
+  after the rule's phrase; a record that doesn't say gets neither (its floor's old rule isn't
+  re-derived here).
+- **Searches.** `search.empty` and `search.unresponsive` are `Option`s: a record without them
+  didn't record them. A query with no results says "failed or timed out" when it is in
+  `failed`, "answered, and found nothing" when in `empty`, else "nothing came back". The
+  engines that didn't answer are one row, said as a note that decides nothing. The heading for
+  `ok: false` follows what the record can support: with `empty` there, "the search as a whole
+  couldn't help"; with only `failed`, the official site's search; with neither, "one failed
+  or timed out".
+- **Notes on links** (`links[].notes`: `tracked`, `brand_in_address`) are drawn dim after the
+  flags as "note: …". A link with only a note keeps an ordinary link's colour. A record
+  without the key is left as it was written: its `lookalike` flag without `close_imitation`
+  is still shown as that record's flag, since its own rules list says what it did then.
+- **Words.** `platform_sender` ("be careful (via a service)" in the list; a sentence in the
+  check), `check.why` `brand_in_address`, the rules `brand_address_risky`,
+  `model_without_grounds` and `model_worry_without_grounds`; `link_lookalike` is "one small
+  change from a genuine one" and `search_down` "the web search couldn't help", which holds
+  for each of its three rules over time. `asks_for`'s `purchase_offer` is its own words.
+- **Fault words.** The format lists the fourteen words of `email.defects` and their two sets,
+  and gives no meaning for any. sentry draws each as its words (underscores as spaces) with
+  no wording table; a test holds that for all fourteen.
+- **Generations**: ten. The tests' records of generations 4 to 9 are the newest samples with
+  what each later generation added taken away; the tenth added words only.
+
+Assumed, not seen: that `platform_sender`, `model_capped`, `model_softened` and link notes
+look in a real record as the format describes (no sample has one).
+
+What the format said it would address and, as read here, has not changed: the index's
+`trusted_sender` still says "when a record from before the list is indexed again"; "not
+written for a trusted sender" is on the `freemail_sender` row and in the paragraph that lists
+the five, not on the other four rows; (the field saying whether `reply_to_differs` was a remark or a warning came with generation 8);
+`judge_word` is `match` for both kinds of match; the remark
+`message_faults` is still in `final.floors`. Nothing was built for those.
+
+**A real install.** This module has now read a real install's folder: the counts through
+`collect`, and every index line and every record parsed. Not seen by the developer's session:
+the screen on real data, and `o` on a desktop.
+
+Assumed, not seen: that a "don't trust this" with a `strong_evidence` list that isn't empty is
+SusCheck's rules' doing even when the model said the same; that a `strong_evidence` beside
+another verdict (the format has none) is still worth showing.
+
+Assumed, not seen: that a `trusted_sender: true` beside an error should not count (the format
+says null there); that "the command line" is the only `added_by` that isn't a computer's name
+(another word is shown as it is); that a fault word in neither of today's sets is minor (the
+format says so for a record without `defects_notable`).
+
+Assumed, not seen: that "starts with a digit" is what a version looks like (the format doesn't
+define it). (That a word in `acquired_by` the format doesn't name is left out of the test was
+a guess when built; the format has since said so.)
+
+Assumed, not seen: that in a record from before `links_total` the email's and the page's totals
+add up to the list's (`links_more` adds the two only there); that a 0 in an old-shape record's
+`stages_ms` is a stage that did not run and never one that took under a millisecond.
+
+Verified: the unit and window tests the Verification section lists, the canary, and
+`live_suscheck` in both disposable containers (the folder's own login reads; the server's
+ordinary login is refused by the server; the same through a copy the test login may read; a
+picture fetched, private, byte for byte, gone at shutdown; nothing written in the folder; the
+check made from an email file read with no picture and its text not shown; `message.txt`
+refused to the server's ordinary login by the server and by both gateways).
+Not verified by this session: the screen on a real install's data, and the desktop's opener
+(no test starts it).

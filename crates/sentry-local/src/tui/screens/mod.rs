@@ -105,7 +105,7 @@ impl Screens {
             ScreenId::Upgrade => self.upgrade.handle(a, v),
             ScreenId::Hist => self.hist.handle(a, v),
             // Another target's.
-            ScreenId::Svc | ScreenId::Clients | ScreenId::Security => Vec::new(),
+            ScreenId::Svc | ScreenId::Clients | ScreenId::Security | ScreenId::Sus => Vec::new(),
         }
     }
 
@@ -120,7 +120,7 @@ impl Screens {
             ScreenId::Clean => self.clean.render(f, area, v),
             ScreenId::Upgrade => self.upgrade.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
-            ScreenId::Svc | ScreenId::Clients | ScreenId::Security => {}
+            ScreenId::Svc | ScreenId::Clients | ScreenId::Security | ScreenId::Sus => {}
         }
     }
 
@@ -135,7 +135,7 @@ impl Screens {
             ScreenId::Clean => cleanup::hints(),
             ScreenId::Upgrade => upgrade::hints(v),
             ScreenId::Hist => history::hints(),
-            ScreenId::Svc | ScreenId::Clients | ScreenId::Security => Vec::new(),
+            ScreenId::Svc | ScreenId::Clients | ScreenId::Security | ScreenId::Sus => Vec::new(),
         }
     }
 
@@ -151,7 +151,7 @@ impl Screens {
             ScreenId::Clean => self.clean.ask(v),
             ScreenId::Upgrade => self.upgrade.ask(v),
             ScreenId::Hist => self.hist.ask(v),
-            ScreenId::Svc | ScreenId::Clients | ScreenId::Security => {
+            ScreenId::Svc | ScreenId::Clients | ScreenId::Security | ScreenId::Sus => {
                 Err("nothing to ask about here".into())
             }
         }

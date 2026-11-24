@@ -160,6 +160,11 @@ expression: "serde_json::to_string_pretty(&f).unwrap()"
         "cadence": {
           "apt-maintenance": "30d"
         }
+      },
+      "suscheck": {
+        "dir": null,
+        "ssh": null,
+        "recent": 200
       }
     }
   }
