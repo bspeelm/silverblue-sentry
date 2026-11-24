@@ -85,6 +85,7 @@ RUN apt-get update \\
       openssh-server sudo procps iproute2 util-linux ca-certificates \\
  && mkdir -p /run/sshd /usr/local/share/fake-docker /srv/stack \\
  && useradd -m -s /bin/bash $LOGIN && usermod -p '*' $LOGIN \\
+ && groupadd susown && usermod -aG susown $LOGIN \\
  && install -d -m 700 -o $LOGIN -g $LOGIN /home/$LOGIN/.ssh
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
@@ -166,7 +167,9 @@ EOF
 # samples: the folder and everything in it 0750/0640 with the setgid bit, group `suscheck`,
 # whose only member is a second login, `susreader` (the same throwaway key). The test login
 # is not in it. A copy beside it belongs to a group the test login is in. And the pointer
-# file. Only there while live_suscheck runs (live_setup looks at a host without it).
+# file. Only there while live_suscheck runs (live_setup looks at a host without it). The test
+# login is in `susown` from the image on: a group added later isn't seen through ssh's shared
+# connection, which an earlier test of the same run may still hold open.
 fake_suscheck() {
   local c=$1 dir=$2 f d id
   "${P[@]}" exec "$c" sh -c "
