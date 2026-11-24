@@ -8,7 +8,7 @@
  "duration_ms": 21480,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "6",
+ "prompt_version": "7",
  "stages_ms": {
   "extract": 3310,
   "reread": 2890,
@@ -85,7 +85,11 @@
    ],
    "domain": []
   },
-  "failed": []
+  "failed": [],
+  "empty": [
+   "domain"
+  ],
+  "unresponsive": []
  },
  "judgement": {
   "red_flags": [
@@ -128,7 +132,10 @@
   "unconfirmed_kind": null,
   "strong_evidence": [
    "close_imitation"
-  ]
+  ],
+  "reply_to_differs": null,
+  "model_capped": false,
+  "model_softened": false
  },
  "input": [
   "image"

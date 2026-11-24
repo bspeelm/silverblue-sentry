@@ -5,7 +5,7 @@ expression: s
  1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   8 SusCheck   0 Upg
 ────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.1 ────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.2 ────────────────────────────────────────────────────────────┐
 │ 7 days   12 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │
 │          2 don't trust this · 5 be careful · 4 no obvious warning signs      │
 │ 30 days  12 checks · 1 failed · 1 incomplete · rules overrode the model 4×   │

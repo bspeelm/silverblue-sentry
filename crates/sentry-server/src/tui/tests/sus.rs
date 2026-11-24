@@ -483,7 +483,7 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         "· a digit where the name has a letter",
         "· the address imitates the real one",
         "· one small change from the real address",
-        "· a link imitates the real address",
+        "· a link leads to an address one small change from a genuine one",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
     }
@@ -803,7 +803,7 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
         "mail site       the mail site had it in spam (the extension's word: not checked)",
         "It said           no obvious warning signs  (medium confidence)",
         "official2       \"Example Pay News\" official website",
-        "nothing came back",
+        "answered, and found nothing",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
     }
@@ -868,7 +868,8 @@ fn what_came_through_the_browser_extension() {
     let s = feed(&mut a, &i);
     for said in [
         "Obtained          by the browser extension: only the sender, subject and links, read off the mail",
-        "the mail site itself warned of phishing · the address couldn't be compared",
+        "· the mail site itself warned of phishing",
+        "· the address couldn't be compared",
         "Mail site         the mail site showed a phishing warning (the extension's word: not checked)",
         "The page (the mail site's window, as the browser extension read it)",
         "address         mail[.]example (the mail site's own: never the sender's, never compared)",
@@ -1565,6 +1566,255 @@ fn shared_platforms_and_who_said_dont_trust_this() {
     assert!(!feed(&mut a, &i).contains("related by"));
 }
 
+/// Generations 8 to 10 on the open check: which way the rules changed the model's verdict
+/// (they can lower it now), how a Reply-To was treated, what each search came to, notes on
+/// links (never a warning), the new kind and the new words. And the fault words as words.
+#[test]
+fn verdicts_lowered_searches_per_check_and_notes_on_links() {
+    let mut a = sus_app();
+    key(&mut a, KeyCode::Char('8'));
+    at(&mut a, 5);
+    key(&mut a, KeyCode::Enter);
+    let feed = |a: &mut App, i: &sc::Incident| {
+        data(
+            a,
+            Kind::SusIncident(i.id),
+            Payload::SusIncident(Fetched::Ok(Box::new(i.clone()))),
+        );
+        screen(a, 158, 110)
+    };
+    // The sample as it is: the Reply-To was a warning; the search for the domain answered
+    // and found nothing; nothing was lowered.
+    let sample = sc::tests::sample_incident("20261105T081233Z-k2m4");
+    let s = feed(&mut a, &sample);
+    for said in [
+        "SusCheck's rules  the verdict stood:",
+        "· replies go to another domain (a warning)",
+        "      answered, and found nothing",
+        "Searches SusCheck ran",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    for absent in [
+        "Model lowered",
+        "Model set aside",
+        "note:",
+        "not answering",
+        "│   found nothing",
+        "nothing came back",
+    ] {
+        assert!(!s.contains(absent), "{absent}:\n{s}");
+    }
+    // The model said "don't trust this" with no concrete ground: the rules lowered it.
+    let mut i = sample.clone();
+    i.judgement.as_mut().unwrap().verdict = Some("likely_malicious".into());
+    let l = i.last.as_mut().unwrap();
+    l.floors_changed = Some(true);
+    l.model_capped = true;
+    l.reply_to_differs = Some("remark".into());
+    l.floors = vec![
+        "model_without_grounds".into(),
+        "reply_to_differs".into(),
+        "brand_address_risky".into(),
+    ];
+    let s = feed(&mut a, &i);
+    for said in [
+        "The model         don't trust this (medium)",
+        "What counted      be careful (medium)",
+        "SusCheck's rules  lowered the verdict:",
+        "· the model's \"don't trust this\" had no concrete ground: lowered",
+        "· replies go to another domain (a remark)",
+        "· the address carries the company's name without being its own, with a risky ask or pressure",
+        "Model lowered     it said \"don't trust this\" with no concrete ground: lowered to \"be careful\"",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    assert!(
+        !s.contains("raised the verdict") && !s.contains("Model set aside"),
+        "{s}"
+    );
+    // Its worry set aside: the answer is the milder "be careful", by its kind, or no
+    // warning at all; either way the rules lowered what the model said.
+    let l = i.last.as_mut().unwrap();
+    l.model_softened = true;
+    l.unconfirmed_only = true;
+    l.unconfirmed_kind = Some("platform_sender".into());
+    l.floors = vec![
+        "model_without_grounds".into(),
+        "model_worry_without_grounds".into(),
+    ];
+    let s = feed(&mut a, &i);
+    for said in [
+        "What counted      be careful: sent through a service for someone; replies go to them (medium)",
+        "lowered the verdict",
+        "the model's worry had no warning-level ground: set aside",
+        "Model lowered     it said",
+        "Model set aside   its worry had no warning-level ground: judged as if it had seen nothing wrong",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    let l = i.last.as_mut().unwrap();
+    l.verdict = Some("likely_safe".into());
+    l.unconfirmed_only = false;
+    l.unconfirmed_kind = None;
+    i.judgement.as_mut().unwrap().verdict = Some("suspicious".into());
+    i.last.as_mut().unwrap().model_capped = false;
+    let s = feed(&mut a, &i);
+    for said in [
+        "The model         be careful (medium)",
+        "What counted      no obvious warning signs (medium)",
+        "lowered the verdict",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    assert!(
+        !s.contains("Model lowered") && !s.to_lowercase().contains("safe"),
+        "{s}"
+    );
+    // Raised still says raised; a verdict without words on either side only "changed".
+    let mut up = sample.clone();
+    up.judgement.as_mut().unwrap().verdict = Some("likely_safe".into());
+    up.last.as_mut().unwrap().floors_changed = Some(true);
+    assert!(feed(&mut a, &up).contains("SusCheck's rules  raised the verdict:"));
+    up.judgement.as_mut().unwrap().verdict = Some("quarantined".into());
+    let s = feed(&mut a, &up);
+    assert!(
+        s.contains("SusCheck's rules  changed the verdict:")
+            && !s.contains("raised")
+            && !s.contains("lowered"),
+        "{s}"
+    );
+    // A Reply-To treated in a way without words; one in a record that doesn't say.
+    let mut r = sample.clone();
+    r.last.as_mut().unwrap().reply_to_differs = Some("held_back".into());
+    assert!(feed(&mut a, &r).contains("· replies go to another domain (held back)"));
+    r.last.as_mut().unwrap().reply_to_differs = None;
+    let s = feed(&mut a, &r);
+    assert!(
+        s.contains("· replies go to another domain") && !s.contains("another domain ("),
+        "{s}"
+    );
+    // Notes on links describe and decide nothing: said after the flags, never in a
+    // warning's words, and a link with only a note is an ordinary one.
+    let mut n = sample.clone();
+    let links = n.links.as_mut().unwrap();
+    links[0].notes = vec!["tracked".into()];
+    links[1].notes = vec!["brand_in_address".into(), "note_from_next_year".into()];
+    let s = feed(&mut a, &n);
+    // (The detail's rows as one text: a long link wraps.)
+    let flat = |s: &str| {
+        s.lines()
+            .map(|l| {
+                l.split("││")
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_end_matches('│')
+                    .trim()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let text = flat(&s);
+    for said in [
+        "https · its text is another address · note: through the message's own click-tracking host",
+        "Contact us → example-pay[.]test · https · note: carries a genuine name inside another address, note from next year",
+    ] {
+        assert!(text.contains(said), "{said}:\n{text}");
+    }
+    // The searches of each time. Today's: what failed, what answered with nothing, the
+    // engines that didn't answer; `ok` false is the search as a whole.
+    let mut q = sample.clone();
+    let x = q.search.as_mut().unwrap();
+    x.ok = Some(false);
+    x.failed = Some(vec!["official".into()]);
+    x.empty = Some(vec!["domain".into(), "carrier".into()]);
+    x.unresponsive = Some(vec!["engine one".into(), "engine-two".into()]);
+    x.queries[0].hits.clear();
+    let s = feed(&mut a, &q);
+    for said in [
+        "Searches SusCheck ran (the search as a whole couldn't help)",
+        "failed          the official site (failed or timed out)",
+        "found nothing   carrier",
+        "not answering   engine one · engine-two (search engines that didn't answer some query: a note, it",
+        "      failed or timed out",
+        "      answered, and found nothing",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    // A record from before the two were told apart: `ok` false was the official site's
+    // search, and an empty list not in `failed` only "came back with nothing".
+    let x = q.search.as_mut().unwrap();
+    x.empty = None;
+    x.unresponsive = None;
+    x.failed = Some(Vec::new());
+    let s = feed(&mut a, &q);
+    for said in [
+        "Searches SusCheck ran (the one for the official site failed or came back empty)",
+        "      nothing came back",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    assert!(
+        !s.contains("not answering") && !s.contains("answered, and found"),
+        "{s}"
+    );
+    q.search.as_mut().unwrap().failed = None;
+    assert!(feed(&mut a, &q).contains("Searches SusCheck ran (one failed or timed out)"));
+    // New words: the comparison's tag, the kind of ask.
+    let mut w = sample.clone();
+    w.domain.as_mut().unwrap().why = Some("brand_in_address".into());
+    w.facts.as_mut().unwrap().asks_for = vec!["purchase_offer".into()];
+    let s = feed(&mut a, &w);
+    for said in [
+        "because         a confirmed sender whose address only carries the company's name inside another one",
+        "asks for        purchase offer",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    // The fault words are SusCheck's own fixed words: drawn as words, underscores as
+    // spaces, with no table of meanings (the format gives none).
+    let mut f = sample.clone();
+    let e = f.email.as_mut().unwrap();
+    e.defects = Some(
+        [
+            "duplicate_header",
+            "eight_bit_header",
+            "no_final_newline",
+            "text_before_headers",
+            "bad_header",
+            "bad_header_encoding",
+            "bad_line_endings",
+            "nul_bytes",
+            "bad_multipart",
+            "no_closing_boundary",
+            "text_outside_parts",
+            "bad_base64",
+            "bad_charset",
+            "other",
+        ]
+        .map(String::from)
+        .to_vec(),
+    );
+    e.defects_notable = Some(Vec::new());
+    let s = feed(&mut a, &f);
+    let flat = flat(&s);
+    for said in [
+        "faults          duplicate header · eight bit header · no final newline · text before headers",
+        "bad header encoding",
+        "nul bytes",
+        "no closing boundary",
+        "text outside parts",
+        "bad base64",
+        "(in how the message was put together; recorded only)",
+    ] {
+        assert!(flat.contains(said), "{said}:\n{flat}");
+    }
+    for raw in ["duplicate_header", "eight_bit_header", "no_final_newline"] {
+        assert!(!s.contains(raw), "{raw}:\n{s}");
+    }
+    assert!(!s.contains("  notable"), "{s}");
+}
+
 /// Values this sentry has no words for are shown as they are; the ones it has are said
 /// plainly; lists that were cut say how many more there were.
 #[test]
@@ -1609,6 +1859,9 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
     let q = i.search.as_mut().unwrap();
     q.ok = Some(false);
     q.failed = Some(vec!["official".into(), "domain".into(), "carrier".into()]);
+    // (A record from before a search's empty answers were told from its failures.)
+    q.empty = None;
+    q.unresponsive = None;
     let l = i.last.as_mut().unwrap();
     l.floors = vec![
         "digit_in_name".into(),
@@ -1687,7 +1940,7 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
         "      failed or timed out",
         "· more links than SusCheck analyses",
         "· a link that doesn't lead to an ordinary named site",
-        "· a link imitates the real address",
+        "· a link leads to an address one small change from a genuine one",
         "· the mail's reported checks failed",
         "· an attachment named like a program or a script",
         "· text written to steer an AI",
@@ -1695,7 +1948,7 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
         "· the address couldn't be compared",
         "· matched by web search only, and it asks for something risky",
         "· no warning signs, but the address isn't a match",
-        "· the search for the official site failed",
+        "· the web search couldn't help",
         "· not readable as an email or a web page",
         "· rule from next year",
         "source          carrier pigeon",
@@ -2215,7 +2468,7 @@ fn a_stored_report_keeps_counts_only() {
     assert_eq!((c.trusted, c.week.trusted), (2, 1));
     assert_eq!(
         (c.version.as_deref(), c.heartbeat_age_s),
-        (Some("0.1.1"), Some(120))
+        (Some("0.1.2"), Some(120))
     );
     assert!(text.contains("\"suscheck\""), "{text}");
     // And it reads back; an older report without the key reads too.
@@ -2305,9 +2558,12 @@ fn hostile() -> (sc::Suscheck, sc::Incident) {
     }
     if let Some(q) = &mut i.search {
         q.failed = Some(vec!["canary-failed".into()]);
+        q.empty = Some(vec!["canary-empty".into()]);
+        q.unresponsive = Some(vec!["canary-engine".into()]);
     }
     if let Some(l) = &mut i.last {
-        l.floors = vec!["canary_floor".into()];
+        l.floors = vec!["canary_floor".into(), "reply_to_differs".into()];
+        l.reply_to_differs = Some("canary_replyto".into());
         l.advice = vec!["canary_advice".into()];
         l.verdict = Some("suspicious".into());
         l.unconfirmed_only = true;
@@ -2345,6 +2601,7 @@ fn hostile() -> (sc::Suscheck, sc::Incident) {
         scheme: Some("canary-scheme".into()),
         target: Some("canary-target[.]test".into()),
         flags: vec!["canary_flag".into()],
+        notes: vec!["canary_note".into()],
     }]);
     i.page = Some(sc::Page {
         source: Some("canary-reader".into()),
@@ -2429,6 +2686,10 @@ fn nothing_of_a_check_reaches_claude_a_report_or_the_log() {
         "canary-judged",
         "canary-related",
         "canary strong",
+        "canary note",
+        "canary-empty",
+        "canary-engine",
+        "canary replyto",
         "canary fault",
         "canary notable",
         "sentry doesn't show it",
@@ -2675,7 +2936,7 @@ fn live_suscheck() {
     assert_eq!(f.checks[9].app_version.as_deref(), Some("0.2.0"));
     assert_eq!(
         f.status.ok().and_then(|x| x.version.as_deref()),
-        Some("0.1.1")
+        Some("0.1.2")
     );
     // The server's clock, not this machine's (they agree to the minute here).
     assert!((f.now - jiff::Timestamp::now().as_second()).abs() < 120);

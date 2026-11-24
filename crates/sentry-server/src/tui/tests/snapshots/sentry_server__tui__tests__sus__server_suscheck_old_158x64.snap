@@ -5,7 +5,7 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Oct 30 18:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.2 ────────────────────────────┐┌ Check · Oct 30 18:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           no obvious warning signs  (medium confidence)                                            │
 │ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 2        2 ││ From              Kitchen iMac (app 0.1.0) · took 17 s                                                     │
@@ -19,7 +19,7 @@ expression: s
 │ rules overrode    the model 4 of 11 (36%)    ││ The model against what counted                                                                             │
 │ typical time      14 s (longest 21 s)        ││ The model         no obvious warning signs (medium)                                                        │
 │ you marked        none yet (m on a check)    ││ What counted      no obvious warning signs (medium)                                                        │
-│ model example-vision:1b · prompts 6          ││ SusCheck's rules  none applied                                                                             │
+│ model example-vision:1b · prompts 7          ││ SusCheck's rules  none applied                                                                             │
 │ by extension: 1 original                     ││   what it found normal                                                                                     │
 │ ● alive 2m ago · keeps checks 30 days        ││   · The address bar matches the company's real site.                                                       │
 │                                              ││   · It only shows a shopping basket.                                                                       │

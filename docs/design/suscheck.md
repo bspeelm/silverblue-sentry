@@ -445,11 +445,56 @@ platform) and prompts 6. The service's own version in the samples moved too.
   what is to look at and the snapshots follow.
 - **Generations**: seven. The tests gained a record of generation 6 the same way as 4 and 5.
 
+### Verdicts the rules lower, searches judged per check, notes on links (generations 8 to 10)
+
+The samples are generation 10 now (prompts 7); their index lines did not change. None of them
+has a lowered verdict, a link note, the kind `platform_sender` or an engine that didn't
+answer: those are tested on records changed by hand.
+
+- **Lowered as well as raised.** `floors_changed_verdict` now also means the rules lowered the
+  model's verdict for want of a ground. The rules row says which way by the two verdicts
+  (`raised the verdict`, `lowered the verdict`, `changed the verdict` when one of them is a
+  value without a rank). `final.model_capped` and `final.model_softened` (only a literal
+  `true`) are two rows: "Model lowered: it said "don't trust this" with no concrete ground:
+  lowered to "be careful"" and "Model set aside: its worry had no warning-level ground: judged
+  as if it had seen nothing wrong". The summary's "rules overrode the model" was already
+  either way.
+- **No tally of lowerings.** The index line gained nothing in these generations, and its
+  `floors_changed_verdict` doesn't say which way; a count would need every record fetched,
+  which the screen never does.
+- **How a Reply-To was treated** (`final.reply_to_differs`): "(a remark)" or "(a warning)"
+  after the rule's phrase; a record that doesn't say gets neither (its floor's old rule isn't
+  re-derived here).
+- **Searches.** `search.empty` and `search.unresponsive` are `Option`s: a record without them
+  didn't record them. A query with no results says "failed or timed out" when it is in
+  `failed`, "answered, and found nothing" when in `empty`, else "nothing came back". The
+  engines that didn't answer are one row, said as a note that decides nothing. The heading for
+  `ok: false` follows what the record can support: with `empty` there, "the search as a whole
+  couldn't help"; with only `failed`, the official site's search; with neither, "one failed
+  or timed out".
+- **Notes on links** (`links[].notes`: `tracked`, `brand_in_address`) are drawn dim after the
+  flags as "note: …". A link with only a note keeps an ordinary link's colour. A record
+  without the key is left as it was written: its `lookalike` flag without `close_imitation`
+  is still shown as that record's flag, since its own rules list says what it did then.
+- **Words.** `platform_sender` ("be careful (via a service)" in the list; a sentence in the
+  check), `check.why` `brand_in_address`, the rules `brand_address_risky`,
+  `model_without_grounds` and `model_worry_without_grounds`; `link_lookalike` is "one small
+  change from a genuine one" and `search_down` "the web search couldn't help", which holds
+  for each of its three rules over time. `asks_for`'s `purchase_offer` is its own words.
+- **Fault words.** The format lists the fourteen words of `email.defects` and their two sets,
+  and gives no meaning for any. sentry draws each as its words (underscores as spaces) with
+  no wording table; a test holds that for all fourteen.
+- **Generations**: ten. The tests' records of generations 4 to 9 are the newest samples with
+  what each later generation added taken away; the tenth added words only.
+
+Assumed, not seen: that `platform_sender`, `model_capped`, `model_softened` and link notes
+look in a real record as the format describes (no sample has one).
+
 What the format said it would address and, as read here, has not changed: the index's
 `trusted_sender` still says "when a record from before the list is indexed again"; "not
 written for a trusted sender" is on the `freemail_sender` row and in the paragraph that lists
-the five, not on the other four rows; there is no field saying whether `reply_to_differs` was
-a remark or a warning; `judge_word` is `match` for both kinds of match; the remark
+the five, not on the other four rows; (the field saying whether `reply_to_differs` was a remark or a warning came with generation 8);
+`judge_word` is `match` for both kinds of match; the remark
 `message_faults` is still in `final.floors`. Nothing was built for those.
 
 **A real install.** This module has now read a real install's folder: the counts through

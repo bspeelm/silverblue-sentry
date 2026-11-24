@@ -1,8 +1,8 @@
 {
  "schema": 1,
- "version": "0.1.1",
+ "version": "0.1.2",
  "model": "example-vision:1b",
- "prompt_version": "6",
+ "prompt_version": "7",
  "retention_days": 30,
  "started_at": "2026-11-01T09:00:00Z",
  "alive_at": "2026-11-05T12:00:00Z",

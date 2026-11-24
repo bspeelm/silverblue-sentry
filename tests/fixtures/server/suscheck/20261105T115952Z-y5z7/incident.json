@@ -8,7 +8,7 @@
  "duration_ms": 13630,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "6",
+ "prompt_version": "7",
  "stages_ms": {
   "extract": 3120,
   "reread": null,
@@ -102,7 +102,9 @@
     }
    ]
   },
-  "failed": []
+  "failed": [],
+  "empty": [],
+  "unresponsive": []
  },
  "judgement": {
   "red_flags": [],
@@ -138,7 +140,10 @@
   "unconfirmed_only": true,
   "trusted_sender": false,
   "unconfirmed_kind": "other_domain",
-  "strong_evidence": []
+  "strong_evidence": [],
+  "reply_to_differs": null,
+  "model_capped": false,
+  "model_softened": false
  },
  "input": [
   "email"
@@ -180,127 +185,148 @@
    "text": "hillside-gardeners@lumoragroups[.]test",
    "scheme": "https",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Lumora Groups Logo",
    "scheme": "https",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Lumora Groups",
    "scheme": "https",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "View all topics",
    "scheme": "https",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "\ud83c\udf31 Seed swap on Saturday",
    "scheme": "none",
    "target_domain": null,
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "\ud83d\udee0 Shed roof repair rota",
    "scheme": "none",
    "target_domain": null,
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Seed swap on Saturday",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Priya Raman",
    "scheme": "mailto",
    "target_domain": "postbox[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Tom Okafor",
    "scheme": "mailto",
    "target_domain": "oakfieldprimary[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Greta Lindqvist",
    "scheme": "mailto",
    "target_domain": "postbox[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "lumotube[.]test",
    "scheme": "https",
    "target_domain": "lumotube[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "...more",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Back to top",
    "scheme": "none",
    "target_domain": null,
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "Shed roof repair rota",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "...more",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "group membership page",
    "scheme": "https",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "hillside-gardeners+unsubscribe@lumoragroups[.]test",
    "scheme": "mailto",
    "target_domain": "lumoragroups[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "lumora[.]test",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "lumora[.]test",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "lumora[.]test",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   },
   {
    "text": "lumora[.]test",
    "scheme": "http",
    "target_domain": "lumora[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   }
  ],
  "links_total": 25,

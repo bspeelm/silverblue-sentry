@@ -8,7 +8,7 @@
  "duration_ms": 12410,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "6",
+ "prompt_version": "7",
  "stages_ms": {
   "extract": 2610,
   "reread": null,
@@ -87,7 +87,12 @@
    "domain": [],
    "official2": []
   },
-  "failed": []
+  "failed": [],
+  "empty": [
+   "domain",
+   "official2"
+  ],
+  "unresponsive": []
  },
  "judgement": {
   "red_flags": [],
@@ -124,7 +129,10 @@
   "unconfirmed_only": false,
   "trusted_sender": false,
   "unconfirmed_kind": null,
-  "strong_evidence": []
+  "strong_evidence": [],
+  "reply_to_differs": null,
+  "model_capped": false,
+  "model_softened": false
  },
  "input": [
   "email"
@@ -166,7 +174,8 @@
    "text": "Read the news",
    "scheme": "https",
    "target_domain": "example-pay[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   }
  ],
  "links_total": 1,

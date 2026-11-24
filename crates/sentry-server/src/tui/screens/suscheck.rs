@@ -823,11 +823,16 @@ fn tag(code: &str) -> String {
         "unknown" => "the address couldn't be compared",
         "weak_match_risky" => "matched by web search only, and it asks for something risky",
         "safe_needs_match" => "no warning signs, but the address isn't a match",
-        "search_down" => "the search for the official site failed",
+        "search_down" => "the web search couldn't help",
+        "brand_address_risky" => {
+            "the address carries the company's name without being its own, with a risky ask or pressure"
+        }
+        "model_without_grounds" => "the model's \"don't trust this\" had no concrete ground: lowered",
+        "model_worry_without_grounds" => "the model's worry had no warning-level ground: set aside",
         "not_readable" => "not readable as an email or a web page",
         "picture_only" => "the address was only read from a picture",
         "link_text_mismatch" => "a link's text is an address, and it leads to another",
-        "link_lookalike" => "a link imitates the real address",
+        "link_lookalike" => "a link leads to an address one small change from a genuine one",
         "link_mailto_mismatch" => "a link's text is an email address, and it writes to another",
         "link_odd_target" => "a link that doesn't lead to an ordinary named site",
         "links_unchecked" => "more links than SusCheck analyses",
@@ -903,6 +908,9 @@ fn unconfirmed(kind: Option<&str>) -> &'static str {
         Some("small_sender") => "be careful: nobody could confirm this sender independently",
         Some("personal_address") => {
             "be careful: a personal mailbox; only you know if you know them"
+        }
+        Some("platform_sender") => {
+            "be careful: sent through a service for someone; replies go to them"
         }
         _ => UNCONFIRMED,
     }
@@ -987,6 +995,9 @@ fn why(code: &str) -> String {
         }
         "brand_in_subdomain" => "the genuine name is used as a subdomain of another domain",
         "brand_in_label" => "the genuine name is a word inside another domain's name, or at its start or end",
+        "brand_in_address" => {
+            "a confirmed sender whose address only carries the company's name inside another one"
+        }
         "shared_platform" => {
             "a platform where anyone can have an address or a page: it is whoever set it up"
         }
@@ -1023,8 +1034,15 @@ fn why(code: &str) -> String {
 /// rule (any digit with a letter on each side) in records from before `domain.digit_rule`.
 fn rule(code: &str, i: &Incident) -> String {
     let reworked = i.domain.as_ref().is_some_and(|d| d.digit_rule.is_some());
-    match code {
-        "digit_in_name" if !reworked => "a digit inside a word of the address".into(),
+    let reply = i.last.as_ref().and_then(|l| l.reply_to_differs.as_deref());
+    match (code, reply) {
+        ("digit_in_name", _) if !reworked => "a digit inside a word of the address".into(),
+        // (Where the record says how it was treated; one from before doesn't.)
+        ("reply_to_differs", Some("remark")) => format!("{} (a remark)", tag(code)),
+        ("reply_to_differs", Some("warning")) => format!("{} (a warning)", tag(code)),
+        ("reply_to_differs", Some(other)) => {
+            format!("{} ({})", tag(code), other.replace('_', " "))
+        }
         _ => tag(code),
     }
 }
@@ -1044,6 +1062,16 @@ fn link_flag(code: &str) -> String {
         "unreadable" => "not a readable address",
         "no_target" => "a relative link: it leads nowhere by itself",
         "shared_hosting" => "a platform anyone can publish on, or a shortener",
+        _ => return code.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// A word that describes a link and decides nothing (`links[].notes`), in words.
+fn link_note(code: &str) -> String {
+    match code {
+        "tracked" => "through the message's own click-tracking host",
+        "brand_in_address" => "carries a genuine name inside another address",
         _ => return code.replace('_', " "),
     }
     .to_string()
@@ -1315,6 +1343,20 @@ fn link_lines(t: &Theme, i: &Incident) -> Vec<Line<'static>> {
                 t.s(t.yellow),
             ));
         }
+        // Notes describe a link and decide nothing: never a warning's colour.
+        if !l.notes.is_empty() {
+            spans.push(Span::styled(
+                format!(
+                    " · note: {}",
+                    l.notes
+                        .iter()
+                        .map(|n| link_note(n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                t.dim(),
+            ));
+        }
         out.push(Line::from(spans));
     }
     match i.links_left() {
@@ -1410,31 +1452,48 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             ),
         ]));
         // A rule or two on the line; more as a list (a check of an email file has many).
-        let did = match l.floors_changed {
-            Some(true) => "raised the verdict",
+        // The rules can raise the model's verdict, and in later records lower it: which
+        // way is told by the two verdicts, where both are known.
+        let rank = |v: &str| {
+            Verdict::of(v).map(|v| match v {
+                Verdict::Safe => 0,
+                Verdict::Suspicious => 1,
+                Verdict::Malicious => 2,
+            })
+        };
+        let did = match (l.floors_changed, rank(jv), rank(lv)) {
+            (Some(true), Some(a), Some(b)) if b > a => "raised the verdict",
+            (Some(true), Some(a), Some(b)) if b < a => "lowered the verdict",
+            (Some(true), _, _) => "changed the verdict",
             _ => "the verdict stood",
         };
-        match l.floors.len() {
+        let rules: Vec<String> = l.floors.iter().map(|f| rule(f, i)).collect();
+        let one = format!("{}: {did}", rules.join(" · "));
+        match rules.len() {
             0 => out.push(row(t, "SusCheck's rules", "none applied".into())),
-            1 | 2 => out.push(row(
-                t,
-                "SusCheck's rules",
-                format!(
-                    "{}: {did}",
-                    l.floors
-                        .iter()
-                        .map(|f| rule(f, i))
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                ),
-            )),
+            // (One or two on the row, where they fit it.)
+            1 | 2 if one.chars().count() <= 84 => out.push(row(t, "SusCheck's rules", one)),
             _ => {
                 out.push(row(t, "SusCheck's rules", format!("{did}:")));
-                out.extend(bullets(
-                    t,
-                    &l.floors.iter().map(|f| rule(f, i)).collect::<Vec<_>>(),
-                ));
+                out.extend(bullets(t, &rules));
             }
+        }
+        // The model's own verdict lowered for want of a ground, where the record says so.
+        if l.model_capped {
+            out.push(row(
+                t,
+                "Model lowered",
+                "it said \"don't trust this\" with no concrete ground: lowered to \"be careful\""
+                    .into(),
+            ));
+        }
+        if l.model_softened {
+            out.push(row(
+                t,
+                "Model set aside",
+                "its worry had no warning-level ground: judged as if it had seen nothing wrong"
+                    .into(),
+            ));
         }
         // Who said "don't trust this": SusCheck's rules do only on strong evidence, so
         // with none it is the model's own verdict. (A record from before doesn't say:
@@ -1791,15 +1850,19 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
     }
     if let Some(s) = &i.search {
         out.push(Line::raw(""));
-        // `ok` is about the official site's search alone where the record lists what
-        // failed; in a record from before, it was false when any search failed.
+        // What `ok: false` means went by the record's time: any search failed (a record
+        // without `failed`), the official site's did (one with `failed`), the search as
+        // a whole couldn't help (one that also lists what was `empty`).
         out.push(head(
             t,
-            match (s.ok, &s.failed) {
-                (Some(false), Some(_)) => {
+            match (s.ok, &s.failed, &s.empty) {
+                (Some(false), Some(_), Some(_)) => {
+                    "Searches SusCheck ran (the search as a whole couldn't help)"
+                }
+                (Some(false), Some(_), None) => {
                     "Searches SusCheck ran (the one for the official site failed or came back empty)"
                 }
-                (Some(false), None) => "Searches SusCheck ran (one failed or timed out)",
+                (Some(false), None, _) => "Searches SusCheck ran (one failed or timed out)",
                 _ => "Searches SusCheck ran",
             },
         ));
@@ -1829,13 +1892,38 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 ),
             ]));
         }
+        // A kind said to have found nothing that no query here has (one this sentry
+        // doesn't know): said as it is. The others say so under their own query.
+        let empty = s.empty.as_deref().unwrap_or(&[]);
+        let stray: Vec<String> = empty
+            .iter()
+            .filter(|k| !s.queries.iter().any(|q| &q.kind == *k))
+            .map(|k| query(k))
+            .collect();
+        if !stray.is_empty() {
+            out.push(row(t, "  found nothing", stray.join(" · ")));
+        }
+        // The engines that didn't answer: a note about the search service, nothing more.
+        if let Some(names) = s.unresponsive.as_ref().filter(|n| !n.is_empty()) {
+            out.push(row(
+                t,
+                "  not answering",
+                format!(
+                    "{} (search engines that didn't answer some query: a note, it decides nothing)",
+                    names.join(" · ")
+                ),
+            ));
+        }
         for q in &s.queries {
             out.push(row(t, &format!("  {}", q.kind), q.query.clone()));
             if q.hits.is_empty() {
                 out.push(Line::styled(
-                    match failed.contains(&q.kind) {
-                        true => "      failed or timed out",
-                        false => "      nothing came back",
+                    match (failed.contains(&q.kind), empty.contains(&q.kind)) {
+                        (true, _) => "      failed or timed out",
+                        (false, true) => "      answered, and found nothing",
+                        // (A record from before the two were told apart, or one that
+                        // lists the query under neither.)
+                        (false, false) => "      nothing came back",
                     },
                     t.dim(),
                 ));

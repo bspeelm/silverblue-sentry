@@ -309,7 +309,9 @@ pub struct Check {
     pub verdict: Option<String>,
     pub confidence: Option<String>,
     pub incomplete: Option<bool>,
-    /// SusCheck's fixed rules raised the verdict above the model's.
+    /// SusCheck's fixed rules changed the verdict from what the model answered: raised
+    /// it, or (in later records) lowered it for want of a ground. The index doesn't say
+    /// which way.
     pub floors_changed: Option<bool>,
     pub duration_ms: u64,
     /// Why it failed (`model`, `server`, `cancelled`, …); None for a completed check.
@@ -351,6 +353,7 @@ pub fn unconfirmed_short(kind: Option<&str>) -> &'static str {
         Some("other_domain") => "be careful (other domain)",
         Some("small_sender") => "be careful (small sender)",
         Some("personal_address") => "be careful (personal)",
+        Some("platform_sender") => "be careful (via a service)",
         _ => UNCONFIRMED_SHORT,
     }
 }
@@ -688,7 +691,7 @@ pub struct Tally {
     pub errors: u32,
     /// Completed, with key evidence not visible or not confirmed.
     pub incomplete: u32,
-    /// Completed, with SusCheck's fixed rules raising the model's verdict.
+    /// Completed, with SusCheck's fixed rules changing the model's verdict (either way).
     pub floors: u32,
 }
 
@@ -1395,6 +1398,13 @@ pub struct Search {
     /// The kind of each query that failed or timed out. None: a record from before that
     /// was written.
     pub failed: Option<Vec<String>>,
+    /// The kind of each query that answered and found nothing. None: a record from
+    /// before, where an empty result list not in `failed` found nothing.
+    pub empty: Option<Vec<String>>,
+    /// The search engines that did not answer some query, by the names the search
+    /// service gave them (cleaned; at most 10). A note about the service. None: a record
+    /// from before.
+    pub unresponsive: Option<Vec<String>>,
     /// The company's own site talks about or hosts the sender's domain (at least two of
     /// the domain query's top results are on the brand's agreed domain). It can only
     /// soften the comparison. None: not looked at, or a record from before.
@@ -1436,6 +1446,15 @@ pub struct Final {
     /// the model's own. None: not recorded (a record from before, when older rules
     /// applied).
     pub strong_evidence: Option<Vec<String>>,
+    /// How a Reply-To on another domain was treated: `remark` or `warning` (or a value
+    /// this sentry doesn't know). None: the rule didn't apply, or a record from before.
+    pub reply_to_differs: Option<String>,
+    /// The model said "don't trust this" with no concrete ground, and SusCheck's rules
+    /// lowered it. Only a literal `true`.
+    pub model_capped: bool,
+    /// The model's worry had no warning-level ground and was set aside: the answer is
+    /// what a model that saw nothing wrong would have got. Only a literal `true`.
+    pub model_softened: bool,
 }
 
 /// One attachment as the message declared it. Nothing else of it exists anywhere: SusCheck
@@ -1531,6 +1550,9 @@ pub struct Link {
     /// (`examp1epay[.]test`). Shown as it is: never resolved, opened or copied anywhere.
     pub target: Option<String>,
     pub flags: Vec<String>,
+    /// Words that describe the link and decide nothing (`tracked`, `brand_in_address`):
+    /// never a flag, never a warning.
+    pub notes: Vec<String>,
 }
 
 /// What the desktop app reported about the window.
@@ -1770,6 +1792,10 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             ok: s["ok"].as_bool(),
             queries,
             failed: s["failed"].is_array().then(|| texts(&s["failed"], 20, 6)),
+            empty: s["empty"].is_array().then(|| texts(&s["empty"], 20, 6)),
+            unresponsive: s["unresponsive"]
+                .is_array()
+                .then(|| texts(&s["unresponsive"], 34, 10)),
             domain_vouched: s["domain_vouched"].as_bool(),
         }
     });
@@ -1800,6 +1826,9 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             strong_evidence: f["strong_evidence"]
                 .is_array()
                 .then(|| texts(&f["strong_evidence"], 40, 8)),
+            reply_to_differs: text(&f["reply_to_differs"], 16),
+            model_capped: f["model_capped"].as_bool() == Some(true),
+            model_softened: f["model_softened"].as_bool() == Some(true),
         }
     });
     let count = |x: &Value| x.as_u64().map(|n| n.min(1_000_000));
@@ -1870,6 +1899,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
                 scheme: text(&l["scheme"], 20),
                 target: text(&l["target_domain"], 210),
                 flags: texts(&l["flags"], 30, 12),
+                notes: texts(&l["notes"], 30, 8),
             })
             .collect()
     });
@@ -2120,7 +2150,7 @@ pub(crate) mod tests {
         assert_eq!(s.checks[7].pictureless(), None);
         assert_eq!(s.checks[5].pictureless(), None);
         let st = s.status.ok().unwrap();
-        assert_eq!(st.version.as_deref(), Some("0.1.1"));
+        assert_eq!(st.version.as_deref(), Some("0.1.2"));
         assert_eq!(st.retention_days, Some(30));
         assert_eq!(s.heartbeat_age(), Some(120));
         let d = s.devices.ok().unwrap();
@@ -2490,10 +2520,19 @@ pub(crate) mod tests {
             d.remove("related_by");
         }
         if let Some(f) = o.get_mut("final").and_then(Value::as_object_mut) {
-            f.remove("strong_evidence");
+            for k in [
+                "strong_evidence",
+                "reply_to_differs",
+                "model_capped",
+                "model_softened",
+            ] {
+                f.remove(k);
+            }
         }
         if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
-            f.remove("domain_vouched");
+            for k in ["domain_vouched", "empty", "unresponsive"] {
+                f.remove(k);
+            }
         }
         if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
             f.remove("failed");
@@ -2596,6 +2635,12 @@ pub(crate) mod tests {
             "\"domain_vouched\":",
             "\"strong_evidence\":",
             "\"mailing_list\":",
+            "\"reply_to_differs\":",
+            "\"model_capped\":",
+            "\"model_softened\":",
+            "\"empty\":",
+            "\"unresponsive\":",
+            "\"notes\":",
         ] {
             assert!(!old_text.contains(later), "{later}");
         }
@@ -2710,10 +2755,15 @@ pub(crate) mod tests {
                 l.unconfirmed_kind = None;
                 l.trusted_sender = false;
                 l.strong_evidence = None;
+                l.reply_to_differs = None;
+                l.model_capped = false;
+                l.model_softened = false;
             }
             if let Some(s) = &mut now.search {
                 s.failed = None;
                 s.domain_vouched = None;
+                s.empty = None;
+                s.unresponsive = None;
             }
             let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
             assert_eq!(then.input, ["image"], "{id}");
@@ -2806,6 +2856,7 @@ pub(crate) mod tests {
                 // As stored: defanged, and never made anything else of.
                 target: Some("account-alerts[.]test".into()),
                 flags: vec!["text_mismatch".into()],
+                notes: Vec::new(),
             }
         );
         assert_eq!((i.links_total, i.links_more()), (Some(2), 0));
@@ -3076,7 +3127,7 @@ pub(crate) mod tests {
             (Some("address_bar"), Some("fired"))
         );
         assert_eq!(w.search.as_ref().unwrap().failed.as_deref(), Some(&[][..]));
-        assert_eq!(w.prompt_version.as_deref(), Some("6"));
+        assert_eq!(w.prompt_version.as_deref(), Some("7"));
         // An email checked with the mail window it was open in: both supply links, and
         // three were exact repeats. Nothing was left out at a limit.
         let both = sample_incident("20261105T114502Z-r3s5");
@@ -4152,39 +4203,49 @@ pub(crate) mod tests {
             (c.acquired_by.as_deref(), c.trusted(), &c.unconfirmed_kind),
             (Some("original"), false, &None)
         );
+        // (What each later generation added is taken away from the newest records, down
+        // to the generation asked for.)
         let strip = |text: &str, generation: u8| {
             let mut v: Value = serde_json::from_str(text).unwrap();
             v["prompt_version"] = "9".into();
-            // (What generation 7 added goes for every one of them.)
-            v["domain"].as_object_mut().unwrap().remove("related_by");
-            v["search"]
-                .as_object_mut()
-                .unwrap()
-                .remove("domain_vouched");
-            v["final"]
-                .as_object_mut()
-                .unwrap()
-                .remove("strong_evidence");
-            if let Some(sig) = v["email"]["signals"].as_object_mut() {
-                sig.remove("mailing_list");
-            }
-            if generation == 6 {
-                return v.to_string();
-            }
-            v["email"]
-                .as_object_mut()
-                .unwrap()
-                .remove("defects_notable");
-            v["final"]["floors"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|f| f != "message_faults");
-            if generation == 4 {
-                v["email"].as_object_mut().unwrap().remove("defects");
-                v["domain"].as_object_mut().unwrap().remove("judge_word");
-                for k in ["trusted_sender", "unconfirmed_kind"] {
-                    v["final"].as_object_mut().unwrap().remove(k);
+            fn rm(v: &mut Value, block: &str, keys: &[&str]) {
+                if let Some(o) = v[block].as_object_mut() {
+                    for k in keys {
+                        o.remove(*k);
+                    }
                 }
+            }
+            if generation < 9 {
+                rm(&mut v, "final", &["model_softened"]);
+            }
+            if generation < 8 {
+                rm(&mut v, "search", &["empty", "unresponsive"]);
+                rm(&mut v, "final", &["reply_to_differs", "model_capped"]);
+                for l in v["links"].as_array_mut().into_iter().flatten() {
+                    if let Some(o) = l.as_object_mut() {
+                        o.remove("notes");
+                    }
+                }
+            }
+            if generation < 7 {
+                rm(&mut v, "domain", &["related_by"]);
+                rm(&mut v, "search", &["domain_vouched"]);
+                rm(&mut v, "final", &["strong_evidence"]);
+                if let Some(sig) = v["email"]["signals"].as_object_mut() {
+                    sig.remove("mailing_list");
+                }
+            }
+            if generation < 6 {
+                rm(&mut v, "email", &["defects_notable"]);
+                v["final"]["floors"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|f| f != "message_faults");
+            }
+            if generation < 5 {
+                rm(&mut v, "email", &["defects"]);
+                rm(&mut v, "domain", &["judge_word"]);
+                rm(&mut v, "final", &["trusted_sender", "unconfirmed_kind"]);
             }
             v.to_string()
         };
@@ -4252,6 +4313,44 @@ pub(crate) mod tests {
         for g in [&g4, &g5] {
             assert_eq!(g.last.as_ref().unwrap().strong_evidence, None);
             assert_eq!(g.domain.as_ref().unwrap().related_by, None);
+        }
+        // Generation 7 (related domains, strong evidence): no word yet on how a Reply-To
+        // was treated, on a verdict lowered, on what a search found empty, on link notes.
+        let g7 = parse_incident(&strip(&text, 7), id).unwrap();
+        let (l, q) = (g7.last.as_ref().unwrap(), g7.search.as_ref().unwrap());
+        assert_eq!(l.strong_evidence.as_deref(), Some(&[][..]));
+        assert!(l.floors.contains(&"reply_to_differs".to_string()));
+        assert_eq!(
+            (&l.reply_to_differs, l.model_capped, l.model_softened),
+            (&None, false, false)
+        );
+        assert_eq!(
+            (&q.empty, &q.unresponsive, q.failed.is_some()),
+            (&None, &None, true)
+        );
+        assert_eq!(q.domain_vouched, Some(false));
+        // Generation 8 (mail through a service, search judged per check): those, and not
+        // yet the model's worry set aside.
+        let g8 = parse_incident(&strip(&text, 8), id).unwrap();
+        let (l, q) = (g8.last.as_ref().unwrap(), g8.search.as_ref().unwrap());
+        assert_eq!(l.reply_to_differs.as_deref(), Some("warning"));
+        assert_eq!(q.empty.as_deref(), Some(&["domain".to_string()][..]));
+        assert_eq!(q.unresponsive.as_deref(), Some(&[][..]));
+        assert!(!l.model_capped && !l.model_softened);
+        // Generation 9 (levels that need grounds) has every field today's has: the tenth
+        // added words, not fields. Whatever prompts it claims, it reads as today's.
+        let g9 = parse_incident(&strip(&text, 9), id).unwrap();
+        let mut today = sample_incident("20261105T081233Z-k2m4");
+        today.prompt_version = Some("9".into());
+        assert_eq!(g9, today);
+        for g in [&g4, &g5, &g6] {
+            let (l, q) = (g.last.as_ref().unwrap(), g.search.as_ref().unwrap());
+            assert_eq!(
+                (&l.reply_to_differs, l.model_capped, l.model_softened),
+                (&None, false, false)
+            );
+            assert_eq!((&q.empty, &q.unresponsive), (&None, &None));
+            assert!(g.links.iter().flatten().all(|l| l.notes.is_empty()));
         }
         // And the script reads the list in the same one exec.
         let sh = script("/srv/x", 50, MARK);
@@ -4391,6 +4490,151 @@ pub(crate) mod tests {
                     _ => assert!(i.last.as_ref().unwrap().strong_evidence.is_none()),
                 }
                 assert!(i.last.is_some() && i.unconfirmed_only());
+            }
+        }
+    }
+
+    /// Generations 8 to 10: a verdict the rules lowered for want of a ground, how a
+    /// Reply-To was treated, what a search found empty and which engines didn't answer,
+    /// notes on links, the kind `platform_sender`.
+    #[test]
+    fn verdicts_lowered_reply_to_search_per_check_and_link_notes() {
+        // The samples: nothing lowered in any; one Reply-To treated as a warning; most
+        // searches for the domain answered and found nothing; no engine unanswering.
+        let mail = sample_incident("20261105T081233Z-k2m4");
+        let (l, q) = (mail.last.as_ref().unwrap(), mail.search.as_ref().unwrap());
+        assert_eq!(l.reply_to_differs.as_deref(), Some("warning"));
+        assert!(!l.model_capped && !l.model_softened);
+        assert_eq!(
+            (
+                q.ok,
+                q.failed.as_deref(),
+                q.empty.as_deref(),
+                q.unresponsive.as_deref()
+            ),
+            (
+                Some(true),
+                Some(&[][..]),
+                Some(&["domain".to_string()][..]),
+                Some(&[][..])
+            )
+        );
+        assert!(mail.links.iter().flatten().all(|l| l.notes.is_empty()));
+        let news = sample_incident("20261105T115821Z-t4v6");
+        assert_eq!(
+            news.search.as_ref().unwrap().empty.as_deref(),
+            Some(&["domain".to_string(), "official2".to_string()][..])
+        );
+        // The old shape says none of it.
+        let old = sample_incident("20261030T184512Z-b0a1");
+        let (l, q) = (old.last.as_ref().unwrap(), old.search.as_ref().unwrap());
+        assert_eq!(
+            (&l.reply_to_differs, l.model_capped, l.model_softened),
+            (&None, false, false)
+        );
+        assert_eq!(
+            (&q.empty, &q.unresponsive, &q.failed),
+            (&None, &None, &None)
+        );
+        // The list's word for the new kind fits its column like the others.
+        for kind in [
+            "picture",
+            "other_domain",
+            "small_sender",
+            "personal_address",
+            "platform_sender",
+            "by_owl",
+        ] {
+            assert!(
+                unconfirmed_short(Some(kind)).chars().count() <= 26,
+                "{kind}"
+            );
+        }
+        assert_eq!(
+            unconfirmed_short(Some("platform_sender")),
+            "be careful (via a service)"
+        );
+        // Hostile and broken, field by field.
+        let id = Id::parse("20261105T081233Z-k2m4").unwrap();
+        let text = fixture("suscheck/20261105T081233Z-k2m4/incident.json");
+        let long = "x".repeat(900);
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["final"]["reply_to_differs"] = format!("war\u{1b}[2Jning\u{202e} {long}").into();
+        v["final"]["model_capped"] = "true".into();
+        v["final"]["model_softened"] = 1.into();
+        v["search"]["empty"] = serde_json::json!(["domain", 3, "pho\u{7}ne", null, long]);
+        v["search"]["unresponsive"] = Value::Array(
+            [
+                "engine\u{1b}]0;x\u{7} one".into(),
+                4.into(),
+                long.clone().into(),
+            ]
+            .into_iter()
+            .chain((0..20).map(|n| format!("e{n}").into()))
+            .collect(),
+        );
+        v["links"][0]["notes"] =
+            serde_json::json!(["tracked", 7, "no\u{7}te_from\u{200b}_next_year", null, long]);
+        v["links"][1]["notes"] = "tracked".into();
+        v["facts"]["asks_for"] = serde_json::json!(["purchase_offer", "payment"]);
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        let (l, q) = (i.last.as_ref().unwrap(), i.search.as_ref().unwrap());
+        assert!(
+            l.reply_to_differs
+                .as_ref()
+                .unwrap()
+                .starts_with("warning x")
+        );
+        assert_eq!(l.reply_to_differs.as_ref().unwrap().chars().count(), 17);
+        // Only a literal `true` says a verdict was lowered.
+        assert!(!l.model_capped && !l.model_softened);
+        let empty = q.empty.as_ref().unwrap();
+        assert_eq!(empty[..2], ["domain", "phone"]);
+        assert_eq!((empty.len(), empty[2].chars().count()), (3, 21));
+        let engines = q.unresponsive.as_ref().unwrap();
+        assert_eq!(engines.len(), 10);
+        assert_eq!(engines[0], "engine one");
+        assert_eq!(engines[1].chars().count(), 35);
+        let links = i.links.as_ref().unwrap();
+        assert_eq!(links[0].notes[..2], ["tracked", "note_from_next_year"]);
+        assert_eq!(links[0].notes[2].chars().count(), 31);
+        assert!(links[1].notes.is_empty());
+        // (A note is never a flag.)
+        assert_eq!(links[0].flags, ["text_mismatch"]);
+        assert_eq!(
+            i.facts.as_ref().unwrap().asks_for,
+            ["purchase_offer", "payment"]
+        );
+        let all = format!("{i:?}");
+        assert!(
+            !all.chars()
+                .any(|c| c == '\u{1b}' || c == '\u{7}' || invisible(c))
+        );
+        v["final"]["model_capped"] = true.into();
+        v["final"]["model_softened"] = true.into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert!(i.last.as_ref().unwrap().model_capped && i.last.as_ref().unwrap().model_softened);
+        for (block, key) in [
+            ("final", "reply_to_differs"),
+            ("final", "model_capped"),
+            ("final", "model_softened"),
+            ("search", "empty"),
+            ("search", "unresponsive"),
+        ] {
+            for wrong in [Value::Null, 3.into(), serde_json::json!({"a": 1})] {
+                let mut w: Value = serde_json::from_str(&text).unwrap();
+                w[block][key] = wrong;
+                let i = parse_incident(&w.to_string(), id).unwrap();
+                let (l, q) = (i.last.as_ref().unwrap(), i.search.as_ref().unwrap());
+                match key {
+                    "reply_to_differs" => assert!(l.reply_to_differs.is_none()),
+                    "model_capped" => assert!(!l.model_capped),
+                    "model_softened" => assert!(!l.model_softened),
+                    // (Not recorded isn't "none".)
+                    "empty" => assert!(q.empty.is_none()),
+                    _ => assert!(q.unresponsive.is_none()),
+                }
+                assert!(i.links.is_some() && q.failed.is_some());
             }
         }
     }

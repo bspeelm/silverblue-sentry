@@ -8,7 +8,7 @@
  "duration_ms": 15930,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "6",
+ "prompt_version": "7",
  "stages_ms": {
   "extract": 3280,
   "reread": null,
@@ -85,7 +85,11 @@
    ],
    "domain": []
   },
-  "failed": []
+  "failed": [],
+  "empty": [
+   "domain"
+  ],
+  "unresponsive": []
  },
  "judgement": {
   "red_flags": [
@@ -135,7 +139,10 @@
   "strong_evidence": [
    "close_imitation",
    "link_close_imitation"
-  ]
+  ],
+  "reply_to_differs": null,
+  "model_capped": false,
+  "model_softened": false
  },
  "input": [
   "image",
@@ -150,13 +157,15 @@
    "flags": [
     "lookalike",
     "close_imitation"
-   ]
+   ],
+   "notes": []
   },
   {
    "text": "Help",
    "scheme": "https",
    "target_domain": "example-pay[.]test",
-   "flags": []
+   "flags": [],
+   "notes": []
   }
  ],
  "links_total": 2,

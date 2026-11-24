@@ -5,7 +5,7 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.1 ────────────────────────────┐┌ Check · Nov 05 08:12 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.2 ────────────────────────────┐┌ Check · Nov 05 08:12 · Hallway PC ─────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           be careful  (medium confidence)                                                          │
 │ checks                           12       12 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 2        2 ││ From              Hallway PC (web) · took 14 s                                                             │
@@ -19,7 +19,7 @@ expression: s
 │ rules overrode    the model 4 of 11 (36%)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
 │ typical time      14 s (longest 21 s)        ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
 │ you marked        none yet (m on a check)    ││   · Replies to this message would go to a different address from the one it was sent from.                 │
-│ model example-vision:1b · prompts 6          ││   · It is put together in a broken way that ordinary mail programs don't produce. Scam mail is often like  │
+│ model example-vision:1b · prompts 7          ││   · It is put together in a broken way that ordinary mail programs don't produce. Scam mail is often like  │
 │ by extension: 1 original                     ││ that, but some genuine mail is too.                                                                        │
 │ ● alive 2m ago · keeps checks 30 days        ││   · It asks the reader to sign in with a password today.                                                   │
 │                                              ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
@@ -33,7 +33,7 @@ expression: s
 │ Study laptop   ext 0.2.0      1  3m ago      ││   · the sender's name shows another address                                                                │
 └──────────────────────────────────────────────┘│   · the mail's reported checks failed                                                                      │
 ┌ Trusted senders · 2 now ─────────────────────┐│   · an attachment named like a program or a script                                                         │
-│ riverside-allotments.test (domain)           ││   · replies go to another domain                                                                           │
+│ riverside-allotments.test (domain)           ││   · replies go to another domain (a warning)                                                               │
 │   ↳ Riverside Allotments                     ││   · put together in a broken way ordinary mail programs don't produce (a remark)                           │
 │     added Nov 04 18:20 by Kitchen iMac       ││   its red flags                                                                                            │
 │ jo-bloggs@freemail.test (address)            ││   · It asks the reader to sign in with a password today.                                                   │
@@ -83,10 +83,10 @@ expression: s
 │                                              ││       Example Pay help centre · example-pay.test · 1 engine                                                │
 │                                              ││         Answers to common questions.                                                                       │
 │                                              ││   domain          "account-alerts.test"                                                                    │
-│                                              ││       nothing came back                                                                                    │
+│                                              ││       answered, and found nothing                                                                          │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 6                                                            │
+│                                              ││   model           example-vision:1b · prompts 7                                                            │
 │                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s                                 │
 │                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         none: this check was made without one                                                    │
