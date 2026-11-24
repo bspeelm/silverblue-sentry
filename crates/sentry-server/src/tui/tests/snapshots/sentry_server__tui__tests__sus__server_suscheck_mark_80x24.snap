@@ -1,0 +1,27 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   8 SusCheck   0 Upg
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Check · Nov 01 09:15 · Kitchen iMac ─────────────────────────────────────────┐
+│ It said           don't trust this  (high confidence)                        │
+│ Your mark         none (m marks it)                                          │
+┌ Mark this check · pick one (1–4, n cancels) ─────────────────────────────────┐
+│                                                                              │
+│ 1  SusCheck was right                                                        │
+│ 2  wrong: it should have said "no obvious warning signs"                     │
+│ 3  wrong: it should have said "be careful"                                   │
+│ 4  wrong: it should have said "don't trust this"                             │
+│                                                                              │
+│ Kept on this machine (the server's suscheck.toml): nothing is written to the │
+│ server, and SusCheck isn't told. x clears a mark.                            │
+│                                                                              │
+│  Enter  close                                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+│ What counted      don't trust this (high)                                    │
+│ SusCheck's rules  lookalike: raised the verdict                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ 1–9  choose   Esc  cancel

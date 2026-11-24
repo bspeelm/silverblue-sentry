@@ -1,0 +1,104 @@
+{
+ "schema": 1,
+ "id": "20261103T172009Z-g7h8",
+ "time": "2026-11-03T17:20:09Z",
+ "device": "Study laptop",
+ "client": "web",
+ "app_version": "",
+ "duration_ms": 11340,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "1",
+ "stages_ms": {
+  "extract": 3400,
+  "reread": 0,
+  "search": 1520,
+  "judge": 6420
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Example Pay",
+  "sender_name": "Example Pay Support",
+  "sender_address": null,
+  "address_bar_domain": null,
+  "link_texts": [
+   "Review activity"
+  ],
+  "phone_numbers": [],
+  "asks_for": [],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": null,
+  "second_reading": null,
+  "check": {
+   "result": "unknown",
+   "shown": null,
+   "real": null,
+   "why": "no_domain"
+  }
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ]
+  }
+ },
+ "judgement": {
+  "red_flags": [
+   "The sender's address is not visible."
+  ],
+  "looks_normal": [
+   "The message does not ask for a password or money."
+  ],
+  "incomplete": true,
+  "confidence": "low",
+  "verdict": "suspicious",
+  "advice": [
+   "retake_with_address_bar",
+   "do_not_click"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"kind\": \"email\", \"claimed_brand\": \"Example Pay\", \"sender_name\": \"Example Pay Support\", \"sender_address\": null, \"asks_for\": [], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [\"The sender's address is not visible.\"], \"verdict\": \"suspicious\", \"confidence\": \"low\", \"incomplete\": true, \"advice\": [\"retake_with_address_bar\", \"do_not_click\"]}"
+ },
+ "final": {
+  "verdict": "suspicious",
+  "confidence": "low",
+  "incomplete": true,
+  "reasons": [
+   "The picture does not show who really sent this.",
+   "The sender's address is not visible."
+  ],
+  "advice": [
+   "do_not_click",
+   "retake_with_address_bar"
+  ],
+  "floors": [
+   "unknown"
+  ],
+  "floors_changed_verdict": false
+ },
+ "screenshot": true
+}

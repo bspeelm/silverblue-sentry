@@ -444,6 +444,58 @@ fn a_proposal_that_does_not_parse_is_said_once_and_stages_nothing() {
     assert!(a.config.pending.is_empty());
 }
 
+/// SusCheck's folder and the login that reads it: the wizard sees neither (only that the
+/// block is there, and how many checks are read) and can propose neither.
+#[test]
+fn the_wizard_neither_sees_nor_proposes_where_suscheck_keeps_its_checks() {
+    let servers = "servers:\n  myserver:\n    services: [app.service]\n    suscheck:\n      \
+                   dir: /srv/private-canary/incidents\n      ssh: canary-reader@192.0.2.9\n";
+    let (mut a, d) = config(&[(FileId::Servers, servers)]);
+    let f = cfgcmd::read_in(&d);
+    let (text, bad) = cfgcmd::shown_for_agent(&f, &[FileId::Servers]);
+    assert!(!bad, "{text}");
+    assert!(
+        text.contains("suscheck:")
+            && text.contains("dir: ‹hidden›")
+            && text.contains("ssh: ‹hidden›"),
+        "{text}"
+    );
+    let brief = a.config.wizard_brief();
+    for (what, seen) in [("show-agent", &text), ("the brief", &brief)] {
+        assert!(
+            !seen.contains("private-canary") && !seen.contains("canary-reader"),
+            "{what}:\n{seen}"
+        );
+    }
+    // Proposed all the same: dropped, each with why; what may be proposed still is.
+    ask(
+        &mut a,
+        "Move it.\n```sentry-config\n[[set]]\npath = \"servers.myserver.suscheck.dir\"\n\
+         value = \"/tmp/x\"\n[[set]]\npath = \"servers.myserver.suscheck.ssh\"\nvalue = \"me@elsewhere\"\n\
+         [[remove]]\npath = \"servers.myserver.suscheck.ssh\"\n\
+         [[set]]\npath = \"servers.myserver.suscheck.recent\"\nvalue = 100\n```\n",
+    );
+    let lines = said(&a).join("\n");
+    assert!(
+        lines.contains("where a household's private checks are kept is yours alone to say"),
+        "{lines}"
+    );
+    assert_eq!(
+        lines
+            .matches("which login reads a household's private checks is yours alone to say")
+            .count(),
+        2,
+        "{lines}"
+    );
+    let staged: Vec<String> = a
+        .config
+        .pending
+        .iter()
+        .map(|p| p.change.path.clone())
+        .collect();
+    assert_eq!(staged, ["servers.myserver.suscheck.recent"]);
+}
+
 /// What it asks for beyond its commands can never be allowed in this chat.
 #[test]
 fn a_refused_tool_call_stays_refused() {

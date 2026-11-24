@@ -99,6 +99,8 @@ pub fn lint(name: Option<&str>, offline: bool) -> u8 {
         }
     };
     let mut problems: Vec<String> = warnings;
+    // What is worth saying and isn't wrong: printed, never the exit code's.
+    let mut notes: Vec<String> = Vec::new();
     let names: Vec<String> = match name {
         Some(n) => vec![n.to_string()],
         None => file.servers.keys().cloned().collect(),
@@ -109,6 +111,7 @@ pub fn lint(name: Option<&str>, offline: bool) -> u8 {
             continue;
         };
         problems.extend(config::lint(n, s));
+        notes.extend(config::notes(n, s));
         if !offline {
             match lint_remote(&Remote::new(n, s)) {
                 Ok(p) => problems.extend(p),
@@ -116,6 +119,7 @@ pub fn lint(name: Option<&str>, offline: bool) -> u8 {
             }
         }
     }
+    notes.iter().for_each(|n| println!("· {n}"));
     if problems.is_empty() {
         println!("✓ {}", names.join(", "));
         0
@@ -416,5 +420,8 @@ pub fn check(name: Option<&str>) -> u8 {
         println!("✗ {p}");
         bad += 1;
     }
+    config::notes(&n, &s)
+        .iter()
+        .for_each(|note| println!("· {note}"));
     u8::from(bad > 0)
 }

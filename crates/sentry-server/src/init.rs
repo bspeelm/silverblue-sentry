@@ -72,6 +72,35 @@ pub struct Facts {
     /// Whole disks, `/dev/sda`.
     pub disks: Vec<String>,
     pub listeners: Vec<net::Listener>,
+    /// SusCheck's incidents folder, when the server has its pointer file
+    /// (`/etc/suscheck/incidents.path`) and that names an absolute path.
+    pub suscheck: Option<String>,
+}
+
+/// What the tools probe prints before the pointer file's first line.
+const SUSCHECK_MARK: &str = "@@suscheck";
+
+/// The pointer file's first line as a folder, if it is one: absolute, no control
+/// characters, not just `/`. It was written by an administrator; it is still only
+/// proposed, for the user to look at.
+pub fn suscheck_dir(line: &str) -> Option<String> {
+    let d = line.strip_suffix('\r').unwrap_or(line);
+    let ok = d.starts_with('/')
+        && d.len() <= 4096
+        && !d.chars().any(char::is_control)
+        && !d.trim_end_matches('/').is_empty();
+    ok.then(|| d.trim_end_matches('/').to_string())
+}
+
+/// The tools probe's output: the tools there are, and SusCheck's folder if it has one.
+fn parse_tools(out: &str) -> (Vec<String>, Option<String>) {
+    let mut lines = out.lines();
+    let tools = lines
+        .by_ref()
+        .take_while(|l| *l != SUSCHECK_MARK)
+        .map(str::to_string)
+        .collect();
+    (tools, lines.next().and_then(suscheck_dir))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,10 +223,16 @@ pub fn discover(r: &Remote) -> Result<Facts, SrvError> {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    f.tools = r
-        .sh(&format!("{SBIN}{probe}; true"))
+    // The same exec says whether SusCheck is here: its pointer file's first line (the file
+    // not being there is the usual case).
+    let pointer = sh_quote(crate::collect::suscheck::POINTER);
+    (f.tools, f.suscheck) = r
+        .sh(&format!(
+            "{SBIN}{probe}; echo {SUSCHECK_MARK}; \
+             head -c 4200 {pointer} 2>/dev/null | head -n 1; true"
+        ))
         .output()
-        .map(|o| o.lines().map(str::to_string).collect())
+        .map(|o| parse_tools(&o))
         .unwrap_or_default();
     if f.sudo == Some(SudoMode::NoPasswd) && f.tools.iter().any(|t| t == "docker") {
         let c = r
@@ -424,6 +459,20 @@ pub fn draft(name: &str, ssh: &str, f: &Facts) -> Draft<Server> {
             "everything listening now. Remove what you didn't expect: it becomes a finding.",
         ));
     }
+    if let Some(dir) = &f.suscheck {
+        s.suscheck.dir = Some(dir.clone());
+        notes.push(Note::on(
+            &at(name, "suscheck.dir"),
+            "SusCheck is installed here (its /etc/suscheck/incidents.path names this folder): \
+             sentry gets a SusCheck screen for how the household's checks went. It only reads.",
+        ));
+        notes.push(Note::on(
+            &at(name, "suscheck.ssh"),
+            "not set: the folder would be read as this server's ordinary login, the one \
+             sentry's sessions run commands as. Better: a second login on the server that is \
+             in the folder's group (and this one left out of it), named here.",
+        ));
+    }
     Draft { entry: s, notes }
 }
 
@@ -523,7 +572,68 @@ mod tests {
             ],
             disks: vec!["/dev/sda".into()],
             listeners: net::parse_listen(&fx("ss-tuln.txt")),
+            suscheck: None,
         }
+    }
+
+    #[test]
+    fn suscheck_is_proposed_from_its_pointer_file_and_only_a_plain_path() {
+        // What the one exec prints: the tools, the mark, the pointer's first line.
+        assert_eq!(
+            parse_tools("docker\nsmartctl\n@@suscheck\n/srv/suscheck/incidents\n"),
+            (
+                vec!["docker".to_string(), "smartctl".to_string()],
+                Some("/srv/suscheck/incidents".to_string())
+            )
+        );
+        // Not there (the usual case): the tools, and nothing else.
+        assert_eq!(
+            parse_tools("docker\n@@suscheck\n"),
+            (vec!["docker".to_string()], None)
+        );
+        assert_eq!(parse_tools(""), (Vec::new(), None));
+        for (line, want) in [
+            ("/srv/suscheck/incidents", Some("/srv/suscheck/incidents")),
+            ("/srv/suscheck/incidents/", Some("/srv/suscheck/incidents")),
+            ("/srv/with space/x\r", Some("/srv/with space/x")),
+            ("srv/relative", None),
+            ("", None),
+            ("/", None),
+            ("//", None),
+            ("/srv/a\x1b[2Jb", None),
+            ("/srv/a\tb", None),
+            ("~/incidents", None),
+            ("$(reboot)", None),
+        ] {
+            assert_eq!(suscheck_dir(line).as_deref(), want, "{line:?}");
+        }
+        // The draft proposes the block, with a note at each setting; nothing without it.
+        let mut f = facts(Some(SudoMode::NoPasswd));
+        let plain = draft("myserver", "myserver", &f);
+        assert_eq!(plain.entry.suscheck, Default::default());
+        assert!(plain.notes.iter().all(|n| !n.text.contains("SusCheck")));
+        f.suscheck = Some("/srv/suscheck/incidents".into());
+        let d = draft("myserver", "myserver", &f);
+        assert_eq!(d.entry.suscheck.on(), Some("/srv/suscheck/incidents"));
+        assert_eq!(d.entry.suscheck.ssh, None);
+        let said: Vec<(&str, &str)> = d
+            .notes
+            .iter()
+            .filter_map(|n| Some((n.path.as_deref()?, n.text.as_str())))
+            .filter(|(p, _)| p.contains("suscheck"))
+            .collect();
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!(said[0].0, "servers.myserver.suscheck.dir");
+        assert!(said[0].1.contains("SusCheck is installed here"));
+        assert_eq!(said[1].0, "servers.myserver.suscheck.ssh");
+        assert!(said[1].1.contains("a second login on the server"));
+        // What it drafts is valid config, and says the same advice the lint's note does.
+        let text = written("myserver", &d);
+        let (file, w) = super::super::config::parse(&text).expect(&text);
+        assert!(w.is_empty() && text.contains("suscheck:\n      dir: /srv/suscheck/incidents"));
+        let s = &file.servers["myserver"];
+        assert!(super::super::config::lint("myserver", s).is_empty());
+        assert_eq!(super::super::config::notes("myserver", s).len(), 1);
     }
 
     fn written(name: &str, d: &Draft<Server>) -> String {

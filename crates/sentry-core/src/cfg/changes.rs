@@ -143,6 +143,14 @@ pub const NEVER: &[(&str, &str)] = &[
         "which files an agent may read is yours alone to say",
     ),
     (
+        "servers.*.suscheck.dir",
+        "where a household's private checks are kept is yours alone to say",
+    ),
+    (
+        "servers.*.suscheck.ssh",
+        "which login reads a household's private checks is yours alone to say",
+    ),
+    (
         "networks.*.router.ssh",
         "which host sentry connects to is yours alone to say",
     ),
@@ -684,6 +692,9 @@ mod tests {
         );
         assert!(never(&parse_path("servers.a.sudo[0]").unwrap()).is_some());
         assert!(never(&parse_path("servers.a.services[0]").unwrap()).is_none());
+        assert!(never(&parse_path("servers.a.suscheck.dir").unwrap()).is_some());
+        assert!(never(&parse_path("servers.a.suscheck.ssh").unwrap()).is_some());
+        assert!(never(&parse_path("servers.a.suscheck.recent").unwrap()).is_none());
     }
 
     #[test]

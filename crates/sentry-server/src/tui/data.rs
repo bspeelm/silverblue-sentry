@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Instant;
 
 use crate::audit::{self, Report};
-use crate::collect::{self, JournalUnit, apt, docker, health, probe, units};
+use crate::collect::{self, JournalUnit, apt, docker, health, probe, suscheck, units};
 use crate::maint;
 use crate::remote::{Remote, SrvError, SudoMode};
 use sentry_app::target::Mail;
@@ -47,6 +47,13 @@ pub enum Kind {
     Upstream,
     /// The server's metrics ring, read from this machine's disk (no ssh).
     History,
+    /// SusCheck's incidents folder, where the config names one: read when its screen is
+    /// entered, on `r` there, and once for the Dashboard; never polled.
+    Suscheck,
+    /// One incident's record (Enter on a check).
+    SusIncident(suscheck::Id),
+    /// One incident's picture, into this machine's private cache (`o`).
+    SusPicture(suscheck::Id),
 }
 
 /// What a fetch thread sends back: the kind, and what it read or why it couldn't.
@@ -81,6 +88,18 @@ pub enum Payload {
     /// When, and the endoflife.date products that have an answer.
     Upstream(jiff::Timestamp, BTreeSet<String>),
     History(Box<sentry_core::tui::histview::HistData>),
+    /// None: the server has no `suscheck:` block.
+    Suscheck(Option<suscheck::Read>),
+    SusIncident(suscheck::Fetched<Box<suscheck::Incident>>),
+    /// Where the picture was put.
+    SusPicture(suscheck::Fetched<std::path::PathBuf>),
+}
+
+/// The incident open on the SusCheck screen: asked for, and what came of it.
+pub struct Opened {
+    pub id: suscheck::Id,
+    /// None: still being read.
+    pub got: Option<Result<suscheck::Fetched<Box<suscheck::Incident>>, SrvError>>,
 }
 
 /// A value with when it arrived and the last error fetching it.
@@ -196,6 +215,12 @@ pub struct Store {
     pub upstream_eol: BTreeSet<String>,
     /// What discovery found: untracked things, tracked ones gone.
     pub maint_found: maint::discover::Found,
+    /// SusCheck's folder as last read (`Some(None)`: read, and the server has no block).
+    /// **Never read by anything that writes for Claude, a report or the log**: those get
+    /// `suscheck::Counts`.
+    pub suscheck: Slot<Option<suscheck::Read>>,
+    /// The incident open on its screen.
+    pub sus_open: Option<Opened>,
     pub inflight: HashSet<Kind>,
     /// The last time ssh itself failed, and why.
     pub unreachable: Option<(Instant, String)>,
@@ -219,7 +244,11 @@ impl Store {
         let res = match res {
             Err(e @ SrvError::Unreachable(_)) => {
                 self.unreachable = Some((Instant::now(), e.to_string()));
-                // Keep the old values: they're what was last known.
+                // Keep the old values: they're what was last known. (An incident asked
+                // for has none: it says why it didn't come.)
+                if matches!(k, Kind::SusIncident(_)) {
+                    self.set_err(k, e);
+                }
                 return;
             }
             Ok(p) => {
@@ -277,6 +306,16 @@ impl Store {
                 self.upstream_eol = eol;
             }
             Payload::History(h) => self.history.set(Ok(*h)),
+            Payload::Suscheck(v) => self.suscheck.set(Ok(v)),
+            Payload::SusIncident(i) => {
+                if let (Kind::SusIncident(id), Some(o)) = (k, self.sus_open.as_mut())
+                    && o.id == id
+                {
+                    o.got = Some(Ok(i));
+                }
+            }
+            // (The target opens it: `ServerTarget::on_data`.)
+            Payload::SusPicture(_) => {}
         }
     }
 
@@ -302,6 +341,14 @@ impl Store {
             Kind::Report | Kind::ReportAt(_) | Kind::Audit => self.report.err = Some(e),
             Kind::Maint | Kind::Upstream => self.maint.err = Some(e),
             Kind::History => self.history.err = Some(e),
+            Kind::Suscheck => self.suscheck.err = Some(e),
+            Kind::SusIncident(id) => {
+                if let Some(o) = self.sus_open.as_mut().filter(|o| o.id == id) {
+                    o.got = Some(Err(e));
+                }
+            }
+            // (Said by the target.)
+            Kind::SusPicture(_) => {}
         }
     }
 
@@ -384,5 +431,12 @@ fn run(k: Kind, r: &Remote) -> Result<Payload, SrvError> {
             Payload::Upstream(jiff::Timestamp::now(), lk.eol.into_keys().collect())
         }
         Kind::History => Payload::History(Box::new(sentry_core::tui::histview::load(&r.name))),
+        Kind::Suscheck => Payload::Suscheck(suscheck::collect(r)?),
+        Kind::SusIncident(id) => Payload::SusIncident(suscheck::incident(r, id)?),
+        Kind::SusPicture(id) => Payload::SusPicture(suscheck::picture(
+            r,
+            id,
+            &suscheck::private_cache(&r.name)?,
+        )?),
     })
 }

@@ -117,3 +117,18 @@ servers:
         - id: legacy
           unit: legacy.service
           retire: {replaced_by: app.service, workflow: retire-service}
+
+    # SusCheck (a home service that checks screenshots of suspicious mail and pages), where
+    # this server runs it: sentry's SusCheck screen (8) shows how the household's checks
+    # went. It only reads the incidents folder, as an unprivileged login, and nothing in it
+    # ever goes to sentry's agent. Leave the block out where SusCheck isn't installed.
+    # suscheck:
+    #   # The incidents folder (SusCheck writes it in /etc/suscheck/incidents.path).
+    #   dir: /srv/suscheck/incidents
+    #   # A login of its own for reading it: a second user on the server that is in the
+    #   # folder's group, while the login above is not. Without it the folder is read as
+    #   # the login above, the one sentry's sessions run commands as (`sentry config check`
+    #   # says so).
+    #   ssh: suscheck-reader@myserver.example
+    #   # How many of the latest checks are read each time (200).
+    #   recent: 200

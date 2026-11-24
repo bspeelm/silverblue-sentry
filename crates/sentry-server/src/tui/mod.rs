@@ -22,7 +22,8 @@ pub use target::ServerTarget;
 
 /// This program's screens, with sentry's numbers and names: `1` Dashboard, `2` Processes,
 /// `3` Network, `4` Containers, `5` Services (where sentry has Flatpaks), `6` Maintenance,
-/// `0` the workflow run, `H` History (in the strip once something was recorded).
+/// `8` SusCheck (in the strip only where the server's config names its folder), `0` the
+/// workflow run, `H` History (in the strip once something was recorded).
 pub const SCREENS: ScreenSet = ScreenSet {
     ids: &[
         ScreenId::Dash,
@@ -31,6 +32,7 @@ pub const SCREENS: ScreenSet = ScreenSet {
         ScreenId::Cont,
         ScreenId::Svc,
         ScreenId::Maint,
+        ScreenId::Sus,
         ScreenId::Upgrade,
         ScreenId::Hist,
     ],

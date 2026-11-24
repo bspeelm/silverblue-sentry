@@ -1,0 +1,27 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dash   2 Proc   3 Net 5   4 Cont 1   5 Svc 1   6 Maint 8   8 SusCheck   0 Upg
+────────────────────────────────────────────────────────────────────────────────
+
+┌ Check · Nov 01 09:15 · Kitchen iMac ─────────────────────────────────────────┐
+│ It said           don't trust this  (high confidence)                        │
+│ Your mark         none (m marks it)                                          │
+│ From              Kitchen iMac (app 0.1.0) · took 21 s                       │
+│                                                                              │
+│ Reasons shown                                                                │
+│   · The address on screen is examp1e-pay[.]test, which imitates              │
+│ example-pay[.]test.                                                          │
+│   · The page asks for a password.                                            │
+│   · It says the account will be locked today.                                │
+│ Advice shown      do not enter password · type address yourself · close      │
+│ window                                                                       │
+│                                                                              │
+│ The model against what counted                                               │
+│ The model         be careful (medium)                                        │
+│ What counted      don't trust this (high)                                    │
+│ SusCheck's rules  lookalike: raised the verdict                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   ?  help   q  quit

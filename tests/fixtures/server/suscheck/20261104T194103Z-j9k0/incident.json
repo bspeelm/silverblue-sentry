@@ -1,0 +1,28 @@
+{
+ "schema": 1,
+ "id": "20261104T194103Z-j9k0",
+ "time": "2026-11-04T19:41:03Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 120450,
+ "error": "model",
+ "model": "example-vision:1b",
+ "prompt_version": "1",
+ "stages_ms": {
+  "extract": 120010,
+  "reread": 0,
+  "search": 0,
+  "judge": 0
+ },
+ "facts": null,
+ "domain": null,
+ "search": null,
+ "judgement": null,
+ "model_raw": {
+  "extract": "",
+  "judge": ""
+ },
+ "final": null,
+ "screenshot": false
+}

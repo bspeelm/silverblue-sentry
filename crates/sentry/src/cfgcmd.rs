@@ -193,7 +193,17 @@ fn what(file: FileId) -> &'static str {
     }
 }
 
-/// `✓`/`✗` per file, as `sentry-server lint` says them; 1 when anything is wrong.
+/// The servers' notes (`sentry_server::config::notes`): advice, not problems.
+pub fn check_notes(f: &Files) -> Vec<String> {
+    f.servers
+        .iter()
+        .flat_map(|file| &file.servers)
+        .flat_map(|(n, s)| servers::notes(n, s))
+        .collect()
+}
+
+/// `✓`/`✗` per file, as `sentry-server lint` says them; 1 when anything is wrong. Notes
+/// (`·`) are advice: they never change the exit code.
 fn check() -> ExitCode {
     let f = read();
     for file in cfg::FILES {
@@ -222,6 +232,11 @@ fn check() -> ExitCode {
             }
         }
         mine.iter().for_each(|p| println!("✗ {}", p.line()));
+        // What is worth saying and isn't wrong (a server's SusCheck folder read by the
+        // login sessions use): printed, never the exit code's.
+        if file == FileId::Servers {
+            check_notes(&f).iter().for_each(|n| println!("· {n}"));
+        }
     }
     if f.problems.is_empty() {
         ExitCode::SUCCESS
@@ -641,6 +656,29 @@ mod tests {
         assert_eq!(f.problems.len(), 1);
         assert_eq!(f.problems[0].file, FileId::Servers);
         assert!(f.servers.is_none() && f.servers_err.is_some());
+    }
+
+    /// A server whose SusCheck folder is read by its ordinary login is a note, not a
+    /// problem: `sentry config check` prints it and still exits 0.
+    #[test]
+    fn a_note_is_said_and_is_no_problem() {
+        let srv = servers::parse(
+            "servers:\n  a:\n    suscheck: {dir: /srv/suscheck/incidents}\n  \
+             b:\n    suscheck: {dir: /srv/suscheck/incidents, ssh: reader@b.example}\n",
+        );
+        let f = assemble(
+            ((Config::default(), vec![]), true),
+            (srv, true),
+            (Err("no file".into()), false),
+        );
+        assert!(f.problems.is_empty(), "{:?}", f.problems);
+        let notes = check_notes(&f);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("a: suscheck has no login of its own")
+                && notes[0].contains("Give the folder a login of its own"),
+            "{notes:?}"
+        );
     }
 
     #[test]

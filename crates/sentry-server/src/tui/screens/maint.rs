@@ -130,6 +130,10 @@ fn own_recs(v: &View) -> Vec<Rec> {
         findings: report(v).map_or(&[][..], |r| &r.findings[..]),
         audited: report(v).and_then(|r| r.snapshot.taken_at),
         tasks: &all_tasks(v),
+        suscheck: match v.cfg.suscheck.on() {
+            Some(_) => super::suscheck::unseen(v),
+            None => (0, 0),
+        },
     })
 }
 
@@ -522,6 +526,7 @@ fn row_verbs(v: &View) -> Verbs {
             Action::OpenPlan(id) => item(id, "apply the plan"),
             Action::Look(id) if !id.is_empty() => item(id, "go to item"),
             Action::Look(_) => only("details"),
+            Action::Sus => only("look"),
         },
     }
 }
@@ -574,6 +579,7 @@ fn action_words(a: &Action) -> String {
         Action::Track(_) => "Enter: track it".into(),
         Action::Remove(id) => format!("Enter: stop tracking {id}"),
         Action::Look(_) => "Enter: go to the item".into(),
+        Action::Sus => "Enter: SusCheck's screen (8), where the checks are".into(),
         Action::Fix(_) => "Enter: ask Claude how to fix it".into(),
         Action::Audit => "Enter: audit the server now".into(),
         Action::Security(_) => {
@@ -1083,6 +1089,7 @@ fn rec_key(c: char, v: &View, r: Rec) -> Vec<Effect> {
             Own::untrack(id.clone()),
         ),
         ('\n', Action::Look(id)) if !id.is_empty() => vec![Own::maint_jump(id.clone())],
+        ('\n', Action::Sus) => vec![Effect::Goto(sentry_core::tui::ScreenId::Sus)],
         ('\n', Action::Fix(id)) => vec![Own::fix_finding(id.clone())],
         ('x', Action::Fix(id)) => dismiss(
             v,

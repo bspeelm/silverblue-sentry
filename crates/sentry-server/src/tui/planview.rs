@@ -28,6 +28,7 @@ the version, the workflow, and why now or why it can wait. You never change anyt
 server yourself.",
         crate::gateway::summary()
     );
+    p.system.push_str(super::ask::suscheck_note(r));
     p
 }
 

@@ -1,0 +1,21 @@
+{
+ "schema": 1,
+ "devices": [
+  {
+   "name": "Kitchen iMac",
+   "os": "macOS 26.1",
+   "client": "app",
+   "app_version": "0.1.0",
+   "paired_at": "2026-10-30T18:02:11Z",
+   "last_seen_at": "2026-11-04T19:41:10Z"
+  },
+  {
+   "name": "Study laptop",
+   "os": "Linux",
+   "client": "web",
+   "app_version": "",
+   "paired_at": "2026-10-31T09:15:40Z",
+   "last_seen_at": "2026-11-03T17:20:31Z"
+  }
+ ]
+}

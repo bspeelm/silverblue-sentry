@@ -1,0 +1,113 @@
+{
+ "schema": 1,
+ "id": "20261101T091500Z-a1b2",
+ "time": "2026-11-01T09:15:00Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 21480,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "1",
+ "stages_ms": {
+  "extract": 3310,
+  "reread": 2890,
+  "search": 1630,
+  "judge": 13650
+ },
+ "facts": {
+  "kind": "web_page",
+  "claimed_brand": "Example Pay",
+  "sender_name": null,
+  "sender_address": null,
+  "address_bar_domain": "examp1e-pay.test",
+  "link_texts": [
+   "Sign in",
+   "Forgot password?"
+  ],
+  "phone_numbers": [],
+  "asks_for": [
+   "password"
+  ],
+  "urgency": true,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": "examp1e-pay.test",
+  "second_reading": "examp1e-pay.test",
+  "check": {
+   "result": "lookalike",
+   "shown": "examp1e-pay.test",
+   "real": "example-pay.test",
+   "why": "confusable"
+  }
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "domain",
+    "\"examp1e-pay.test\" scam phishing"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  }
+ },
+ "judgement": {
+  "red_flags": [
+   "The page asks for a password.",
+   "It says the account will be locked today."
+  ],
+  "looks_normal": [],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "suspicious",
+  "advice": [
+   "do_not_enter_password",
+   "type_address_yourself"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"kind\": \"web_page\", \"claimed_brand\": \"Example Pay\", \"address_bar_domain\": \"examp1e-pay.test\", \"asks_for\": [\"password\"], \"urgency\": true, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [\"The page asks for a password.\", \"It says the account will be locked today.\"], \"looks_normal\": [], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"suspicious\", \"advice\": [\"do_not_enter_password\", \"type_address_yourself\"]}"
+ },
+ "final": {
+  "verdict": "likely_malicious",
+  "confidence": "high",
+  "incomplete": false,
+  "reasons": [
+   "The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.",
+   "The page asks for a password.",
+   "It says the account will be locked today."
+  ],
+  "advice": [
+   "do_not_enter_password",
+   "type_address_yourself",
+   "close_window"
+  ],
+  "floors": [
+   "lookalike"
+  ],
+  "floors_changed_verdict": true
+ },
+ "screenshot": true
+}

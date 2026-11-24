@@ -389,6 +389,28 @@ Read only, and only where it is installed: sentry installs nothing, registers no
 
 Blocked and banned addresses never reach a report or Claude: only counts, scenario names and bouncer names leave the collectors.
 
+## SusCheck
+
+[SusCheck](docs/design/suscheck.md) is a separate project: a home service that looks at a screenshot of a suspicious email or web page and answers "don't trust this", "be careful" or "no obvious warning signs" for the computers of a household. Where a server runs it, sentry shows its owner how it is being used and how it behaves: screen `8` on that server.
+
+```yaml
+servers:
+  myserver:
+    suscheck:
+      dir: /srv/suscheck/incidents          # SusCheck writes it in /etc/suscheck/incidents.path
+      ssh: suscheck-reader@myserver.example # a login of its own, in the folder's group
+```
+
+- **The screen**: checks in the last 7 and 30 days by verdict, how many failed or were incomplete, how often SusCheck's fixed rules overrode the model, the typical time, whether the service is alive (by the server's clock); the paired computers (never used, not seen for a while, an older app); the latest checks. `Enter` reads one in full (the reasons and advice shown, what was read from the picture, both readings of the domain, the searches, the model's answer against what counted, time per stage), `o` fetches its picture and opens it in your viewer, `m` marks whether SusCheck was right (`x` clears), `/` filters, `r` reads again. Nothing is read on a timer.
+- **Next time you open sentry**: checks that said "don't trust this" since you last looked, and checks that failed, are the tab's badge, a Dashboard row and one Maintenance row. Looking at the list is all it takes. Nothing alerts by itself.
+- **It only reads**, as an unprivileged login, never with sudo, and never changes or deletes anything in the folder (retention is SusCheck's).
+- **Sentry's agent never reads a check.** What is in the folder was written by a model that had just read whatever a scammer put on screen, and the pictures are a household's private mail. So: `A` isn't offered on the screen; nothing of a check goes into a brief, a review, a stored audit report, a finding or the log (those get counts); `sentry-server exec` and `run` refuse any line that names the folder, its pointer file or its file names. That refusal is a match on words, and a shell line can be written around one, which is why **the folder should have a login of its own**: `suscheck.ssh` names a second user on the server that is in the folder's group, while the server's ordinary login (the one sessions run commands as) is not, and then the server itself says no. Without it `sentry config check` says so (a note, not an error).
+- **The picture** is fetched to `~/.cache/sentry/suscheck/<server>/` (private to you: 0700, the file 0600; nothing over 16 MB or that isn't a PNG is kept), handed to `xdg-open`, and removed when sentry closes (and at the next start, should it have crashed). Domains are shown as text and never resolved, looked up or opened.
+- Marks and how far you have looked are kept on this machine (`~/.config/sentry/servers/<name>/suscheck.toml`): ids and your word, nothing of a check.
+- Findings, from counts: `srv:suscheck:down` (no heartbeat for five minutes), `srv:suscheck:unreadable` (the folder isn't there, or the login isn't in its group), `srv:suscheck:errors` (three failed checks in a day), `srv:suscheck:format` (a newer format than this sentry reads: it says so and shows nothing of it, rather than guess).
+
+`sentry-server init` and the Config tab's setup find SusCheck by its pointer file and propose the block. `sentry-server collect <name> suscheck` prints counts only.
+
 ## Security audit
 
 **`S`** on Maintenance or Security of any target (or `:audit security`) runs it in the window: while it reads, every target says so; then the report opens, each item is a row on the target it belongs to (the network's Security for its own and for what spans devices, Maintenance elsewhere), and Enter on a row is a session with Claude that fixes it, on whichever devices that takes. A question only you can answer is a pick: yes, no, or you don't know. After the checks Claude reads the evidence (addresses and names are never in it) and looks up advisories for the versions found: "What matters most here", at the top of the report. `S` again shows the report; `S` there runs the audit again. It is also a task every 30 days.
@@ -465,6 +487,7 @@ What you decide in the TUI goes to machine-written files next to it:
 - `docs/spec-addendum.md`: binding amendments made after probing the real machine.
 - `docs/design/m3-m7.md`: design for the audit, jobs, workflows and recorder.
 - `docs/design/config.md`: design for `sentry config` (one writer of the config files, a setup flow and a Config tab).
+- `docs/design/suscheck.md`: design for SusCheck's screen on a server, and what keeps its checks from sentry's agent.
 - `docs/design/sentry-tui.dc.html`: the visual target.
 
 ## License

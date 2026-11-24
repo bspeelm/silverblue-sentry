@@ -267,6 +267,13 @@ pub fn status_rows(v: &View) -> Vec<StatusRow> {
         }
         out.push(row);
     }
+    // SusCheck, where it is configured: counts, and its own screen behind Enter.
+    if let Some((look, text)) = super::suscheck::status(v) {
+        out.push(match look {
+            true => bad(t.yellow, text, Some(ScreenId::Sus)),
+            false => ok(text, Some(ScreenId::Sus)),
+        });
+    }
     match s.report.value.as_ref().map(|r| r.as_deref()) {
         Some(Some(r)) => {
             // The findings Maintenance lists (not the ones its item rows already say, nor

@@ -1477,6 +1477,14 @@ impl App {
     pub fn pane_cmd_for_test(&self) -> Option<String> {
         self.slot().pane.as_ref().map(|p| p.cmd.clone())
     }
+    /// The target in view with what it is asked with: what it would make for Claude.
+    pub fn asks_for_test<R>(
+        &mut self,
+        f: impl FnOnce(&dyn crate::target::Target, &crate::shared::Shared, &crate::target::Cx) -> R,
+    ) -> R {
+        let (s, w) = self.parts();
+        s.asks_for_test(w, f)
+    }
     /// The keys of every row Maintenance lists (what can wait too).
     pub fn rows_for_test(&mut self) -> Vec<String> {
         let (s, w) = self.parts();

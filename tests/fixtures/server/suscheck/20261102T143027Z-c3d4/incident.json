@@ -1,0 +1,110 @@
+{
+ "schema": 1,
+ "id": "20261102T143027Z-c3d4",
+ "time": "2026-11-02T14:30:27Z",
+ "device": "Study laptop",
+ "client": "web",
+ "app_version": "",
+ "duration_ms": 18920,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "1",
+ "stages_ms": {
+  "extract": 3540,
+  "reread": 2710,
+  "search": 1980,
+  "judge": 10690
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Example Pay",
+  "sender_name": "Example Pay Billing",
+  "sender_address": "billing@example.net",
+  "address_bar_domain": null,
+  "link_texts": [
+   "Pay invoice now"
+  ],
+  "phone_numbers": [],
+  "asks_for": [
+   "payment"
+  ],
+  "urgency": true,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": "example.net",
+  "second_reading": "example.net",
+  "check": {
+   "result": "mismatch",
+   "shown": "example.net",
+   "real": "example-pay.test",
+   "why": "different"
+  }
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "domain",
+    "\"example.net\" scam phishing"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  }
+ },
+ "judgement": {
+  "red_flags": [
+   "The sender's address does not belong to the company it claims to be.",
+   "It demands payment within 24 hours."
+  ],
+  "looks_normal": [],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "suspicious",
+  "advice": [
+   "do_not_pay",
+   "ask_sender_another_way"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"kind\": \"email\", \"claimed_brand\": \"Example Pay\", \"sender_address\": \"billing@example.net\", \"asks_for\": [\"payment\"], \"urgency\": true, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [\"The sender's address does not belong to the company it claims to be.\", \"It demands payment within 24 hours.\"], \"verdict\": \"suspicious\", \"confidence\": \"medium\", \"incomplete\": false, \"advice\": [\"do_not_pay\", \"ask_sender_another_way\"]}"
+ },
+ "final": {
+  "verdict": "suspicious",
+  "confidence": "medium",
+  "incomplete": false,
+  "reasons": [
+   "The sender's address does not belong to the company it claims to be.",
+   "It demands payment within 24 hours."
+  ],
+  "advice": [
+   "do_not_pay",
+   "ask_sender_another_way"
+  ],
+  "floors": [
+   "mismatch_risky"
+  ],
+  "floors_changed_verdict": false
+ },
+ "screenshot": true
+}

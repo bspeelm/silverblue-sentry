@@ -13,6 +13,7 @@ pub mod maint;
 pub mod recorder;
 pub mod remote;
 pub mod secfacts;
+pub mod suscheck;
 pub mod tui;
 pub mod watch;
 pub mod workflow;

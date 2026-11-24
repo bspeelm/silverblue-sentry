@@ -11,6 +11,11 @@
 #   both      live_setup (a first run: fresh scratch XDG dirs with no config at all, the
 #             window opens on the setup flow, the container is found among the ssh hosts,
 #             looked at for real, reviewed and saved; then its tab reads)
+#             live_suscheck (SusCheck's incidents folder made from the synthetic samples
+#             under a group only a second login, `susreader`, is in, and a copy under a
+#             group the test login is in: the collector, an incident and a picture for
+#             real through the folder's own login, the same through the test login's own
+#             copy, and "not in its group" where it isn't)
 #
 #   scripts/live-container.sh up [nopasswd|password]    start one, print how to run its tests
 #   scripts/live-container.sh test [nopasswd|password]  run that variant's tests against it
@@ -47,8 +52,8 @@ die() {
 
 tests_of() {
   case "$1" in
-    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets live_reaudit live_setup" ;;
-    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series live_reaudit live_setup" ;;
+    nopasswd) echo "live_actions live_workflow live_sudo_stop live_auto_series live_two_targets live_reaudit live_setup live_suscheck" ;;
+    password) echo "live_password_step live_inventory live_claude_reads live_sudo_stop live_auto_series live_reaudit live_setup live_suscheck" ;;
     *) die "mode: nopasswd or password, not \`$1\`" ;;
   esac
 }
@@ -157,12 +162,55 @@ esac
 EOF
 }
 
+# SusCheck's incidents folder as its format document lays it out, from the synthetic
+# samples: the folder and everything in it 0750/0640 with the setgid bit, group `suscheck`,
+# whose only member is a second login, `susreader` (the same throwaway key). The test login
+# is not in it. A copy beside it belongs to a group the test login is in. And the pointer
+# file. Only there while live_suscheck runs (live_setup looks at a host without it).
+fake_suscheck() {
+  local c=$1 dir=$2 f d id
+  "${P[@]}" exec "$c" sh -c "
+    set -e
+    getent group suscheck >/dev/null || groupadd suscheck
+    getent group susown >/dev/null || groupadd susown
+    id susreader >/dev/null 2>&1 || { useradd -m -s /bin/bash -G suscheck susreader; usermod -p '*' susreader; }
+    usermod -aG susown $LOGIN
+    install -d -m 700 -o susreader -g susreader /home/susreader/.ssh
+    install -d -m 755 /etc/suscheck /srv/suscheck /srv/suscheck-own
+    install -d -m 2750 -g suscheck /srv/suscheck/incidents
+    echo /srv/suscheck/incidents >/etc/suscheck/incidents.path
+    chmod 644 /etc/suscheck/incidents.path"
+  put "$c" /home/susreader/.ssh/authorized_keys 600 <"$dir/key.pub"
+  "${P[@]}" exec "$c" chown susreader:susreader /home/susreader/.ssh/authorized_keys
+  for f in status.json devices.json index.jsonl; do
+    put "$c" "/srv/suscheck/incidents/$f" 640 <"$FIX/suscheck/$f"
+  done
+  for d in "$FIX"/suscheck/2*/; do
+    id=$(basename "$d")
+    "${P[@]}" exec "$c" install -d -m 2750 -g suscheck "/srv/suscheck/incidents/$id"
+    for f in incident.json screenshot.png; do
+      [[ ! -f "$d$f" ]] || put "$c" "/srv/suscheck/incidents/$id/$f" 640 <"$d$f"
+    done
+  done
+  "${P[@]}" exec "$c" sh -c '
+    set -e
+    chgrp -R suscheck /srv/suscheck/incidents
+    rm -rf /srv/suscheck-own/incidents
+    cp -a /srv/suscheck/incidents /srv/suscheck-own/incidents
+    chgrp -R susown /srv/suscheck-own/incidents'
+}
+
 # One test's scratch XDG dirs, made afresh: the server's config, and the workflow
 # live_password_step starts (beside the seeded ones). Only the password variant has the fake
 # docker and its `sudo:` reads: its fixtures have an unhealthy container, which
 # apt-maintenance's last step would wait three minutes for.
 scratch() {
-  local dir=$1 mode=$2 t=$3 x="$1/xdg/$3" reads="" watched=""
+  local dir=$1 mode=$2 t=$3 x="$1/xdg/$3" reads="" watched="" sus=""
+  # live_suscheck: the incidents folder, read through its own login.
+  [[ $t != live_suscheck ]] || sus="
+    suscheck:
+      dir: /srv/suscheck/incidents
+      ssh: $SERVER-sus"
   # live_reaudit: the config expects a service (the fake systemd's one, which is down).
   [[ $t != live_reaudit ]] || watched="
     services: [app.service]"
@@ -181,7 +229,7 @@ scratch() {
   cat >"$x/config/sentry/server_config.yaml" <<EOF
 servers:
   $SERVER:
-    ssh: $SERVER$reads$watched
+    ssh: $SERVER$reads$watched$sus
     actions:
       - id: hello
         title: Say hello
@@ -317,6 +365,19 @@ Host $SERVER
   UserKnownHostsFile $dir/known_hosts
   GlobalKnownHostsFile /dev/null
   LogLevel ERROR
+
+# The login that reads SusCheck's incidents (live_suscheck makes it).
+Host $SERVER-sus
+  HostName 127.0.0.1
+  Port $port
+  User susreader
+  IdentityFile $dir/key
+  IdentitiesOnly yes
+  IdentityAgent none
+  StrictHostKeyChecking no
+  UserKnownHostsFile $dir/known_hosts
+  GlobalKnownHostsFile /dev/null
+  LogLevel ERROR
 EOF
 
   if [[ $mode == password ]]; then
@@ -362,6 +423,8 @@ run_tests() {
     scratch "$dir" "$mode" "$t"
     "${P[@]}" exec "$c" rm -f /usr/local/bin/systemctl
     [[ $t != live_reaudit ]] || fake_systemd "$c"
+    "${P[@]}" exec "$c" rm -rf /etc/suscheck /srv/suscheck /srv/suscheck-own
+    [[ $t != live_suscheck ]] || fake_suscheck "$c" "$dir"
     echo "=== $t ($mode)"
     local cmd=(env "SENTRY_SSH_CONFIG=$dir/ssh_config" "SENTRY_SERVER_SCRATCH=$SERVER"
       "XDG_CONFIG_HOME=$dir/xdg/$t/config" "XDG_DATA_HOME=$dir/xdg/$t/data"

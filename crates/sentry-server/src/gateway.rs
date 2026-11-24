@@ -85,6 +85,92 @@ fn never(cmd: &str) -> &'static [&'static str] {
     }
 }
 
+/// Why a line that names SusCheck's incidents is never run for sentry's agent.
+pub const SUSCHECK_PRIVATE: &str = "SusCheck's incidents are a household's private mail and may \
+    carry text written by an attacker: sentry's agent never reads them";
+
+/// The names inside the incidents folder, and its pointer file's.
+const SUSCHECK_WORDS: &[&str] = &[
+    "incident.json",
+    "screenshot.png",
+    "index.jsonl",
+    "incidents.path",
+];
+
+/// A path as its text says where it leads: `//` and `/./` squashed, `..` taken with the
+/// part before it, no trailing slash.
+fn plain_path(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in p.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            x => parts.push(x),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// Why `line` isn't run on a server whose config names SusCheck's incidents folder: it
+/// names that folder (as written, or with `//`, `/./`, `..`, a trailing slash, quotes or
+/// backslashes in it), the pointer file, or one of the folder's file names. None: the rule
+/// has nothing to say, and always None for a server without the block.
+///
+/// This is a match on the line's words, the second layer. A shell line can reach a folder
+/// without naming it (`cd` to its parent and a relative path, a glob, a variable, a name
+/// put together by a command, a symlink, `find … -exec`): what stops those is the server
+/// itself, when the folder has a login of its own (`suscheck.ssh`) and the server's
+/// ordinary login isn't in its group.
+pub fn suscheck_private(cfg: &crate::config::Server, line: &str) -> Option<&'static str> {
+    let dir = plain_path(cfg.suscheck.on()?);
+    // Quoting taken out: `/srv/"suscheck"/incidents` names it too.
+    let bare: String = line
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
+    let lower = bare.to_lowercase();
+    if SUSCHECK_WORDS.iter().any(|w| lower.contains(w)) {
+        return Some(SUSCHECK_PRIVATE);
+    }
+    // Every stretch of the line that reads as an absolute path, made plain.
+    let named = bare
+        .split(|c: char| c.is_whitespace() || ";|&<>()=,:`${}".contains(c))
+        .filter(|w| w.contains('/'))
+        .any(|w| {
+            let at = w.find('/').unwrap_or(0);
+            let p = plain_path(&w[at..]);
+            p == dir || p.starts_with(&format!("{dir}/"))
+        });
+    // And as it stands, for a path glued to something the split doesn't know.
+    let squashed = {
+        let mut s = bare.clone();
+        while s.contains("//") || s.contains("/./") {
+            s = s.replace("/./", "/").replace("//", "/");
+        }
+        s
+    };
+    (dir != "/" && (named || squashed.contains(&dir))).then_some(SUSCHECK_PRIVATE)
+}
+
+/// [`allowed`], for this server: first what its config keeps from the agent whatever the
+/// command is.
+pub fn allowed_on(cfg: &crate::config::Server, argv: &[String]) -> Result<(), String> {
+    if let Some(why) = suscheck_private(cfg, &argv.join(" ")) {
+        return Err(why.into());
+    }
+    allowed(argv)
+}
+
+/// [`runnable`], for this server.
+pub fn runnable_on(cfg: &crate::config::Server, line: &str) -> Result<(), Held> {
+    if let Some(why) = suscheck_private(cfg, line) {
+        return Err(Held::Never(why.into()));
+    }
+    runnable(line)
+}
+
 pub fn allowed(argv: &[String]) -> Result<(), String> {
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     if words.is_empty() {
@@ -147,7 +233,7 @@ pub fn allowed(argv: &[String]) -> Result<(), String> {
 
 /// Run it: plain, or `sudo -n` when the server's sudo list covers it. Output passes through.
 pub fn exec_cli(r: &Remote, argv: &[String]) -> u8 {
-    if let Err(e) = allowed(argv) {
+    if let Err(e) = allowed_on(&r.cfg, argv) {
         eprintln!("sentry-server exec: refused: {e}");
         return 126;
     }
@@ -239,12 +325,12 @@ pub fn runnable(line: &str) -> Result<(), Held> {
 
 /// Run it as the login user; output passes through.
 pub fn run_cli(r: &Remote, line: &str) -> u8 {
-    shared::run_cli("sentry-server run", r, line, runnable)
+    shared::run_cli("sentry-server run", r, line, |l| runnable_on(&r.cfg, l))
 }
 
 /// The queued reads (each still on the read-only list, no repeats), and the queue emptied.
-pub fn take_reads(server: &str) -> Vec<Vec<String>> {
-    shared::take_reads(server, |argv| allowed(argv).is_ok())
+pub fn take_reads(r: &Remote) -> Vec<Vec<String>> {
+    shared::take_reads(&r.name, |argv| allowed_on(&r.cfg, argv).is_ok())
 }
 
 /// How Claude is told to use the gateway.
@@ -306,6 +392,125 @@ mod tests {
         }
     }
 
+    /// Every spelling of the incidents folder, its pointer file and its file names is
+    /// refused by both commands on a server that has SusCheck, with the plain reason; the
+    /// same lines on a server without it, and ordinary lines on one with it, are as ever.
+    #[test]
+    fn nothing_that_names_suscheck_s_incidents_is_run_for_the_agent() {
+        use crate::config::{Server, Suscheck};
+        let with = Server {
+            suscheck: Suscheck {
+                dir: Some("/srv/suscheck/incidents/".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let without = Server::default();
+        let argv = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        let refused = [
+            // The folder, as written and around it.
+            "cat /srv/suscheck/incidents/status.json",
+            "ls -la /srv/suscheck/incidents",
+            "ls /srv/suscheck/incidents/",
+            "ls /srv//suscheck///incidents",
+            "ls /srv/./suscheck/./incidents/.",
+            "ls /srv/suscheck/../suscheck/incidents",
+            "ls /srv/suscheck/incidents/../incidents/20261101T091500Z-a1b2",
+            "ls /opt/../srv/suscheck/incidents",
+            "stat /srv/suscheck/incidents/20261101T091500Z-a1b2",
+            "head -c 100 /srv/suscheck/incidents/20261101T091500Z-a1b2/anything",
+            "tail -n 5 /SRV/../srv/suscheck/incidents/x",
+            // The files' names, wherever they are said to be.
+            "cat /srv/elsewhere/incident.json",
+            "cat /opt/copy/20261101T091500Z-a1b2/screenshot.png",
+            "tail -n 200 /srv/x/index.jsonl",
+            "cat /srv/x/INDEX.JSONL",
+            // The pointer.
+            "cat /etc/suscheck/incidents.path",
+            "head -n 1 /etc//suscheck/./incidents.path",
+        ];
+        for line in refused {
+            assert_eq!(
+                allowed_on(&with, &argv(line)),
+                Err(SUSCHECK_PRIVATE.to_string()),
+                "exec: {line}"
+            );
+            assert_eq!(
+                runnable_on(&with, line),
+                Err(Held::Never(SUSCHECK_PRIVATE.into())),
+                "run: {line}"
+            );
+            assert_eq!(suscheck_private(&without, line), None, "{line}");
+        }
+        // What only a shell line can say.
+        for line in [
+            "cat '/srv/suscheck/incidents/index'",
+            "cat \"/srv/suscheck\"/incidents/x",
+            "cat /srv/susch\\eck/incidents/x",
+            "cat /srv/sus''check/incidents/x",
+            "x=/srv/suscheck/incidents; ls $x",
+            "d=$(cat /etc/suscheck/incidents.path); ls \"$d\"",
+            "sudo tar c /srv/suscheck/incidents | base64",
+            "(cd /srv/suscheck/incidents && ls)",
+            "find /srv -name incident.json",
+            "find / -name 'screenshot.png' 2>/dev/null",
+            "scp host:/srv/suscheck/incidents/a /tmp",
+            "ls /srv/suscheck/incidents;id",
+            "cat</srv/suscheck/incidents/status.json",
+            "sudo cat /srv/suscheck/incidents/x/incident.json",
+        ] {
+            assert_eq!(
+                runnable_on(&with, line),
+                Err(Held::Never(SUSCHECK_PRIVATE.into())),
+                "run: {line}"
+            );
+        }
+        assert!(SUSCHECK_PRIVATE.starts_with(
+            "SusCheck's incidents are a household's private mail and may carry text written \
+             by an attacker: sentry's agent never reads them"
+        ));
+        // Ordinary lines, and SusCheck's own service, are untouched by it.
+        for line in [
+            "systemctl status suscheck.service",
+            "journalctl -u suscheck -n 50 --no-pager",
+            "ls -la /srv",
+            "ls /srv/suscheck",
+            "cat /etc/fstab",
+            "df -h /srv",
+            "docker ps -a",
+        ] {
+            assert_eq!(suscheck_private(&with, line), None, "{line}");
+            assert_eq!(
+                allowed_on(&with, &argv(line)),
+                allowed(&argv(line)),
+                "{line}"
+            );
+            assert_eq!(runnable_on(&with, line), runnable(line), "{line}");
+        }
+        // The rest of both gateways is what it was, with the block or without.
+        for line in [
+            "cat /etc/shadow",
+            "systemctl restart app.service",
+            "sudo id",
+            "reboot",
+        ] {
+            assert_eq!(
+                allowed_on(&with, &argv(line)),
+                allowed(&argv(line)),
+                "{line}"
+            );
+            assert_eq!(runnable_on(&with, line), runnable(line), "{line}");
+        }
+        // Past the words (what the folder's own login is for): none of these names it.
+        for line in [
+            "cd /srv/suscheck && cat incidents/status.json",
+            "cat /srv/suscheck/inc*/status.json",
+            "cat /srv/suscheck/$(echo incidents)/status.json",
+        ] {
+            assert_eq!(suscheck_private(&with, line), None, "{line}");
+        }
+    }
+
     #[test]
     fn read_only_only() {
         for good in [
@@ -354,7 +559,8 @@ mod tests {
         queue_read(&server, &v("journalctl -u app.service -n 15")).unwrap();
         // Written by hand into the queue: still refused.
         queue_read(&server, &v("docker rm web")).unwrap();
-        let reads = take_reads(&server);
+        let r = Remote::new(&server, &crate::config::Server::default());
+        let reads = take_reads(&r);
         assert_eq!(
             reads,
             [
@@ -362,6 +568,6 @@ mod tests {
                 v("journalctl -u app.service -n 15")
             ]
         );
-        assert!(take_reads(&server).is_empty(), "taken means gone");
+        assert!(take_reads(&r).is_empty(), "taken means gone");
     }
 }

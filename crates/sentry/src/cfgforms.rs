@@ -409,6 +409,9 @@ fn every_setting_of_a_server_is_set_in_a_form_saved_and_set_back() {
     yes(&mut a, &action("risky"), true);
     set(&mut a, &action("undo"), "start it again");
     close_row(&mut a);
+    set(&mut a, &at("suscheck.dir"), "/srv/suscheck/incidents");
+    set(&mut a, &at("suscheck.ssh"), "suscheck-reader@192.0.2.10");
+    set(&mut a, &at("suscheck.recent"), "50");
     save(&mut a);
     let written = text(&d, FileId::Servers).unwrap();
     let (file, warnings) = srv::parse(&written).unwrap();
@@ -478,6 +481,11 @@ fn every_setting_of_a_server_is_set_in_a_form_saved_and_set_back() {
             }],
             cadence: BTreeMap::from([("apt-maintenance".to_string(), Dur::secs(30 * 86400))]),
         },
+        suscheck: srv::Suscheck {
+            dir: Some("/srv/suscheck/incidents".into()),
+            ssh: Some("suscheck-reader@192.0.2.10".into()),
+            recent: 50,
+        },
     };
     assert_eq!(file.servers["myserver"], want, "{written}");
     // All of it back: the records out, the lists empty, the numbers at their defaults.
@@ -500,6 +508,9 @@ fn every_setting_of_a_server_is_set_in_a_form_saved_and_set_back() {
     set(&mut a, &at("containers.restart_window"), "24h");
     list(&mut a, &at("findings"), &[]);
     no_rows(&mut a, &at("actions"));
+    set(&mut a, &at("suscheck.dir"), "");
+    set(&mut a, &at("suscheck.ssh"), "");
+    set(&mut a, &at("suscheck.recent"), "200");
     save(&mut a);
     let written = text(&d, FileId::Servers).unwrap();
     let (file, _) = srv::parse(&written).unwrap();

@@ -15,6 +15,7 @@ pub mod network;
 pub mod processes;
 pub mod report;
 pub mod services;
+pub mod suscheck;
 pub mod upgrade;
 
 use std::time::Duration;
@@ -64,6 +65,9 @@ pub struct View<'a> {
     pub auto: bool,
     /// The workflows there are, each with its last run.
     pub wf_list: &'a [sentry_core::tui::wflist::WfInfo],
+    /// What this machine keeps about the server's SusCheck checks: how far you have
+    /// looked, your marks.
+    pub sus: &'a crate::suscheck::Records,
 }
 
 impl View<'_> {
@@ -126,6 +130,7 @@ pub struct Screens {
     pub net: network::Network,
     pub procs: processes::Processes,
     pub hist: history::History,
+    pub sus: suscheck::Sus,
 }
 
 impl Screens {
@@ -169,6 +174,8 @@ impl Screens {
                 at(Kind::Docker, None),
                 at(Kind::Report, None),
             ],
+            // One read of the folder when the screen is entered (and on r): no timer.
+            ScreenId::Sus if cfg.suscheck.on().is_some() => vec![at(Kind::Suscheck, None)],
             _ => Vec::new(),
         }
     }
@@ -180,6 +187,15 @@ impl Screens {
             && v.s.apt.at.is_none_or(|t| t.elapsed() > APT_MAX_AGE)
         {
             e.push(Own::fetch(Kind::Apt));
+        }
+        // SusCheck, where it's configured: read once for the Dashboard's row and the
+        // screen's badge (its own screen reads it at every entry: `polls`).
+        if id == ScreenId::Dash
+            && v.cfg.suscheck.on().is_some()
+            && v.s.suscheck.value.is_none()
+            && v.s.suscheck.err.is_none()
+        {
+            e.push(Own::fetch(Kind::Suscheck));
         }
         if id == ScreenId::Maint {
             // Upstream changes slowly: looked up again at most daily without `c`, and when
@@ -206,6 +222,7 @@ impl Screens {
             ScreenId::Maint => maint::count(v),
             ScreenId::Net => network::rows(v).len(),
             ScreenId::Proc => processes::count(v),
+            ScreenId::Sus => suscheck::rows(v).len(),
             // The list, while nothing runs.
             ScreenId::Upgrade if v.wf.is_none() => v.wf_list.len(),
             _ => 0,
@@ -221,6 +238,10 @@ impl Screens {
         // No list there: the arrows scrub.
         if id == ScreenId::Hist {
             return self.hist.handle(a, v);
+        }
+        // Its list, or the check in front of it (which the arrows scroll).
+        if id == ScreenId::Sus {
+            return self.sus.handle(a, v);
         }
         let n = Self::rows(id, v);
         if self.cursor_mut(id).nav(a, n) {
@@ -250,6 +271,7 @@ impl Screens {
             ScreenId::Net => self.net.render(f, area, v),
             ScreenId::Proc => self.procs.render(f, area, v),
             ScreenId::Hist => self.hist.render(f, area, v),
+            ScreenId::Sus => self.sus.render(f, area, v),
             _ => {}
         }
     }
@@ -290,6 +312,7 @@ impl Screens {
             ScreenId::Net => network::hints(),
             ScreenId::Proc => processes::hints(),
             ScreenId::Hist => history::hints(),
+            ScreenId::Sus => suscheck::hints(self.sus.open.is_some(), v),
             _ => Vec::new(),
         }
     }
@@ -308,6 +331,10 @@ impl Screens {
         }
         if id == ScreenId::Hist {
             return self.hist.ask(v, r);
+        }
+        // Never: a household's checks don't go to Claude.
+        if id == ScreenId::Sus {
+            return Err(suscheck::NO_CLAUDE.to_string());
         }
         crate::tui::ask::ask_for(id, v, r)
             .ok_or_else(|| crate::tui::ask::nothing_here(id, v).to_string())
@@ -333,6 +360,7 @@ impl Screens {
                 (n > 0).then(|| (format!(" {n}"), t.red))
             }
             ScreenId::Maint => maint::badge(v),
+            ScreenId::Sus => suscheck::badge(v),
             // Listeners open to the network that nothing expects.
             ScreenId::Net => {
                 let n = network::new_count(v);
@@ -351,7 +379,12 @@ impl Screens {
     pub fn filterable(id: ScreenId) -> bool {
         matches!(
             id,
-            ScreenId::Svc | ScreenId::Cont | ScreenId::Maint | ScreenId::Net | ScreenId::Proc
+            ScreenId::Svc
+                | ScreenId::Cont
+                | ScreenId::Maint
+                | ScreenId::Net
+                | ScreenId::Proc
+                | ScreenId::Sus
         )
     }
 
@@ -375,6 +408,7 @@ impl Screens {
             ScreenId::Upgrade => &mut self.upgrade.cur,
             ScreenId::Net => &mut self.net.cur,
             ScreenId::Proc => &mut self.procs.cur,
+            ScreenId::Sus => &mut self.sus.cur,
             _ => &mut self.dash.cur,
         }
     }
@@ -388,6 +422,7 @@ impl Screens {
             ScreenId::Upgrade => self.upgrade.cur.sel,
             ScreenId::Net => self.net.cur.sel,
             ScreenId::Proc => self.procs.cur.sel,
+            ScreenId::Sus => self.sus.cur.sel,
             _ => self.dash.cur.sel,
         }
     }
