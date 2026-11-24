@@ -7,24 +7,24 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 01 09:15 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                            8        8 ││ Your mark         none (m marks it)                                                                        │
+│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 21 s                                                     │
-│  be careful                       2        2 ││ Made from         picture                                                                                  │
-│  no obvious warning signs         2        2 ││                                                                                                            │
+│  be careful                       3        3 ││ Made from         picture                                                                                  │
+│  no obvious warning signs         3        3 ││                                                                                                            │
 │  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 7/7 · email 1/1 · page 1/1     ││   · The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.                        │
-│ incomplete        1 of 7 (14%)               ││   · The page asks for a password.                                                                          │
-│ rules overrode    the model 3 of 7 (43%)     ││   · It says the account will be locked today.                                                              │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││   · The address on screen is examp1e-pay[.]test, which imitates example-pay[.]test.                        │
+│ incomplete        1 of 9 (11%)               ││   · The page asks for a password.                                                                          │
+│ rules overrode    the model 4 of 9 (44%)     ││   · It says the account will be locked today.                                                              │
 │ typical time      15 s (longest 21 s)        ││ Advice shown      do not enter password · type address yourself · close window                             │
 │ you marked        none yet (m on a ┌ Mark this check · pick one (1–4, n cancels) ─────────────────────────────────────┐                                    │
-│ model example-vision:1b · prompts 2│                                                                                  │                                    │
+│ model example-vision:1b · prompts 3│                                                                                  │                                    │
 │ ● alive 2m ago · keeps checks 30 da│ 1  SusCheck was right                                                            │                                    │
 │                                    │ 2  wrong: it should have said "no obvious warning signs"                         │                                    │
 └────────────────────────────────────│ 3  wrong: it should have said "be careful"                                       │                                    │
 ┌ Computers · 2 paired ──────────────│ 4  wrong: it should have said "don't trust this"                                 │                                    │
 │ Name           Client    Checks  La│                                                                                  │                                    │
-│ Kitchen iMac   app 0.1.0      5  16│ Kept on this machine (the server's suscheck.toml): nothing is written to the     │                                    │
-│ Study laptop   web            3  1d│ server, and SusCheck isn't told. x clears a mark.                                │                                    │
+│ Kitchen iMac   app 0.1.0      6  16│ Kept on this machine (the server's suscheck.toml): nothing is written to the     │                                    │
+│ Study laptop   web            4  1d│ server, and SusCheck isn't told. x clears a mark.                                │                                    │
 │                                    │                                                                                  │                                    │
 │                                    │  Enter  close                                                                    │                                    │
 │                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
@@ -35,10 +35,10 @@ expression: s
 │                                              ││                                                                                                            │
 │                                              ││ Where the address came from                                                                                │
 │                                              ││   source          read from the picture: a reading by the model, not exact text                            │
+│                                              ││   digit rule      couldn't look: no trustworthy text of the address, or nothing to hold it against         │
 │                                              ││                                                                                                            │
 │                                              ││ The domain (text only: never open it)                                                                      │
 │                                              ││   first reading   examp1e-pay.test                                                                         │
-│                                              ││   second reading  examp1e-pay.test                                                                         │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  1–9  choose   Esc  cancel

@@ -13,6 +13,8 @@
   "extract": 120010,
   "reread": null,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": null,
   "judge": null
  },
@@ -31,7 +33,10 @@
  "email": null,
  "links": null,
  "links_total": null,
+ "links_merged": null,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": false,
  "message": false
 }

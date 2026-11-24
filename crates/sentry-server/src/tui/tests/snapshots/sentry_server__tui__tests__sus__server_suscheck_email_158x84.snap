@@ -7,24 +7,24 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 08:12 · Study laptop ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                            8        8 ││ Your mark         none (m marks it)                                                                        │
+│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Study laptop (web) · took 14 s                                                           │
-│  be careful                       2        2 ││ Made from         email                                                                                    │
-│  no obvious warning signs         2        2 ││                                                                                                            │
+│  be careful                       3        3 ││ Made from         email                                                                                    │
+│  no obvious warning signs         3        3 ││                                                                                                            │
 │  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 7/7 · email 1/1 · page 1/1     ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
-│ incomplete        1 of 7 (14%)               ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
-│ rules overrode    the model 3 of 7 (43%)     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
+│ incomplete        1 of 9 (11%)               ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
+│ rules overrode    the model 4 of 9 (44%)     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
 │ typical time      15 s (longest 21 s)        ││ one.                                                                                                       │
 │ you marked        none yet (m on a check)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
-│ model example-vision:1b · prompts 2          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
+│ model example-vision:1b · prompts 3          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
 │ ● alive 2m ago · keeps checks 30 days        ││   · Replies to this message would go to a different address from the one it was sent from.                 │
 │                                              ││   · It asks the reader to sign in with a password today.                                                   │
 └──────────────────────────────────────────────┘│ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
 ┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
 │ Name           Client    Checks  Last seen   ││ The model against what counted                                                                             │
-│ Kitchen iMac   app 0.1.0      5  16h ago     ││ The model         be careful (medium)                                                                      │
-│ Study laptop   web            3  1d ago      ││ What counted      don't trust this (high)                                                                  │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││ The model         be careful (medium)                                                                      │
+│ Study laptop   web            4  1d ago      ││ What counted      don't trust this (high)                                                                  │
 │                                              ││ SusCheck's rules  raised the verdict:                                                                      │
 │                                              ││   · a different address, and it asks for something risky                                                   │
 │                                              ││   · a link's text is an address, and it leads to another                                                   │
@@ -46,6 +46,7 @@ expression: s
 │                                              ││ Where the address came from                                                                                │
 │                                              ││   source          the email's own header: exact text, not a reading                                        │
 │                                              ││   exact address   account-alerts.test                                                                      │
+│                                              ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
 │                                              ││                                                                                                            │
 │                                              ││ The email (its headers, read by SusCheck's code)                                                           │
 │                                              ││   from            service@example-pay.test <notice@account-alerts.test>                                    │
@@ -56,6 +57,8 @@ expression: s
 │                                              ││   attachments     1 (declared; none is kept)                                                               │
 │                                              ││   · statement.pdf.htm (text/html, 92 B)                                                                    │
 │                                              ││   links           2                                                                                        │
+│                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
+│                                              ││   · words about money (payment, invoice, order…)                                                           │
 │                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
 │                                              ││                                                                                                            │
 │                                              ││ Links (text only: never open one)                                                                          │
@@ -75,13 +78,10 @@ expression: s
 │                                              ││       nothing came back                                                                                    │
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
-│                                              ││   model           example-vision:1b · prompts 2                                                            │
-│                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s · not run: reread, ocr          │
+│                                              ││   model           example-vision:1b · prompts 3                                                            │
+│                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s                                 │
+│                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
 │                                              ││   picture         none: this check was made without one                                                    │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit            this check was made from the email itself: there is no picture

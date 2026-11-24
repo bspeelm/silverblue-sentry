@@ -8,11 +8,13 @@
  "duration_ms": 14620,
  "error": null,
  "model": "example-vision:1b",
- "prompt_version": "2",
+ "prompt_version": "3",
  "stages_ms": {
   "extract": 2950,
   "reread": null,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": 1710,
   "judge": 9840
  },
@@ -37,12 +39,16 @@
   "second_reading": null,
   "ocr_reading": null,
   "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "clear",
   "check": {
    "result": "mismatch",
    "shown": "account-alerts.test",
    "real": "example-pay.test",
    "why": "different"
   },
+  "first_reading_from": null,
   "source": "email_header",
   "exact": "account-alerts.test"
  },
@@ -74,7 +80,8 @@
     }
    ],
    "domain": []
-  }
+  },
+  "failed": []
  },
  "judgement": {
   "red_flags": [
@@ -120,7 +127,8 @@
    "risky_attachment",
    "reply_to_differs"
   ],
-  "floors_changed_verdict": true
+  "floors_changed_verdict": true,
+  "unconfirmed_only": false
  },
  "input": [
   "email"
@@ -146,7 +154,19 @@
   ],
   "attachments_total": 1,
   "links_total": 2,
-  "aimed_at_ai": false
+  "aimed_at_ai": false,
+  "from_written": null,
+  "signals": {
+   "body_nearly_empty": false,
+   "random_address": false,
+   "names_disagree": false,
+   "money_wording": true,
+   "return_path_differs": false,
+   "body_is_one_link": false,
+   "display_name_is_recipient": false,
+   "name_matches_address": false
+  },
+  "freemail": null
  },
  "links": [
   {
@@ -165,7 +185,10 @@
   }
  ],
  "links_total": 2,
+ "links_merged": 0,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": false,
  "message": true
 }

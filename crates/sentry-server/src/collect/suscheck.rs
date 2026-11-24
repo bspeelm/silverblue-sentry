@@ -18,6 +18,11 @@
 //! The record then has the email's headers, the links (text and where each leads, stored
 //! defanged) and the page; and the folder may hold `message.txt`, a quarantined copy of
 //! the message's text. **That file is never read here**: [`path_of`] has no name for it.
+//!
+//! The format grows without a schema change, and every addition is read the same way: a
+//! part that is missing, null or not what the format says is left out; a value this sentry
+//! has no words for is kept as cleaned text and never taken for a known one; a boolean
+//! counts only when it is literally `true`.
 
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -201,7 +206,12 @@ pub fn clean(s: &str) -> String {
 /// A string from a record: cleaned, cut to `cap` characters, None when it isn't a string
 /// or nothing is left of it.
 fn text(v: &Value, cap: usize) -> Option<String> {
-    let s = clean(v.as_str()?);
+    cut(v.as_str()?, cap)
+}
+
+/// The same for text that is not a value: an object's key.
+fn cut(s: &str, cap: usize) -> Option<String> {
+    let s = clean(s);
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -1095,6 +1105,17 @@ pub struct Domain {
     pub ocr_reading: Option<String>,
     /// Whether the text recogniser was run. None: a record from before there was one.
     pub ocr_available: Option<bool>,
+    /// Which field of the model's reading of the picture gave the first reading
+    /// (`sender_address`, `sender_host`, `address_bar`, or a value this sentry doesn't know).
+    pub first_reading_from: Option<String>,
+    /// Whether the letter shapes found in the picture could spell the first reading, judged
+    /// by code: `fits`, `touching` (means nothing), `differs` (it takes a match away).
+    pub shape_fit: Option<String>,
+    /// What the model read when shown those letter shapes one by one, out of order.
+    pub shuffled_reading: Option<String>,
+    /// Whether the digit rule could look, and what it found: `fired`, `clear`,
+    /// `not_evaluated`. None: a record from before the rule was reworked.
+    pub digit_rule: Option<String>,
     /// Where the address the verdict rests on came from: `email_header`, `window`,
     /// `screenshot`, or a value this sentry doesn't know. None: an older record (a picture).
     pub source: Option<String>,
@@ -1126,8 +1147,13 @@ pub struct Query {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Search {
+    /// False only when a search for the official site failed (a record without `failed`,
+    /// from before: when any search did).
     pub ok: Option<bool>,
     pub queries: Vec<Query>,
+    /// The kind of each query that failed or timed out. None: a record from before that
+    /// was written.
+    pub failed: Option<Vec<String>>,
 }
 
 /// The model's own answer, before SusCheck's rules.
@@ -1151,6 +1177,10 @@ pub struct Final {
     pub advice: Vec<String>,
     pub floors: Vec<String>,
     pub floors_changed: Option<bool>,
+    /// The verdict is `suspicious` only because the address could not be confirmed, and
+    /// nothing looked wrong: the person was shown a milder "be careful". Only a literal
+    /// `true` says so; a record without it (from before) doesn't.
+    pub unconfirmed_only: bool,
 }
 
 /// One attachment as the message declared it. Nothing else of it exists anywhere: SusCheck
@@ -1184,7 +1214,30 @@ pub struct Email {
     pub attachments_total: u64,
     pub links_total: Option<u64>,
     pub aimed_at_ai: Option<bool>,
+    /// What was written in the From header where no address could be read from it. Not
+    /// defanged: text, never resolved.
+    pub from_written: Option<String>,
+    /// The free personal mail provider the sender uses, by SusCheck's own short list.
+    pub freemail: Option<String>,
+    /// The small facts SusCheck's code worked out about the message that are true (only
+    /// a literal `true` counts), by their keys: those the format names, in its order, then
+    /// any other, as cleaned text. Hints, never proof. At most [`SIGNALS_MAX`].
+    pub signals: Vec<String>,
 }
+
+/// `email.signals` as the format names them, in its order.
+pub const SIGNALS: [&str; 8] = [
+    "body_nearly_empty",
+    "random_address",
+    "names_disagree",
+    "money_wording",
+    "return_path_differs",
+    "body_is_one_link",
+    "display_name_is_recipient",
+    "name_matches_address",
+];
+/// The most signals of one record that are kept.
+pub const SIGNALS_MAX: usize = 16;
 
 /// One link of the email or of the page's list, as SusCheck's code analysed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1246,6 +1299,9 @@ pub struct Incident {
     /// How many links there were in all, before exact repeats were merged and before the
     /// list was cut. None: no list, or a record from before the count was written.
     pub links_total: Option<u64>,
+    /// How many of those were exact repeats of an earlier link and were merged into it.
+    /// None: no list, or a record from before the count was written.
+    pub links_merged: Option<u64>,
     pub page: Option<Page>,
     /// Whether a picture was kept.
     pub screenshot: bool,
@@ -1267,6 +1323,28 @@ impl Incident {
             email.unwrap_or(0).saturating_add(page.unwrap_or(0))
         });
         total.saturating_sub(listed)
+    }
+
+    /// The links that are not in the list, where the record says how they split: (left
+    /// out at a limit, exact repeats merged into one already listed or counted). The
+    /// format's own sum: `links_total - links_merged - len(links)` at a limit. Neither is
+    /// believed past what the total leaves beyond the list. None: a record without
+    /// `links_merged` (see [`Incident::links_more`]).
+    pub fn links_left(&self) -> Option<(u64, u64)> {
+        let listed = self.links.as_ref()?.len() as u64;
+        let beyond = self.links_total?.saturating_sub(listed);
+        let merged = self.links_merged?.min(beyond);
+        Some((beyond - merged, merged))
+    }
+
+    /// The person was shown the milder "be careful": the verdict is `suspicious` only
+    /// because the address couldn't be confirmed. Never for any other verdict, whatever
+    /// the record says.
+    pub fn unconfirmed_only(&self) -> bool {
+        self.last.as_ref().is_some_and(|l| {
+            l.unconfirmed_only
+                && l.verdict.as_deref().and_then(Verdict::of) == Some(Verdict::Suspicious)
+        })
     }
 
     /// Whether `what` was among the inputs sent. None: the record doesn't say.
@@ -1337,6 +1415,10 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             second_reading: t(&d["second_reading"]),
             ocr_reading: t(&d["ocr_reading"]),
             ocr_available: d["ocr_available"].as_bool(),
+            first_reading_from: text(&d["first_reading_from"], 30),
+            shape_fit: text(&d["shape_fit"], 30),
+            shuffled_reading: t(&d["shuffled_reading"]),
+            digit_rule: text(&d["digit_rule"], 30),
             source: text(&d["source"], 30),
             exact: text(&d["exact"], 260),
             result: t(&d["check"]["result"]),
@@ -1376,6 +1458,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         Search {
             ok: s["ok"].as_bool(),
             queries,
+            failed: s["failed"].is_array().then(|| texts(&s["failed"], 20, 6)),
         }
     });
     let judgement = obj(&v["judgement"]).then(|| {
@@ -1399,6 +1482,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             advice: texts(&f["advice"], 40, 8),
             floors: texts(&f["floors"], 40, 12),
             floors_changed: f["floors_changed_verdict"].as_bool(),
+            unconfirmed_only: f["unconfirmed_only"].as_bool() == Some(true),
         }
     });
     let count = |x: &Value| x.as_u64().map(|n| n.min(1_000_000));
@@ -1416,6 +1500,23 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
                 size: a["size"].as_u64(),
             })
             .collect();
+        // Only a literal `true` is a signal. The ones the format names come first, in its
+        // order; a key it doesn't name is kept as cleaned text.
+        let on = |k: &str| e["signals"][k].as_bool() == Some(true);
+        let signals: Vec<String> = SIGNALS
+            .iter()
+            .filter(|k| on(k))
+            .map(|k| k.to_string())
+            .chain(
+                e["signals"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(k, v)| v.as_bool() == Some(true) && !SIGNALS.contains(&k.as_str()))
+                    .filter_map(|(k, _)| cut(k, 40)),
+            )
+            .take(SIGNALS_MAX)
+            .collect();
         Email {
             from_name: text(&e["from_name"], 210),
             from_address: text(&e["from_address"], 260),
@@ -1430,6 +1531,9 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             attachments,
             links_total: count(&e["links_total"]),
             aimed_at_ai: e["aimed_at_ai"].as_bool(),
+            from_written: text(&e["from_written"], 260),
+            freemail: text(&e["freemail"], 24),
+            signals,
         }
     });
     let links = v["links"].as_array().map(|list| {
@@ -1464,14 +1568,16 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         error: text(&v["error"], 120),
         model: text(&v["model"], 120),
         prompt_version: text(&v["prompt_version"], 40),
-        stages: ["extract", "reread", "ocr", "search", "judge"]
-            .into_iter()
-            .filter_map(|s| match v["stages_ms"].get(s)? {
-                Value::Null => Some((s, None)),
-                // (The old shape's 0 is "did not run"; today's is "under a millisecond".)
-                ms => Some((s, Some(ms.as_u64()?).filter(|ms| *ms > 0 || !old))),
-            })
-            .collect(),
+        stages: [
+            "extract", "reread", "ocr", "shapes", "shuffle", "search", "judge",
+        ]
+        .into_iter()
+        .filter_map(|s| match v["stages_ms"].get(s)? {
+            Value::Null => Some((s, None)),
+            // (The old shape's 0 is "did not run"; today's is "under a millisecond".)
+            ms => Some((s, Some(ms.as_u64()?).filter(|ms| *ms > 0 || !old))),
+        })
+        .collect(),
         facts,
         domain,
         search,
@@ -1483,6 +1589,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         },
         email,
         links_total: links.as_ref().and_then(|_| count(&v["links_total"])),
+        links_merged: links.as_ref().and_then(|_| count(&v["links_merged"])),
         links,
         page,
         screenshot: v["screenshot"].as_bool().unwrap_or(false),
@@ -1623,7 +1730,7 @@ pub(crate) mod tests {
     #[test]
     fn the_samples_parse_to_what_the_format_says() {
         let s = sample();
-        assert_eq!(s.checks.len(), 8);
+        assert_eq!(s.checks.len(), 10);
         assert_eq!((s.skipped, s.index_newer, s.newer()), (0, None, None));
         // The oldest is a line in the old shape (it ends at `error`): a picture's.
         let old = &s.checks[0];
@@ -1649,7 +1756,14 @@ pub(crate) mod tests {
         );
         assert_eq!(failed.outcome(), "failed (model)");
         // Never "safe".
-        assert_eq!(s.checks[3].outcome(), "no obvious warning signs");
+        assert_eq!(s.checks[8].outcome(), "no obvious warning signs");
+        // A genuine page seen only in a picture is "be careful", never more: the index
+        // doesn't say it is the milder kind (the record does).
+        assert_eq!(s.checks[3].id.as_str(), "20261103T080542Z-e5f6");
+        assert_eq!(
+            (s.checks[3].verdict(), s.checks[3].domain_check.as_deref()),
+            (Some(Verdict::Suspicious), Some("match_trusted"))
+        );
         // What each was made from: the index's word, and plain words for it. The check
         // that failed says what it was given too.
         let sent: Vec<Option<String>> = s.checks.iter().map(Check::sent).collect();
@@ -1665,7 +1779,13 @@ pub(crate) mod tests {
                 said("picture"),
                 said("email"),
                 said("picture + page address"),
+                said("email + page address"),
+                said("email"),
             ]
+        );
+        assert_eq!(
+            s.checks[8].pictureless(),
+            Some("the email and the page's address")
         );
         assert_eq!(s.checks[6].input.as_deref(), Some("email"));
         assert_eq!(s.checks[6].pictureless(), Some("the email itself"));
@@ -1681,23 +1801,23 @@ pub(crate) mod tests {
             (d[1].name.as_str(), d[1].app_version.as_deref()),
             ("Study laptop", None)
         );
-        // Counts: by the server's clock, the last day has the failed check and the two
+        // Counts: by the server's clock, the last day has the failed check and the four
         // of that morning.
         let c = s.counts();
         assert_eq!(
             c.week,
             Tally {
-                total: 8,
+                total: 10,
                 malicious: 3,
-                suspicious: 2,
-                safe: 2,
+                suspicious: 3,
+                safe: 3,
                 other: 0,
                 errors: 1,
                 incomplete: 1,
-                floors: 3,
+                floors: 4,
             }
         );
-        assert_eq!((c.day.total, c.day.errors, c.computers), (3, 1, 2));
+        assert_eq!((c.day.total, c.day.errors, c.computers), (5, 1, 2));
         assert!(!c.down());
         // Since the first lookalike was looked at: two more said "don't trust this", one
         // failed.
@@ -1706,6 +1826,13 @@ pub(crate) mod tests {
         assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (2, 1));
         assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (2, 0));
         assert_eq!(s.unseen(Some("20261105T103045Z-p6q8")), (0, 0));
+        // What needs a look is what said "don't trust this" or failed: a "be careful",
+        // the milder kind included, never is.
+        assert_eq!(s.unseen(Some("20261102T143027Z-c3d4")), (2, 1));
+        assert_eq!(
+            s.newest().map(|i| i.to_string()).as_deref(),
+            Some("20261105T115821Z-t4v6")
+        );
     }
 
     #[test]
@@ -1883,6 +2010,8 @@ pub(crate) mod tests {
                 ("extract", Some(3310)),
                 ("reread", Some(2890)),
                 ("ocr", None),
+                ("shapes", None),
+                ("shuffle", None),
                 ("search", Some(1630)),
                 ("judge", Some(13650))
             ]
@@ -1906,6 +2035,8 @@ pub(crate) mod tests {
                 ("extract", Some(120_010)),
                 ("reread", None),
                 ("ocr", None),
+                ("shapes", None),
+                ("shuffle", None),
                 ("search", None),
                 ("judge", None)
             ]
@@ -1945,16 +2076,41 @@ pub(crate) mod tests {
     fn older(text: &str) -> String {
         let mut v: Value = serde_json::from_str(text).unwrap();
         let o = v.as_object_mut().unwrap();
-        for k in ["input", "email", "links", "links_total", "page", "message"] {
+        for k in [
+            "input",
+            "email",
+            "links",
+            "links_total",
+            "links_merged",
+            "page",
+            "message",
+        ] {
             o.remove(k);
         }
         if let Some(d) = o.get_mut("domain").and_then(Value::as_object_mut) {
-            for k in ["source", "exact", "ocr_reading", "ocr_available"] {
+            for k in [
+                "source",
+                "exact",
+                "ocr_reading",
+                "ocr_available",
+                "first_reading_from",
+                "shape_fit",
+                "shuffled_reading",
+                "digit_rule",
+            ] {
                 d.remove(k);
             }
         }
         if let Some(st) = o.get_mut("stages_ms").and_then(Value::as_object_mut) {
-            st.remove("ocr");
+            for k in ["ocr", "shapes", "shuffle"] {
+                st.remove(k);
+            }
+        }
+        if let Some(f) = o.get_mut("final").and_then(Value::as_object_mut) {
+            f.remove("unconfirmed_only");
+        }
+        if let Some(f) = o.get_mut("search").and_then(Value::as_object_mut) {
+            f.remove("failed");
         }
         v.to_string()
     }
@@ -2032,6 +2188,16 @@ pub(crate) mod tests {
             "\"source\":",
             "\"exact\":",
             "\"ocr",
+            "\"links_merged\":",
+            "\"first_reading_from\":",
+            "\"shape_fit\":",
+            "\"shuffled_reading\":",
+            "\"digit_rule\":",
+            "\"shapes\":",
+            "\"shuffle\":",
+            "\"unconfirmed_only\":",
+            "\"failed\":",
+            "\"signals\":",
         ] {
             assert!(!old_text.contains(later), "{later}");
         }
@@ -2043,6 +2209,7 @@ pub(crate) mod tests {
         );
         assert!(old.email.is_none() && old.links.is_none() && old.page.is_none());
         assert_eq!((old.links_total, old.links_more()), (None, 0));
+        assert_eq!((old.links_merged, old.links_left()), (None, None));
         assert_eq!((old.screenshot, old.message), (true, false));
         assert_eq!(old.prompt_version.as_deref(), Some("1"));
         let d = old.domain.as_ref().unwrap();
@@ -2055,6 +2222,19 @@ pub(crate) mod tests {
             ),
             (None, None, None, None)
         );
+        assert_eq!(
+            (
+                d.first_reading_from.as_deref(),
+                d.shape_fit.as_deref(),
+                d.shuffled_reading.as_deref(),
+                d.digit_rule.as_deref()
+            ),
+            (None, None, None, None)
+        );
+        // A picture alone could still be "no obvious warning signs" then, and no search
+        // was listed as failed.
+        assert!(!old.unconfirmed_only());
+        assert_eq!(old.search.as_ref().unwrap().failed, None);
         assert_eq!(
             (
                 d.first_reading.as_deref(),
@@ -2106,7 +2286,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|s| s.0)
                 .collect::<Vec<_>>(),
-            ["extract", "ocr", "judge"]
+            ["extract", "ocr", "shapes", "shuffle", "judge"]
         );
         // Every sample of today's shape, cut back to the old shape's fields, still reads:
         // a picture's, with what both shapes have unchanged.
@@ -2118,17 +2298,36 @@ pub(crate) mod tests {
             "20261104T194103Z-j9k0",
             "20261105T081233Z-k2m4",
             "20261105T103045Z-p6q8",
+            "20261105T114502Z-r3s5",
+            "20261105T115821Z-t4v6",
         ] {
             let text = fixture(&format!("suscheck/{id}/incident.json"));
-            let now = sample_incident(id);
+            let mut now = sample_incident(id);
+            // (What a record from before doesn't say: the milder verdict, which searches
+            // failed.)
+            if let Some(l) = &mut now.last {
+                l.unconfirmed_only = false;
+            }
+            if let Some(s) = &mut now.search {
+                s.failed = None;
+            }
             let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
             assert_eq!(then.input, ["image"], "{id}");
             assert!(then.email.is_none() && then.links.is_none(), "{id}");
             assert!(then.page.is_none() && !then.message && then.links_total.is_none());
+            assert!(then.links_merged.is_none() && !then.unconfirmed_only());
+            assert!(then.domain.as_ref().is_none_or(|d| {
+                d.source.is_none()
+                    && d.exact.is_none()
+                    && d.digit_rule.is_none()
+                    && d.shape_fit.is_none()
+                    && d.shuffled_reading.is_none()
+                    && d.first_reading_from.is_none()
+            }));
             assert!(
-                then.domain
-                    .as_ref()
-                    .is_none_or(|d| d.source.is_none() && d.exact.is_none())
+                then.stages
+                    .iter()
+                    .all(|(n, _)| !["ocr", "shapes", "shuffle"].contains(n))
             );
             assert_eq!(
                 (&then.last, &then.judgement, &then.facts, &then.search),
@@ -2186,6 +2385,10 @@ pub(crate) mod tests {
         );
         assert_eq!((e.attachments_total, e.links_total), (1, Some(2)));
         assert_eq!(e.aimed_at_ai, Some(false));
+        // What code worked out: the one signal that is true, no provider, nothing written
+        // in an address's place.
+        assert_eq!(e.signals, ["money_wording"]);
+        assert_eq!((&e.from_written, &e.freemail), (&None, &None));
         let links = i.links.as_ref().unwrap();
         assert_eq!(links.len(), 2);
         assert_eq!(
@@ -2199,6 +2402,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!((i.links_total, i.links_more()), (Some(2), 0));
+        assert_eq!((i.links_merged, i.links_left()), (Some(0), Some((0, 0))));
         assert!(i.page.is_none());
         // The address came as exact text: no second reading, no text recogniser.
         assert_eq!(
@@ -2207,6 +2411,8 @@ pub(crate) mod tests {
                 ("extract", Some(2950)),
                 ("reread", None),
                 ("ocr", None),
+                ("shapes", None),
+                ("shuffle", None),
                 ("search", Some(1710)),
                 ("judge", Some(9840))
             ]
@@ -2400,6 +2606,243 @@ pub(crate) mod tests {
         w["email"] = serde_json::json!({});
         let e = parse_incident(&w.to_string(), id).unwrap().email.unwrap();
         assert_eq!(e, Email::default());
+    }
+
+    /// The format's later revision (still schema 1): the milder verdict, how the links
+    /// that aren't listed split, what code noticed about an email, which searches failed,
+    /// and what the picture's letter shapes and the digit rule said of the address.
+    #[test]
+    fn the_later_revision_is_read_defensively() {
+        // A genuine page seen only in a picture: "be careful", and only because the
+        // address couldn't be confirmed.
+        let p = sample_incident("20261103T080542Z-e5f6");
+        let last = p.last.as_ref().unwrap();
+        assert_eq!(
+            (last.verdict.as_deref(), last.confidence.as_deref()),
+            (Some("suspicious"), Some("low"))
+        );
+        assert_eq!(last.floors, ["picture_only"]);
+        assert!(last.unconfirmed_only && p.unconfirmed_only());
+        assert!(last.advice.contains(&"check_with_file_or_app".to_string()));
+        assert_eq!(
+            p.judgement.as_ref().unwrap().verdict.as_deref(),
+            Some("likely_safe")
+        );
+        let d = p.domain.as_ref().unwrap();
+        assert_eq!(
+            (
+                d.result.as_deref(),
+                d.digit_rule.as_deref(),
+                d.shape_fit.as_deref(),
+                d.shuffled_reading.as_deref(),
+                d.first_reading_from.as_deref()
+            ),
+            (
+                Some("match_trusted"),
+                Some("not_evaluated"),
+                None,
+                None,
+                None
+            )
+        );
+        // Every other sample says it isn't the milder kind.
+        for id in [
+            "20261030T184512Z-b0a1",
+            "20261101T091500Z-a1b2",
+            "20261102T143027Z-c3d4",
+            "20261103T172009Z-g7h8",
+            "20261104T194103Z-j9k0",
+            "20261105T081233Z-k2m4",
+            "20261105T103045Z-p6q8",
+            "20261105T114502Z-r3s5",
+            "20261105T115821Z-t4v6",
+        ] {
+            assert!(!sample_incident(id).unconfirmed_only(), "{id}");
+        }
+        // The window's address: which field the model's own reading came from, and the
+        // digit rule firing on the exact text.
+        let w = sample_incident("20261105T103045Z-p6q8");
+        let d = w.domain.as_ref().unwrap();
+        assert_eq!(
+            (d.first_reading_from.as_deref(), d.digit_rule.as_deref()),
+            (Some("address_bar"), Some("fired"))
+        );
+        assert_eq!(w.search.as_ref().unwrap().failed.as_deref(), Some(&[][..]));
+        assert_eq!(w.prompt_version.as_deref(), Some("3"));
+        // An email checked with the mail window it was open in: both supply links, and
+        // three were exact repeats. Nothing was left out at a limit.
+        let both = sample_incident("20261105T114502Z-r3s5");
+        assert_eq!(both.input, ["email", "page"]);
+        assert_eq!(
+            (both.screenshot, both.message, both.sent_picture()),
+            (false, true, Some(false))
+        );
+        assert_eq!(
+            (
+                both.links.as_ref().unwrap().len(),
+                both.links_total,
+                both.links_merged
+            ),
+            (4, Some(7), Some(3))
+        );
+        assert_eq!(both.links_left(), Some((0, 3)));
+        assert_eq!(
+            both.last.as_ref().unwrap().verdict.as_deref(),
+            Some("likely_safe")
+        );
+        assert_eq!(both.email.as_ref().unwrap().signals, ["money_wording"]);
+        // A second search for the official site, by the sender's name; a rule and fields
+        // this sentry has no words for are kept as text or ignored.
+        let news = sample_incident("20261105T115821Z-t4v6");
+        let kinds: Vec<&str> = news
+            .search
+            .as_ref()
+            .unwrap()
+            .queries
+            .iter()
+            .map(|q| q.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["official", "official2", "domain"]);
+        assert_eq!(news.last.as_ref().unwrap().floors, ["mail_label_spam"]);
+        assert_eq!(news.links_left(), Some((0, 0)));
+
+        // Hostile and broken, field by field. Never a failure.
+        let id = Id::parse("20261105T081233Z-k2m4").unwrap();
+        let text = fixture("suscheck/20261105T081233Z-k2m4/incident.json");
+        let long = "x".repeat(5000);
+        let len = |s: &Option<String>| s.as_ref().unwrap().chars().count();
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["email"]["from_written"] = format!("wr\u{1b}[2Jit\u{202e}ten\n{long}").into();
+        v["email"]["freemail"] = format!("G\u{7}mail {long}").into();
+        v["email"]["signals"] = serde_json::json!({
+            "money_wording": "true",
+            "random_address": 1,
+            "names_disagree": true,
+            "body_nearly_empty": true,
+            "name_matches_address": null,
+            "sig\u{1b}[31mnal_from\u{200b}_next_year": true,
+            "another_new_one": false,
+            format!("long_{long}"): true,
+        });
+        v["domain"]["first_reading_from"] = format!("fo\u{7}oter {long}").into();
+        v["domain"]["shape_fit"] = "dif\u{1b}[2Jfers\u{202e}".into();
+        v["domain"]["shuffled_reading"] = format!("sh\u{9b}31muffled.{long}").into();
+        v["domain"]["digit_rule"] = serde_json::json!(["fired"]);
+        v["search"]["failed"] = serde_json::json!(
+            ["domain", 4, "pho\u{7}ne", null, {"a": 1}, long, "a", "b", "c", "d", "e"]
+        );
+        v["final"]["unconfirmed_only"] = "true".into();
+        v["links_total"] = 500.into();
+        v["links_merged"] = 120.into();
+        v["stages_ms"]["shapes"] = 0.into();
+        v["stages_ms"]["shuffle"] = "soon".into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        let e = i.email.as_ref().unwrap();
+        assert!(e.from_written.as_ref().unwrap().starts_with("written xxx"));
+        assert_eq!((len(&e.from_written), len(&e.freemail)), (261, 25));
+        assert!(e.freemail.as_ref().unwrap().starts_with("Gmail xxx"));
+        // Only a literal `true` is a signal: the format's own first, in its order, then
+        // one it doesn't name, cleaned and cut.
+        assert_eq!(e.signals.len(), 4);
+        assert_eq!(e.signals[..2], ["body_nearly_empty", "names_disagree"]);
+        assert!(e.signals.contains(&"signal_from_next_year".to_string()));
+        assert!(e.signals.iter().any(|s| s.chars().count() == 41));
+        let d = i.domain.as_ref().unwrap();
+        assert!(
+            d.first_reading_from
+                .as_ref()
+                .unwrap()
+                .starts_with("footer x")
+        );
+        assert_eq!(len(&d.first_reading_from), 31);
+        assert_eq!(d.shape_fit.as_deref(), Some("differs"));
+        assert!(
+            d.shuffled_reading
+                .as_ref()
+                .unwrap()
+                .starts_with("shuffled.x")
+        );
+        assert_eq!((len(&d.shuffled_reading), &d.digit_rule), (321, &None));
+        let failed = i.search.as_ref().unwrap().failed.as_ref().unwrap();
+        assert_eq!(failed.len(), 6);
+        assert_eq!(failed[..2], ["domain", "phone"]);
+        assert_eq!(failed[2].chars().count(), 21);
+        // The milder verdict is said only by a literal `true`, and only of "be careful".
+        assert!(!i.last.as_ref().unwrap().unconfirmed_only && !i.unconfirmed_only());
+        v["final"]["unconfirmed_only"] = true.into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!(
+            i.last.as_ref().unwrap().verdict.as_deref(),
+            Some("likely_malicious")
+        );
+        assert!(i.last.as_ref().unwrap().unconfirmed_only && !i.unconfirmed_only());
+        // The format's own sum: 500 in all, 120 exact repeats, 2 listed: 378 at a limit.
+        assert_eq!(i.links_left(), Some((378, 120)));
+        assert_eq!(
+            i.stages
+                .iter()
+                .filter(|s| ["shapes", "shuffle"].contains(&s.0))
+                .collect::<Vec<_>>(),
+            [&("shapes", Some(0))]
+        );
+        let all = format!("{i:?}");
+        assert!(
+            !all.chars()
+                .any(|c| c == '\u{1b}' || c == '\u{7}' || invisible(c)),
+            "{all}"
+        );
+        // More repeats than the total leaves beyond the list aren't believed; a count that
+        // isn't one, or no list at all, and nothing is said of how they split.
+        v["links_merged"] = 9000.into();
+        assert_eq!(
+            parse_incident(&v.to_string(), id).unwrap().links_left(),
+            Some((0, 498))
+        );
+        v["links_total"] = 1.into();
+        assert_eq!(
+            parse_incident(&v.to_string(), id).unwrap().links_left(),
+            Some((0, 0))
+        );
+        for gone in [Value::Null, "three".into(), (-3).into()] {
+            let mut w = v.clone();
+            w["links_merged"] = gone;
+            let i = parse_incident(&w.to_string(), id).unwrap();
+            assert_eq!((i.links_merged, i.links_left()), (None, None));
+        }
+        v["links"] = Value::Null;
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!((i.links_merged, i.links_left()), (None, None));
+        // Each new part null, or not what the format says: left out, the rest read.
+        for (block, key) in [
+            ("email", "signals"),
+            ("email", "from_written"),
+            ("email", "freemail"),
+            ("search", "failed"),
+            ("final", "unconfirmed_only"),
+            ("domain", "shape_fit"),
+            ("domain", "shuffled_reading"),
+            ("domain", "digit_rule"),
+            ("domain", "first_reading_from"),
+        ] {
+            for bad in [Value::Null, 3.into(), serde_json::json!({"a": [1]})] {
+                let mut w: Value = serde_json::from_str(&text).unwrap();
+                w[block][key] = bad;
+                let i = parse_incident(&w.to_string(), id).unwrap();
+                let (e, d) = (i.email.as_ref().unwrap(), i.domain.as_ref().unwrap());
+                match key {
+                    "signals" => assert!(e.signals.is_empty()),
+                    "from_written" => assert!(e.from_written.is_none()),
+                    "freemail" => assert!(e.freemail.is_none()),
+                    "failed" => assert!(i.search.as_ref().unwrap().failed.is_none()),
+                    "unconfirmed_only" => assert!(!i.unconfirmed_only()),
+                    "shape_fit" => assert!(d.shape_fit.is_none()),
+                    "shuffled_reading" => assert!(d.shuffled_reading.is_none()),
+                    "digit_rule" => assert!(d.digit_rule.is_none()),
+                    _ => assert!(d.first_reading_from.is_none()),
+                }
+                assert!(i.last.is_some() && i.links.is_some(), "{block}.{key}");
+            }
+        }
     }
 
     #[test]

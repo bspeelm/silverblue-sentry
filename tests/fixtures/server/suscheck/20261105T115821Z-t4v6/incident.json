@@ -1,0 +1,170 @@
+{
+ "schema": 1,
+ "id": "20261105T115821Z-t4v6",
+ "time": "2026-11-05T11:58:21Z",
+ "device": "Study laptop",
+ "client": "web",
+ "app_version": "",
+ "duration_ms": 12410,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "3",
+ "stages_ms": {
+  "extract": 2610,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": 1390,
+  "judge": 7940
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Example Pay",
+  "sender_name": "Example Pay News",
+  "sender_address": "news@example-pay.test",
+  "address_bar_domain": null,
+  "link_texts": [
+   "Read the news"
+  ],
+  "phone_numbers": [],
+  "asks_for": [],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": null,
+  "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "clear",
+  "check": {
+   "result": "match_search",
+   "shown": "example-pay.test",
+   "real": "example-pay.test",
+   "why": "exact"
+  },
+  "first_reading_from": null,
+  "source": "email_header",
+  "exact": "example-pay.test"
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "official2",
+    "\"Example Pay News\" official website"
+   ],
+   [
+    "domain",
+    "\"example-pay.test\" scam phishing"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "official2": [],
+   "domain": []
+  },
+  "failed": []
+ },
+ "judgement": {
+  "red_flags": [],
+  "looks_normal": [
+   "It is a newsletter that asks for nothing."
+  ],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "likely_safe",
+  "advice": [
+   "no_action_needed"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"claimed_brand\": \"Example Pay\", \"link_texts\": [\"Read the news\"], \"phone_numbers\": [], \"asks_for\": [], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [], \"looks_normal\": [\"It is a newsletter that asks for nothing.\"], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"likely_safe\", \"advice\": [\"no_action_needed\"]}"
+ },
+ "final": {
+  "verdict": "likely_safe",
+  "confidence": "medium",
+  "incomplete": false,
+  "reasons": [
+   "Gmail had already put this message in spam.",
+   "It is a newsletter that asks for nothing."
+  ],
+  "advice": [
+   "no_action_needed",
+   "ask_for_help"
+  ],
+  "floors": [
+   "mail_label_spam"
+  ],
+  "floors_changed_verdict": false,
+  "unconfirmed_only": false
+ },
+ "input": [
+  "email"
+ ],
+ "email": {
+  "from_name": "Example Pay News",
+  "from_address": "news@example-pay.test",
+  "reply_to": null,
+  "return_path": null,
+  "subject": "What is new at Example Pay this month",
+  "date": "Thu, 05 Nov 2026 11:52:00 +0000",
+  "auth": {
+   "spf": "pass",
+   "dkim": "pass",
+   "dmarc": "pass"
+  },
+  "attachments": [],
+  "attachments_total": 0,
+  "links_total": 1,
+  "aimed_at_ai": false,
+  "from_written": null,
+  "signals": {
+   "body_nearly_empty": false,
+   "random_address": false,
+   "names_disagree": false,
+   "money_wording": true,
+   "return_path_differs": false,
+   "body_is_one_link": false,
+   "display_name_is_recipient": false,
+   "name_matches_address": false
+  },
+  "freemail": null
+ },
+ "links": [
+  {
+   "text": "Read the news",
+   "scheme": "https",
+   "target_domain": "example-pay[.]test",
+   "flags": []
+  }
+ ],
+ "links_total": 1,
+ "links_merged": 0,
+ "page": null,
+ "acquired_by": "original",
+ "mail_label": "spam",
+ "screenshot": false,
+ "message": true
+}

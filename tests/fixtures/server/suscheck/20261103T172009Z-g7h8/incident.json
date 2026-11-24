@@ -13,6 +13,8 @@
   "extract": 3400,
   "reread": null,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": 1520,
   "judge": 6420
  },
@@ -35,6 +37,9 @@
   "second_reading": null,
   "ocr_reading": null,
   "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "not_evaluated",
   "check": {
    "result": "unknown",
    "shown": null,
@@ -103,7 +108,8 @@
   "floors": [
    "unknown"
   ],
-  "floors_changed_verdict": false
+  "floors_changed_verdict": false,
+  "unconfirmed_only": false
  },
  "input": [
   "image"
@@ -111,7 +117,10 @@
  "email": null,
  "links": null,
  "links_total": null,
+ "links_merged": null,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": true,
  "message": false
 }

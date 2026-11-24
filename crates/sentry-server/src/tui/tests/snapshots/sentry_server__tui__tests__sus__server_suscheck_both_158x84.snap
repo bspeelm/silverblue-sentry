@@ -1,0 +1,87 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 11:45 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+│                              7 days  30 days ││ It said           no obvious warning signs  (medium confidence)                                            │
+│ checks                           10       10 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 12 s                                                     │
+│  be careful                       3        3 ││ Made from         email + page address                                                                     │
+│  no obvious warning signs         3        3 ││                                                                                                            │
+│  failed                           1        1 ││ Reasons shown                                                                                              │
+│ from: picture 7/7 · email 3/3 · page 2/2     ││   · It tells the reader a statement is ready and asks for nothing.                                         │
+│ incomplete        1 of 9 (11%)               ││ Advice shown      no action needed · ask for help                                                          │
+│ rules overrode    the model 4 of 9 (44%)     ││                                                                                                            │
+│ typical time      15 s (longest 21 s)        ││ The model against what counted                                                                             │
+│ you marked        none yet (m on a check)    ││ The model         no obvious warning signs (medium)                                                        │
+│ model example-vision:1b · prompts 3          ││ What counted      no obvious warning signs (medium)                                                        │
+│ ● alive 2m ago · keeps checks 30 days        ││ SusCheck's rules  none applied                                                                             │
+│                                              ││   what it found normal                                                                                     │
+└──────────────────────────────────────────────┘│   · It tells the reader a statement is ready and asks for nothing.                                         │
+┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
+│ Name           Client    Checks  Last seen   ││ What it read from the message                                                                              │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││   kind            email                                                                                    │
+│ Study laptop   web            4  1d ago      ││   claims to be    Example Pay                                                                              │
+│                                              ││   sender          Example Pay <service@example-pay.test> (the header's exact values)                       │
+│                                              ││   links           View statement · contact us (the model's reading: go by Links below)                     │
+│                                              ││   asks for        nothing                                                                                  │
+│                                              ││   pressure        urgency: no · text addressed to an AI: no                                                │
+│                                              ││                                                                                                            │
+│                                              ││ Where the address came from                                                                                │
+│                                              ││   source          the email's own header: exact text, not a reading                                        │
+│                                              ││   exact address   example-pay.test                                                                         │
+│                                              ││   digit rule      looked, and found no digit in a letter's place (the address may still not be genuine)    │
+│                                              ││                                                                                                            │
+│                                              ││ The email (its headers, read by SusCheck's code)                                                           │
+│                                              ││   from            Example Pay <service@example-pay.test>                                                   │
+│                                              ││   subject         Your November statement                                                                  │
+│                                              ││   date            Thu, 05 Nov 2026 11:40:00 +0000                                                          │
+│                                              ││   authentication  spf pass · dkim pass · dmarc pass (as the message reports it)                            │
+│                                              ││   attachments     none                                                                                     │
+│                                              ││   links           3                                                                                        │
+│                                              ││   what SusCheck's code noticed (hints, never proof)                                                        │
+│                                              ││   · words about money (payment, invoice, order…)                                                           │
+│                                              ││ The email's text is kept on the server with this check (quarantined). sentry doesn't show it.              │
+│                                              ││                                                                                                            │
+│                                              ││ Links (text only: never open one)                                                                          │
+│                                              ││   · View statement → example-pay[.]test · https                                                            │
+│                                              ││   · contact us → example-pay[.]test · https                                                                │
+│                                              ││   · Inbox → example[.]net · https                                                                          │
+│                                              ││   · Settings → example[.]net · https                                                                       │
+│                                              ││   3 more were exact repeats of a link already listed or counted                                            │
+│                                              ││                                                                                                            │
+│                                              ││ The page (as the app read the window)                                                                      │
+│                                              ││   address         example[.]net                                                                            │
+│                                              ││   title           Your November statement - Mail                                                           │
+│                                              ││   links           4                                                                                        │
+│                                              ││   read through    accessibility                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││ The domain (text only: never open it)                                                                      │
+│                                              ││   compared        match search (exact) · on screen example-pay.test · the real one example-pay.test        │
+│                                              ││                                                                                                            │
+│                                              ││ Searches SusCheck ran                                                                                      │
+│                                              ││   official        "Example Pay" official website                                                           │
+│                                              ││       Example Pay - official site · example-pay.test · 2 engines                                           │
+│                                              ││         Sign in to your Example Pay account.                                                               │
+│                                              ││       Example Pay help centre · example-pay.test · 1 engine                                                │
+│                                              ││         Answers to common questions.                                                                       │
+│                                              ││   domain          "example-pay.test" scam phishing                                                         │
+│                                              ││       nothing came back                                                                                    │
+│                                              ││                                                                                                            │
+│                                              ││ How it ran                                                                                                 │
+│                                              ││   model           example-vision:1b · prompts 3                                                            │
+│                                              ││   time            12 s in all · extract 2.7 s · search 1.5 s · judge 8.3 s                                 │
+│                                              ││   not run         reread, ocr, shapes, shuffle                                                             │
+│                                              ││   picture         none: this check was made without one                                                    │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit

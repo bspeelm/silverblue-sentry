@@ -13,6 +13,8 @@
   "extract": 3540,
   "reread": 2710,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": 1980,
   "judge": 10690
  },
@@ -37,6 +39,9 @@
   "second_reading": "example.net",
   "ocr_reading": null,
   "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "not_evaluated",
   "check": {
    "result": "mismatch",
    "shown": "example.net",
@@ -109,7 +114,8 @@
   "floors": [
    "mismatch_risky"
   ],
-  "floors_changed_verdict": false
+  "floors_changed_verdict": false,
+  "unconfirmed_only": false
  },
  "input": [
   "image"
@@ -117,7 +123,10 @@
  "email": null,
  "links": null,
  "links_total": null,
+ "links_merged": null,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": true,
  "message": false
 }

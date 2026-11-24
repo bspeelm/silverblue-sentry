@@ -13,6 +13,8 @@
   "extract": 3120,
   "reread": 2650,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": 1410,
   "judge": 8030
  },
@@ -36,6 +38,9 @@
   "second_reading": "www.example.com",
   "ocr_reading": null,
   "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "not_evaluated",
   "check": {
    "result": "match_trusted",
    "shown": "example.com",
@@ -88,19 +93,23 @@
   "judge": "{\"red_flags\": [], \"looks_normal\": [\"The address bar matches the company's real site.\", \"Nothing asks for a password, a code or money.\"], \"verdict\": \"likely_safe\", \"confidence\": \"medium\", \"incomplete\": false, \"advice\": [\"no_action_needed\"]}"
  },
  "final": {
-  "verdict": "likely_safe",
-  "confidence": "medium",
+  "verdict": "suspicious",
+  "confidence": "low",
   "incomplete": false,
   "reasons": [
-   "The address bar matches the company's real site.",
-   "Nothing asks for a password, a code or money."
+   "I could only read the address from a picture, and look-alike addresses can fool me in pictures. Check the address yourself, letter by letter."
   ],
   "advice": [
-   "no_action_needed",
+   "do_not_click",
+   "check_with_file_or_app",
+   "type_address_yourself",
    "ask_for_help"
   ],
-  "floors": [],
-  "floors_changed_verdict": false
+  "floors": [
+   "picture_only"
+  ],
+  "floors_changed_verdict": true,
+  "unconfirmed_only": true
  },
  "input": [
   "image"
@@ -108,7 +117,10 @@
  "email": null,
  "links": null,
  "links_total": null,
+ "links_merged": null,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": true,
  "message": false
 }

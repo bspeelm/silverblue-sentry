@@ -1,0 +1,187 @@
+{
+ "schema": 1,
+ "id": "20261105T114502Z-r3s5",
+ "time": "2026-11-05T11:45:02Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 12870,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "3",
+ "stages_ms": {
+  "extract": 2740,
+  "reread": null,
+  "ocr": null,
+  "shapes": null,
+  "shuffle": null,
+  "search": 1480,
+  "judge": 8310
+ },
+ "facts": {
+  "kind": "email",
+  "claimed_brand": "Example Pay",
+  "sender_name": "Example Pay",
+  "sender_address": "service@example-pay.test",
+  "address_bar_domain": null,
+  "link_texts": [
+   "View statement",
+   "contact us"
+  ],
+  "phone_numbers": [],
+  "asks_for": [],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": null,
+  "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "clear",
+  "check": {
+   "result": "match_search",
+   "shown": "example-pay.test",
+   "real": "example-pay.test",
+   "why": "exact"
+  },
+  "first_reading_from": null,
+  "source": "email_header",
+  "exact": "example-pay.test"
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example Pay\" official website"
+   ],
+   [
+    "domain",
+    "\"example-pay.test\" scam phishing"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example Pay - official site",
+     "snippet": "Sign in to your Example Pay account.",
+     "domain": "example-pay.test",
+     "engines": 2
+    },
+    {
+     "title": "Example Pay help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example-pay.test",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  },
+  "failed": []
+ },
+ "judgement": {
+  "red_flags": [],
+  "looks_normal": [
+   "It tells the reader a statement is ready and asks for nothing."
+  ],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "likely_safe",
+  "advice": [
+   "no_action_needed"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"claimed_brand\": \"Example Pay\", \"link_texts\": [\"View statement\", \"contact us\"], \"phone_numbers\": [], \"asks_for\": [], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [], \"looks_normal\": [\"It tells the reader a statement is ready and asks for nothing.\"], \"incomplete\": false, \"confidence\": \"medium\", \"verdict\": \"likely_safe\", \"advice\": [\"no_action_needed\"]}"
+ },
+ "final": {
+  "verdict": "likely_safe",
+  "confidence": "medium",
+  "incomplete": false,
+  "reasons": [
+   "It tells the reader a statement is ready and asks for nothing."
+  ],
+  "advice": [
+   "no_action_needed",
+   "ask_for_help"
+  ],
+  "floors": [],
+  "floors_changed_verdict": false,
+  "unconfirmed_only": false
+ },
+ "input": [
+  "email",
+  "page"
+ ],
+ "email": {
+  "from_name": "Example Pay",
+  "from_address": "service@example-pay.test",
+  "reply_to": null,
+  "return_path": null,
+  "subject": "Your November statement",
+  "date": "Thu, 05 Nov 2026 11:40:00 +0000",
+  "auth": {
+   "spf": "pass",
+   "dkim": "pass",
+   "dmarc": "pass"
+  },
+  "attachments": [],
+  "attachments_total": 0,
+  "links_total": 3,
+  "aimed_at_ai": false,
+  "from_written": null,
+  "signals": {
+   "body_nearly_empty": false,
+   "random_address": false,
+   "names_disagree": false,
+   "money_wording": true,
+   "return_path_differs": false,
+   "body_is_one_link": false,
+   "display_name_is_recipient": false,
+   "name_matches_address": false
+  },
+  "freemail": null
+ },
+ "links": [
+  {
+   "text": "View statement",
+   "scheme": "https",
+   "target_domain": "example-pay[.]test",
+   "flags": []
+  },
+  {
+   "text": "contact us",
+   "scheme": "https",
+   "target_domain": "example-pay[.]test",
+   "flags": []
+  },
+  {
+   "text": "Inbox",
+   "scheme": "https",
+   "target_domain": "example[.]net",
+   "flags": []
+  },
+  {
+   "text": "Settings",
+   "scheme": "https",
+   "target_domain": "example[.]net",
+   "flags": []
+  }
+ ],
+ "links_total": 7,
+ "links_merged": 3,
+ "page": {
+  "source": "accessibility",
+  "url_domain": "example[.]net",
+  "title": "Your November statement - Mail",
+  "links_total": 4
+ },
+ "acquired_by": null,
+ "mail_label": null,
+ "screenshot": false,
+ "message": true
+}

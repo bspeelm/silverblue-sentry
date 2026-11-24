@@ -169,7 +169,8 @@ a symlink that leads there, `find <parent> -exec`, a tool that reads a list of p
 
 SusCheck's format grew without a schema change: a check can be made from an email file, from
 the page's address as its desktop app reads it out of the window, from a screenshot, or from a
-combination. The fixtures are the eight published samples, byte for byte: one in the old shape
+combination. The fixtures were then the eight published samples, byte for byte (ten now: see
+the later revision below): one in the old shape
 (the first release's: no `input`, `message`, `domain.source` or text-recogniser fields), five in
 today's full shape, an email file with `message.txt` and no picture, a picture beside the
 window's exact address.
@@ -187,7 +188,7 @@ window's exact address.
   own `links_total` less the list; that count is from before exact repeats were merged, so the
   line says "exact repeats of these included". A record without it falls back to the email's
   and the page's totals. `stages_ms`: null is a stage that did not run, a number one that ran
-  (0: in under a millisecond); "How it ran" gives the times, then `· not run: reread, ocr`. The
+  (0: in under a millisecond); "How it ran" gives the times, then what did not run (`reread, ocr`; a row of its own since the later revision). The
   old shape wrote 0 for a stage that did not run, so a 0 there is read as not run. The format's
   caps are on the plain value, which is stored defanged: sentry's are a little over the stored
   sizes (a link's text 410, a target and the page's address 210). A failed check's index line
@@ -221,12 +222,72 @@ window's exact address.
   (the index says the check was made from the email itself or the page's address; or the open
   record says none was kept) and says which. From the list, a failed check's `o` still asks
   (its index line says a picture was sent; none was kept) and gets the same plain answer.
-- **Wording.** Every rule the format lists but `lookalike`, and the tag `ocr_differs`, has a
-  short phrase by the format's own line for it (`tag()`); any other
+- **Wording.** Every rule the format then listed but `lookalike`, and the tag `ocr_differs`, had
+  a short phrase by the format's own line for it (`tag()`); any other
   value is its own text with spaces for underscores. Three or more rules are listed one a line
   (a check of an email file has six).
 - **The detail scrolls by wrapped rows.** It used to stop at the count of unwrapped lines, which
   on a narrow window left the end of a long check out of reach.
+
+### The format's later revision (prompts 3, still schema 1)
+
+The fixtures are the ten published samples, byte for byte. New among them: a genuine page seen
+only in a picture (now "be careful", never more), an email checked beside the mail window it
+was open in (both supply links, three exact repeats), a newsletter with a second search for
+the official site.
+
+- **The milder "be careful".** A verdict that rests on an address read from a picture is never
+  `likely_safe`: the rule `picture_only` makes it `suspicious` and `final.unconfirmed_only` says
+  that this is the only reason. Only a literal `true` counts, and only beside the verdict
+  `suspicious` (`Incident::unconfirmed_only`). The open check then says "be careful: only because
+  the address couldn't be confirmed" in both places its verdict is said ("It said", "What
+  counted"); the model's own verdict beside it stays the model's. The index doesn't carry the
+  field, so the list, the summary's tallies, the badge, the Dashboard's row and Maintenance's
+  row are unchanged: what is to look at is still only "don't trust this" and failed checks.
+  Until the record is in, "It said" is the index's plain "be careful".
+- **Links that aren't listed, split.** With `links_merged`, `Incident::links_left` gives (left
+  out at a limit, exact repeats merged) by the format's own sum, `links_total - links_merged -
+  len(links)`; a count of repeats larger than what the total leaves beyond the list is cut to
+  that. The check says "and N more, left out at a limit" and "M more were exact repeats of a
+  link already listed or counted", each only when it isn't zero. A record without
+  `links_merged` keeps "and N more, exact repeats of these included".
+- **The email.** `signals` is kept as the keys that are literally `true`: the format's eight
+  first, in its order, then any other as cleaned text (at most 16), and drawn in words under
+  "what SusCheck's code noticed (hints, never proof)". `from_written` is a row `written as`
+  whenever it is there (the format writes it only where no address could be read);
+  `freemail` is `sent from  a free personal mail address (<provider>), not a company's`.
+- **Where the address came from** gained: `first read in` (which field of the picture the
+  model's reading came from), `letter shapes` (only for `differs`, in yellow: it takes a match
+  away; `touching` as "it means nothing"; `fits` says nothing; another value as its words),
+  `shuffled` (the reading of the shuffled letter shapes, only when it is neither the first
+  reading nor that host's own domain), `digit rule` (fired / looked and found none, which is
+  never "genuine" / couldn't look).
+- **Searches.** `search.failed` is an `Option`: a record without it is from before, where
+  `ok: false` meant any search failed, and keeps "(one failed or timed out)". With it, a
+  `failed` row says which, by what each was for (the official site; the official site, by the
+  sender's name; scam reports about the domain; the phone number), the query itself says
+  "failed or timed out" instead of "nothing came back", and `ok: false` is said as the
+  official site's search.
+- **How it ran.** `shapes` and `shuffle` are stages between `ocr` and `search`. The stages
+  that did not run have a row of their own (`not run  reread, ocr, shapes, shuffle`): with
+  seven stages the one line no longer fitted 158 columns.
+- **Wording.** `tag()` has a phrase for every rule the format lists, `lookalike` now too, and
+  for the comparison tags the format gives a meaning (`readings_differ`, `ocr_differs`,
+  `shapes_differ`, `no_confirmed_candidate`, `freemail`, `not_a_real_domain`, `no_domain`,
+  `no_candidates`, `private_ip`). The tags it lists without one (`exact`, `punycode`,
+  `userinfo`, `confusable`, `edit_distance`, `brand_in_subdomain`, `brand_in_label`,
+  `match_unconfirmed`, `different`) stay their own words. `digit_in_name` is "a digit where
+  the name has a letter", and in a record without `domain.digit_rule` (the older, wider rule)
+  still "a digit inside a word of the address". `search_down` is now the official site's
+  search. Advice codes are their own words as before (`check with file or app`).
+- **Not in the format document, in its samples:** `acquired_by` (index and record),
+  `mail_label`, and the rule `mail_label_spam`. Unknown fields are ignored and the rule is
+  shown as "mail label spam", as the format asks for any unknown value. Nothing was built on
+  them.
+
+Assumed, not seen: that a shuffled reading equal to the end of the first reading's host is the
+same address (no public-suffix list here); that `from_written` never needs showing beside a
+readable address (it is shown whenever present).
 
 Assumed, not seen: that in a record from before `links_total` the email's and the page's totals
 add up to the list's (`links_more` adds the two only there); that a 0 in an old-shape record's

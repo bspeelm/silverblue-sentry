@@ -21,6 +21,11 @@ use crate::suscheck::RIGHT;
 pub const MESSAGE_KEPT: &str = "The email's text is kept on the server with this check \
     (quarantined). sentry doesn't show it.";
 
+/// What a check said where its "be careful" rests on one thing only: the address couldn't
+/// be confirmed, and nothing looked wrong (`final.unconfirmed_only`). The household was
+/// shown a milder "be careful" for these.
+pub const UNCONFIRMED: &str = "be careful: only because the address couldn't be confirmed";
+
 /// Why `A` does nothing here.
 pub const NO_CLAUDE: &str = "never sent to Claude: private, and may carry an attacker's text";
 
@@ -516,10 +521,13 @@ impl Sus {
         let r = inner(&b, area);
         f.render_widget(b, area);
         let mut lines = Vec::new();
+        let got = v.s.sus_open.as_ref().filter(|o| o.id == id).map(|o| &o.got);
+        // (The index doesn't say a verdict is the milder one: the record does, once in.)
+        let mild = matches!(got, Some(Some(Ok(Fetched::Ok(i)))) if i.unconfirmed_only());
         if let Some(c) = check {
-            lines.extend(check_lines(v, c));
+            lines.extend(check_lines(v, c, mild));
         }
-        match v.s.sus_open.as_ref().filter(|o| o.id == id).map(|o| &o.got) {
+        match got {
             None | Some(None) => {
                 lines.push(Line::styled("reading its record…", t.dim()));
             }
@@ -584,12 +592,16 @@ fn row(t: &Theme, label: &str, text: String) -> Line<'static> {
 }
 
 /// What the index says of the check: shown at once, before its record is in.
-fn check_lines(v: &View, c: &Check) -> Vec<Line<'static>> {
+fn check_lines(v: &View, c: &Check, mild: bool) -> Vec<Line<'static>> {
     let t = v.t;
     let mut out = Vec::new();
+    let said = match mild && c.verdict() == Some(Verdict::Suspicious) {
+        true => UNCONFIRMED.to_string(),
+        false => c.outcome(),
+    };
     let mut verdict = vec![
         Span::styled(format!("{:<18}", "It said"), t.dim()),
-        Span::styled(c.outcome(), t.s(verdict_color(t, c))),
+        Span::styled(said, t.s(verdict_color(t, c))),
     ];
     if let Some(conf) = &c.confidence {
         verdict.push(Span::styled(format!("  ({conf} confidence)"), t.dim()));
@@ -664,20 +676,24 @@ fn words(codes: &[String]) -> String {
 }
 
 /// A rule of SusCheck's (`final.floors`) or the tag of a comparison (`check.why`) as a
-/// short phrase, by what the format says each means. One this sentry has no words for is
-/// shown as it is (already cleaned), its underscores as spaces.
+/// short phrase, by what the format says each means. One this sentry has no words for (a
+/// tag the format lists without saying what it means among them) is shown as it is
+/// (already cleaned), its underscores as spaces.
 fn tag(code: &str) -> String {
     match code {
-        "close_imitation" => "one small change from the real address",
-        "digit_in_name" => "a digit inside a word of the address",
+        // The rules.
+        "digit_in_name" => "a digit where the name has a letter",
         "talks_to_ai" => "text written to steer an AI",
+        "lookalike" => "the address imitates the real one",
+        "close_imitation" => "one small change from the real address",
         "mismatch_risky" => "a different address, and it asks for something risky",
         "public_ip" => "a public IP address, not a name",
         "unknown" => "the address couldn't be compared",
         "weak_match_risky" => "matched by web search only, and it asks for something risky",
         "safe_needs_match" => "no warning signs, but the address isn't a match",
-        "search_down" => "a web search failed",
+        "search_down" => "the search for the official site failed",
         "not_readable" => "not readable as an email or a web page",
+        "picture_only" => "the address was only read from a picture",
         "link_text_mismatch" => "a link's text is an address, and it leads to another",
         "link_lookalike" => "a link imitates the real address",
         "link_odd_target" => "a link that doesn't lead to an ordinary named site",
@@ -686,14 +702,39 @@ fn tag(code: &str) -> String {
         "display_name_address" => "the sender's name shows another address",
         "auth_failed" => "the mail's reported checks failed",
         "risky_attachment" => "an attachment named like a program or a script",
+        "sender_domain_not_real" => "the sender's domain can't exist",
+        "link_shared_hosting" => "a link to a platform anyone can publish on, or a shortener",
+        "body_is_one_link" => "most of the message is one link",
+        "freemail_sender" => "sent from a free personal mail address, not a company's",
+        "freemail_invoice_attachment" => {
+            "a bill as an attachment from a personal address, with signs of a made-up sender"
+        }
+        "freemail_invoice_mild" => "a bill as an attachment from a personal address",
+        "return_path_differs" => "bounces go to another domain",
+        "display_name_is_recipient" => "the sender's name is the start of the recipient's address",
+        // The comparison's own tags, where the format says what they mean.
+        "readings_differ" => "the readings of the address disagree",
         "ocr_differs" => "the text recogniser read another address",
+        "shapes_differ" => "the letter shapes in the picture can't spell the address read",
+        "no_confirmed_candidate" => "search agreed on no address to compare it with",
+        "freemail" => "a free personal mailbox: no company address to compare it with",
+        "not_a_real_domain" => "the sender's domain can't exist",
+        "no_domain" => "no address could be read",
+        "no_candidates" => "nothing to compare it with",
+        "private_ip" => "a private address, such as a router's page",
         _ => return code.replace('_', " "),
     }
     .to_string()
 }
 
-fn tags(codes: &[String]) -> String {
-    codes.iter().map(|c| tag(c)).collect::<Vec<_>>().join(" · ")
+/// A rule as [`tag`] words it, in the record it stands in: `digit_in_name` was a wider
+/// rule (any digit with a letter on each side) in records from before `domain.digit_rule`.
+fn rule(code: &str, i: &Incident) -> String {
+    let reworked = i.domain.as_ref().is_some_and(|d| d.digit_rule.is_some());
+    match code {
+        "digit_in_name" if !reworked => "a digit inside a word of the address".into(),
+        _ => tag(code),
+    }
 }
 
 /// What code found about a link (`links[].flags`), in words.
@@ -709,6 +750,7 @@ fn link_flag(code: &str) -> String {
         "odd_scheme" => "an unusual scheme",
         "unreadable" => "not a readable address",
         "no_target" => "a relative link: it leads nowhere by itself",
+        "shared_hosting" => "a platform anyone can publish on, or a shortener",
         _ => return code.replace('_', " "),
     }
     .to_string()
@@ -721,6 +763,64 @@ fn source_said(source: &str) -> String {
         "window" => "read out of the window by the app",
         "screenshot" => "read from the picture",
         _ => return source.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// Which field of the model's reading of the picture gave the first reading
+/// (`domain.first_reading_from`), in words.
+fn read_in(field: &str) -> String {
+    match field {
+        "sender_address" => "the sender's address",
+        "sender_host" => "the sender field, which held a bare host and no @",
+        "address_bar" => "the address bar",
+        _ => return field.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// What the digit rule found (`domain.digit_rule`), in words. `clear` is no more than
+/// that the rule looked: never that the address is genuine.
+fn digit_rule(found: &str) -> String {
+    match found {
+        "fired" => "a digit stands where the name has a letter",
+        "clear" => {
+            "looked, and found no digit in a letter's place (the address may still not be genuine)"
+        }
+        "not_evaluated" => {
+            "couldn't look: no trustworthy text of the address, or nothing to hold it against"
+        }
+        _ => return found.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// A fact SusCheck's code worked out about the message (`email.signals`), in words.
+fn signal(key: &str) -> String {
+    match key {
+        "body_nearly_empty" => "an attachment, and almost no text",
+        "random_address" => "the sender's address looks machine-made",
+        "names_disagree" => "the sender's name isn't the person the message names",
+        "money_wording" => "words about money (payment, invoice, order…)",
+        "return_path_differs" => "bounces go to another domain",
+        "body_is_one_link" => "most of the message is one link",
+        "display_name_is_recipient" => "the sender's name is the start of the recipient's address",
+        "name_matches_address" => {
+            "the sender's name is its own domain's name (and it passed DMARC)"
+        }
+        _ => return key.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// A search SusCheck ran (`search.queries[].kind`, `search.failed`), in words.
+fn query(kind: &str) -> String {
+    match kind {
+        "official" => "the official site",
+        "official2" => "the official site, by the sender's name",
+        "domain" => "scam reports about the domain",
+        "phone" => "the phone number",
+        _ => return kind.replace('_', " "),
     }
     .to_string()
 }
@@ -743,6 +843,17 @@ fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'stat
             e.from_address.as_deref().unwrap_or("no readable address")
         ),
     ));
+    // What stood where an address should have: text, as everything here.
+    if let Some(w) = &e.from_written {
+        out.push(row(t, "  written as", w.clone()));
+    }
+    if let Some(provider) = &e.freemail {
+        out.push(row(
+            t,
+            "  sent from",
+            format!("a free personal mail address ({provider}), not a company's"),
+        ));
+    }
     // Where replies and bounces go, when that isn't where it says it is from.
     for (label, to) in [
         ("  replies go to", &e.reply_to),
@@ -811,6 +922,16 @@ fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'stat
     if e.aimed_at_ai == Some(true) {
         out.push(Line::styled("  has text addressed to an AI", t.s(t.yellow)));
     }
+    if !e.signals.is_empty() {
+        out.push(Line::styled(
+            "  what SusCheck's code noticed (hints, never proof)",
+            t.dim(),
+        ));
+        out.extend(bullets(
+            t,
+            &e.signals.iter().map(|k| signal(k)).collect::<Vec<_>>(),
+        ));
+    }
     out
 }
 
@@ -859,12 +980,34 @@ fn link_lines(t: &Theme, i: &Incident) -> Vec<Line<'static>> {
         }
         out.push(Line::from(spans));
     }
-    // (The record's own count is from before exact repeats were merged into one line.)
-    let note = match i.links_total {
-        Some(_) => ", exact repeats of these included",
-        None => "",
-    };
-    out.extend(and_more(t, i.links_more(), note));
+    match i.links_left() {
+        // The record says how the rest split: left out at a limit, or exact repeats.
+        Some((cut, repeats)) => {
+            out.extend(and_more(t, cut, ", left out at a limit"));
+            if repeats > 0 {
+                out.push(Line::styled(
+                    format!(
+                        "  {repeats} more {} of a link already listed or counted",
+                        if repeats == 1 {
+                            "was an exact repeat"
+                        } else {
+                            "were exact repeats"
+                        },
+                    ),
+                    t.dim(),
+                ));
+            }
+        }
+        // (A record from before the split was written: its own count is from before
+        // exact repeats were merged into one line.)
+        None => {
+            let note = match i.links_total {
+                Some(_) => ", exact repeats of these included",
+                None => "",
+            };
+            out.extend(and_more(t, i.links_more(), note));
+        }
+    }
     out
 }
 
@@ -917,7 +1060,13 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         ]));
         out.push(Line::from(vec![
             Span::styled(format!("{:<18}", "What counted"), t.dim()),
-            Span::styled(said(lv).to_string(), t.s(word_color(t, lv))),
+            Span::styled(
+                match i.unconfirmed_only() {
+                    true => UNCONFIRMED.to_string(),
+                    false => said(lv).to_string(),
+                },
+                t.s(word_color(t, lv)),
+            ),
             Span::styled(
                 format!(" ({})", l.confidence.as_deref().unwrap_or("?")),
                 t.dim(),
@@ -933,13 +1082,20 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             1 | 2 => out.push(row(
                 t,
                 "SusCheck's rules",
-                format!("{}: {did}", tags(&l.floors)),
+                format!(
+                    "{}: {did}",
+                    l.floors
+                        .iter()
+                        .map(|f| rule(f, i))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                ),
             )),
             _ => {
                 out.push(row(t, "SusCheck's rules", format!("{did}:")));
                 out.extend(bullets(
                     t,
-                    &l.floors.iter().map(|f| tag(f)).collect::<Vec<_>>(),
+                    &l.floors.iter().map(|f| rule(f, i)).collect::<Vec<_>>(),
                 ));
             }
         }
@@ -1081,6 +1237,51 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         {
             out.push(row(t, "  text recogniser", format!("read {ocr}")));
         }
+        if let Some(field) = &d.first_reading_from {
+            out.push(row(
+                t,
+                "  first read in",
+                format!("{} (the model's reading of the picture)", read_in(field)),
+            ));
+        }
+        // The letter shapes found in the picture, against the first reading: only when
+        // they can't spell it does it count; touching letters are said as what they are.
+        match d.shape_fit.as_deref() {
+            None | Some("fits") => {}
+            Some("differs") => out.push(Line::from(vec![
+                Span::styled(format!("{:<18}", "  letter shapes"), t.dim()),
+                Span::styled(
+                    "can't spell the address the model read: that takes a match away",
+                    t.s(t.yellow),
+                ),
+            ])),
+            Some("touching") => out.push(row(
+                t,
+                "  letter shapes",
+                "fit only with letters drawn touching (common at small sizes: it means nothing)"
+                    .into(),
+            )),
+            Some(other) => out.push(row(t, "  letter shapes", other.replace('_', " "))),
+        }
+        if let Some(read) = d
+            .shuffled_reading
+            .as_ref()
+            // (It is a registrable domain; the first reading may be a longer host of it.)
+            .filter(|r| {
+                d.first_reading
+                    .as_ref()
+                    .is_none_or(|f| f != *r && !f.ends_with(&format!(".{r}")))
+            })
+        {
+            out.push(row(
+                t,
+                "  shuffled",
+                format!("read {read} (shown the letter shapes one by one, out of order)"),
+            ));
+        }
+        if let Some(found) = &d.digit_rule {
+            out.push(row(t, "  digit rule", digit_rule(found)));
+        }
     }
     if let Some(e) = &i.email {
         out.push(Line::raw(""));
@@ -1133,7 +1334,7 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 d.result.as_deref().unwrap_or("?").replace('_', " "),
                 d.why
                     .as_ref()
-                    .map_or(String::new(), |w| format!(" ({})", tag(w))),
+                    .map_or(String::new(), |w| format!(" ({})", rule(w, i))),
                 d.shown
                     .as_ref()
                     .map_or(String::new(), |s| format!(" · on screen {s}")),
@@ -1145,20 +1346,48 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
     }
     if let Some(s) = &i.search {
         out.push(Line::raw(""));
+        // `ok` is about the official site's search alone where the record lists what
+        // failed; in a record from before, it was false when any search failed.
         out.push(head(
             t,
-            match s.ok {
-                Some(false) => "Searches SusCheck ran (one failed or timed out)",
+            match (s.ok, &s.failed) {
+                (Some(false), Some(_)) => {
+                    "Searches SusCheck ran (the one for the official site failed or came back empty)"
+                }
+                (Some(false), None) => "Searches SusCheck ran (one failed or timed out)",
                 _ => "Searches SusCheck ran",
             },
         ));
         if s.queries.is_empty() {
             out.push(none());
         }
+        let failed = s.failed.as_deref().unwrap_or(&[]);
+        if !failed.is_empty() {
+            out.push(Line::from(vec![
+                Span::styled(format!("{:<18}", "  failed"), t.dim()),
+                Span::styled(
+                    format!(
+                        "{} (failed or timed out)",
+                        failed
+                            .iter()
+                            .map(|k| query(k))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    ),
+                    t.s(t.yellow),
+                ),
+            ]));
+        }
         for q in &s.queries {
             out.push(row(t, &format!("  {}", q.kind), q.query.clone()));
             if q.hits.is_empty() {
-                out.push(Line::styled("      nothing came back", t.dim()));
+                out.push(Line::styled(
+                    match failed.contains(&q.kind) {
+                        true => "      failed or timed out",
+                        false => "      nothing came back",
+                    },
+                    t.dim(),
+                ));
             }
             for h in &q.hits {
                 out.push(Line::from(vec![
@@ -1193,29 +1422,28 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             i.prompt_version.as_deref().unwrap_or("?")
         ),
     ));
+    // A stage that ran is a time, however short; one that didn't is said so.
     out.push(row(
         t,
         "  time",
         format!(
-            "{} in all{}{}",
+            "{} in all{}",
             secs(i.duration_ms),
-            // A stage that ran is a time, however short; one that didn't is said so.
             i.stages
                 .iter()
                 .filter_map(|(n, ms)| Some(format!(" · {n} {}", secs((*ms)?))))
                 .collect::<String>(),
-            match i
-                .stages
-                .iter()
-                .filter(|(_, ms)| ms.is_none())
-                .map(|(n, _)| *n)
-                .collect::<Vec<_>>()
-            {
-                not if not.is_empty() => String::new(),
-                not => format!(" · not run: {}", not.join(", ")),
-            }
         ),
     ));
+    let not: Vec<&str> = i
+        .stages
+        .iter()
+        .filter(|(_, ms)| ms.is_none())
+        .map(|(n, _)| *n)
+        .collect();
+    if !not.is_empty() {
+        out.push(row(t, "  not run", not.join(", ")));
+    }
     out.push(row(
         t,
         "  picture",

@@ -13,6 +13,8 @@
   "extract": 3310,
   "reread": 2890,
   "ocr": null,
+  "shapes": null,
+  "shuffle": null,
   "search": 1630,
   "judge": 13650
  },
@@ -38,6 +40,9 @@
   "second_reading": "examp1e-pay.test",
   "ocr_reading": null,
   "ocr_available": false,
+  "shape_fit": null,
+  "shuffled_reading": null,
+  "digit_rule": "not_evaluated",
   "check": {
    "result": "lookalike",
    "shown": "examp1e-pay.test",
@@ -112,7 +117,8 @@
   "floors": [
    "lookalike"
   ],
-  "floors_changed_verdict": true
+  "floors_changed_verdict": true,
+  "unconfirmed_only": false
  },
  "input": [
   "image"
@@ -120,7 +126,10 @@
  "email": null,
  "links": null,
  "links_total": null,
+ "links_merged": null,
  "page": null,
+ "acquired_by": null,
+ "mail_label": null,
  "screenshot": true,
  "message": false
 }

@@ -2,9 +2,9 @@
  "schema": 1,
  "version": "0.1.0",
  "model": "example-vision:1b",
- "prompt_version": "2",
+ "prompt_version": "3",
  "retention_days": 30,
  "started_at": "2026-11-01T09:00:00Z",
  "alive_at": "2026-11-05T12:00:00Z",
- "last_check_at": "2026-11-05T10:30:45Z"
+ "last_check_at": "2026-11-05T11:58:21Z"
 }
