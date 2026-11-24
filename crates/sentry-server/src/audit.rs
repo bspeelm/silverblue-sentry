@@ -505,7 +505,8 @@ pub fn derive(
 }
 
 /// SusCheck, where the config names its folder: the service stopped, the folder not
-/// readable, checks failing, a format this sentry doesn't know. From counts alone: a
+/// readable, checks failing, its browser extension falling back from the original mail, a
+/// format this sentry doesn't know. From counts alone: a
 /// finding never holds a check's text, a brand, a domain or a computer's name.
 fn suscheck(c: &super::collect::suscheck::Counts, own_login: bool) -> Vec<Finding> {
     use super::collect::suscheck::{ERRORS_A_DAY, Unreadable};
@@ -572,6 +573,38 @@ fn suscheck(c: &super::collect::suscheck::Counts, own_login: bool) -> Vec<Findin
                 "{} of {} checks in the last 24 hours",
                 c.day.errors, c.day.total
             )),
+        );
+    }
+    if let Some(fb) = c.fallback {
+        let checks = |n: u32| format!("{n} check{}", if n == 1 { "" } else { "s" });
+        out.push(
+            f(
+                "srv:suscheck:fallback".into(),
+                Sev::Medium,
+                "suscheck",
+                "SusCheck's browser extension is falling back from the original mail".into(),
+            )
+            .explain(
+                "The extension used to fetch the original message from the mail site; its \
+                 latest checks could only read the mail page, ask for a paste, or take a \
+                 picture of the tab.",
+                "The mail site's pages have probably changed. Checks made that way rest on \
+                 less: without the original message its headers aren't read, and from a \
+                 picture alone an address is never confirmed.",
+                "Update the extension's rules for the mail site (a newer SusCheck or \
+                 extension has them). One fallback by itself means little; this is several.",
+            )
+            .evidence(match fb.day {
+                0 => format!(
+                    "the latest {} through the extension weren't the original mail",
+                    checks(fb.run)
+                ),
+                day => format!(
+                    "the latest {} through the extension weren't the original mail (all {day} \
+                     of the last 24 hours)",
+                    checks(fb.run)
+                ),
+            }),
         );
     }
     if let Some(n) = c.schema {

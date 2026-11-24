@@ -12,6 +12,7 @@ expression: s
 │          3 don't trust this · 3 be careful · 3 no obvious warning signs      │
 │ made from  picture 7/7 · email 3/3 · page address 2/2 (7/30 days)            │
 │ 2 computer(s) · typical time 15 s · you marked 0 wrong of 0                  │
+│ by extension: 1 original                                                     │
 │ ● alive 2m ago · keeps checks 30 days                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Checks · 10 shown, newest first ─────────────────────────────────────────────┐
@@ -21,7 +22,6 @@ expression: s
 │ ● Nov 05 10:30 Kitchen iMac  don't trust this           examp1e-pay.test     │
 │ ● Nov 05 08:12 Study laptop  don't trust this           account-alerts.tes   │
 │ ● Nov 04 19:41 Kitchen iMac  failed (model)                                  │
-│ ● Nov 03 17:20 Study laptop  be careful ?                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  j/k  select   Enter  the check   o  picture   m  mark   ?  help   q  quit

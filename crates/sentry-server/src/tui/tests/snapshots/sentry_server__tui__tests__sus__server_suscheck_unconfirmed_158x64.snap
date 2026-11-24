@@ -18,15 +18,15 @@ expression: s
 │ typical time      15 s (longest 21 s)        ││                                                                                                            │
 │ you marked        none yet (m on a check)    ││ The model against what counted                                                                             │
 │ model example-vision:1b · prompts 3          ││ The model         no obvious warning signs (medium)                                                        │
-│ ● alive 2m ago · keeps checks 30 days        ││ What counted      be careful: only because the address couldn't be confirmed (low)                         │
-│                                              ││ SusCheck's rules  the address was only read from a picture: raised the verdict                             │
-└──────────────────────────────────────────────┘│   what it found normal                                                                                     │
-┌ Computers · 2 paired ────────────────────────┐│   · The address bar matches the company's real site.                                                       │
-│ Name           Client    Checks  Last seen   ││   · Nothing asks for a password, a code or money.                                                          │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
-│ Study laptop   web            4  1d ago      ││ What it read from the picture                                                                              │
-│                                              ││   kind            web page                                                                                 │
-│                                              ││   claims to be    Example                                                                                  │
+│ by extension: 1 original                     ││ What counted      be careful: only because the address couldn't be confirmed (low)                         │
+│ ● alive 2m ago · keeps checks 30 days        ││ SusCheck's rules  the address was only read from a picture: raised the verdict                             │
+│                                              ││   what it found normal                                                                                     │
+└──────────────────────────────────────────────┘│   · The address bar matches the company's real site.                                                       │
+┌ Computers · 2 paired ────────────────────────┐│   · Nothing asks for a password, a code or money.                                                          │
+│ Name           Client    Checks  Last seen   ││                                                                                                            │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││ What it read from the picture                                                                              │
+│ Study laptop   web            4  1d ago      ││   kind            web page                                                                                 │
+│   ↳ a browser profile: no extension seen yet ││   claims to be    Example                                                                                  │
 │                                              ││   address bar     www.example.com                                                                          │
 │                                              ││   links           Products · Contact us                                                                    │
 │                                              ││   asks for        nothing                                                                                  │

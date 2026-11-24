@@ -18,15 +18,15 @@ expression: s
 │ typical time      15 s (longest 21 s)        ││ one.                                                                                                       │
 │ you marked        none yet (m on a check)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
 │ model example-vision:1b · prompts 3          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
-│ ● alive 2m ago · keeps checks 30 days        ││   · Replies to this message would go to a different address from the one it was sent from.                 │
-│                                              ││   · It asks the reader to sign in with a password today.                                                   │
-└──────────────────────────────────────────────┘│ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
-┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
-│ Name           Client    Checks  Last seen   ││ The model against what counted                                                                             │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││ The model         be careful (medium)                                                                      │
-│ Study laptop   web            4  1d ago      ││ What counted      don't trust this (high)                                                                  │
-│                                              ││ SusCheck's rules  raised the verdict:                                                                      │
-│                                              ││   · a different address, and it asks for something risky                                                   │
+│ by extension: 1 original                     ││   · Replies to this message would go to a different address from the one it was sent from.                 │
+│ ● alive 2m ago · keeps checks 30 days        ││   · It asks the reader to sign in with a password today.                                                   │
+│                                              ││ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
+└──────────────────────────────────────────────┘│                                                                                                            │
+┌ Computers · 2 paired ────────────────────────┐│ The model against what counted                                                                             │
+│ Name           Client    Checks  Last seen   ││ The model         be careful (medium)                                                                      │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││ What counted      don't trust this (high)                                                                  │
+│ Study laptop   web            4  1d ago      ││ SusCheck's rules  raised the verdict:                                                                      │
+│   ↳ a browser profile: no extension seen yet ││   · a different address, and it asks for something risky                                                   │
 │                                              ││   · a link's text is an address, and it leads to another                                                   │
 │                                              ││   · the sender's name shows another address                                                                │
 │                                              ││   · the mail's reported checks failed                                                                      │

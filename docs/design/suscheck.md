@@ -280,14 +280,61 @@ the official site.
   the name has a letter", and in a record without `domain.digit_rule` (the older, wider rule)
   still "a digit inside a word of the address". `search_down` is now the official site's
   search. Advice codes are their own words as before (`check with file or app`).
-- **Not in the format document, in its samples:** `acquired_by` (index and record),
-  `mail_label`, and the rule `mail_label_spam`. Unknown fields are ignored and the rule is
-  shown as "mail label spam", as the format asks for any unknown value. Nothing was built on
-  them.
+- **Not in the format document then, in its samples:** `acquired_by` (index and record),
+  `mail_label`, and the rule `mail_label_spam`: unknown fields were ignored and the rule
+  shown as its own words. The next revision published them (below).
 
 Assumed, not seen: that a shuffled reading equal to the end of the first reading's host is the
 same address (no public-suffix list here); that `from_written` never needs showing beside a
 readable address (it is shown whenever present).
+
+### The browser extension (the revision after, still schema 1)
+
+SusCheck's browser extension hands a message open on the mail site to the SusCheck page. The
+samples didn't change with this revision (the newsletter already came "through the
+extension"); the format document now describes it.
+
+- **How the mail was obtained.** `acquired_by` on the index line and the record: `original`
+  (the raw message, fetched from the mail site), or the fallbacks `page`, `paste`, `picture`.
+  Null and a missing key are the same: by hand on the page, the desktop app, an older
+  writer. The open check has an `Obtained` row in words, only when there is a value; an
+  unknown word is shown as it is. It is the extension's own account, and the row says "by the
+  browser extension".
+- **What the mail site showed.** `mail_label` (the record only): "the mail site had it in
+  spam" / "the mail site showed a phishing warning", each with "(the extension's word: not
+  checked)", since the format calls it the client's claim; `none` is "the extension saw
+  neither…". In the email section, or a row of its own where there is no email block. The
+  rules `mail_label_spam` (a remark) and `mail_label_phishing` have their phrases.
+- **The mail site's window.** `page.source: extension`: the page section's heading says so,
+  its address is "the mail site's own: never the sender's, never compared", and what the model
+  read as the address bar isn't called "the window's exact address".
+- **`srv:suscheck:fallback`** (medium). The format's section "How a reader can notice the mail
+  site has changed", exactly: among index lines whose `acquired_by` is not null, the latest
+  three are all not `original`, or every one of the last 24 hours is not and there are at
+  least two, while some earlier line is `original`. `fallback_of(now, &[(when, original)])`
+  is pure and table-tested; the 24 hours are by the server's clock against the id's time.
+  `Counts` gained `fallback: Option<Fallback { run, day }>`: how many of the latest in a row
+  weren't the original, and how many of the last day when that part of the test holds. Two
+  numbers; the finding's words are sentry's own. `remark` drops it with the block (it goes by
+  the `srv:suscheck:` prefix).
+- **The summary** says `by extension: 1 original · 3 fell back` (and how each fell back where
+  there is room), only when a check came through the extension, and "extension falling back:
+  update its rules" when the test holds. The panel is that many rows taller.
+- **Computers.** `devices.json` has one entry per paired browser profile for `web`, whose
+  `app_version` is `web` (or empty) until a check has come through the extension in it, then
+  the extension's version. Only a value that starts with a digit is a version, and versions
+  are compared among entries of the same client: "older app than the others" and "older
+  extension than the others" (the Client column says `ext 1.3.9`). A `web` entry without one
+  is `web` with a dim note, "a browser profile: no extension seen yet": never "older". The
+  format gives no field that tells one profile from another on the same computer but the name
+  the owner chose, so the panel stays "Computers".
+
+Assumed, not seen: that a word in `acquired_by` the format doesn't name should be left out of
+the test, like null (the format's "not `original`" would count it as a fallback, and it also
+says no other word is ever written); that "starts with a digit" is what a version looks like
+(the format doesn't define it). In the samples the newsletter came through the extension from a
+computer whose entry has no version yet (the document says there would be one): the panel
+says what `devices.json` says.
 
 Assumed, not seen: that in a record from before `links_total` the email's and the page's totals
 add up to the list's (`links_more` adds the two only there); that a 0 in an old-shape record's

@@ -18,6 +18,7 @@ expression: s
 │ typical time      15 s (longest 21 s)        ││   time            2m 0s in all · extract 2m 0s                                                             │
 │ you marked        none yet (m on a check)    ││   not run         reread, ocr, shapes, shuffle, search, judge                                              │
 │ model example-vision:1b · prompts 3          ││   picture         none was kept                                                                            │
+│ by extension: 1 original                     ││                                                                                                            │
 │ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘│                                                                                                            │
@@ -25,8 +26,7 @@ expression: s
 │ Name           Client    Checks  Last seen   ││                                                                                                            │
 │ Kitchen iMac   app 0.1.0      6  16h ago     ││                                                                                                            │
 │ Study laptop   web            4  1d ago      ││                                                                                                            │
-│                                              ││                                                                                                            │
-│                                              ││                                                                                                            │
+│   ↳ a browser profile: no extension seen yet ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │

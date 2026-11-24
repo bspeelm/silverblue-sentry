@@ -18,15 +18,15 @@ expression: s
 │ typical time      15 s (longest 21 s)        ││   · A link in it leads to an address that is one small change away from the real one. That is done on      │
 │ you marked        none yet (m on a check)    ││ purpose to fool people.                                                                                    │
 │ model example-vision:1b · prompts 3          ││   · The page asks for a password.                                                                          │
-│ ● alive 2m ago · keeps checks 30 days        ││ Advice shown      do not click · do not enter password · type address yourself                             │
-│                                              ││                                                                                                            │
-└──────────────────────────────────────────────┘│ The model against what counted                                                                             │
-┌ Computers · 2 paired ────────────────────────┐│ The model         be careful (medium)                                                                      │
-│ Name           Client    Checks  Last seen   ││ What counted      don't trust this (high)                                                                  │
-│ Kitchen iMac   app 0.1.0      6  16h ago     ││ SusCheck's rules  raised the verdict:                                                                      │
-│ Study laptop   web            4  1d ago      ││   · a digit where the name has a letter                                                                    │
-│                                              ││   · the address imitates the real one                                                                      │
-│                                              ││   · one small change from the real address                                                                 │
+│ by extension: 1 original                     ││ Advice shown      do not click · do not enter password · type address yourself                             │
+│ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
+│                                              ││ The model against what counted                                                                             │
+└──────────────────────────────────────────────┘│ The model         be careful (medium)                                                                      │
+┌ Computers · 2 paired ────────────────────────┐│ What counted      don't trust this (high)                                                                  │
+│ Name           Client    Checks  Last seen   ││ SusCheck's rules  raised the verdict:                                                                      │
+│ Kitchen iMac   app 0.1.0      6  16h ago     ││   · a digit where the name has a letter                                                                    │
+│ Study laptop   web            4  1d ago      ││   · the address imitates the real one                                                                      │
+│   ↳ a browser profile: no extension seen yet ││   · one small change from the real address                                                                 │
 │                                              ││   · a link imitates the real address                                                                       │
 │                                              ││   its red flags                                                                                            │
 │                                              ││   · The page asks for a password.                                                                          │

@@ -319,6 +319,60 @@ pub struct Check {
     /// that failed has it too. A line from before the field was there is `image`: a picture
     /// was all there was. None: not a string (today's writer never leaves it null).
     pub input: Option<String>,
+    /// How the message reached SusCheck, where the browser extension brought it:
+    /// `original` (the raw message, fetched from the mail site), or one of its fallbacks,
+    /// `page`, `paste`, `picture`; a value this sentry doesn't know is kept as text. None:
+    /// made by hand on the page or sent by the desktop app (null), or a line from before
+    /// the key was written. The extension's own account of what it did.
+    pub acquired_by: Option<String>,
+}
+
+/// How the browser extension can have got a message (`acquired_by`), each in a word for
+/// the summary: the original, then its fallbacks in decreasing strength.
+pub const ACQUIRED: [(&str, &str); 4] = [
+    ("original", "original"),
+    ("page", "page"),
+    ("paste", "paste"),
+    ("picture", "picture"),
+];
+
+/// The browser extension is falling back from the original mail: what
+/// [`Suscheck::fallback`] found. Numbers only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fallback {
+    /// The latest checks through the extension, in a row, that weren't the original mail.
+    pub run: u32,
+    /// Those of the last 24 hours by the server's clock.
+    pub day: u32,
+}
+
+/// The format's own test for "the mail site has changed", over the index lines that came
+/// through the browser extension, oldest first: `(when, was it the original mail)`. It
+/// holds when the latest three are all not the original, or every one of the last 24
+/// hours is not and there are at least two of them, while some earlier line was the
+/// original. One fallback by itself means little. Pure.
+pub fn fallback_of(now: i64, lines: &[(Option<i64>, bool)]) -> Option<Fallback> {
+    let run = lines
+        .iter()
+        .rev()
+        .take_while(|(_, original)| !original)
+        .count();
+    // (Every line after the last original is a fallback: one was earlier exactly when
+    // the run isn't the whole list.)
+    if run == lines.len() {
+        return None;
+    }
+    let today: Vec<bool> = lines
+        .iter()
+        .filter(|(at, _)| at.is_some_and(|a| a >= now - 86_400))
+        .map(|(_, original)| *original)
+        .collect();
+    let day = today.len();
+    let all_day = day >= 2 && today.iter().all(|original| !original);
+    (run >= 3 || all_day).then_some(Fallback {
+        run: run as u32,
+        day: if all_day { day as u32 } else { 0 },
+    })
 }
 
 /// The inputs a check can be made from, in the format's order, each in plain words.
@@ -578,6 +632,10 @@ pub struct Counts {
     pub computers: u32,
     /// Index lines skipped as damaged.
     pub skipped: u32,
+    /// The browser extension is falling back from the original mail (the format's own
+    /// test: see [`fallback_of`]). None: it isn't, or no check came through it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Fallback>,
 }
 
 impl Counts {
@@ -637,6 +695,26 @@ impl Suscheck {
         (bad, failed)
     }
 
+    /// The browser extension is falling back from the original mail: the mail site's
+    /// pages probably changed, and the extension's rules need updating. Only lines that
+    /// say how the extension got the message count: one made by hand or by the desktop
+    /// app (null), an older line without the key, and a value this sentry doesn't know
+    /// (the format says none is ever written) are left out.
+    pub fn fallback(&self) -> Option<Fallback> {
+        let lines: Vec<(Option<i64>, bool)> = self
+            .checks
+            .iter()
+            .filter_map(|c| {
+                let how = c.acquired_by.as_deref()?;
+                ACQUIRED
+                    .iter()
+                    .any(|(w, _)| *w == how)
+                    .then_some((c.at, how == "original"))
+            })
+            .collect();
+        fallback_of(self.now, &lines)
+    }
+
     /// The newest check's id.
     pub fn newest(&self) -> Option<Id> {
         self.checks.iter().map(|c| c.id).max()
@@ -658,6 +736,7 @@ impl Suscheck {
             month: self.tally(30),
             computers: self.devices.ok().map_or(0, |d| d.len() as u32),
             skipped: self.skipped,
+            fallback: self.fallback(),
         }
     }
 }
@@ -768,6 +847,8 @@ pub fn parse_line(line: &str) -> Result<Check, Option<i64>> {
             None => Some("image".into()),
             Some(x) => text(x, 24),
         },
+        // The last key, added with the browser extension: missing is the same as null.
+        acquired_by: text(&v["acquired_by"], 16),
     })
 }
 
@@ -1303,6 +1384,14 @@ pub struct Incident {
     /// None: no list, or a record from before the count was written.
     pub links_merged: Option<u64>,
     pub page: Option<Page>,
+    /// How the message reached SusCheck (as [`Check::acquired_by`]). None: by hand, the
+    /// desktop app, or a record from before the browser extension.
+    pub acquired_by: Option<String>,
+    /// What the browser extension says the mail program showed for the message: `spam`,
+    /// `phishing_warning`, `none` (it looked and saw neither), or a value this sentry
+    /// doesn't know. The client's word: SusCheck checked none of it. None: nothing
+    /// reported.
+    pub mail_label: Option<String>,
     /// Whether a picture was kept.
     pub screenshot: bool,
     /// Whether the folder holds `message.txt`, the quarantined text of the email. Only
@@ -1364,6 +1453,14 @@ impl Incident {
     /// The window's own address was among what was sent.
     pub fn sent_page(&self) -> bool {
         self.sent("page") == Some(true) || self.page.is_some()
+    }
+
+    /// The window was the mail site's, read by the browser extension: its address is the
+    /// mail site's own and never the one the verdict rests on.
+    pub fn mail_window(&self) -> bool {
+        self.page
+            .as_ref()
+            .is_some_and(|p| p.source.as_deref() == Some("extension"))
     }
 }
 
@@ -1592,6 +1689,8 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         links_merged: links.as_ref().and_then(|_| count(&v["links_merged"])),
         links,
         page,
+        acquired_by: text(&v["acquired_by"], 16),
+        mail_label: text(&v["mail_label"], 24),
         screenshot: v["screenshot"].as_bool().unwrap_or(false),
         message: v["message"].as_bool().unwrap_or(false),
     })
@@ -2084,6 +2183,8 @@ pub(crate) mod tests {
             "links_merged",
             "page",
             "message",
+            "acquired_by",
+            "mail_label",
         ] {
             o.remove(k);
         }
@@ -2122,8 +2223,10 @@ pub(crate) mod tests {
         // The published line in the old shape ends at `error`: no `input`, and a picture
         // was all there was. Given the key, nothing else of it reads differently.
         assert!(lines[0].ends_with("\"error\":null}") && !lines[0].contains("input"));
+        assert!(!lines[0].contains("acquired_by"));
         let then = parse_line(lines[0]).unwrap();
         assert_eq!(then.input.as_deref(), Some("image"));
+        assert_eq!(then.acquired_by, None);
         assert_eq!(then.pictureless(), None);
         let now = lines[0].replacen("\"error\":null}", "\"error\":null,\"input\":\"image\"}", 1);
         assert_eq!(parse_line(&now).unwrap(), then);
@@ -2198,6 +2301,8 @@ pub(crate) mod tests {
             "\"unconfirmed_only\":",
             "\"failed\":",
             "\"signals\":",
+            "\"acquired_by\":",
+            "\"mail_label\":",
         ] {
             assert!(!old_text.contains(later), "{later}");
         }
@@ -2316,6 +2421,7 @@ pub(crate) mod tests {
             assert!(then.email.is_none() && then.links.is_none(), "{id}");
             assert!(then.page.is_none() && !then.message && then.links_total.is_none());
             assert!(then.links_merged.is_none() && !then.unconfirmed_only());
+            assert!(then.acquired_by.is_none() && then.mail_label.is_none());
             assert!(then.domain.as_ref().is_none_or(|d| {
                 d.source.is_none()
                     && d.exact.is_none()
@@ -2842,6 +2948,251 @@ pub(crate) mod tests {
                 }
                 assert!(i.last.is_some() && i.links.is_some(), "{block}.{key}");
             }
+        }
+    }
+
+    /// How a message reached SusCheck where the browser extension brought it, what the
+    /// mail site showed for it, and the format's test for "the mail site has changed".
+    #[test]
+    fn how_the_mail_was_obtained_and_when_the_extension_is_falling_back() {
+        let s = sample();
+        // Nine made by hand or by the app (the oldest has no such key); the newsletter
+        // came through the extension as the original message, out of the spam folder.
+        let how: Vec<Option<&str>> = s.checks.iter().map(|c| c.acquired_by.as_deref()).collect();
+        assert_eq!(how[..9], [None; 9]);
+        assert_eq!(how[9], Some("original"));
+        let news = sample_incident("20261105T115821Z-t4v6");
+        assert_eq!(
+            (news.acquired_by.as_deref(), news.mail_label.as_deref()),
+            (Some("original"), Some("spam"))
+        );
+        // The spam label is a remark: the verdict stood.
+        let last = news.last.as_ref().unwrap();
+        assert_eq!(last.floors, ["mail_label_spam"]);
+        assert_eq!(
+            (last.verdict.as_deref(), last.floors_changed),
+            (Some("likely_safe"), Some(false))
+        );
+        let other = sample_incident("20261105T114502Z-r3s5");
+        assert_eq!((&other.acquired_by, &other.mail_label), (&None, &None));
+        assert!(!other.mail_window() && !news.mail_window());
+        // One original and nothing after it: no fallback.
+        assert_eq!((s.fallback(), s.counts().fallback), (None, None));
+
+        // The rule, as the format gives it. `o`: the original; `f`: a fallback; the
+        // number is how many hours ago (by the server's clock).
+        let now = 1_000_000;
+        let held = |spec: &[(char, i64)]| {
+            let lines: Vec<(Option<i64>, bool)> = spec
+                .iter()
+                .map(|(kind, hours)| (Some(now - hours * 3600), *kind == 'o'))
+                .collect();
+            fallback_of(now, &lines)
+        };
+        let both = |run, day| Some(Fallback { run, day });
+        for (what, spec, want) in [
+            ("nothing through the extension", &[][..], None),
+            (
+                "only originals",
+                &[('o', 90), ('o', 50), ('o', 2)][..],
+                None,
+            ),
+            // The latest three, after an earlier original.
+            (
+                "three fallbacks after an original",
+                &[('o', 200), ('f', 150), ('f', 100), ('f', 50)][..],
+                both(3, 0),
+            ),
+            (
+                "five, older than a day",
+                &[
+                    ('o', 300),
+                    ('f', 250),
+                    ('f', 200),
+                    ('f', 150),
+                    ('f', 100),
+                    ('f', 50),
+                ][..],
+                both(5, 0),
+            ),
+            // Fewer than three, and not two within the day: one fallback means little.
+            ("one fallback", &[('o', 100), ('f', 50)][..], None),
+            ("one fallback today", &[('o', 100), ('f', 2)][..], None),
+            (
+                "two, one of them today",
+                &[('o', 100), ('f', 50), ('f', 2)][..],
+                None,
+            ),
+            // An original among the latest three.
+            (
+                "an original among the latest three",
+                &[('o', 300), ('f', 200), ('f', 150), ('o', 100), ('f', 50)][..],
+                None,
+            ),
+            (
+                "the latest is the original",
+                &[('f', 200), ('f', 150), ('f', 100), ('o', 50)][..],
+                None,
+            ),
+            // No earlier original: the extension never got one here, so nothing changed.
+            (
+                "no earlier original",
+                &[('f', 150), ('f', 100), ('f', 50)][..],
+                None,
+            ),
+            (
+                "no earlier original, today",
+                &[('f', 5), ('f', 2)][..],
+                None,
+            ),
+            // Every one of the last 24 hours, at least two of them.
+            (
+                "two today after an original",
+                &[('o', 100), ('f', 5), ('f', 2)][..],
+                both(2, 2),
+            ),
+            (
+                "an original earlier today",
+                &[('o', 20), ('f', 5), ('f', 2)][..],
+                None,
+            ),
+            (
+                "three, two of them today",
+                &[('o', 100), ('f', 50), ('f', 5), ('f', 2)][..],
+                both(3, 2),
+            ),
+        ] {
+            assert_eq!(held(spec), want, "{what}");
+        }
+        // A line whose id is no date is in no day, and still one of the latest three.
+        let undated = [
+            (Some(now - 400_000), true),
+            (None, false),
+            (None, false),
+            (Some(now - 60), false),
+        ];
+        assert_eq!(fallback_of(now, &undated), both(3, 0));
+
+        // From the index: null, a missing key and a value the format doesn't name are
+        // left out, wherever they stand; a failed check says how it was got and counts.
+        let index = fixture("suscheck/index.jsonl");
+        let last = index.lines().last().unwrap();
+        let line = |n: u32, how: &str| {
+            let at = format!("202611{:02}T1200{:02}Z-aaaa", 1 + n / 60, n % 60);
+            let l = last.replacen("20261105T115821Z-t4v6", &at, 1);
+            match how {
+                "missing" => l.replacen(",\"acquired_by\":\"original\"", "", 1),
+                "null" => l.replacen("\"acquired_by\":\"original\"", "\"acquired_by\":null", 1),
+                "failed" => l
+                    .replacen("\"error\":null", "\"error\":\"model\"", 1)
+                    .replacen(
+                        "\"acquired_by\":\"original\"",
+                        "\"acquired_by\":\"paste\"",
+                        1,
+                    ),
+                how => l.replacen("\"original\"", &format!("\"{how}\""), 1),
+            }
+        };
+        let read = |hows: &[&str]| {
+            let body: String = hows
+                .iter()
+                .enumerate()
+                .map(|(n, how)| line(n as u32, how) + "\n")
+                .collect();
+            let (checks, newer, skipped) = parse_index(&body);
+            assert_eq!((checks.len(), newer, skipped), (hows.len(), None, 0));
+            Suscheck {
+                // (Long after: none of them is of the last day.)
+                now: sample().now + 30 * 86_400,
+                checks,
+                ..sample()
+            }
+        };
+        assert_eq!(
+            read(&["original", "page", "paste", "picture"]).fallback(),
+            both(3, 0)
+        );
+        assert_eq!(
+            read(&[
+                "original", "page", "null", "failed", "missing", "picture", "null"
+            ])
+            .fallback(),
+            both(3, 0)
+        );
+        assert_eq!(
+            read(&["original", "page", "null", "picture", "missing"]).fallback(),
+            None
+        );
+        assert_eq!(read(&["null", "page", "paste", "picture"]).fallback(), None);
+        assert_eq!(
+            read(&["missing", "page", "paste", "picture"]).fallback(),
+            None
+        );
+        // A word the format doesn't name is no known way: neither the original nor a
+        // fallback, so it neither makes the three nor stands for the earlier original.
+        assert_eq!(
+            read(&["original", "page", "carrier", "paste"]).fallback(),
+            None
+        );
+        assert_eq!(
+            read(&["original", "page", "carrier", "paste", "picture"]).fallback(),
+            both(3, 0)
+        );
+        assert_eq!(
+            read(&["carrier", "page", "paste", "picture"]).fallback(),
+            None
+        );
+        assert_eq!(
+            read(&["original", "page", "paste", "original"]).fallback(),
+            None
+        );
+        // What leaves for a report is those two numbers.
+        let c = read(&["original", "page", "paste", "picture"]).counts();
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(
+            text.contains("\"fallback\":{\"run\":3,\"day\":0}"),
+            "{text}"
+        );
+        assert!(
+            !serde_json::to_string(&sample().counts())
+                .unwrap()
+                .contains("fallback")
+        );
+        // Hostile and broken values: cleaned, cut, or nothing. Never a failure.
+        let odd = last.replacen(
+            "\"original\"",
+            "\"ori\\u001b[2Jgi\\u202enal of a long kind\"",
+            1,
+        );
+        assert_eq!(
+            parse_line(&odd).unwrap().acquired_by.as_deref(),
+            Some("original of a lo…")
+        );
+        for bad in ["7", "[\"original\"]", "{\"a\":1}", "true", "\"\""] {
+            let l = last.replacen(
+                "\"acquired_by\":\"original\"",
+                &format!("\"acquired_by\":{bad}"),
+                1,
+            );
+            assert_eq!(parse_line(&l).unwrap().acquired_by, None, "{bad}");
+        }
+        let id = Id::parse("20261105T115821Z-t4v6").unwrap();
+        let text = fixture("suscheck/20261105T115821Z-t4v6/incident.json");
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["acquired_by"] = "pa\u{7}ge\u{202e}".into();
+        v["mail_label"] = format!("phi\u{1b}[31mshing_{}", "x".repeat(900)).into();
+        v["page"] = serde_json::json!({"source": "exten\u{7}sion", "url_domain": "mail[.]example"});
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!(i.acquired_by.as_deref(), Some("page"));
+        assert_eq!(i.mail_label.as_ref().unwrap().chars().count(), 25);
+        assert!(i.mail_label.as_ref().unwrap().starts_with("phishing_x"));
+        assert!(i.mail_window());
+        for bad in [Value::Null, 3.into(), serde_json::json!(["spam"])] {
+            v["acquired_by"] = bad.clone();
+            v["mail_label"] = bad;
+            let i = parse_incident(&v.to_string(), id).unwrap();
+            assert_eq!((&i.acquired_by, &i.mail_label), (&None, &None));
+            assert!(i.last.is_some());
         }
     }
 

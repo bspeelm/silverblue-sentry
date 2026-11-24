@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::collect::suscheck::{
-    Check, Device, Fetched, INPUTS, Id, Incident, Part, Read, Suscheck, Tally, Verdict,
+    ACQUIRED, Check, Device, Fetched, INPUTS, Id, Incident, Part, Read, Suscheck, Tally, Verdict,
     input_parts, said,
 };
 use crate::suscheck::RIGHT;
@@ -25,6 +25,10 @@ pub const MESSAGE_KEPT: &str = "The email's text is kept on the server with this
 /// be confirmed, and nothing looked wrong (`final.unconfirmed_only`). The household was
 /// shown a milder "be careful" for these.
 pub const UNCONFIRMED: &str = "be careful: only because the address couldn't be confirmed";
+
+/// What the summary says when the browser extension keeps falling back from the original
+/// mail (the format's own test: `Suscheck::fallback`).
+pub const FALLING_BACK: &str = "extension falling back: update its rules";
 
 /// Why `A` does nothing here.
 pub const NO_CLAUDE: &str = "never sent to Claude: private, and may carry an attacker's text";
@@ -334,11 +338,13 @@ impl Sus {
         };
         let wide = area.width >= 120;
         let open = self.open.filter(|_| v.s.sus_open.is_some());
+        // (The summary is as tall as what it has to say about the extension.)
+        let extra = extension_lines(t, s, 200).len() as u16;
         if wide {
             let [left, right] =
                 Layout::horizontal([Constraint::Length(48), Constraint::Min(40)]).areas(area);
             let [top, bottom] =
-                Layout::vertical([Constraint::Length(16), Constraint::Min(4)]).areas(left);
+                Layout::vertical([Constraint::Length(16 + extra), Constraint::Min(4)]).areas(left);
             summary(f, top, v, s, false);
             computers(f, bottom, v, s);
             match open {
@@ -352,7 +358,7 @@ impl Sus {
             let n = (rows.len() + rows.iter().filter(|d| !d.note.is_empty()).count()) as u16;
             let roomy = area.height >= 30;
             let [top, mid, rest] = Layout::vertical([
-                Constraint::Length(9),
+                Constraint::Length(9 + extra),
                 Constraint::Length(if roomy { (n + 3).min(9) } else { 0 }),
                 Constraint::Min(4),
             ])
@@ -643,7 +649,87 @@ fn check_lines(v: &View, c: &Check, mild: bool) -> Vec<Line<'static>> {
     if let Some(sent) = c.sent() {
         out.push(row(t, "Made from", sent));
     }
+    if let Some(how) = &c.acquired_by {
+        out.push(row(t, "Obtained", obtained(how)));
+    }
     out.push(Line::raw(""));
+    out
+}
+
+/// How the message reached SusCheck where the browser extension brought it
+/// (`acquired_by`), in words. The extension's own account of what it did.
+fn obtained(how: &str) -> String {
+    match how {
+        "original" => "by the browser extension: the original message, fetched from the mail site",
+        "page" => {
+            "by the browser extension: only the sender, subject and links, read off the mail \
+             page (a fallback)"
+        }
+        "paste" => {
+            "by the browser extension: it couldn't get the message and asked for a paste (a \
+             fallback)"
+        }
+        "picture" => "by the browser extension: only a picture of the tab (a fallback)",
+        _ => return how.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// What the browser extension says the mail program showed for the message
+/// (`mail_label`), in words: its claim, which SusCheck didn't check.
+fn mail_label(label: &str) -> String {
+    match label {
+        "spam" => "the mail site had it in spam (the extension's word: not checked)",
+        "phishing_warning" => {
+            "the mail site showed a phishing warning (the extension's word: not checked)"
+        }
+        "none" => "the extension saw neither a spam nor a phishing label on it",
+        _ => return label.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// What the summary has to say about the browser extension, where a check came through
+/// it: how many it got as the original mail and by each fallback (of the checks read),
+/// and that it keeps falling back when the format's test says so.
+fn extension_lines(t: &Theme, s: &Suscheck, width: usize) -> Vec<Line<'static>> {
+    let n = |how: &str| {
+        s.checks
+            .iter()
+            .filter(|c| c.acquired_by.as_deref() == Some(how))
+            .count()
+    };
+    let original = n("original");
+    let fell: Vec<String> = ACQUIRED
+        .iter()
+        .filter(|(how, _)| *how != "original" && n(how) > 0)
+        .map(|(how, said)| format!("{said} {}", n(how)))
+        .collect();
+    let back: usize = ACQUIRED
+        .iter()
+        .filter(|(how, _)| *how != "original")
+        .map(|(how, _)| n(how))
+        .sum();
+    let mut out = Vec::new();
+    if original + back > 0 {
+        let label = "by extension: ";
+        let mut said = format!("{original} original");
+        if back > 0 {
+            said += &format!(" · {back} fell back");
+            // (How each fell back, where there is room: the side panel has none.)
+            let how = format!(" ({})", fell.join(" · "));
+            if label.len() + said.len() + how.len() <= width {
+                said += &how;
+            }
+        }
+        out.push(Line::from(vec![
+            Span::styled(label, t.dim()),
+            Span::styled(trunc(&said, width.saturating_sub(label.len())), t.fg()),
+        ]));
+    }
+    if s.fallback().is_some() {
+        out.push(Line::styled(trunc(FALLING_BACK, width), t.s(t.yellow)));
+    }
     out
 }
 
@@ -702,6 +788,8 @@ fn tag(code: &str) -> String {
         "display_name_address" => "the sender's name shows another address",
         "auth_failed" => "the mail's reported checks failed",
         "risky_attachment" => "an attachment named like a program or a script",
+        "mail_label_spam" => "the mail site had already put it in spam",
+        "mail_label_phishing" => "the mail site itself warned of phishing",
         "sender_domain_not_real" => "the sender's domain can't exist",
         "link_shared_hosting" => "a link to a platform anyone can publish on, or a shortener",
         "body_is_one_link" => "most of the message is one link",
@@ -832,7 +920,11 @@ fn and_more(t: &Theme, n: u64, note: &str) -> Option<Line<'static>> {
 
 /// The email as SusCheck's code read its headers. Text and nothing else: an address is
 /// never resolved, opened or copied anywhere.
-fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'static>> {
+fn email_lines(
+    t: &Theme,
+    e: &crate::collect::suscheck::Email,
+    label: Option<&str>,
+) -> Vec<Line<'static>> {
     let mut out = vec![head(t, "The email (its headers, read by SusCheck's code)")];
     out.push(row(
         t,
@@ -921,6 +1013,9 @@ fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'stat
     }
     if e.aimed_at_ai == Some(true) {
         out.push(Line::styled("  has text addressed to an AI", t.s(t.yellow)));
+    }
+    if let Some(label) = label {
+        out.push(row(t, "  mail site", mail_label(label)));
     }
     if !e.signals.is_empty() {
         out.push(Line::styled(
@@ -1142,7 +1237,8 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 format!(
                     "{}{}",
                     or(&x.address_bar_domain),
-                    match i.sent_page() {
+                    // (The mail site's window isn't the sender's: nothing is said of it.)
+                    match i.sent_page() && !i.mail_window() {
                         true => " (the window's exact address)",
                         false => "",
                     }
@@ -1285,7 +1381,11 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
     }
     if let Some(e) = &i.email {
         out.push(Line::raw(""));
-        out.extend(email_lines(t, e));
+        out.extend(email_lines(t, e, i.mail_label.as_deref()));
+    } else if let Some(label) = &i.mail_label {
+        // (No email file, as when the extension could only read the page.)
+        out.push(Line::raw(""));
+        out.push(row(t, "Mail site", mail_label(label)));
     }
     if i.message {
         out.push(Line::styled(MESSAGE_KEPT, t.dim()));
@@ -1296,11 +1396,27 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
     }
     if let Some(p) = &i.page {
         out.push(Line::raw(""));
-        out.push(head(t, "The page (as the app read the window)"));
+        // Read by the browser extension, the window is the mail site's: its address is
+        // the mail site's own, and never the one the verdict rests on.
+        let mail = i.mail_window();
+        out.push(head(
+            t,
+            match mail {
+                true => "The page (the mail site's window, as the browser extension read it)",
+                false => "The page (as the app read the window)",
+            },
+        ));
         out.push(row(
             t,
             "  address",
-            p.url_domain.clone().unwrap_or_else(|| "none usable".into()),
+            format!(
+                "{}{}",
+                p.url_domain.as_deref().unwrap_or("none usable"),
+                match mail {
+                    true => " (the mail site's own: never the sender's, never compared)",
+                    false => "",
+                }
+            ),
         ));
         out.push(row(
             t,
@@ -1314,7 +1430,14 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 .map_or("no list was sent".into(), |n| n.to_string()),
         ));
         if let Some(s) = &p.source {
-            out.push(row(t, "  read through", s.replace('_', " ")));
+            out.push(row(
+                t,
+                "  read through",
+                match s.as_str() {
+                    "extension" => "the browser extension".into(),
+                    s => s.replace('_', " "),
+                },
+            ));
         }
     }
     if let Some(d) = &i.domain {
@@ -1690,6 +1813,7 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
             ));
         }
     }
+    lines.extend(extension_lines(t, s, r.width as usize));
     lines.push(service_line(t, s));
     if s.cut() {
         lines.push(Line::styled(
@@ -1736,42 +1860,64 @@ fn device_rows(s: &Suscheck) -> Vec<DeviceRow> {
             .filter(|c| c.device.as_deref() == Some(name))
             .count()
     };
-    let newest = paired
-        .iter()
-        .filter(|d| d.client.as_deref() == Some("app"))
-        .filter_map(|d| d.app_version.as_deref())
-        .map(version)
-        .max();
+    // What an entry reports as its version, when it is one (it starts with a digit): a
+    // `web` entry says `web` or nothing until a check has come through the browser
+    // extension in that profile, then the extension's version. Versions are compared
+    // among entries of the same client only: the app's and the extension's are not one
+    // series.
+    let ver = |d: &Device| {
+        d.app_version
+            .as_deref()
+            .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+            .map(version)
+    };
+    let newest = |client: Option<&str>| {
+        paired
+            .iter()
+            .filter(|d| d.client.as_deref() == client)
+            .filter_map(ver)
+            .max()
+    };
     let mut out: Vec<DeviceRow> = paired
         .iter()
         .map(|d| {
             let checks = count(&d.name);
             let idle = d.last_seen_at.map(|t| (s.now - t) / 86_400);
-            let older = d.client.as_deref() == Some("app")
-                && d.app_version
-                    .as_deref()
-                    .map(version)
-                    .is_some_and(|v| newest.as_ref().is_some_and(|n| v < *n));
-            let note = match idle {
-                None if checks == 0 => "never used".to_string(),
-                Some(days) if days >= 14 => format!("not seen for {days} days"),
-                _ if older => "older app than the others".into(),
-                _ if checks == 0 && !s.cut() => "never used".into(),
-                _ => String::new(),
+            let web = d.client.as_deref() == Some("web");
+            let older = ver(d).is_some_and(|v| newest(d.client.as_deref()).is_some_and(|n| v < n));
+            let (note, odd) = match idle {
+                None if checks == 0 => ("never used".to_string(), true),
+                Some(days) if days >= 14 => (format!("not seen for {days} days"), true),
+                _ if older && web => ("older extension than the others".into(), true),
+                _ if older => ("older app than the others".into(), true),
+                _ if checks == 0 && !s.cut() => ("never used".into(), true),
+                // (Not old: no check has come through the extension in that profile.)
+                _ if web && ver(d).is_none() => {
+                    ("a browser profile: no extension seen yet".into(), false)
+                }
+                _ => (String::new(), false),
             };
             DeviceRow {
                 name: d.name.clone(),
-                client: [d.client.as_deref(), d.app_version.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" "),
+                client: match (d.client.as_deref(), ver(d).is_some()) {
+                    // (`web web` says nothing: the word stands alone until there is a
+                    // version, which is the extension's.)
+                    (Some("web"), true) => {
+                        format!("ext {}", d.app_version.as_deref().unwrap_or(""))
+                    }
+                    (Some("web"), false) => "web".into(),
+                    (client, _) => [client, d.app_version.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                },
                 checks,
                 seen: match d.last_seen_at {
                     Some(at) => fmt::ago(s.now - at),
                     None => "never".into(),
                 },
-                odd: !note.is_empty(),
+                odd,
                 note,
             }
         })

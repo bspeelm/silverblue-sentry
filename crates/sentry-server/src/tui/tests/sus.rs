@@ -703,7 +703,12 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
     incident(&mut a, "20261105T115821Z-t4v6");
     let s = screen(&mut a, 158, 84);
     for said in [
-        "SusCheck's rules  mail label spam: the verdict stood",
+        // It came through the browser extension, as the original message, out of the
+        // mail site's spam folder: the extension's word, and a remark only.
+        "Obtained          by the browser extension: the original message, fetched from the mail site",
+        "SusCheck's rules  the mail site had already put it in spam: the verdict stood",
+        "mail site       the mail site had it in spam (the extension's word: not checked)",
+        "It said           no obvious warning signs  (medium confidence)",
         "official2       \"Example Pay News\" official website",
         "nothing came back",
     ] {
@@ -713,6 +718,221 @@ fn the_milder_be_careful_and_the_links_that_were_repeats() {
         !s.contains("exact repeat") && !s.contains("(failed or timed out)"),
         "{s}"
     );
+    // The summary counts what came through the extension, and says nothing of a fallback.
+    assert!(s.contains("by extension: 1 original  "), "{s}");
+    assert!(!s.contains(sc_screen::FALLING_BACK), "{s}");
+    // A check made by hand says nothing of how it was obtained, nor of a label.
+    key(&mut a, KeyCode::Esc);
+    at(&mut a, 3);
+    key(&mut a, KeyCode::Enter);
+    incident(&mut a, "20261105T081233Z-k2m4");
+    let s = screen(&mut a, 158, 84);
+    assert!(!s.contains("Obtained") && !s.contains("mail site  "), "{s}");
+}
+
+/// The browser extension's fallbacks, the mail site's window and its labels in words; the
+/// summary's line and the finding when the extension keeps falling back; the Computers
+/// panel with browser profiles in it.
+#[test]
+fn what_came_through_the_browser_extension() {
+    let mut a = sus_app();
+    key(&mut a, KeyCode::Char('8'));
+    // The extension could only read the mail page: no email file, the window is the mail
+    // site's, and the mail site was showing its own warning.
+    let mut folder = sc::tests::sample();
+    folder.checks[9].acquired_by = Some("page".into());
+    folder.checks[9].input = Some("page".into());
+    data(
+        &mut a,
+        Kind::Suscheck,
+        Payload::Suscheck(Some(Read::Folder(Box::new(folder)))),
+    );
+    at(&mut a, 0);
+    key(&mut a, KeyCode::Enter);
+    let mut i = sc::tests::sample_incident("20261105T115821Z-t4v6");
+    i.acquired_by = Some("page".into());
+    i.mail_label = Some("phishing_warning".into());
+    i.input = vec!["page".into()];
+    i.email = None;
+    i.message = false;
+    i.page = Some(sc::Page {
+        source: Some("extension".into()),
+        url_domain: Some("mail[.]example".into()),
+        title: Some("Inbox - Mail".into()),
+        links_total: Some(1),
+    });
+    i.facts.as_mut().unwrap().address_bar_domain = Some("mail.example".into());
+    i.last.as_mut().unwrap().floors = vec!["mail_label_phishing".into(), "unknown".into()];
+    let feed = |a: &mut App, i: &sc::Incident| {
+        data(
+            a,
+            Kind::SusIncident(i.id),
+            Payload::SusIncident(Fetched::Ok(Box::new(i.clone()))),
+        );
+        screen(a, 158, 84)
+    };
+    let s = feed(&mut a, &i);
+    for said in [
+        "Made from         page address",
+        "Obtained          by the browser extension: only the sender, subject and links, read off the mail",
+        "the mail site itself warned of phishing · the address couldn't be compared",
+        "Mail site         the mail site showed a phishing warning (the extension's word: not checked)",
+        "The page (the mail site's window, as the browser extension read it)",
+        "address         mail[.]example (the mail site's own: never the sender's, never compared)",
+        "read through    the browser extension",
+        "address bar     mail.example\u{20}",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    assert!(
+        !s.contains("the window's exact address") && !s.contains("The email"),
+        "{s}"
+    );
+    // The other ways, and what has no words.
+    for (how, said) in [
+        (
+            "paste",
+            "it couldn't get the message and asked for a paste (a fallback)",
+        ),
+        ("picture", "only a picture of the tab (a fallback)"),
+        ("by_owl", "Obtained          by owl"),
+    ] {
+        let mut folder = sc::tests::sample();
+        folder.checks[9].acquired_by = Some(how.into());
+        data(
+            &mut a,
+            Kind::Suscheck,
+            Payload::Suscheck(Some(Read::Folder(Box::new(folder)))),
+        );
+        let s = feed(&mut a, &i);
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    for (label, said) in [
+        (
+            "none",
+            "the extension saw neither a spam nor a phishing label on it",
+        ),
+        ("flagged_twice", "Mail site         flagged twice"),
+    ] {
+        i.mail_label = Some(label.into());
+        let s = feed(&mut a, &i);
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
+    key(&mut a, KeyCode::Esc);
+
+    // The extension keeps falling back: after an original, the latest three weren't.
+    let mut folder = sc::tests::sample();
+    let last = folder.checks[9].clone();
+    for (n, how) in ["page", "paste", "picture"].into_iter().enumerate() {
+        let mut c = last.clone();
+        c.id = id(&format!("20261105T1159{:02}Z-ext{n}", 10 + n));
+        c.at = c.id.time();
+        c.acquired_by = Some(how.into());
+        folder.checks.push(c);
+    }
+    let counts = folder.counts();
+    // (The original was today too, so it isn't "every one of the last 24 hours".)
+    assert_eq!(counts.fallback, Some(sc::Fallback { run: 3, day: 0 }));
+    data(
+        &mut a,
+        Kind::Suscheck,
+        Payload::Suscheck(Some(Read::Folder(Box::new(folder.clone())))),
+    );
+    for (w, h, said) in [
+        (158, 41, "by extension: 1 original · 3 fell back  "),
+        (
+            80,
+            24,
+            "by extension: 1 original · 3 fell back (page 1 · paste 1 · picture 1)",
+        ),
+    ] {
+        let s = screen(&mut a, w, h);
+        assert!(s.contains(said), "{s}");
+        assert!(s.contains(sc_screen::FALLING_BACK), "{s}");
+        assert!(s.contains("● alive"), "{s}");
+    }
+    // The finding: medium, from the two numbers, and gone with the block.
+    let snap = collect::Snapshot {
+        suscheck: Some(counts),
+        ..Default::default()
+    };
+    let found = audit::derive(&snap, &sus_cfg(true), None, &Default::default());
+    let f = found
+        .iter()
+        .find(|f| f.id == "srv:suscheck:fallback")
+        .unwrap();
+    assert_eq!(f.severity, sentry_core::finding::Sev::Medium);
+    let text = serde_json::to_string(f).unwrap();
+    for said in [
+        "browser extension is falling back from the original mail",
+        "The mail site's pages have probably changed",
+        "Update the extension's rules",
+        "the latest 3 checks through the extension weren't the original mail\"",
+    ] {
+        assert!(text.contains(said), "{said}:\n{text}");
+    }
+    for word in CANARIES {
+        assert!(!text.contains(word), "{word} in the finding");
+    }
+    let none = audit::derive(&snap, &cfg(), None, &Default::default());
+    assert!(none.iter().all(|f| !f.id.contains("suscheck")), "{none:?}");
+
+    // Computers: one entry per paired browser profile. A `web` entry says `web` (or
+    // nothing) until a check has come through the extension in it: never "old". Versions
+    // are compared among the app's entries and among the extension's, not across.
+    let device = |name: &str, client: &str, version: Option<&str>| sc::Device {
+        name: name.into(),
+        os: None,
+        client: Some(client.into()),
+        app_version: version.map(Into::into),
+        paired_at: None,
+        last_seen_at: Some(folder.now - 3600),
+    };
+    folder.devices = sc::Part::Ok(vec![
+        device("Kitchen iMac", "app", Some("0.2.0")),
+        device("Study laptop", "web", Some("web")),
+        device("Den", "app", Some("0.1.0")),
+        device("Attic", "web", Some("1.4.0")),
+        device("Porch", "web", Some("1.3.9")),
+        device("Shed", "web", None),
+        device("Loft", "web", Some("0.1.0-beta")),
+    ]);
+    folder.recent = 5;
+    data(
+        &mut a,
+        Kind::Suscheck,
+        Payload::Suscheck(Some(Read::Folder(Box::new(folder)))),
+    );
+    let s = screen(&mut a, 158, 60);
+    let after = |name: &str| -> String {
+        let lines: Vec<&str> = s.lines().collect();
+        let n = lines
+            .iter()
+            .position(|l| l.contains(&format!("│ {name} ")))
+            .unwrap();
+        format!("{}\n{}", lines[n], lines[n + 1])
+    };
+    assert!(after("Study laptop").contains("web  "), "{s}");
+    assert!(!after("Study laptop").contains("web web"), "{s}");
+    assert!(
+        after("Study laptop").contains("↳ a browser profile: no extension seen yet"),
+        "{s}"
+    );
+    assert!(after("Shed").contains("no extension seen yet"), "{s}");
+    assert!(after("Den").contains("↳ older app than the others"), "{s}");
+    assert!(after("Porch").contains("ext 1.3.9"), "{s}");
+    assert!(
+        after("Porch").contains("↳ older extension than the others"),
+        "{s}"
+    );
+    assert!(
+        after("Loft").contains("↳ older extension than the others"),
+        "{s}"
+    );
+    // (The newest of each: nothing to say. The extension's 1.4.0 isn't held against the
+    // app's 0.2.0, nor the other way.)
+    assert!(!after("Attic").contains("↳"), "{s}");
+    assert!(!after("Kitchen iMac").contains("↳"), "{s}");
 }
 
 /// Values this sentry has no words for are shown as they are; the ones it has are said
@@ -1190,6 +1410,14 @@ fn findings_are_made_of_counts_alone() {
         found(failing, true),
         [("srv:suscheck:errors".to_string(), Sev::Medium)]
     );
+    let falling = sc::Counts {
+        fallback: Some(sc::Fallback { run: 3, day: 0 }),
+        ..base.clone()
+    };
+    assert_eq!(
+        found(falling, true),
+        [("srv:suscheck:fallback".to_string(), Sev::Medium)]
+    );
     let newer = sc::Counts {
         schema: Some(2),
         ..base.clone()
@@ -1215,6 +1443,7 @@ fn findings_are_made_of_counts_alone() {
                 errors: 5,
                 ..Default::default()
             },
+            fallback: Some(sc::Fallback { run: 4, day: 0 }),
             ..base
         }),
         ..Default::default()
@@ -1224,7 +1453,7 @@ fn findings_are_made_of_counts_alone() {
         all.iter()
             .filter(|f| f.id.starts_with("srv:suscheck:"))
             .count(),
-        3
+        4
     );
     let text = serde_json::to_string(&all).unwrap();
     for word in CANARIES {
@@ -1293,6 +1522,8 @@ const CANARIES: &[&str] = &[
     "address_bar",
     "mail_label",
     "Gmail",
+    "in spam",
+    "phishing",
 ];
 
 /// A stored report built from the samples holds counts and nothing else of them.
@@ -1364,6 +1595,7 @@ fn hostile() -> (sc::Suscheck, sc::Incident) {
         c.confidence = Some("canary-confidence".into());
         c.app_version = Some("canary-version".into());
         c.input = Some("canary-input".into());
+        c.acquired_by = Some("canary-acquired".into());
     }
     if let sc::Part::Ok(d) = &mut s.devices {
         for x in d.iter_mut() {
@@ -1390,6 +1622,8 @@ fn hostile() -> (sc::Suscheck, sc::Incident) {
     // What a check made from an email file and a window's address adds.
     i.input = vec!["canary-sent".into()];
     i.message = true;
+    i.acquired_by = Some("canary-acquired".into());
+    i.mail_label = Some("canary-label".into());
     if let Some(d) = &mut i.domain {
         d.source = Some("canary-source".into());
         d.exact = Some("canary-exact.test".into());
@@ -1510,6 +1744,8 @@ fn nothing_of_a_check_reaches_claude_a_report_or_the_log() {
         "canary-written",
         "canary-provider",
         "canary signal",
+        "canary-acquired",
+        "canary-label",
         "sentry doesn't show it",
     ] {
         assert!(on_screen.contains(planted), "{planted} isn't on screen");
@@ -1720,6 +1956,11 @@ fn live_suscheck() {
     );
     assert_eq!(f.checks[8].sent().as_deref(), Some("email + page address"));
     assert_eq!(f.checks[9].sent().as_deref(), Some("email"));
+    // The newest came through the browser extension, as the original message: nothing
+    // is falling back.
+    assert_eq!(f.checks[9].acquired_by.as_deref(), Some("original"));
+    assert!(f.checks[..9].iter().all(|c| c.acquired_by.is_none()));
+    assert_eq!(f.fallback(), None);
     // What `sentry-server collect <name> suscheck` prints is counts, for real too.
     let printed =
         serde_json::to_string_pretty(&collect::collect_json(&r, "suscheck").unwrap()).unwrap();

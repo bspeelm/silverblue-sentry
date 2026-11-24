@@ -18,15 +18,15 @@ expression: s
 │ typical time      15 s (longest 21 s)        ││ Advice shown      do not enter password · type address yourself · close window                             │
 │ you marked        none yet (m on a ┌ Mark this check · pick one (1–4, n cancels) ─────────────────────────────────────┐                                    │
 │ model example-vision:1b · prompts 3│                                                                                  │                                    │
-│ ● alive 2m ago · keeps checks 30 da│ 1  SusCheck was right                                                            │                                    │
-│                                    │ 2  wrong: it should have said "no obvious warning signs"                         │                                    │
-└────────────────────────────────────│ 3  wrong: it should have said "be careful"                                       │                                    │
-┌ Computers · 2 paired ──────────────│ 4  wrong: it should have said "don't trust this"                                 │                                    │
-│ Name           Client    Checks  La│                                                                                  │                                    │
-│ Kitchen iMac   app 0.1.0      6  16│ Kept on this machine (the server's suscheck.toml): nothing is written to the     │                                    │
-│ Study laptop   web            4  1d│ server, and SusCheck isn't told. x clears a mark.                                │                                    │
-│                                    │                                                                                  │                                    │
-│                                    │  Enter  close                                                                    │                                    │
+│ by extension: 1 original           │ 1  SusCheck was right                                                            │                                    │
+│ ● alive 2m ago · keeps checks 30 da│ 2  wrong: it should have said "no obvious warning signs"                         │                                    │
+│                                    │ 3  wrong: it should have said "be careful"                                       │                                    │
+└────────────────────────────────────│ 4  wrong: it should have said "don't trust this"                                 │                                    │
+┌ Computers · 2 paired ──────────────│                                                                                  │                                    │
+│ Name           Client    Checks  La│ Kept on this machine (the server's suscheck.toml): nothing is written to the     │                                    │
+│ Kitchen iMac   app 0.1.0      6  16│ server, and SusCheck isn't told. x clears a mark.                                │                                    │
+│ Study laptop   web            4  1d│                                                                                  │                                    │
+│   ↳ a browser profile: no extension│  Enter  close                                                                    │                                    │
 │                                    └──────────────────────────────────────────────────────────────────────────────────┘                                    │
 │                                              ││   address bar     examp1e-pay.test                                                                         │
 │                                              ││   links           Sign in · Forgot password?                                                               │
