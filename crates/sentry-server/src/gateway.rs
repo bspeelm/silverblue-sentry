@@ -95,6 +95,8 @@ const SUSCHECK_WORDS: &[&str] = &[
     "screenshot.png",
     "index.jsonl",
     "incidents.path",
+    // (A check made from an email keeps the message's text: a household member's mail.)
+    "message.txt",
 ];
 
 /// A path as its text says where it leads: `//` and `/./` squashed, `..` taken with the
@@ -425,6 +427,7 @@ mod tests {
             "cat /opt/copy/20261101T091500Z-a1b2/screenshot.png",
             "tail -n 200 /srv/x/index.jsonl",
             "cat /srv/x/INDEX.JSONL",
+            "cat /opt/copy/20261101T091500Z-a1b2/message.txt",
             // The pointer.
             "cat /etc/suscheck/incidents.path",
             "head -n 1 /etc//suscheck/./incidents.path",
