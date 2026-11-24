@@ -664,20 +664,28 @@ fn words(codes: &[String]) -> String {
 }
 
 /// A rule of SusCheck's (`final.floors`) or the tag of a comparison (`check.why`) as a
-/// short phrase. One this sentry has no words for is shown as it is (already cleaned),
-/// its underscores as spaces.
+/// short phrase, by what the format says each means. One this sentry has no words for is
+/// shown as it is (already cleaned), its underscores as spaces.
 fn tag(code: &str) -> String {
     match code {
         "close_imitation" => "one small change from the real address",
         "digit_in_name" => "a digit inside a word of the address",
-        "link_text_mismatch" => "a link's text names another address",
+        "talks_to_ai" => "text written to steer an AI",
+        "mismatch_risky" => "a different address, and it asks for something risky",
+        "public_ip" => "a public IP address, not a name",
+        "unknown" => "the address couldn't be compared",
+        "weak_match_risky" => "matched by web search only, and it asks for something risky",
+        "safe_needs_match" => "no warning signs, but the address isn't a match",
+        "search_down" => "a web search failed",
+        "not_readable" => "not readable as an email or a web page",
+        "link_text_mismatch" => "a link's text is an address, and it leads to another",
         "link_lookalike" => "a link imitates the real address",
-        "link_odd_target" => "a link with an odd target",
-        "links_unchecked" => "more links than were checked",
-        "reply_to_differs" => "replies go to another address",
-        "display_name_address" => "the sender's name is written as an address",
-        "auth_failed" => "the mail's own checks failed",
-        "risky_attachment" => "a risky attachment",
+        "link_odd_target" => "a link that doesn't lead to an ordinary named site",
+        "links_unchecked" => "more links than SusCheck analyses",
+        "reply_to_differs" => "replies go to another domain",
+        "display_name_address" => "the sender's name shows another address",
+        "auth_failed" => "the mail's reported checks failed",
+        "risky_attachment" => "an attachment named like a program or a script",
         "ocr_differs" => "the text recogniser read another address",
         _ => return code.replace('_', " "),
     }
@@ -717,9 +725,9 @@ fn source_said(source: &str) -> String {
     .to_string()
 }
 
-/// "and N more", where a list was cut.
-fn and_more(t: &Theme, n: u64) -> Option<Line<'static>> {
-    (n > 0).then(|| Line::styled(format!("  and {n} more"), t.dim()))
+/// "and N more", where a list was cut (`note`: what else is to be said of the count).
+fn and_more(t: &Theme, n: u64, note: &str) -> Option<Line<'static>> {
+    (n > 0).then(|| Line::styled(format!("  and {n} more{note}"), t.dim()))
 }
 
 /// The email as SusCheck's code read its headers. Text and nothing else: an address is
@@ -794,6 +802,7 @@ fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'stat
             t,
             e.attachments_total
                 .saturating_sub(e.attachments.len() as u64),
+            "",
         ));
     }
     if let Some(n) = e.links_total {
@@ -850,7 +859,12 @@ fn link_lines(t: &Theme, i: &Incident) -> Vec<Line<'static>> {
         }
         out.push(Line::from(spans));
     }
-    out.extend(and_more(t, i.links_more()));
+    // (The record's own count is from before exact repeats were merged into one line.)
+    let note = match i.links_total {
+        Some(_) => ", exact repeats of these included",
+        None => "",
+    };
+    out.extend(and_more(t, i.links_more(), note));
     out
 }
 
@@ -948,18 +962,50 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             x.kind.as_deref().unwrap_or("?").replace('_', " "),
         ));
         out.push(row(t, "  claims to be", or(&x.claimed_brand)));
+        // Who read what: with an email file the sender is the header's, with the window's
+        // address the address bar is the window's; the link texts are always the model's.
         if x.sender_name.is_some() || x.sender_address.is_some() {
             out.push(row(
                 t,
                 "  sender",
-                format!("{} <{}>", or(&x.sender_name), or(&x.sender_address)),
+                format!(
+                    "{} <{}>{}",
+                    or(&x.sender_name),
+                    or(&x.sender_address),
+                    match i.sent_email() {
+                        true => " (the header's exact values)",
+                        false => "",
+                    }
+                ),
             ));
         }
         if x.address_bar_domain.is_some() {
-            out.push(row(t, "  address bar", or(&x.address_bar_domain)));
+            out.push(row(
+                t,
+                "  address bar",
+                format!(
+                    "{}{}",
+                    or(&x.address_bar_domain),
+                    match i.sent_page() {
+                        true => " (the window's exact address)",
+                        false => "",
+                    }
+                ),
+            ));
         }
         if !x.link_texts.is_empty() {
-            out.push(row(t, "  links", x.link_texts.join(" · ")));
+            out.push(row(
+                t,
+                "  links",
+                format!(
+                    "{}{}",
+                    x.link_texts.join(" · "),
+                    match i.links {
+                        Some(_) => " (the model's reading: go by Links below)",
+                        None => "",
+                    }
+                ),
+            ));
         }
         if !x.phone_numbers.is_empty() {
             out.push(row(t, "  phone numbers", x.phone_numbers.join(" · ")));
@@ -977,17 +1023,23 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             t,
             "  pressure",
             format!(
-                "urgency: {} · text addressed to an AI: {}",
+                "urgency: {} · text addressed to an AI: {}{}",
                 yes_no(x.urgency),
-                yes_no(x.talks_to_ai)
+                yes_no(x.talks_to_ai),
+                // (Also yes when the model missed it and the phrase list didn't.)
+                match i.email.as_ref().and_then(|e| e.aimed_at_ai) {
+                    Some(true) if x.talks_to_ai == Some(true) =>
+                        " (SusCheck's phrase list found some)",
+                    _ => "",
+                }
             ),
         ));
     }
-    // Where the address came from: only a record that says (older ones are all a picture).
+    // Where the address came from. A record in the old shape doesn't say: a picture.
     if let Some((d, source)) = i
         .domain
         .as_ref()
-        .and_then(|d| Some((d, d.source.as_deref()?)))
+        .map(|d| (d, d.source.as_deref().unwrap_or("screenshot")))
     {
         out.push(Line::raw(""));
         out.push(head(t, "Where the address came from"));
@@ -1145,12 +1197,23 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
         t,
         "  time",
         format!(
-            "{} in all{}",
+            "{} in all{}{}",
             secs(i.duration_ms),
+            // A stage that ran is a time, however short; one that didn't is said so.
             i.stages
                 .iter()
-                .map(|(n, ms)| format!(" · {n} {}", secs(*ms)))
-                .collect::<String>()
+                .filter_map(|(n, ms)| Some(format!(" · {n} {}", secs((*ms)?))))
+                .collect::<String>(),
+            match i
+                .stages
+                .iter()
+                .filter(|(_, ms)| ms.is_none())
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+            {
+                not if not.is_empty() => String::new(),
+                not => format!(" · not run: {}", not.join(", ")),
+            }
         ),
     ));
     out.push(row(

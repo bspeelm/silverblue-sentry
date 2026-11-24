@@ -11,8 +11,8 @@
  "prompt_version": "2",
  "stages_ms": {
   "extract": 2950,
-  "reread": 0,
-  "ocr": 0,
+  "reread": null,
+  "ocr": null,
   "search": 1710,
   "judge": 9840
  },
@@ -164,6 +164,7 @@
    "flags": []
   }
  ],
+ "links_total": 2,
  "page": null,
  "screenshot": false,
  "message": true

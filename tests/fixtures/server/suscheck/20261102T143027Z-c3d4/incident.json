@@ -12,6 +12,7 @@
  "stages_ms": {
   "extract": 3540,
   "reread": 2710,
+  "ocr": null,
   "search": 1980,
   "judge": 10690
  },
@@ -34,12 +35,16 @@
  "domain": {
   "first_reading": "example.net",
   "second_reading": "example.net",
+  "ocr_reading": null,
+  "ocr_available": false,
   "check": {
    "result": "mismatch",
    "shown": "example.net",
    "real": "example-pay.test",
    "why": "different"
-  }
+  },
+  "source": "screenshot",
+  "exact": null
  },
  "search": {
   "ok": true,
@@ -106,6 +111,13 @@
   ],
   "floors_changed_verdict": false
  },
+ "input": [
+  "image"
+ ],
+ "email": null,
+ "links": null,
+ "links_total": null,
+ "page": null,
  "screenshot": true,
  "message": false
 }

@@ -169,8 +169,10 @@ a symlink that leads there, `find <parent> -exec`, a tool that reads a list of p
 
 SusCheck's format grew without a schema change: a check can be made from an email file, from
 the page's address as its desktop app reads it out of the window, from a screenshot, or from a
-combination. The fixtures are the seven published samples (the five older ones, an email file
-with `message.txt` and no picture, a picture beside the window's exact address).
+combination. The fixtures are the eight published samples, byte for byte: one in the old shape
+(the first release's: no `input`, `message`, `domain.source` or text-recogniser fields), five in
+today's full shape, an email file with `message.txt` and no picture, a picture beside the
+window's exact address.
 
 - **Parsing.** An index line's `input` is kept as cleaned text (`Check.input`): a line without
   the key is `image` (older lines), null is "nothing recorded", an unknown combination is shown
@@ -178,8 +180,20 @@ with `message.txt` and no picture, a picture beside the window's exact address).
   `source`, `exact`, `ocr_reading`, `ocr_available`; `stages_ms.ocr`. Every block may be null,
   not an object, or empty; every string goes through `clean()` and is cut at sentry's own cap, a
   little over the format's (nothing fails for being long); attachments stop at 20 and links at
-  50, and what was beyond them is counted from the totals. An older record parses to exactly
-  what it did, and a newer one stripped of the new fields still parses (both tested).
+  50, and what was beyond them is counted from the totals. The published record in the old
+  shape parses as a picture's (`input = ["image"]`), and every newer one stripped of the new
+  fields still parses (both tested).
+- **After the format's revision** (still schema 1). "And N more" under Links is the record's
+  own `links_total` less the list; that count is from before exact repeats were merged, so the
+  line says "exact repeats of these included". A record without it falls back to the email's
+  and the page's totals. `stages_ms`: null is a stage that did not run, a number one that ran
+  (0: in under a millisecond); "How it ran" gives the times, then `· not run: reread, ocr`. The
+  old shape wrote 0 for a stage that did not run, so a 0 there is read as not run. The format's
+  caps are on the plain value, which is stored defanged: sentry's are a little over the stored
+  sizes (a link's text 410, a target and the page's address 210). A failed check's index line
+  says what it was given, so its From is `picture`, not `–`. In what the model read, one clause
+  says whose value it is where the format does: the sender (the header's exact values), the
+  address bar (the window's exact address), the link texts (the model's reading: go by Links).
 - **The list** has a From column in plain words (`picture`, `email`, `picture + email`,
   `picture + page address`), as wide as the widest. At 158 columns there is no room for it
   beside Brand and Domain check and a readable domain (18 columns), so those two give way,
@@ -206,16 +220,17 @@ with `message.txt` and no picture, a picture beside the window's exact address).
 - **`o` without a picture** asks the server nothing where it is already known there is none
   (the index says the check was made from the email itself or the page's address; or the open
   record says none was kept) and says which. From the list, a failed check's `o` still asks
-  (its index line doesn't say) and gets the same plain answer.
-- **Wording.** The newer rules and comparison tags have short phrases (`tag()`); any other
+  (its index line says a picture was sent; none was kept) and gets the same plain answer.
+- **Wording.** Every rule the format lists but `lookalike`, and the tag `ocr_differs`, has a
+  short phrase by the format's own line for it (`tag()`); any other
   value is its own text with spaces for underscores. Three or more rules are listed one a line
   (a check of an email file has six).
 - **The detail scrolls by wrapped rows.** It used to stop at the count of unwrapped lines, which
   on a narrow window left the end of a long check out of reach.
 
-Assumed, not seen: that a record with both an email's and a page's links lists them together
-(`links_more` adds the two totals); that the format's caps are counted before defanging (sentry's
-caps for defanged fields are 20 over).
+Assumed, not seen: that in a record from before `links_total` the email's and the page's totals
+add up to the list's (`links_more` adds the two only there); that a 0 in an old-shape record's
+`stages_ms` is a stage that did not run and never one that took under a millisecond.
 
 Verified: the unit and window tests the Verification section lists, the canary, and
 `live_suscheck` in both disposable containers (the folder's own login reads; the server's

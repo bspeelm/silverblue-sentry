@@ -12,6 +12,7 @@
  "stages_ms": {
   "extract": 3120,
   "reread": 2650,
+  "ocr": null,
   "search": 1410,
   "judge": 8030
  },
@@ -33,12 +34,16 @@
  "domain": {
   "first_reading": "www.example.com",
   "second_reading": "www.example.com",
+  "ocr_reading": null,
+  "ocr_available": false,
   "check": {
    "result": "match_trusted",
    "shown": "example.com",
    "real": "example.com",
    "why": "exact"
-  }
+  },
+  "source": "screenshot",
+  "exact": null
  },
  "search": {
   "ok": true,
@@ -97,6 +102,13 @@
   "floors": [],
   "floors_changed_verdict": false
  },
+ "input": [
+  "image"
+ ],
+ "email": null,
+ "links": null,
+ "links_total": null,
+ "page": null,
  "screenshot": true,
  "message": false
 }

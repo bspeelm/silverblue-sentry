@@ -78,8 +78,9 @@ fn the_screen_from_the_samples() {
         );
         // Never offered to Claude: not in the key bar.
         assert!(!s.contains("ask Claude") && !s.contains(" A "), "{s}");
-        // A selected check in full.
+        // A selected check in full: the first lookalike (the oldest but one).
         key(&mut a, KeyCode::Char('G'));
+        key(&mut a, KeyCode::Char('k'));
         key(&mut a, KeyCode::Enter);
         assert_eq!(
             srv(&a).asked.last(),
@@ -155,7 +156,7 @@ fn help_lists_its_keys_and_the_filter_narrows_the_list() {
     assert!(s.contains("Domain check") && !s.contains("Brand"), "{s}");
     key(&mut a, KeyCode::Esc);
     let s = screen(&mut a, 158, 41);
-    assert!(s.contains("7 shown") && !s.contains("Domain check"), "{s}");
+    assert!(s.contains("8 shown") && !s.contains("Domain check"), "{s}");
     // A wider window has every column.
     let s = screen(&mut a, 200, 41);
     assert!(s.contains("Domain check") && s.contains("Brand"), "{s}");
@@ -245,7 +246,7 @@ fn the_picture_goes_to_the_private_cache_and_is_never_opened_in_a_test() {
     key(&mut a, KeyCode::Char('8'));
     key(&mut a, KeyCode::Char('G'));
     key(&mut a, KeyCode::Char('o'));
-    let of = id("20261101T091500Z-a1b2");
+    let of = id("20261030T184512Z-b0a1");
     assert_eq!(srv(&a).asked.last(), Some(&Kind::SusPicture(of)));
     assert!(render_to_string(&mut a, 158, 41).contains("fetching the picture"));
     // What the fetch would have sent: where it was put. Offline, it is only said.
@@ -284,9 +285,9 @@ fn the_picture_goes_to_the_private_cache_and_is_never_opened_in_a_test() {
     assert!(path.starts_with(sentry_core::paths::cache_dir().join("suscheck")));
 }
 
-/// The two newer samples: a check made from an email file (its headers and links, no
-/// picture, the message's text kept on the server and never shown) and one made from a
-/// picture beside the window's own address.
+/// A check made from an email file (its headers and links, no picture, the message's text
+/// kept on the server and never shown), one made from a picture beside the window's own
+/// address, one that failed, and one in the old shape (a picture's, as they all were).
 #[test]
 fn a_check_made_from_an_email_file_or_with_the_windows_address() {
     let mut a = sus_app();
@@ -298,12 +299,12 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         assert!(s.contains(said), "{said}:\n{s}");
     }
     assert!(
-        s.contains("from: picture 5/5 · email 1/1 · page 1/1"),
+        s.contains("from: picture 7/7 · email 1/1 · page 1/1"),
         "{s}"
     );
     assert!(
         screen(&mut a, 80, 24)
-            .contains("made from  picture 5/5 · email 1/1 · page address 1/1 (7/30 days)")
+            .contains("made from  picture 7/7 · email 1/1 · page address 1/1 (7/30 days)")
     );
     // The email file.
     let email = id("20261105T081233Z-k2m4");
@@ -325,7 +326,10 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         "What it read from the message",
         "Where the address came from",
         "the email's own header: exact text, not a reading",
-        "service@example-pay.test <notice@account-alerts.test>",
+        // Who read what: the sender is the header's, the link texts the model's.
+        "sender          service@example-pay.test <notice@account-alerts.test> (the header's exact values)",
+        "links           Contact us (the model's reading: go by Links below)",
+        "from            service@example-pay.test <notice@account-alerts.test>",
         "replies go to   desk@billing-desk.test",
         "Your Example Pay statement is ready",
         "spf fail · dkim none · dmarc fail",
@@ -333,9 +337,14 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         "example-pay[.]test → account-alerts[.]test · https · its text is another address",
         "Contact us → example-pay[.]test · https",
         "SusCheck's rules  raised the verdict:",
-        "· a link's text names another address",
-        "· the sender's name is written as an address",
-        "· replies go to another address",
+        "· a different address, and it asks for something risky",
+        "· a link's text is an address, and it leads to another",
+        "· the sender's name shows another address",
+        "· replies go to another domain",
+        "· the mail's reported checks failed",
+        "· an attachment named like a program or a script",
+        // The address came as exact text: two stages did not run, and that is said.
+        "14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s · not run: reread, ocr",
         "none: this check was made without one",
         sc_screen::MESSAGE_KEPT,
     ] {
@@ -424,6 +433,9 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         "Made from         picture + page address",
         "What it read from the picture",
         "read out of the window by the app: exact text, not a reading",
+        "address bar     examp1e-pay.test (the window's exact address)",
+        "links           Sign in · Forgot password? (the model's reading: go by Links below)",
+        "15 s in all · extract 3.3 s · search 1.5 s · judge 11 s · not run: reread, ocr",
         "exact address   examp1e-pay.test",
         "the model read  example-pay.test in the picture (not used)",
         "Forgot password? → examp1e-pay[.]test · https · imitates the real address, one small change",
@@ -445,12 +457,16 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
     key(&mut a, KeyCode::Char('o'));
     assert_eq!(asked(&a, Kind::SusPicture(page)), 1);
 
-    // A check that failed: with its record open, `o` says there is none without asking;
-    // from the list (the index doesn't say) the server is asked, and says the same.
+    // A check that failed: the list says what it was given (a picture), so from there the
+    // server is asked, and says there is none; with its record open, `o` says so without
+    // asking.
     let failed = id("20261104T194103Z-j9k0");
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('j'));
     key(&mut a, KeyCode::Char('j'));
+    let s = screen(&mut a, 158, 41);
+    let row = s.lines().find(|l| l.contains("failed (model)")).unwrap();
+    assert!(row.contains(" picture ") && !row.contains("–"), "{row}");
     key(&mut a, KeyCode::Char('o'));
     assert_eq!(asked(&a, Kind::SusPicture(failed)), 1);
     data(
@@ -462,6 +478,17 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
     assert!(s.contains("there is no picture for this check"), "{s}");
     key(&mut a, KeyCode::Enter);
     incident(&mut a, "20261104T194103Z-j9k0");
+    let s = screen(&mut a, 158, 41);
+    insta::assert_snapshot!("server_suscheck_failed_158x41", s);
+    for said in [
+        "Made from         picture",
+        "The check failed (model): nobody was shown a verdict.",
+        // How far it got: one stage ran, the rest are said not to have.
+        "2m 0s in all · extract 2m 0s · not run: reread, ocr, search, judge",
+        "none was kept",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
     key(&mut a, KeyCode::Char('o'));
     assert_eq!(asked(&a, Kind::SusPicture(failed)), 1);
     let s = render_to_string(&mut a, 158, 41);
@@ -469,15 +496,57 @@ fn a_check_made_from_an_email_file_or_with_the_windows_address() {
         s.contains("this check failed before a picture was kept: there is no picture"),
         "{s}"
     );
-    // An older record (it doesn't say what was sent) is a picture's, as it always was.
+    // The record in the old shape (it doesn't say what was sent, nor where the address
+    // came from) is a picture's, as they all were: no email, links or page, no stage it
+    // doesn't name, and nothing labelled as anyone's reading but the model's.
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('G'));
     key(&mut a, KeyCode::Enter);
-    incident(&mut a, "20261101T091500Z-a1b2");
+    assert_eq!(
+        srv(&a).asked.last(),
+        Some(&Kind::SusIncident(id("20261030T184512Z-b0a1")))
+    );
+    incident(&mut a, "20261030T184512Z-b0a1");
     let s = screen(&mut a, 158, 64);
-    assert!(s.contains("What it read from the picture"), "{s}");
+    insta::assert_snapshot!("server_suscheck_old_158x64", s);
+    for said in [
+        "Made from         picture",
+        "What it read from the picture",
+        "address bar     shop.example.com",
+        "links           Basket · Checkout",
+        "read from the picture: a reading by the model, not exact text",
+        "compared        match search (exact) · on screen example.com · the real one example.com",
+        "model           example-vision:1b · prompts 1",
+        "17 s in all · extract 3.2 s · reread 2.7 s · search 1.5 s · judge 9.8 s",
+        "kept: o fetches it",
+    ] {
+        assert!(s.contains(said), "{said}:\n{s}");
+    }
     assert!(
-        !s.contains("Where the address came from") && !s.contains("Links ("),
+        !s.contains("Links (") && !s.contains("The email") && !s.contains("The page"),
+        "{s}"
+    );
+    assert!(
+        !s.contains("not run") && !s.contains("exact values") && !s.contains("go by Links"),
+        "{s}"
+    );
+    // A stage that ran in under a millisecond is a time; null is what did not run.
+    let mut quick = sc::tests::sample_incident("20261030T184512Z-b0a1");
+    quick.stages = vec![
+        ("extract", Some(3190)),
+        ("reread", None),
+        ("ocr", Some(0)),
+        ("search", Some(1480)),
+        ("judge", Some(9850)),
+    ];
+    data(
+        &mut a,
+        Kind::SusIncident(quick.id),
+        Payload::SusIncident(Fetched::Ok(Box::new(quick))),
+    );
+    let s = screen(&mut a, 158, 64);
+    assert!(
+        s.contains("extract 3.2 s · ocr 0.0 s · search 1.5 s · judge 9.8 s · not run: reread"),
         "{s}"
     );
 }
@@ -494,6 +563,7 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
     let e = i.email.as_mut().unwrap();
     e.attachments_total = 23;
     e.links_total = Some(60);
+    i.links_total = Some(60);
     e.aimed_at_ai = Some(true);
     e.return_path = Some("bounce@elsewhere.test".into());
     e.reply_to = Some("NOTICE@account-alerts.test".into());
@@ -515,8 +585,17 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
         "link_lookalike".into(),
         "auth_failed".into(),
         "risky_attachment".into(),
+        "talks_to_ai".into(),
+        "public_ip".into(),
+        "unknown".into(),
+        "weak_match_risky".into(),
+        "safe_needs_match".into(),
+        "search_down".into(),
+        "not_readable".into(),
         "rule_from_next_year".into(),
     ];
+    // The model missed text addressed to an AI and the phrase list didn't: who found it.
+    i.facts.as_mut().unwrap().talks_to_ai = Some(true);
     data(
         &mut a,
         Kind::SusIncident(i.id),
@@ -524,10 +603,18 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
     );
     let s = screen(&mut a, 158, 96);
     for said in [
-        "· more links than were checked",
-        "· a link with an odd target",
-        "· the mail's own checks failed",
-        "· a risky attachment",
+        "· more links than SusCheck analyses",
+        "· a link that doesn't lead to an ordinary named site",
+        "· a link imitates the real address",
+        "· the mail's reported checks failed",
+        "· an attachment named like a program or a script",
+        "· text written to steer an AI",
+        "· a public IP address, not a name",
+        "· the address couldn't be compared",
+        "· matched by web search only, and it asks for something risky",
+        "· no warning signs, but the address isn't a match",
+        "· a web search failed",
+        "· not readable as an email or a web page",
         "· rule from next year",
         "source          carrier pigeon",
         "text recogniser read accaunt-alerts.test",
@@ -541,10 +628,28 @@ fn new_values_are_shown_as_text_and_cut_lists_say_how_many_more() {
         "has text addressed to an AI",
         "another scheme · shiny new flag, a name and an @ in front",
         "Contact us → no address · no scheme",
-        "and 58 more",
+        // The record's own count, which is from before exact repeats were merged.
+        "and 58 more, exact repeats of these included",
+        "text addressed to an AI: yes (SusCheck's phrase list found some)",
     ] {
         assert!(s.contains(said), "{said}:\n{s}");
     }
+    // The household's word is never "safe", in a rule's phrase either.
+    assert!(!s.contains(" safe"), "{s}");
+    // A record from before that count was written: the email's and the page's together.
+    let mut i = sc::tests::sample_incident("20261105T081233Z-k2m4");
+    i.links_total = None;
+    i.email.as_mut().unwrap().links_total = Some(9);
+    data(
+        &mut a,
+        Kind::SusIncident(i.id),
+        Payload::SusIncident(Fetched::Ok(Box::new(i))),
+    );
+    let s = screen(&mut a, 158, 96);
+    assert!(
+        s.contains("and 7 more") && !s.contains("exact repeats"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -553,7 +658,7 @@ fn what_you_havent_seen_is_a_row_and_a_badge_until_the_list_was_on_screen() {
     // The Dashboard: its row, counts only.
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("suscheck  7 checks this week · 4 to look at"),
+        s.contains("suscheck  8 checks this week · 4 to look at"),
         "{s}"
     );
     let tabs = s.lines().nth(1).unwrap().to_string();
@@ -584,12 +689,13 @@ fn what_you_havent_seen_is_a_row_and_a_badge_until_the_list_was_on_screen() {
     key(&mut a, KeyCode::Char('1'));
     let s = render_to_string(&mut a, 158, 41);
     assert!(
-        s.contains("suscheck  7 checks this week · 0 to look at"),
+        s.contains("suscheck  8 checks this week · 0 to look at"),
         "{s}"
     );
     // A new check that says "don't trust this" arrives with the next read: back they are.
     let mut later = sc::tests::sample();
-    let mut c = later.checks[0].clone();
+    let mut c = later.checks[1].clone();
+    assert_eq!(c.verdict(), Some(sc::Verdict::Malicious));
     c.id = id("20261105T110000Z-zz99");
     c.at = c.id.time();
     later.checks.push(c);
@@ -868,6 +974,13 @@ const CANARIES: &[&str] = &[
     "k2m4",
     "QUARANTINED",
     "Your monthly",
+    // The record in the old shape.
+    "20261030T184512Z",
+    "b0a1",
+    "shop.example",
+    "Basket",
+    "Checkout",
+    "match_search",
 ];
 
 /// A stored report built from the samples holds counts and nothing else of them.
@@ -899,7 +1012,7 @@ fn a_stored_report_keeps_counts_only() {
     }
     // What is there: the numbers, the schema, the version, the heartbeat's age.
     let c = &report.snapshot.suscheck.as_ref().unwrap();
-    assert_eq!((c.week.total, c.week.malicious, c.week.errors), (7, 3, 1));
+    assert_eq!((c.week.total, c.week.malicious, c.week.errors), (8, 3, 1));
     assert_eq!(
         (c.version.as_deref(), c.heartbeat_age_s),
         (Some("0.1.0"), Some(120))
@@ -1023,6 +1136,7 @@ fn nothing_of_a_check_reaches_claude_a_report_or_the_log() {
     );
     key(&mut a, KeyCode::Char('8'));
     key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Char('k'));
     key(&mut a, KeyCode::Enter);
     data(
         &mut a,
@@ -1252,10 +1366,16 @@ fn live_suscheck() {
     let Some(Read::Folder(f)) = sc::collect(&r).unwrap() else {
         panic!("not read")
     };
-    assert_eq!((f.checks.len(), f.skipped, f.newer()), (7, 0, None));
-    assert_eq!(f.checks[5].sent().as_deref(), Some("email"));
+    assert_eq!((f.checks.len(), f.skipped, f.newer()), (8, 0, None));
+    // The oldest line is in the old shape (no `input`): a picture's. The failed one says
+    // what it was given.
+    assert_eq!(f.checks[0].id, id("20261030T184512Z-b0a1"));
+    assert_eq!(f.checks[0].sent().as_deref(), Some("picture"));
+    assert_eq!(f.checks[5].error.as_deref(), Some("model"));
+    assert_eq!(f.checks[5].sent().as_deref(), Some("picture"));
+    assert_eq!(f.checks[6].sent().as_deref(), Some("email"));
     assert_eq!(
-        f.checks[6].sent().as_deref(),
+        f.checks[7].sent().as_deref(),
         Some("picture + page address")
     );
     // What `sentry-server collect <name> suscheck` prints is counts, for real too.
@@ -1267,7 +1387,8 @@ fn live_suscheck() {
     }
     assert!(printed.contains("\"computers\": 2"), "{printed}");
     assert_eq!(f.checks[0].device.as_deref(), Some("Kitchen iMac"));
-    assert_eq!(f.checks[0].verdict(), Some(sc::Verdict::Malicious));
+    assert_eq!(f.checks[0].verdict(), Some(sc::Verdict::Safe));
+    assert_eq!(f.checks[1].verdict(), Some(sc::Verdict::Malicious));
     assert_eq!(f.devices.ok().map(Vec::len), Some(2));
     assert_eq!(
         f.status.ok().and_then(|x| x.version.as_deref()),
@@ -1341,7 +1462,23 @@ fn live_suscheck() {
         Some("Your Example Pay statement is ready")
     );
     assert_eq!(m.links.as_ref().map(Vec::len), Some(2));
+    assert_eq!((m.links_total, m.links_more()), (Some(2), 0));
+    assert_eq!(m.stages[1], ("reread", None));
     assert_eq!(sc::path_of(DIR, &mail, "message.txt"), None);
+    // The record in the old shape, and the one that failed, read for real too.
+    let Fetched::Ok(old) = sc::incident(&r, id("20261030T184512Z-b0a1")).unwrap() else {
+        panic!("the old record wasn't read")
+    };
+    assert_eq!((old.input.len(), old.sent_picture()), (1, Some(true)));
+    assert!(old.screenshot && old.stages.iter().all(|s| s.1.is_some()));
+    let Fetched::Ok(failed) = sc::incident(&r, id("20261104T194103Z-j9k0")).unwrap() else {
+        panic!("the failed check's record wasn't read")
+    };
+    assert_eq!(
+        (failed.sent_picture(), failed.screenshot),
+        (Some(true), false)
+    );
+    assert_eq!(failed.stages.iter().filter(|s| s.1.is_none()).count(), 4);
 
     // A copy under a group the test login is in: read as that login (no `suscheck.ssh`),
     // which is what the config's note is about.
@@ -1358,7 +1495,7 @@ fn live_suscheck() {
     let Some(Read::Folder(mine)) = sc::collect(&ro).unwrap() else {
         panic!("the login's own copy wasn't read")
     };
-    assert_eq!(mine.checks.len(), 7);
+    assert_eq!(mine.checks.len(), 8);
     let scratch = std::env::temp_dir().join(format!("sentry-live-sus-{}", std::process::id()));
     let first = id("20261101T091500Z-a1b2");
     assert!(matches!(sc::incident(&ro, first), Ok(Fetched::Ok(_))));
@@ -1438,7 +1575,7 @@ fn live_suscheck() {
     println!("{s1}");
     assert!(s1.lines().nth(1).unwrap().contains("8 SusCheck"), "{s1}");
     assert!(
-        s1.contains("Kitchen iMac") && s1.contains("don't trust this") && s1.contains("7 shown"),
+        s1.contains("Kitchen iMac") && s1.contains("don't trust this") && s1.contains("8 shown"),
         "{s1}"
     );
     assert!(s1.contains("no obvious warning signs") && s1.contains("examp1e-pay.test"));
@@ -1487,6 +1624,7 @@ fn live_suscheck() {
     assert!(!sc::cache_dir(n).join(format!("{mail}.png")).exists());
     key(&mut a, KeyCode::Esc);
     key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Char('k'));
     key(&mut a, KeyCode::Enter);
     pump(&mut a, 4);
     let s2 = render_to_string(&mut a, 158, 41);

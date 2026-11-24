@@ -1,0 +1,106 @@
+{
+ "schema": 1,
+ "id": "20261030T184512Z-b0a1",
+ "time": "2026-10-30T18:45:12Z",
+ "device": "Kitchen iMac",
+ "client": "app",
+ "app_version": "0.1.0",
+ "duration_ms": 17260,
+ "error": null,
+ "model": "example-vision:1b",
+ "prompt_version": "1",
+ "stages_ms": {
+  "extract": 3190,
+  "reread": 2740,
+  "search": 1480,
+  "judge": 9850
+ },
+ "facts": {
+  "kind": "web_page",
+  "claimed_brand": "Example",
+  "sender_name": null,
+  "sender_address": null,
+  "address_bar_domain": "shop.example.com",
+  "link_texts": [
+   "Basket",
+   "Checkout"
+  ],
+  "phone_numbers": [],
+  "asks_for": [],
+  "urgency": false,
+  "talks_to_ai": false
+ },
+ "domain": {
+  "first_reading": "shop.example.com",
+  "second_reading": "shop.example.com",
+  "check": {
+   "result": "match_search",
+   "shown": "example.com",
+   "real": "example.com",
+   "why": "exact"
+  }
+ },
+ "search": {
+  "ok": true,
+  "queries": [
+   [
+    "official",
+    "\"Example\" official website"
+   ],
+   [
+    "domain",
+    "\"example.com\" scam phishing"
+   ]
+  ],
+  "results": {
+   "official": [
+    {
+     "title": "Example - official site",
+     "snippet": "Sign in to your Example account.",
+     "domain": "example.com",
+     "engines": 2
+    },
+    {
+     "title": "Example help centre",
+     "snippet": "Answers to common questions.",
+     "domain": "example.com",
+     "engines": 1
+    }
+   ],
+   "domain": []
+  }
+ },
+ "judgement": {
+  "red_flags": [],
+  "looks_normal": [
+   "The address bar matches the company's real site.",
+   "It only shows a shopping basket."
+  ],
+  "incomplete": false,
+  "confidence": "medium",
+  "verdict": "likely_safe",
+  "advice": [
+   "no_action_needed"
+  ]
+ },
+ "model_raw": {
+  "extract": "{\"kind\": \"web_page\", \"claimed_brand\": \"Example\", \"address_bar_domain\": \"shop.example.com\", \"asks_for\": [], \"urgency\": false, \"talks_to_ai\": false}",
+  "judge": "{\"red_flags\": [], \"looks_normal\": [\"The address bar matches the company's real site.\", \"It only shows a shopping basket.\"], \"verdict\": \"likely_safe\", \"confidence\": \"medium\", \"incomplete\": false, \"advice\": [\"no_action_needed\"]}"
+ },
+ "final": {
+  "verdict": "likely_safe",
+  "confidence": "medium",
+  "incomplete": false,
+  "reasons": [
+   "The address bar matches the company's real site.",
+   "It only shows a shopping basket."
+  ],
+  "advice": [
+   "no_action_needed",
+   "ask_for_help"
+  ],
+  "floors": [],
+  "floors_changed_verdict": false
+ },
+ "screenshot": true
+}

@@ -2,7 +2,7 @@
  "schema": 1,
  "version": "0.1.0",
  "model": "example-vision:1b",
- "prompt_version": "1",
+ "prompt_version": "2",
  "retention_days": 30,
  "started_at": "2026-11-01T09:00:00Z",
  "alive_at": "2026-11-05T12:00:00Z",

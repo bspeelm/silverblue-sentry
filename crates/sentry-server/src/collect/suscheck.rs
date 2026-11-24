@@ -305,8 +305,9 @@ pub struct Check {
     /// Why it failed (`model`, `server`, `cancelled`, …); None for a completed check.
     pub error: Option<String>,
     /// What the person sent, as the index says it (`image`, `email`, `image+page`, …; a
-    /// value this sentry doesn't know is kept as text). A line from before the field was
-    /// there is `image`: a picture was all there was. None: nothing usable was recorded.
+    /// value this sentry doesn't know is kept as text), whatever happened next: a check
+    /// that failed has it too. A line from before the field was there is `image`: a picture
+    /// was all there was. None: not a string (today's writer never leaves it null).
     pub input: Option<String>,
 }
 
@@ -752,7 +753,7 @@ pub fn parse_line(line: &str) -> Result<Check, Option<i64>> {
         duration_ms: v["duration_ms"].as_u64().unwrap_or(0).min(86_400_000),
         error: text(&v["error"], 120),
         // The last key, added later: a line without it is from when a picture was all a
-        // check could be made from. There and null: nothing usable was recorded.
+        // check could be made from. There and not a string: nothing usable.
         input: match v.get("input") {
             None => Some("image".into()),
             Some(x) => text(x, 24),
@@ -1224,20 +1225,27 @@ pub struct Incident {
     pub error: Option<String>,
     pub model: Option<String>,
     pub prompt_version: Option<String>,
-    /// Milliseconds per stage, in the order they run.
-    pub stages: Vec<(&'static str, u64)>,
+    /// Each stage the record names, in the order they run: its milliseconds (0: it ran,
+    /// in under one), or None for a stage that did not run. A record in the old shape wrote
+    /// 0 for one that did not run: read as None there.
+    pub stages: Vec<(&'static str, Option<u64>)>,
     pub facts: Option<Facts>,
     pub domain: Option<Domain>,
     pub search: Option<Search>,
     pub judgement: Option<Judgement>,
     pub last: Option<Final>,
-    /// Which inputs were sent (`image`, `email`, `page`). Empty: an older record, made
-    /// from a picture.
+    /// Which inputs were sent (`image`, `email`, `page`), on a check that failed too. A
+    /// record in the old shape has no such key and is `image`: a picture was all there
+    /// was. Empty: the key is there and isn't a list of words.
     pub input: Vec<String>,
     /// Read from an email file's headers by SusCheck's code. None: no email file was sent.
     pub email: Option<Email>,
-    /// The links of the email and of the page's list. None: there was no link list.
+    /// The links of the email (first) and of the page's list, exact repeats merged. None:
+    /// there was no link list.
     pub links: Option<Vec<Link>>,
+    /// How many links there were in all, before exact repeats were merged and before the
+    /// list was cut. None: no list, or a record from before the count was written.
+    pub links_total: Option<u64>,
     pub page: Option<Page>,
     /// Whether a picture was kept.
     pub screenshot: bool,
@@ -1247,16 +1255,18 @@ pub struct Incident {
 }
 
 impl Incident {
-    /// How many links there were beyond the ones listed: the email's and the page's
-    /// counts together, less the list.
+    /// How many links there were beyond the ones listed: the record's own count less the
+    /// list (exact repeats of a listed link are among them: the count is from before they
+    /// were merged). A record from before that count was written: the email's and the
+    /// page's counts together, less the list.
     pub fn links_more(&self) -> u64 {
         let listed = self.links.as_ref().map_or(0, Vec::len) as u64;
-        let email = self.email.as_ref().and_then(|e| e.links_total);
-        let page = self.page.as_ref().and_then(|p| p.links_total);
-        email
-            .unwrap_or(0)
-            .saturating_add(page.unwrap_or(0))
-            .saturating_sub(listed)
+        let total = self.links_total.unwrap_or_else(|| {
+            let email = self.email.as_ref().and_then(|e| e.links_total);
+            let page = self.page.as_ref().and_then(|p| p.links_total);
+            email.unwrap_or(0).saturating_add(page.unwrap_or(0))
+        });
+        total.saturating_sub(listed)
     }
 
     /// Whether `what` was among the inputs sent. None: the record doesn't say.
@@ -1264,14 +1274,18 @@ impl Incident {
         (!self.input.is_empty()).then(|| self.input.iter().any(|i| i == what))
     }
 
-    /// A picture was among what was sent. None: the record doesn't say (an older one,
-    /// where a picture was all there was).
+    /// A picture was among what was sent. None: the record doesn't say.
     pub fn sent_picture(&self) -> Option<bool> {
         self.sent("image")
     }
 
     pub fn sent_email(&self) -> bool {
         self.sent("email") == Some(true) || self.email.is_some()
+    }
+
+    /// The window's own address was among what was sent.
+    pub fn sent_page(&self) -> bool {
+        self.sent("page") == Some(true) || self.page.is_some()
     }
 }
 
@@ -1299,6 +1313,8 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
     }
     let t = |x: &Value| text_of(x);
     let obj = |x: &Value| x.is_object();
+    // The old shape (the first release's): no `input` key, nor any field added since.
+    let old = v.get("input").is_none();
     let facts = obj(&v["facts"]).then(|| {
         let f = &v["facts"];
         Facts {
@@ -1421,9 +1437,11 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             .filter(|l| l.is_object())
             .take(LINKS_MAX)
             .map(|l| Link {
-                text: text(&l["text"], 220),
+                // (The format's caps are on the plain value; what is stored is that
+                // value defanged, up to twice as long: 400 and 200.)
+                text: text(&l["text"], 410),
                 scheme: text(&l["scheme"], 20),
-                target: text(&l["target_domain"], 140),
+                target: text(&l["target_domain"], 210),
                 flags: texts(&l["flags"], 30, 12),
             })
             .collect()
@@ -1432,7 +1450,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         let p = &v["page"];
         Page {
             source: text(&p["source"], 24),
-            url_domain: text(&p["url_domain"], 140),
+            url_domain: text(&p["url_domain"], 210),
             title: text(&p["title"], 210),
             links_total: count(&p["links_total"]),
         }
@@ -1448,15 +1466,23 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         prompt_version: text(&v["prompt_version"], 40),
         stages: ["extract", "reread", "ocr", "search", "judge"]
             .into_iter()
-            .filter_map(|s| Some((s, v["stages_ms"][s].as_u64()?)))
+            .filter_map(|s| match v["stages_ms"].get(s)? {
+                Value::Null => Some((s, None)),
+                // (The old shape's 0 is "did not run"; today's is "under a millisecond".)
+                ms => Some((s, Some(ms.as_u64()?).filter(|ms| *ms > 0 || !old))),
+            })
             .collect(),
         facts,
         domain,
         search,
         judgement,
         last,
-        input: texts(&v["input"], 16, 6),
+        input: match v.get("input") {
+            None => vec!["image".into()],
+            Some(x) => texts(x, 16, 6),
+        },
         email,
+        links_total: links.as_ref().and_then(|_| count(&v["links_total"])),
         links,
         page,
         screenshot: v["screenshot"].as_bool().unwrap_or(false),
@@ -1597,9 +1623,17 @@ pub(crate) mod tests {
     #[test]
     fn the_samples_parse_to_what_the_format_says() {
         let s = sample();
-        assert_eq!(s.checks.len(), 7);
+        assert_eq!(s.checks.len(), 8);
         assert_eq!((s.skipped, s.index_newer, s.newer()), (0, None, None));
-        let first = &s.checks[0];
+        // The oldest is a line in the old shape (it ends at `error`): a picture's.
+        let old = &s.checks[0];
+        assert_eq!(old.id.as_str(), "20261030T184512Z-b0a1");
+        assert_eq!(
+            (old.verdict(), old.error.as_deref()),
+            (Some(Verdict::Safe), None)
+        );
+        assert_eq!(old.input.as_deref(), Some("image"));
+        let first = &s.checks[1];
         assert_eq!(first.id.as_str(), "20261101T091500Z-a1b2");
         assert_eq!(first.device.as_deref(), Some("Kitchen iMac"));
         assert_eq!(first.domain.as_deref(), Some("examp1e-pay.test"));
@@ -1607,17 +1641,17 @@ pub(crate) mod tests {
         assert_eq!(first.outcome(), "don't trust this");
         assert_eq!(first.floors_changed, Some(true));
         // An empty `app_version` is none; a failed check has an error and no verdict.
-        assert_eq!(s.checks[1].app_version, None);
-        let failed = &s.checks[4];
+        assert_eq!(s.checks[2].app_version, None);
+        let failed = &s.checks[5];
         assert_eq!(
             (failed.verdict.as_deref(), failed.error.as_deref()),
             (None, Some("model"))
         );
         assert_eq!(failed.outcome(), "failed (model)");
         // Never "safe".
-        assert_eq!(s.checks[2].outcome(), "no obvious warning signs");
+        assert_eq!(s.checks[3].outcome(), "no obvious warning signs");
         // What each was made from: the index's word, and plain words for it. The check
-        // that failed recorded nothing usable.
+        // that failed says what it was given too.
         let sent: Vec<Option<String>> = s.checks.iter().map(Check::sent).collect();
         let said = |w: &str| Some(w.to_string());
         assert_eq!(
@@ -1627,15 +1661,16 @@ pub(crate) mod tests {
                 said("picture"),
                 said("picture"),
                 said("picture"),
-                None,
+                said("picture"),
+                said("picture"),
                 said("email"),
                 said("picture + page address"),
             ]
         );
-        assert_eq!(s.checks[5].input.as_deref(), Some("email"));
-        assert_eq!(s.checks[5].pictureless(), Some("the email itself"));
-        assert_eq!(s.checks[6].pictureless(), None);
-        assert_eq!(s.checks[4].pictureless(), None);
+        assert_eq!(s.checks[6].input.as_deref(), Some("email"));
+        assert_eq!(s.checks[6].pictureless(), Some("the email itself"));
+        assert_eq!(s.checks[7].pictureless(), None);
+        assert_eq!(s.checks[5].pictureless(), None);
         let st = s.status.ok().unwrap();
         assert_eq!(st.version.as_deref(), Some("0.1.0"));
         assert_eq!(st.retention_days, Some(30));
@@ -1652,10 +1687,10 @@ pub(crate) mod tests {
         assert_eq!(
             c.week,
             Tally {
-                total: 7,
+                total: 8,
                 malicious: 3,
                 suspicious: 2,
-                safe: 1,
+                safe: 2,
                 other: 0,
                 errors: 1,
                 incomplete: 1,
@@ -1664,8 +1699,10 @@ pub(crate) mod tests {
         );
         assert_eq!((c.day.total, c.day.errors, c.computers), (3, 1, 2));
         assert!(!c.down());
-        // Since the first check was looked at: two more said "don't trust this", one failed.
+        // Since the first lookalike was looked at: two more said "don't trust this", one
+        // failed.
         assert_eq!(s.unseen(None), (3, 1));
+        assert_eq!(s.unseen(Some("20261030T184512Z-b0a1")), (3, 1));
         assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (2, 1));
         assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (2, 0));
         assert_eq!(s.unseen(Some("20261105T103045Z-p6q8")), (0, 0));
@@ -1674,7 +1711,7 @@ pub(crate) mod tests {
     #[test]
     fn what_isnt_the_format_is_skipped_counted_or_said() {
         let good = fixture("suscheck/index.jsonl");
-        let line = good.lines().next().unwrap();
+        let line = good.lines().nth(1).unwrap();
         let with = |from: &str, to: &str| line.replacen(from, to, 1);
         // A bad id, an over-long line, not JSON, not an object, no schema: skipped, counted.
         let long = with("Example Pay", &"x".repeat(1024));
@@ -1839,23 +1876,41 @@ pub(crate) mod tests {
             ("official", 2)
         );
         assert_eq!(s.queries[0].hits[0].engines, 2);
+        // A stage that did not run is null: here the text recogniser.
         assert_eq!(
             i.stages,
             [
-                ("extract", 3310),
-                ("reread", 2890),
-                ("search", 1630),
-                ("judge", 13650)
+                ("extract", Some(3310)),
+                ("reread", Some(2890)),
+                ("ocr", None),
+                ("search", Some(1630)),
+                ("judge", Some(13650))
             ]
         );
         assert!(i.screenshot);
-        // A check that failed: every part may be null.
+        // A check that failed: every part may be null, and it still says what it was given
+        // and how far it got.
         let failed = sample_incident("20261104T194103Z-j9k0");
         assert!(failed.facts.is_none() && failed.last.is_none() && failed.search.is_none());
         assert_eq!(
             (failed.error.as_deref(), failed.screenshot),
             (Some("model"), false)
         );
+        assert_eq!(
+            (failed.input.as_slice(), failed.sent_picture()),
+            (&["image".to_string()][..], Some(true))
+        );
+        assert_eq!(
+            failed.stages,
+            [
+                ("extract", Some(120_010)),
+                ("reread", None),
+                ("ocr", None),
+                ("search", None),
+                ("judge", None)
+            ]
+        );
+        assert_eq!((failed.links.is_none(), failed.links_total), (true, None));
         // The record of another incident isn't the one asked for; a newer schema is said.
         let text = fixture("suscheck/20261101T091500Z-a1b2/incident.json");
         let other = Id::parse("20261102T143027Z-c3d4").unwrap();
@@ -1886,18 +1941,20 @@ pub(crate) mod tests {
         assert!(!format!("{:?}", sample_incident("20261101T091500Z-a1b2")).contains("model_raw"));
     }
 
-    /// An index line and a record as they were before a check could be made from an
-    /// email file or a page's address: no `input`, no `message`, no `source`.
+    /// A record cut back to the old shape's fields: none of those added since.
     fn older(text: &str) -> String {
         let mut v: Value = serde_json::from_str(text).unwrap();
         let o = v.as_object_mut().unwrap();
-        for k in ["input", "email", "links", "page", "message"] {
+        for k in ["input", "email", "links", "links_total", "page", "message"] {
             o.remove(k);
         }
         if let Some(d) = o.get_mut("domain").and_then(Value::as_object_mut) {
             for k in ["source", "exact", "ocr_reading", "ocr_available"] {
                 d.remove(k);
             }
+        }
+        if let Some(st) = o.get_mut("stages_ms").and_then(Value::as_object_mut) {
+            st.remove("ocr");
         }
         v.to_string()
     }
@@ -1906,20 +1963,23 @@ pub(crate) mod tests {
     fn what_a_check_was_made_from_in_both_generations() {
         let index = fixture("suscheck/index.jsonl");
         let lines: Vec<&str> = index.lines().collect();
-        // An older line has no `input`: a picture was all there was. Nothing else of it
-        // reads differently.
-        let now = parse_line(lines[0]).unwrap();
-        assert!(!older(lines[0]).contains("input"));
-        let then = parse_line(&older(lines[0])).unwrap();
-        assert_eq!(then, now);
+        // The published line in the old shape ends at `error`: no `input`, and a picture
+        // was all there was. Given the key, nothing else of it reads differently.
+        assert!(lines[0].ends_with("\"error\":null}") && !lines[0].contains("input"));
+        let then = parse_line(lines[0]).unwrap();
         assert_eq!(then.input.as_deref(), Some("image"));
-        // There and null (a check that failed before anything usable): none, not a picture.
-        assert!(lines[4].contains("\"input\":null"));
-        assert_eq!(parse_line(lines[4]).unwrap().input, None);
+        assert_eq!(then.pictureless(), None);
+        let now = lines[0].replacen("\"error\":null}", "\"error\":null,\"input\":\"image\"}", 1);
+        assert_eq!(parse_line(&now).unwrap(), then);
+        // A check that failed says what it was given.
+        assert!(lines[5].contains("\"error\":\"model\",\"input\":\"image\""));
         assert_eq!(
-            parse_line(&older(lines[4])).unwrap().input.as_deref(),
+            parse_line(lines[5]).unwrap().input.as_deref(),
             Some("image")
         );
+        // There and null (today's writer never does): none, not a picture.
+        let null = lines[5].replacen("\"input\":\"image\"", "\"input\":null", 1);
+        assert_eq!(parse_line(&null).unwrap().input, None);
         // Every combination the format names, in plain words; one it doesn't is shown as
         // it is, cleaned and cut, and is no known kind.
         for (word, said, without) in [
@@ -1939,7 +1999,7 @@ pub(crate) mod tests {
             ("", "", None),
         ] {
             let line =
-                lines[0].replacen("\"input\":\"image\"", &format!("\"input\":\"{word}\""), 1);
+                lines[1].replacen("\"input\":\"image\"", &format!("\"input\":\"{word}\""), 1);
             let c = parse_line(&line).unwrap();
             match word {
                 "" => assert_eq!(c.input, None),
@@ -1947,7 +2007,7 @@ pub(crate) mod tests {
             }
             assert_eq!(c.pictureless(), without, "{word}");
         }
-        let odd = lines[0].replacen(
+        let odd = lines[1].replacen(
             "\"input\":\"image\"",
             "\"input\":\"im\\u001b[2Jage\\u202e+\\nscan of a very long kind of thing\"",
             1,
@@ -1956,34 +2016,126 @@ pub(crate) mod tests {
             parse_line(&odd).unwrap().input.as_deref(),
             Some("image+ scan of a very lo…")
         );
-        let wrong = lines[0].replacen("\"input\":\"image\"", "\"input\":[\"image\"]", 1);
+        let wrong = lines[1].replacen("\"input\":\"image\"", "\"input\":[\"image\"]", 1);
         assert_eq!(parse_line(&wrong).unwrap().input, None);
 
-        // The records. An older one (none of the later fields) reads as it always did.
+        // The records. The published one in the old shape, byte for byte as the first
+        // release wrote it: none of the later fields, and it reads as a picture's.
+        let old_text = fixture("suscheck/20261030T184512Z-b0a1/incident.json");
+        for later in [
+            "\"input\":",
+            "\"email\":",
+            "\"links\":",
+            "\"links_total\":",
+            "\"page\":",
+            "\"message\":",
+            "\"source\":",
+            "\"exact\":",
+            "\"ocr",
+        ] {
+            assert!(!old_text.contains(later), "{later}");
+        }
+        let old = sample_incident("20261030T184512Z-b0a1");
+        assert_eq!(old.input, ["image"]);
+        assert_eq!(
+            (old.sent_picture(), old.sent_email(), old.sent_page()),
+            (Some(true), false, false)
+        );
+        assert!(old.email.is_none() && old.links.is_none() && old.page.is_none());
+        assert_eq!((old.links_total, old.links_more()), (None, 0));
+        assert_eq!((old.screenshot, old.message), (true, false));
+        assert_eq!(old.prompt_version.as_deref(), Some("1"));
+        let d = old.domain.as_ref().unwrap();
+        assert_eq!(
+            (
+                d.source.as_deref(),
+                d.exact.as_deref(),
+                d.ocr_reading.as_deref(),
+                d.ocr_available
+            ),
+            (None, None, None, None)
+        );
+        assert_eq!(
+            (
+                d.first_reading.as_deref(),
+                d.result.as_deref(),
+                d.why.as_deref()
+            ),
+            (
+                Some("shop.example.com"),
+                Some("match_search"),
+                Some("exact")
+            )
+        );
+        // No `ocr` key: the stage isn't named at all (there was no text recogniser).
+        assert_eq!(
+            old.stages,
+            [
+                ("extract", Some(3190)),
+                ("reread", Some(2740)),
+                ("search", Some(1480)),
+                ("judge", Some(9850))
+            ]
+        );
+        assert_eq!(
+            old.last.as_ref().unwrap().verdict.as_deref(),
+            Some("likely_safe")
+        );
+        // The old shape wrote 0 for a stage that did not run; today's 0 ran, in under a
+        // millisecond, and null is what did not run.
+        let id = Id::parse("20261030T184512Z-b0a1").unwrap();
+        let zero = old_text.replacen("\"reread\": 2740", "\"reread\": 0", 1);
+        assert_eq!(
+            parse_incident(&zero, id).unwrap().stages[1],
+            ("reread", None)
+        );
+        let id = Id::parse("20261101T091500Z-a1b2").unwrap();
+        let text = fixture("suscheck/20261101T091500Z-a1b2/incident.json");
+        let zero = text.replacen("\"reread\": 2890", "\"reread\": 0", 1);
+        assert_eq!(
+            parse_incident(&zero, id).unwrap().stages[1],
+            ("reread", Some(0))
+        );
+        let odd = text
+            .replacen("\"reread\": 2890", "\"reread\": \"fast\"", 1)
+            .replacen("\"search\": 1630", "\"search\": -4", 1);
+        assert_eq!(
+            parse_incident(&odd, id)
+                .unwrap()
+                .stages
+                .iter()
+                .map(|s| s.0)
+                .collect::<Vec<_>>(),
+            ["extract", "ocr", "judge"]
+        );
+        // Every sample of today's shape, cut back to the old shape's fields, still reads:
+        // a picture's, with what both shapes have unchanged.
         for id in [
             "20261101T091500Z-a1b2",
             "20261102T143027Z-c3d4",
             "20261103T080542Z-e5f6",
             "20261103T172009Z-g7h8",
             "20261104T194103Z-j9k0",
+            "20261105T081233Z-k2m4",
+            "20261105T103045Z-p6q8",
         ] {
             let text = fixture(&format!("suscheck/{id}/incident.json"));
+            let now = sample_incident(id);
             let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
-            assert_eq!(then, sample_incident(id), "{id}");
-            assert!(then.input.is_empty() && then.email.is_none() && then.links.is_none());
-            assert!(then.page.is_none() && !then.message);
-            assert_eq!(then.sent_picture(), None);
+            assert_eq!(then.input, ["image"], "{id}");
+            assert!(then.email.is_none() && then.links.is_none(), "{id}");
+            assert!(then.page.is_none() && !then.message && then.links_total.is_none());
             assert!(
                 then.domain
+                    .as_ref()
                     .is_none_or(|d| d.source.is_none() && d.exact.is_none())
             );
-        }
-        // A newer one cut back to an older one's fields still reads.
-        for id in ["20261105T081233Z-k2m4", "20261105T103045Z-p6q8"] {
-            let text = fixture(&format!("suscheck/{id}/incident.json"));
-            let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
-            assert!(then.email.is_none() && then.links.is_none() && !then.message);
-            assert_eq!(then.last, sample_incident(id).last);
+            assert_eq!(
+                (&then.last, &then.judgement, &then.facts, &then.search),
+                (&now.last, &now.judgement, &now.facts, &now.search),
+                "{id}"
+            );
+            assert_eq!((&then.error, then.screenshot), (&now.error, now.screenshot));
         }
     }
 
@@ -2046,11 +2198,18 @@ pub(crate) mod tests {
                 flags: vec!["text_mismatch".into()],
             }
         );
-        assert_eq!(i.links_more(), 0);
+        assert_eq!((i.links_total, i.links_more()), (Some(2), 0));
         assert!(i.page.is_none());
+        // The address came as exact text: no second reading, no text recogniser.
         assert_eq!(
-            i.stages.iter().map(|s| s.0).collect::<Vec<_>>(),
-            ["extract", "reread", "ocr", "search", "judge"]
+            i.stages,
+            [
+                ("extract", Some(2950)),
+                ("reread", None),
+                ("ocr", None),
+                ("search", Some(1710)),
+                ("judge", Some(9840))
+            ]
         );
         assert!(
             i.last
@@ -2089,6 +2248,7 @@ pub(crate) mod tests {
             })
         );
         assert!(p.email.is_none() && p.links.as_ref().unwrap().len() == 2);
+        assert_eq!((p.links_total, p.links_more()), (Some(2), 0));
 
         // Hostile and broken: every string cleaned and cut at sentry's own cap, lists cut
         // at theirs with the rest counted from the totals, wrong types left out. Never a
@@ -2112,6 +2272,7 @@ pub(crate) mod tests {
         );
         v["email"]["attachments_total"] = 45.into();
         v["email"]["links_total"] = 300.into();
+        v["links_total"] = 320.into();
         v["email"]["aimed_at_ai"] = "yes".into();
         v["links"] = Value::Array(
             (0..80)
@@ -2154,9 +2315,11 @@ pub(crate) mod tests {
         assert_eq!((len(&a.name), len(&a.kind), a.size), (131, 91, None));
         assert_eq!((e.links_total, e.aimed_at_ai), (Some(300), None));
         let links = i.links.as_ref().unwrap();
-        assert_eq!((links.len(), i.links_more()), (LINKS_MAX, 250));
+        // "And N more" is the record's own count less the list.
+        assert_eq!((links.len(), i.links_more()), (LINKS_MAX, 270));
         assert!(links[0].text.as_ref().unwrap().starts_with("t0 xxx"));
-        assert_eq!((len(&links[0].text), len(&links[0].target)), (221, 141));
+        // (A little over what the format stores: 400 and 200, the defanged lengths.)
+        assert_eq!((len(&links[0].text), len(&links[0].target)), (411, 211));
         assert_eq!(links[0].scheme.as_deref(), Some("java script"));
         assert_eq!(links[0].flags, ["text_mismatch", "new_flag"]);
         let p = i.page.as_ref().unwrap();
@@ -2180,8 +2343,40 @@ pub(crate) mod tests {
         );
         // A total that says fewer than are listed is not believed below the list.
         v["email"]["attachments_total"] = 2.into();
+        v["links_total"] = 7.into();
         let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!(i.links_more(), 0);
         assert_eq!(i.email.unwrap().attachments_total, ATTACHMENTS_MAX as u64);
+        // A record from before the count was written (or with something else in its
+        // place): the email's and the page's counts together, less the list.
+        for gone in [None, Some(Value::Null), Some("many".into())] {
+            let mut w = v.clone();
+            match gone {
+                None => drop(w.as_object_mut().unwrap().remove("links_total")),
+                Some(x) => w["links_total"] = x,
+            }
+            let i = parse_incident(&w.to_string(), id).unwrap();
+            assert_eq!((i.links_total, i.links_more()), (None, 250));
+            w["page"]["links_total"] = 40.into();
+            assert_eq!(
+                parse_incident(&w.to_string(), id).unwrap().links_more(),
+                290
+            );
+        }
+        // What the format stores at its longest is kept whole: a link's text of 400, a
+        // target and a page's address of 200 (the plain value's cap, defanged).
+        let mut w: Value = serde_json::from_str(&text).unwrap();
+        w["links"][0]["text"] = "t[.]".repeat(100).into();
+        w["links"][0]["target_domain"] = "d[.]".repeat(50).into();
+        w["page"] = serde_json::json!({"url_domain": "p[.]".repeat(50)});
+        let i = parse_incident(&w.to_string(), id).unwrap();
+        let l = &i.links.as_ref().unwrap()[0];
+        assert_eq!(l.text.as_deref(), Some("t[.]".repeat(100).as_str()));
+        assert_eq!(l.target.as_deref(), Some("d[.]".repeat(50).as_str()));
+        assert_eq!(
+            i.page.unwrap().url_domain.as_deref(),
+            Some("p[.]".repeat(50).as_str())
+        );
         // Each block null, or not an object: left out, the rest read.
         for block in ["email", "links", "page", "domain", "input"] {
             for bad in [Value::Null, "text".into(), 3.into()] {
@@ -2194,7 +2389,9 @@ pub(crate) mod tests {
                     "links" => assert!(i.links.is_none()),
                     "page" => assert!(i.page.is_none()),
                     "domain" => assert!(i.domain.is_none()),
-                    _ => assert!(i.input.is_empty()),
+                    // (There, and not a list of words: nothing is made of it. Only a
+                    // record without the key is the old shape's picture.)
+                    _ => assert!(i.input.is_empty() && i.sent_picture().is_none()),
                 }
             }
         }

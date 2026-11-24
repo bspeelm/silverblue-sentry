@@ -7,23 +7,23 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 10:30 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                            7        7 ││ Your mark         none (m marks it)                                                                        │
+│ checks                            8        8 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
 │  be careful                       2        2 ││ Made from         picture + page address                                                                   │
-│  no obvious warning signs         1        1 ││                                                                                                            │
+│  no obvious warning signs         2        2 ││                                                                                                            │
 │  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 5/5 · email 1/1 · page 1/1     ││   · The address has a number in the middle of a word, which is a common trick.                             │
-│ incomplete        1 of 6 (17%)               ││   · The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.    │
-│ rules overrode    the model 3 of 6 (50%)     ││   · The address is one small change away from the real one. That is done on purpose to fool people.        │
+│ from: picture 7/7 · email 1/1 · page 1/1     ││   · The address has a number in the middle of a word, which is a common trick.                             │
+│ incomplete        1 of 7 (14%)               ││   · The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.    │
+│ rules overrode    the model 3 of 7 (43%)     ││   · The address is one small change away from the real one. That is done on purpose to fool people.        │
 │ typical time      15 s (longest 21 s)        ││   · A link in it leads to an address that is one small change away from the real one. That is done on      │
 │ you marked        none yet (m on a check)    ││ purpose to fool people.                                                                                    │
-│ model example-vision:1b · prompts 1          ││   · The page asks for a password.                                                                          │
+│ model example-vision:1b · prompts 2          ││   · The page asks for a password.                                                                          │
 │ ● alive 2m ago · keeps checks 30 days        ││ Advice shown      do not click · do not enter password · type address yourself                             │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘│ The model against what counted                                                                             │
 ┌ Computers · 2 paired ────────────────────────┐│ The model         be careful (medium)                                                                      │
 │ Name           Client    Checks  Last seen   ││ What counted      don't trust this (high)                                                                  │
-│ Kitchen iMac   app 0.1.0      4  16h ago     ││ SusCheck's rules  raised the verdict:                                                                      │
+│ Kitchen iMac   app 0.1.0      5  16h ago     ││ SusCheck's rules  raised the verdict:                                                                      │
 │ Study laptop   web            3  1d ago      ││   · a digit inside a word of the address                                                                   │
 │                                              ││   · lookalike                                                                                              │
 │                                              ││   · one small change from the real address                                                                 │
@@ -36,8 +36,8 @@ expression: s
 │                                              ││ What it read from the picture                                                                              │
 │                                              ││   kind            web page                                                                                 │
 │                                              ││   claims to be    Example Pay                                                                              │
-│                                              ││   address bar     examp1e-pay.test                                                                         │
-│                                              ││   links           Sign in · Forgot password?                                                               │
+│                                              ││   address bar     examp1e-pay.test (the window's exact address)                                            │
+│                                              ││   links           Sign in · Forgot password? (the model's reading: go by Links below)                      │
 │                                              ││   asks for        password                                                                                 │
 │                                              ││   pressure        urgency: no · text addressed to an AI: no                                                │
 │                                              ││                                                                                                            │
@@ -73,7 +73,7 @@ expression: s
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
 │                                              ││   model           example-vision:1b · prompts 2                                                            │
-│                                              ││   time            15 s in all · extract 3.3 s · reread 0.0 s · ocr 0.0 s · search 1.5 s · judge 11 s       │
+│                                              ││   time            15 s in all · extract 3.3 s · search 1.5 s · judge 11 s · not run: reread, ocr           │
 │                                              ││   picture         kept: o fetches it to a private cache here and opens it (gone when sentry closes)        │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │

@@ -11,7 +11,8 @@
  "prompt_version": "1",
  "stages_ms": {
   "extract": 3400,
-  "reread": 0,
+  "reread": null,
+  "ocr": null,
   "search": 1520,
   "judge": 6420
  },
@@ -32,12 +33,16 @@
  "domain": {
   "first_reading": null,
   "second_reading": null,
+  "ocr_reading": null,
+  "ocr_available": false,
   "check": {
    "result": "unknown",
    "shown": null,
    "real": null,
    "why": "no_domain"
-  }
+  },
+  "source": "screenshot",
+  "exact": null
  },
  "search": {
   "ok": true,
@@ -100,6 +105,13 @@
   ],
   "floors_changed_verdict": false
  },
+ "input": [
+  "image"
+ ],
+ "email": null,
+ "links": null,
+ "links_total": null,
+ "page": null,
  "screenshot": true,
  "message": false
 }

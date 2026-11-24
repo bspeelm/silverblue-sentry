@@ -11,8 +11,8 @@
  "prompt_version": "2",
  "stages_ms": {
   "extract": 3280,
-  "reread": 0,
-  "ocr": 0,
+  "reread": null,
+  "ocr": null,
   "search": 1540,
   "judge": 11020
  },
@@ -142,6 +142,7 @@
    "flags": []
   }
  ],
+ "links_total": 2,
  "page": {
   "source": "accessibility",
   "url_domain": "examp1e-pay[.]test",

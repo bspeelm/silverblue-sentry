@@ -5,25 +5,25 @@ expression: s
  1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Checks · 7 shown, newest first ────────────────────────────────────────────────────────────────────────────┐
+┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Checks · 8 shown, newest first ────────────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││   When         Computer       It said                    From                   Domain                     │
-│ checks                            7        7 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
+│ checks                            8        8 ││ ● Nov 05 10:30 Kitchen iMac   don't trust this           picture + page address examp1e-pay.test           │
 │  don't trust this                 3        3 ││ ● Nov 05 08:12 Study laptop   don't trust this           email                  account-alerts.test        │
-│  be careful                       2        2 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             –                                                 │
-│  no obvious warning signs         1        1 ││ ● Nov 03 17:20 Study laptop   be careful ?               picture                                           │
+│  be careful                       2        2 ││ ● Nov 04 19:41 Kitchen iMac   failed (model)             picture                                           │
+│  no obvious warning signs         2        2 ││ ● Nov 03 17:20 Study laptop   be careful ?               picture                                           │
 │  failed                           1        1 ││ ● Nov 03 08:05 Kitchen iMac   no obvious warning signs   picture                example.com                │
-│ from: picture 5/5 · email 1/1 · page 1/1     ││ ● Nov 02 14:30 Study laptop   be careful                 picture                example.net                │
-│ incomplete        1 of 6 (17%)               ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
-│ rules overrode    the model 3 of 6 (50%)     ││                                                                                                            │
+│ from: picture 7/7 · email 1/1 · page 1/1     ││ ● Nov 02 14:30 Study laptop   be careful                 picture                example.net                │
+│ incomplete        1 of 7 (14%)               ││ ● Nov 01 09:15 Kitchen iMac   don't trust this           picture                examp1e-pay.test           │
+│ rules overrode    the model 3 of 7 (43%)     ││ ● Oct 30 18:45 Kitchen iMac   no obvious warning signs   picture                example.com                │
 │ typical time      15 s (longest 21 s)        ││                                                                                                            │
 │ you marked        none yet (m on a check)    ││                                                                                                            │
-│ model example-vision:1b · prompts 1          ││                                                                                                            │
+│ model example-vision:1b · prompts 2          ││                                                                                                            │
 │ ● alive 2m ago · keeps checks 30 days        ││                                                                                                            │
 │                                              ││                                                                                                            │
 └──────────────────────────────────────────────┘│                                                                                                            │
 ┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
 │ Name           Client    Checks  Last seen   ││                                                                                                            │
-│ Kitchen iMac   app 0.1.0      4  16h ago     ││                                                                                                            │
+│ Kitchen iMac   app 0.1.0      5  16h ago     ││                                                                                                            │
 │ Study laptop   web            3  1d ago      ││                                                                                                            │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │

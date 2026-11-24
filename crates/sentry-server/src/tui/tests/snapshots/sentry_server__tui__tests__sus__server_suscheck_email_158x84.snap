@@ -7,39 +7,39 @@ expression: s
 
 ┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 08:12 · Study laptop ───────────────────────────────────────────────────────────────────────┐
 │                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
-│ checks                            7        7 ││ Your mark         none (m marks it)                                                                        │
+│ checks                            8        8 ││ Your mark         none (m marks it)                                                                        │
 │  don't trust this                 3        3 ││ From              Study laptop (web) · took 14 s                                                           │
 │  be careful                       2        2 ││ Made from         email                                                                                    │
-│  no obvious warning signs         1        1 ││                                                                                                            │
+│  no obvious warning signs         2        2 ││                                                                                                            │
 │  failed                           1        1 ││ Reasons shown                                                                                              │
-│ from: picture 5/5 · email 1/1 · page 1/1     ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
-│ incomplete        1 of 6 (17%)               ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
-│ rules overrode    the model 3 of 6 (50%)     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
+│ from: picture 7/7 · email 1/1 · page 1/1     ││   · It asks for a password, a code or a payment, but the address does not belong to who it claims to be.   │
+│ incomplete        1 of 7 (14%)               ││   · A link in it shows one address but really leads to a different one. That is a common trick.            │
+│ rules overrode    the model 3 of 7 (43%)     ││   · The sender's name is written to look like an address, but the message really comes from a different    │
 │ typical time      15 s (longest 21 s)        ││ one.                                                                                                       │
 │ you marked        none yet (m on a check)    ││   · The mail system could not confirm that this message really comes from the address it shows.            │
-│ model example-vision:1b · prompts 1          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
+│ model example-vision:1b · prompts 2          ││   · It carries an attachment of a kind that can run a program or show a fake sign-in page.                 │
 │ ● alive 2m ago · keeps checks 30 days        ││   · Replies to this message would go to a different address from the one it was sent from.                 │
 │                                              ││   · It asks the reader to sign in with a password today.                                                   │
 └──────────────────────────────────────────────┘│ Advice shown      do not open attachment · do not click · do not reply · do not enter password             │
 ┌ Computers · 2 paired ────────────────────────┐│                                                                                                            │
 │ Name           Client    Checks  Last seen   ││ The model against what counted                                                                             │
-│ Kitchen iMac   app 0.1.0      4  16h ago     ││ The model         be careful (medium)                                                                      │
+│ Kitchen iMac   app 0.1.0      5  16h ago     ││ The model         be careful (medium)                                                                      │
 │ Study laptop   web            3  1d ago      ││ What counted      don't trust this (high)                                                                  │
 │                                              ││ SusCheck's rules  raised the verdict:                                                                      │
-│                                              ││   · mismatch risky                                                                                         │
-│                                              ││   · a link's text names another address                                                                    │
-│                                              ││   · the sender's name is written as an address                                                             │
-│                                              ││   · the mail's own checks failed                                                                           │
-│                                              ││   · a risky attachment                                                                                     │
-│                                              ││   · replies go to another address                                                                          │
+│                                              ││   · a different address, and it asks for something risky                                                   │
+│                                              ││   · a link's text is an address, and it leads to another                                                   │
+│                                              ││   · the sender's name shows another address                                                                │
+│                                              ││   · the mail's reported checks failed                                                                      │
+│                                              ││   · an attachment named like a program or a script                                                         │
+│                                              ││   · replies go to another domain                                                                           │
 │                                              ││   its red flags                                                                                            │
 │                                              ││   · It asks the reader to sign in with a password today.                                                   │
 │                                              ││                                                                                                            │
 │                                              ││ What it read from the message                                                                              │
 │                                              ││   kind            email                                                                                    │
 │                                              ││   claims to be    Example Pay                                                                              │
-│                                              ││   sender          service@example-pay.test <notice@account-alerts.test>                                    │
-│                                              ││   links           Contact us                                                                               │
+│                                              ││   sender          service@example-pay.test <notice@account-alerts.test> (the header's exact values)        │
+│                                              ││   links           Contact us (the model's reading: go by Links below)                                      │
 │                                              ││   asks for        password                                                                                 │
 │                                              ││   pressure        urgency: yes · text addressed to an AI: no                                               │
 │                                              ││                                                                                                            │
@@ -76,7 +76,7 @@ expression: s
 │                                              ││                                                                                                            │
 │                                              ││ How it ran                                                                                                 │
 │                                              ││   model           example-vision:1b · prompts 2                                                            │
-│                                              ││   time            14 s in all · extract 3.0 s · reread 0.0 s · ocr 0.0 s · search 1.7 s · judge 9.8 s      │
+│                                              ││   time            14 s in all · extract 3.0 s · search 1.7 s · judge 9.8 s · not run: reread, ocr          │
 │                                              ││   picture         none: this check was made without one                                                    │
 │                                              ││                                                                                                            │
 │                                              ││                                                                                                            │

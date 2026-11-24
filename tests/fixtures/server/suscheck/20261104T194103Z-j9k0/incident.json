@@ -11,9 +11,10 @@
  "prompt_version": "1",
  "stages_ms": {
   "extract": 120010,
-  "reread": 0,
-  "search": 0,
-  "judge": 0
+  "reread": null,
+  "ocr": null,
+  "search": null,
+  "judge": null
  },
  "facts": null,
  "domain": null,
@@ -24,6 +25,13 @@
   "judge": ""
  },
  "final": null,
+ "input": [
+  "image"
+ ],
+ "email": null,
+ "links": null,
+ "links_total": null,
+ "page": null,
  "screenshot": false,
  "message": false
 }
