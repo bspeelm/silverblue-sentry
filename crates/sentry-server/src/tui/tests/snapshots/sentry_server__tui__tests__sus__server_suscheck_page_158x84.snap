@@ -1,0 +1,87 @@
+---
+source: crates/sentry-server/src/tui/tests/sus.rs
+expression: s
+---
+ 1 Dashboard   2 Processes   3 Network 5   4 Containers 1   5 Services 1   6 Maintenance 8   8 SusCheck   0 Upgrade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌ SusCheck · 0.1.0 ────────────────────────────┐┌ Check · Nov 05 10:30 · Kitchen iMac ───────────────────────────────────────────────────────────────────────┐
+│                              7 days  30 days ││ It said           don't trust this  (high confidence)                                                      │
+│ checks                            7        7 ││ Your mark         none (m marks it)                                                                        │
+│  don't trust this                 3        3 ││ From              Kitchen iMac (app 0.1.0) · took 15 s                                                     │
+│  be careful                       2        2 ││ Made from         picture + page address                                                                   │
+│  no obvious warning signs         1        1 ││                                                                                                            │
+│  failed                           1        1 ││ Reasons shown                                                                                              │
+│ from: picture 5/5 · email 1/1 · page 1/1     ││   · The address has a number in the middle of a word, which is a common trick.                             │
+│ incomplete        1 of 6 (17%)               ││   · The address shown is examp1e-pay[.]test. It imitates example-pay[.]test but is a different address.    │
+│ rules overrode    the model 3 of 6 (50%)     ││   · The address is one small change away from the real one. That is done on purpose to fool people.        │
+│ typical time      15 s (longest 21 s)        ││   · A link in it leads to an address that is one small change away from the real one. That is done on      │
+│ you marked        none yet (m on a check)    ││ purpose to fool people.                                                                                    │
+│ model example-vision:1b · prompts 1          ││   · The page asks for a password.                                                                          │
+│ ● alive 2m ago · keeps checks 30 days        ││ Advice shown      do not click · do not enter password · type address yourself                             │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘│ The model against what counted                                                                             │
+┌ Computers · 2 paired ────────────────────────┐│ The model         be careful (medium)                                                                      │
+│ Name           Client    Checks  Last seen   ││ What counted      don't trust this (high)                                                                  │
+│ Kitchen iMac   app 0.1.0      4  16h ago     ││ SusCheck's rules  raised the verdict:                                                                      │
+│ Study laptop   web            3  1d ago      ││   · a digit inside a word of the address                                                                   │
+│                                              ││   · lookalike                                                                                              │
+│                                              ││   · one small change from the real address                                                                 │
+│                                              ││   · a link imitates the real address                                                                       │
+│                                              ││   its red flags                                                                                            │
+│                                              ││   · The page asks for a password.                                                                          │
+│                                              ││   what it found normal                                                                                     │
+│                                              ││   · The page looks like an ordinary sign-in page.                                                          │
+│                                              ││                                                                                                            │
+│                                              ││ What it read from the picture                                                                              │
+│                                              ││   kind            web page                                                                                 │
+│                                              ││   claims to be    Example Pay                                                                              │
+│                                              ││   address bar     examp1e-pay.test                                                                         │
+│                                              ││   links           Sign in · Forgot password?                                                               │
+│                                              ││   asks for        password                                                                                 │
+│                                              ││   pressure        urgency: no · text addressed to an AI: no                                                │
+│                                              ││                                                                                                            │
+│                                              ││ Where the address came from                                                                                │
+│                                              ││   source          read out of the window by the app: exact text, not a reading                             │
+│                                              ││   exact address   examp1e-pay.test                                                                         │
+│                                              ││   the model read  example-pay.test in the picture (not used)                                               │
+│                                              ││                                                                                                            │
+│                                              ││ Links (text only: never open one)                                                                          │
+│                                              ││   · Forgot password? → examp1e-pay[.]test · https · imitates the real address, one small change from the   │
+│                                              ││ real one                                                                                                   │
+│                                              ││   · Help → example-pay[.]test · https                                                                      │
+│                                              ││                                                                                                            │
+│                                              ││ The page (as the app read the window)                                                                      │
+│                                              ││   address         examp1e-pay[.]test                                                                       │
+│                                              ││   title           Example Pay - Sign in                                                                    │
+│                                              ││   links           2                                                                                        │
+│                                              ││   read through    accessibility                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││ The domain (text only: never open it)                                                                      │
+│                                              ││   first reading   example-pay.test                                                                         │
+│                                              ││   second reading  none read                                                                                │
+│                                              ││   compared        lookalike (confusable) · on screen examp1e-pay.test · the real one example-pay.test      │
+│                                              ││                                                                                                            │
+│                                              ││ Searches SusCheck ran                                                                                      │
+│                                              ││   official        "Example Pay" official website                                                           │
+│                                              ││       Example Pay - official site · example-pay.test · 2 engines                                           │
+│                                              ││         Sign in to your Example Pay account.                                                               │
+│                                              ││       Example Pay help centre · example-pay.test · 1 engine                                                │
+│                                              ││         Answers to common questions.                                                                       │
+│                                              ││   domain          "examp1e-pay.test" scam phishing                                                         │
+│                                              ││       nothing came back                                                                                    │
+│                                              ││                                                                                                            │
+│                                              ││ How it ran                                                                                                 │
+│                                              ││   model           example-vision:1b · prompts 2                                                            │
+│                                              ││   time            15 s in all · extract 3.3 s · reread 0.0 s · ocr 0.0 s · search 1.5 s · judge 11 s       │
+│                                              ││   picture         kept: o fetches it to a private cache here and opens it (gone when sentry closes)        │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+│                                              ││                                                                                                            │
+└──────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Esc  back   j/k  scroll   o  picture   m  mark   x  clear mark   ?  help   q  quit            this check was made from the email itself: there is no picture

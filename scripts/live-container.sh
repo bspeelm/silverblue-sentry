@@ -191,7 +191,8 @@ fake_suscheck() {
   for d in "$FIX"/suscheck/2*/; do
     id=$(basename "$d")
     "${P[@]}" exec "$c" install -d -m 2750 -g suscheck "/srv/suscheck/incidents/$id"
-    for f in incident.json screenshot.png; do
+    # (message.txt: the quarantined text of a check made from an email file.)
+    for f in incident.json screenshot.png message.txt; do
       [[ ! -f "$d$f" ]] || put "$c" "/srv/suscheck/incidents/$id/$f" 640 <"$d$f"
     done
   done

@@ -165,8 +165,62 @@ parent and a relative path, a glob (`inc*`), a variable or a name put together b
 a symlink that leads there, `find <parent> -exec`, a tool that reads a list of paths. With no
 `suscheck.ssh` those reach the folder; `sentry config check` says so.
 
+### Email files and page addresses (the format's later additions)
+
+SusCheck's format grew without a schema change: a check can be made from an email file, from
+the page's address as its desktop app reads it out of the window, from a screenshot, or from a
+combination. The fixtures are the seven published samples (the five older ones, an email file
+with `message.txt` and no picture, a picture beside the window's exact address).
+
+- **Parsing.** An index line's `input` is kept as cleaned text (`Check.input`): a line without
+  the key is `image` (older lines), null is "nothing recorded", an unknown combination is shown
+  as it is. `Incident` gained `input`, `email`, `links`, `page`, `message` and, in `domain`,
+  `source`, `exact`, `ocr_reading`, `ocr_available`; `stages_ms.ocr`. Every block may be null,
+  not an object, or empty; every string goes through `clean()` and is cut at sentry's own cap, a
+  little over the format's (nothing fails for being long); attachments stop at 20 and links at
+  50, and what was beyond them is counted from the totals. An older record parses to exactly
+  what it did, and a newer one stripped of the new fields still parses (both tested).
+- **The list** has a From column in plain words (`picture`, `email`, `picture + email`,
+  `picture + page address`), as wide as the widest. At 158 columns there is no room for it
+  beside Brand and Domain check and a readable domain (18 columns), so those two give way,
+  Brand first: with the longest word in the list both go, with `picture + email` only Brand.
+  Both are in the check itself. The narrow list has no From column: the check says "Made from".
+- **The summary** has one line by kind over 7 and 30 days. A check made from two inputs counts
+  under both.
+- **The check**, after what the model read, and only where the record has them: where the
+  address came from (the email's own header / read out of the window by the app / read from
+  the picture; exact text or a reading; what the model read in the picture all the same, when
+  it differs; the text recogniser's reading when it differs), the email's headers (reply-to
+  and return-path only when they differ from the sender; authentication as the message reports
+  it; attachments by declared name, type and size), the links (text → target domain, scheme,
+  what code found, in words), the page. Link targets and the page's address are drawn exactly
+  as SusCheck stored them, defanged; `domain`, `email` and the index are not defanged by
+  SusCheck and are drawn as they are. Nothing is resolved, opened or copied to a clipboard.
+- **The message's text is deliberately not shown.** `message.txt` is a household member's mail
+  and possibly a scammer's words. The format lets a reader show it when a person asks; sentry
+  doesn't: where `message` is true the check says "The email's text is kept on the server with
+  this check (quarantined). sentry doesn't show it.", no key fetches it, `path_of` makes a path
+  only to `incident.json` and `screenshot.png`, and there is no `Kind` for it. Whoever wants to
+  read it does so on the server, as the folder's own login. The gateways refuse its name like
+  the folder's other names, and the profiles' off-limits sentence names the quarantined copies.
+- **`o` without a picture** asks the server nothing where it is already known there is none
+  (the index says the check was made from the email itself or the page's address; or the open
+  record says none was kept) and says which. From the list, a failed check's `o` still asks
+  (its index line doesn't say) and gets the same plain answer.
+- **Wording.** The newer rules and comparison tags have short phrases (`tag()`); any other
+  value is its own text with spaces for underscores. Three or more rules are listed one a line
+  (a check of an email file has six).
+- **The detail scrolls by wrapped rows.** It used to stop at the count of unwrapped lines, which
+  on a narrow window left the end of a long check out of reach.
+
+Assumed, not seen: that a record with both an email's and a page's links lists them together
+(`links_more` adds the two totals); that the format's caps are counted before defanging (sentry's
+caps for defanged fields are 20 over).
+
 Verified: the unit and window tests the Verification section lists, the canary, and
 `live_suscheck` in both disposable containers (the folder's own login reads; the server's
 ordinary login is refused by the server; the same through a copy the test login may read; a
-picture fetched, private, byte for byte, gone at shutdown; nothing written in the folder).
+picture fetched, private, byte for byte, gone at shutdown; nothing written in the folder; the
+check made from an email file read with no picture and its text not shown; `message.txt`
+refused to the server's ordinary login by the server and by both gateways).
 Not verified anywhere: a real SusCheck install, and the desktop's opener (no test starts it).

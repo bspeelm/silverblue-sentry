@@ -1,17 +1,25 @@
 //! SusCheck: how a household's checks of suspicious mail and pages went, read from the
 //! incidents folder SusCheck keeps on this server. A summary, the paired computers, the
 //! latest checks; Enter reads one check in full, `o` fetches its picture for the desktop's
-//! viewer, `m` marks whether SusCheck was right.
+//! viewer, `m` marks whether SusCheck was right. A check made from an email file also
+//! keeps a quarantined copy of the message's text on the server: that is said, and never
+//! fetched or shown (no key reads it).
 //!
 //! Everything shown here was cleaned as it was parsed (`collect::suscheck::clean`), is
-//! drawn as text and nothing else (a domain is never resolved, looked up or opened), and
+//! drawn as text and nothing else (a domain, an address or a link's target is never
+//! resolved, looked up, opened or copied anywhere), and
 //! never goes to Claude: `A` isn't offered on this screen.
 
 use super::*;
 use crate::collect::suscheck::{
-    Check, Device, Fetched, Id, Incident, Part, Read, Suscheck, Tally, Verdict, said,
+    Check, Device, Fetched, INPUTS, Id, Incident, Part, Read, Suscheck, Tally, Verdict,
+    input_parts, said,
 };
 use crate::suscheck::RIGHT;
+
+/// What is said of an email's text (`message.txt`), and all sentry does with it.
+pub const MESSAGE_KEPT: &str = "The email's text is kept on the server with this check \
+    (quarantined). sentry doesn't show it.";
 
 /// Why `A` does nothing here.
 pub const NO_CLAUDE: &str = "never sent to Claude: private, and may carry an attacker's text";
@@ -49,6 +57,7 @@ pub fn rows<'a>(v: &View<'a>) -> Vec<&'a Check> {
                 c.domain.as_deref().unwrap_or(""),
                 c.domain_check.as_deref().unwrap_or(""),
                 c.kind.as_deref().unwrap_or(""),
+                c.sent().as_deref().unwrap_or(""),
             ])
         })
         .collect()
@@ -61,6 +70,30 @@ fn selected<'a>(v: &View<'a>) -> Option<&'a Check> {
 /// The check the keys act on: the one open, else the one under the cursor.
 fn target<'a>(open: Option<Id>, v: &View<'a>) -> Option<Id> {
     open.or_else(|| selected(v).map(|c| c.id))
+}
+
+/// Why `o` has nothing to fetch, where that is known without asking the server: the index
+/// says the check was made without a picture, or its record (when it is the one open)
+/// says none was kept. None: there may be one.
+fn no_picture(v: &View, id: Id) -> Option<String> {
+    let check = folder(v).and_then(|s| s.checks.iter().find(|c| c.id == id));
+    if let Some(from) = check.and_then(Check::pictureless) {
+        return Some(format!(
+            "this check was made from {from}: there is no picture"
+        ));
+    }
+    let open = v.s.sus_open.as_ref().filter(|o| o.id == id)?;
+    let Some(Ok(Fetched::Ok(i))) = &open.got else {
+        return None;
+    };
+    if i.screenshot {
+        return None;
+    }
+    Some(match (&i.error, i.sent_picture()) {
+        (Some(_), _) => "this check failed before a picture was kept: there is no picture".into(),
+        (None, Some(false)) => "this check was made without a picture: there is none".into(),
+        (None, _) => "no picture was kept for this check".into(),
+    })
 }
 
 /// What needs a look since you last did: checks that said "don't trust this", and checks
@@ -229,7 +262,11 @@ impl Sus {
                 self.scroll = 0;
                 vec![Own::SusOpen(id).into()]
             }
-            Action::Char('o') => vec![Own::SusPicture(id).into()],
+            // Nothing is asked of the server for a picture that was never there.
+            Action::Char('o') => match no_picture(v, id) {
+                Some(why) => vec![Effect::Toast(why)],
+                None => vec![Own::SusPicture(id).into()],
+            },
             Action::Char('m') => vec![Effect::Choose(mark_choice(v, id))],
             Action::Char('x') => match v.sus.mark(&id) {
                 Some(_) => vec![Own::SusMark(id, None).into()],
@@ -296,7 +333,7 @@ impl Sus {
             let [left, right] =
                 Layout::horizontal([Constraint::Length(48), Constraint::Min(40)]).areas(area);
             let [top, bottom] =
-                Layout::vertical([Constraint::Length(15), Constraint::Min(4)]).areas(left);
+                Layout::vertical([Constraint::Length(16), Constraint::Min(4)]).areas(left);
             summary(f, top, v, s, false);
             computers(f, bottom, v, s);
             match open {
@@ -310,7 +347,7 @@ impl Sus {
             let n = (rows.len() + rows.iter().filter(|d| !d.note.is_empty()).count()) as u16;
             let roomy = area.height >= 30;
             let [top, mid, rest] = Layout::vertical([
-                Constraint::Length(8),
+                Constraint::Length(9),
                 Constraint::Length(if roomy { (n + 3).min(9) } else { 0 }),
                 Constraint::Min(4),
             ])
@@ -364,9 +401,30 @@ impl Sus {
             return;
         }
         let new = |c: &Check| self.after.as_deref().is_none_or(|a| c.id.as_str() > a);
+        // What each was made from, in words; the column is as wide as the widest.
+        let sent: Vec<String> = list
+            .iter()
+            .map(|c| c.sent().unwrap_or_else(|| "–".into()))
+            .collect();
+        let from = sent
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(7, 22) as u16;
+        // The columns there is room for beside a readable domain: the brand goes first,
+        // then the domain's check (both are in the check itself).
+        // (The fixed columns and the gaps come to 59 beside From; the check's column
+        // takes 14 more, the brand's 15: the domain keeps 18.)
+        let (brand, compared) = match r.width.saturating_sub(from) {
+            106.. => (true, true),
+            91.. => (false, true),
+            _ => (false, false),
+        };
         let table: Vec<Row> = list
             .iter()
-            .map(|c| {
+            .zip(sent)
+            .map(|(c, sent)| {
                 let yours = match v.sus.mark(&c.id) {
                     Some(m) if m.verdict == RIGHT => ("✓", t.green),
                     Some(_) => ("✗", t.red),
@@ -383,10 +441,13 @@ impl Sus {
                     Cell::from(verdict).style(t.s(verdict_color(t, c))),
                 ];
                 if wide {
+                    cells.push(Cell::from(sent).style(t.dim()));
+                }
+                if wide && brand {
                     cells.push(Cell::from(c.brand.clone().unwrap_or_default()).style(t.fg()));
                 }
                 cells.push(Cell::from(c.domain.clone().unwrap_or_default()).style(t.fg()));
-                if wide {
+                if wide && compared {
                     cells.push(
                         Cell::from(c.domain_check.as_deref().unwrap_or("").replace('_', " "))
                             .style(t.dim()),
@@ -397,28 +458,27 @@ impl Sus {
             })
             .collect();
         let (header, widths) = if wide {
-            (
-                vec![
-                    "",
-                    "When",
-                    "Computer",
-                    "It said",
-                    "Brand",
-                    "Domain",
-                    "Domain check",
-                    "",
-                ],
-                vec![
-                    Constraint::Length(1),
-                    Constraint::Length(12),
-                    Constraint::Length(14),
-                    Constraint::Length(26),
-                    Constraint::Length(14),
-                    Constraint::Fill(1),
-                    Constraint::Length(13),
-                    Constraint::Length(1),
-                ],
-            )
+            let mut header = vec!["", "When", "Computer", "It said", "From"];
+            let mut widths = vec![
+                Constraint::Length(1),
+                Constraint::Length(12),
+                Constraint::Length(14),
+                Constraint::Length(26),
+                Constraint::Length(from),
+            ];
+            if brand {
+                header.push("Brand");
+                widths.push(Constraint::Length(14));
+            }
+            header.push("Domain");
+            widths.push(Constraint::Fill(1));
+            if compared {
+                header.push("Domain check");
+                widths.push(Constraint::Length(13));
+            }
+            header.push("");
+            widths.push(Constraint::Length(1));
+            (header, widths)
         } else {
             (
                 vec!["", "When", "Computer", "It said", "Domain", ""],
@@ -471,7 +531,17 @@ impl Sus {
             Some(Some(Err(e))) => lines.push(Line::styled(format!("Its record: {e}"), t.s(t.red))),
             Some(Some(Ok(Fetched::Ok(i)))) => lines.extend(incident_lines(v, i)),
         }
-        let most = (lines.len() as u16).saturating_sub(1);
+        // How far it scrolls: by the rows the lines take once wrapped (a long line may
+        // break early at a word, so each is counted a little narrower than the panel).
+        let width = usize::from(r.width.max(20));
+        let rows: usize = lines
+            .iter()
+            .map(|l| match l.width() {
+                w if w <= width => 1,
+                w => w.div_ceil(width - 16),
+            })
+            .sum();
+        let most = u16::try_from(rows).unwrap_or(u16::MAX).saturating_sub(1);
         self.scroll = self.scroll.min(most);
         f.render_widget(
             Paragraph::new(lines)
@@ -558,6 +628,9 @@ fn check_lines(v: &View, c: &Check) -> Vec<Line<'static>> {
             secs(c.duration_ms)
         ),
     ));
+    if let Some(sent) = c.sent() {
+        out.push(row(t, "Made from", sent));
+    }
     out.push(Line::raw(""));
     out
 }
@@ -588,6 +661,206 @@ fn words(codes: &[String]) -> String {
         .map(|c| c.replace('_', " "))
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// A rule of SusCheck's (`final.floors`) or the tag of a comparison (`check.why`) as a
+/// short phrase. One this sentry has no words for is shown as it is (already cleaned),
+/// its underscores as spaces.
+fn tag(code: &str) -> String {
+    match code {
+        "close_imitation" => "one small change from the real address",
+        "digit_in_name" => "a digit inside a word of the address",
+        "link_text_mismatch" => "a link's text names another address",
+        "link_lookalike" => "a link imitates the real address",
+        "link_odd_target" => "a link with an odd target",
+        "links_unchecked" => "more links than were checked",
+        "reply_to_differs" => "replies go to another address",
+        "display_name_address" => "the sender's name is written as an address",
+        "auth_failed" => "the mail's own checks failed",
+        "risky_attachment" => "a risky attachment",
+        "ocr_differs" => "the text recogniser read another address",
+        _ => return code.replace('_', " "),
+    }
+    .to_string()
+}
+
+fn tags(codes: &[String]) -> String {
+    codes.iter().map(|c| tag(c)).collect::<Vec<_>>().join(" · ")
+}
+
+/// What code found about a link (`links[].flags`), in words.
+fn link_flag(code: &str) -> String {
+    match code {
+        "text_mismatch" => "its text is another address",
+        "imitates_text" => "imitates the address in its text",
+        "lookalike" => "imitates the real address",
+        "close_imitation" => "one small change from the real one",
+        "userinfo" => "a name and an @ in front of the address",
+        "punycode" => "punycode",
+        "ip_address" => "a bare IP address",
+        "odd_scheme" => "an unusual scheme",
+        "unreadable" => "not a readable address",
+        "no_target" => "a relative link: it leads nowhere by itself",
+        _ => return code.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// Where the address the verdict rests on came from (`domain.source`), in words.
+fn source_said(source: &str) -> String {
+    match source {
+        "email_header" => "the email's own header",
+        "window" => "read out of the window by the app",
+        "screenshot" => "read from the picture",
+        _ => return source.replace('_', " "),
+    }
+    .to_string()
+}
+
+/// "and N more", where a list was cut.
+fn and_more(t: &Theme, n: u64) -> Option<Line<'static>> {
+    (n > 0).then(|| Line::styled(format!("  and {n} more"), t.dim()))
+}
+
+/// The email as SusCheck's code read its headers. Text and nothing else: an address is
+/// never resolved, opened or copied anywhere.
+fn email_lines(t: &Theme, e: &crate::collect::suscheck::Email) -> Vec<Line<'static>> {
+    let mut out = vec![head(t, "The email (its headers, read by SusCheck's code)")];
+    out.push(row(
+        t,
+        "  from",
+        format!(
+            "{} <{}>",
+            e.from_name.as_deref().unwrap_or("–"),
+            e.from_address.as_deref().unwrap_or("no readable address")
+        ),
+    ));
+    // Where replies and bounces go, when that isn't where it says it is from.
+    for (label, to) in [
+        ("  replies go to", &e.reply_to),
+        ("  bounces go to", &e.return_path),
+    ] {
+        if let Some(a) = to.as_ref().filter(|a| {
+            e.from_address
+                .as_ref()
+                .is_none_or(|f| !f.eq_ignore_ascii_case(a))
+        }) {
+            out.push(row(t, label, a.clone()));
+        }
+    }
+    out.push(row(
+        t,
+        "  subject",
+        e.subject.clone().unwrap_or_else(|| "–".into()),
+    ));
+    out.push(row(
+        t,
+        "  date",
+        e.date.clone().unwrap_or_else(|| "–".into()),
+    ));
+    out.push(row(
+        t,
+        "  authentication",
+        format!(
+            "{} (as the message reports it)",
+            ["spf", "dkim", "dmarc"]
+                .iter()
+                .zip(&e.auth)
+                .map(|(k, v)| format!("{k} {}", v.as_deref().unwrap_or("not stated")))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ),
+    ));
+    if e.attachments_total == 0 {
+        out.push(row(t, "  attachments", "none".into()));
+    } else {
+        out.push(row(
+            t,
+            "  attachments",
+            format!("{} (declared; none is kept)", e.attachments_total),
+        ));
+        for a in &e.attachments {
+            out.push(Line::styled(
+                format!(
+                    "  · {} ({}, {})",
+                    a.name.as_deref().unwrap_or("(no name)"),
+                    a.kind.as_deref().unwrap_or("no type"),
+                    a.size.map_or("size unknown".into(), fmt::bytes)
+                ),
+                t.fg(),
+            ));
+        }
+        out.extend(and_more(
+            t,
+            e.attachments_total
+                .saturating_sub(e.attachments.len() as u64),
+        ));
+    }
+    if let Some(n) = e.links_total {
+        out.push(row(t, "  links", n.to_string()));
+    }
+    if e.aimed_at_ai == Some(true) {
+        out.push(Line::styled("  has text addressed to an AI", t.s(t.yellow)));
+    }
+    out
+}
+
+/// The links SusCheck's code analysed: text → where it leads. The target is a domain as
+/// SusCheck stored it (defanged): shown as it is, never resolved, opened or copied.
+fn link_lines(t: &Theme, i: &Incident) -> Vec<Line<'static>> {
+    let Some(links) = &i.links else {
+        return Vec::new();
+    };
+    let mut out = vec![head(t, "Links (text only: never open one)")];
+    if links.is_empty() {
+        out.push(Line::styled("  (none)", t.dim()));
+    }
+    for l in links {
+        let scheme = match l.scheme.as_deref() {
+            None => "?".to_string(),
+            Some("none") => "no scheme".into(),
+            Some("other") => "another scheme".into(),
+            Some(s) => s.to_string(),
+        };
+        let flagged = !l.flags.is_empty();
+        let mut spans = vec![
+            Span::styled(
+                format!("  · {}", l.text.as_deref().unwrap_or("(no text)")),
+                t.fg(),
+            ),
+            Span::styled(" → ", t.dim()),
+            Span::styled(
+                l.target.clone().unwrap_or_else(|| "no address".into()),
+                if flagged { t.s(t.yellow) } else { t.fg() },
+            ),
+            Span::styled(format!(" · {scheme}"), t.dim()),
+        ];
+        if flagged {
+            spans.push(Span::styled(
+                format!(
+                    " · {}",
+                    l.flags
+                        .iter()
+                        .map(|f| link_flag(f))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                t.s(t.yellow),
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+    out.extend(and_more(t, i.links_more()));
+    out
+}
+
+/// What the record's first part is called: what the model read, and from what.
+fn read_from(i: &Incident) -> &'static str {
+    match (i.sent_picture(), i.sent_email()) {
+        (Some(false), true) => "What it read from the message",
+        (Some(false), false) => "What it read from the page",
+        _ => "What it read from the picture",
+    }
 }
 
 /// The record in full: what the person was shown, what the model read and said, what
@@ -636,15 +909,26 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 t.dim(),
             ),
         ]));
-        out.push(row(
-            t,
-            "SusCheck's rules",
-            match (l.floors.is_empty(), l.floors_changed) {
-                (true, _) => "none applied".into(),
-                (false, Some(true)) => format!("{}: raised the verdict", words(&l.floors)),
-                (false, _) => format!("{}: the verdict stood", words(&l.floors)),
-            },
-        ));
+        // A rule or two on the line; more as a list (a check of an email file has many).
+        let did = match l.floors_changed {
+            Some(true) => "raised the verdict",
+            _ => "the verdict stood",
+        };
+        match l.floors.len() {
+            0 => out.push(row(t, "SusCheck's rules", "none applied".into())),
+            1 | 2 => out.push(row(
+                t,
+                "SusCheck's rules",
+                format!("{}: {did}", tags(&l.floors)),
+            )),
+            _ => {
+                out.push(row(t, "SusCheck's rules", format!("{did}:")));
+                out.extend(bullets(
+                    t,
+                    &l.floors.iter().map(|f| tag(f)).collect::<Vec<_>>(),
+                ));
+            }
+        }
         if !j.red_flags.is_empty() {
             out.push(Line::styled("  its red flags", t.dim()));
             out.extend(bullets(t, &j.red_flags));
@@ -656,7 +940,7 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
     }
     if let Some(x) = &i.facts {
         out.push(Line::raw(""));
-        out.push(head(t, "What it read from the picture"));
+        out.push(head(t, read_from(i)));
         let or = |o: &Option<String>| o.clone().unwrap_or_else(|| "–".into());
         out.push(row(
             t,
@@ -699,12 +983,96 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             ),
         ));
     }
+    // Where the address came from: only a record that says (older ones are all a picture).
+    if let Some((d, source)) = i
+        .domain
+        .as_ref()
+        .and_then(|d| Some((d, d.source.as_deref()?)))
+    {
+        out.push(Line::raw(""));
+        out.push(head(t, "Where the address came from"));
+        let exact = source != "screenshot";
+        out.push(row(
+            t,
+            "  source",
+            format!(
+                "{}{}",
+                source_said(source),
+                match source {
+                    "email_header" | "window" => ": exact text, not a reading",
+                    "screenshot" => ": a reading by the model, not exact text",
+                    _ => "",
+                }
+            ),
+        ));
+        match &d.exact {
+            Some(x) => out.push(row(t, "  exact address", x.clone())),
+            None if exact => out.push(row(t, "  exact address", "none usable in it".into())),
+            None => {}
+        }
+        // What the model read in the picture all the same, when it was something else.
+        if let Some(read) = d
+            .first_reading
+            .as_ref()
+            .filter(|r| exact && d.shown.as_ref().is_some_and(|s| s != *r))
+        {
+            out.push(row(
+                t,
+                "  the model read",
+                format!("{read} in the picture (not used)"),
+            ));
+        }
+        if let Some(ocr) = d
+            .ocr_reading
+            .as_ref()
+            .filter(|o| d.shown.as_ref() != Some(*o))
+        {
+            out.push(row(t, "  text recogniser", format!("read {ocr}")));
+        }
+    }
+    if let Some(e) = &i.email {
+        out.push(Line::raw(""));
+        out.extend(email_lines(t, e));
+    }
+    if i.message {
+        out.push(Line::styled(MESSAGE_KEPT, t.dim()));
+    }
+    if i.links.is_some() {
+        out.push(Line::raw(""));
+        out.extend(link_lines(t, i));
+    }
+    if let Some(p) = &i.page {
+        out.push(Line::raw(""));
+        out.push(head(t, "The page (as the app read the window)"));
+        out.push(row(
+            t,
+            "  address",
+            p.url_domain.clone().unwrap_or_else(|| "none usable".into()),
+        ));
+        out.push(row(
+            t,
+            "  title",
+            p.title.clone().unwrap_or_else(|| "–".into()),
+        ));
+        out.push(row(
+            t,
+            "  links",
+            p.links_total
+                .map_or("no list was sent".into(), |n| n.to_string()),
+        ));
+        if let Some(s) = &p.source {
+            out.push(row(t, "  read through", s.replace('_', " ")));
+        }
+    }
     if let Some(d) = &i.domain {
         out.push(Line::raw(""));
         out.push(head(t, "The domain (text only: never open it)"));
         let or = |o: &Option<String>| o.clone().unwrap_or_else(|| "none read".into());
-        out.push(row(t, "  first reading", or(&d.first_reading)));
-        out.push(row(t, "  second reading", or(&d.second_reading)));
+        // (No picture, no readings of one.)
+        if i.sent_picture() != Some(false) {
+            out.push(row(t, "  first reading", or(&d.first_reading)));
+            out.push(row(t, "  second reading", or(&d.second_reading)));
+        }
         out.push(row(
             t,
             "  compared",
@@ -713,7 +1081,7 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
                 d.result.as_deref().unwrap_or("?").replace('_', " "),
                 d.why
                     .as_ref()
-                    .map_or(String::new(), |w| format!(" ({})", w.replace('_', " "))),
+                    .map_or(String::new(), |w| format!(" ({})", tag(w))),
                 d.shown
                     .as_ref()
                     .map_or(String::new(), |s| format!(" · on screen {s}")),
@@ -792,10 +1160,52 @@ fn incident_lines(v: &View, i: &Incident) -> Vec<Line<'static>> {
             "kept: o fetches it to a private cache here and opens it (gone when sentry closes)"
                 .into()
         } else {
-            "none was kept".to_string()
+            match (&i.error, i.sent_picture()) {
+                (None, Some(false)) => "none: this check was made without one".to_string(),
+                _ => "none was kept".to_string(),
+            }
         },
     ));
     out
+}
+
+/// The checks of the last 7 and 30 days by what they were made from, in one line:
+/// `picture 4/6 · email 1/1 · page address 1/1` (a check made from two counts under both;
+/// one with nothing recorded under none; a value this sentry doesn't know under `other`).
+fn made_from(s: &Suscheck, short: bool) -> String {
+    // (picture, email, page address, other), for 7 and for 30 days.
+    let mut n = [[0u32; 2]; 4];
+    for (span, days) in [7, 30].into_iter().enumerate() {
+        let since = s.now - days * 86_400;
+        for c in s.checks.iter().filter(|c| c.at.is_some_and(|a| a >= since)) {
+            let Some(input) = c.input.as_deref() else {
+                continue;
+            };
+            match input_parts(input) {
+                Some(parts) => {
+                    for (k, (word, _)) in INPUTS.iter().enumerate() {
+                        n[k][span] += u32::from(parts.contains(word));
+                    }
+                }
+                None => n[3][span] += 1,
+            }
+        }
+    }
+    let mut out: Vec<String> = INPUTS
+        .iter()
+        .zip(&n)
+        .map(|((_, said), [week, month])| {
+            let said = said.split(' ').next().filter(|_| short).unwrap_or(said);
+            format!("{said} {week}/{month}")
+        })
+        .collect();
+    if n[3][1] > 0 {
+        out.push(format!("other {}/{}", n[3][0], n[3][1]));
+    }
+    match short {
+        true => out.join(" · "),
+        false => format!("{} (7/30 days)", out.join(" · ")),
+    }
 }
 
 /// The median of the completed checks' times, and the longest, in the last 30 days.
@@ -860,6 +1270,18 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
     let (week, month) = (s.tally(7), s.tally(30));
     let (wrong, marked) = v.sus.marked();
     let typical = times(s);
+    // (The side panel is narrow: shorter words there, under its own 7 / 30 days header.)
+    let label = if brief { "made from  " } else { "from: " };
+    let sent = Line::from(vec![
+        Span::styled(label, t.dim()),
+        Span::styled(
+            trunc(
+                &made_from(s, !brief),
+                (r.width as usize).saturating_sub(label.len()),
+            ),
+            t.fg(),
+        ),
+    ]);
     let mut lines: Vec<Line> = Vec::new();
     if brief {
         for (label, x) in [("7 days ", week), ("30 days", month)] {
@@ -892,6 +1314,7 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
                 Span::styled(format!("{} {}", x.safe, Verdict::Safe.said()), t.s(t.green)),
             ]));
         }
+        lines.push(sent);
         lines.push(Line::styled(
             format!(
                 "{} computer(s) · typical time {} · you marked {wrong} wrong of {marked}",
@@ -936,6 +1359,7 @@ fn summary(f: &mut Frame, area: Rect, v: &View, s: &Suscheck, brief: bool) {
             lines.push(line(" another verdict", week.other, month.other, t.fg));
         }
         lines.push(line(" failed", week.errors, month.errors, t.mag));
+        lines.push(sent);
         lines.push(row(
             t,
             "incomplete",

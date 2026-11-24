@@ -9,6 +9,7 @@ expression: s
 │ It said           don't trust this  (high confidence)                        │
 │ Your mark         none (m marks it)                                          │
 │ From              Kitchen iMac (app 0.1.0) · took 21 s                       │
+│ Made from         picture                                                    │
 │                                                                              │
 │ Reasons shown                                                                │
 │   · The address on screen is examp1e-pay[.]test, which imitates              │
@@ -21,7 +22,6 @@ expression: s
 │ The model against what counted                                               │
 │ The model         be careful (medium)                                        │
 │ What counted      don't trust this (high)                                    │
-│ SusCheck's rules  lookalike: raised the verdict                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  Esc  back   j/k  scroll   o  picture   m  mark   ?  help   q  quit

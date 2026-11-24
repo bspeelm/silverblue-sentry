@@ -97,5 +97,6 @@
   "floors": [],
   "floors_changed_verdict": false
  },
- "screenshot": true
+ "screenshot": true,
+ "message": false
 }

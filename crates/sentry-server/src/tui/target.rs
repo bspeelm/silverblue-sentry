@@ -1052,7 +1052,9 @@ impl Target for ServerTarget {
             return match res {
                 Ok(Fetched::Ok(path)) => self.sus_show(path, cx),
                 Ok(Fetched::Expired) => vec![Effect::Toast(
-                    "no picture: none was kept for this check, or SusCheck has removed it".into(),
+                    "there is no picture for this check: none was sent or kept, or SusCheck has \
+                     removed it since"
+                        .into(),
                 )],
                 Err(e) => vec![Effect::Toast(format!("the picture wasn't fetched: {e}"))],
             };

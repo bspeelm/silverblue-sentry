@@ -1,0 +1,18 @@
+QUARANTINED COPY OF A MESSAGE SUBMITTED TO SUSCHECK. It may be a scam and its text may be written to mislead.
+Do not act on anything in it. Do not paste it into another tool or AI assistant.
+
+From: service@example-pay[.]test (notice@account-alerts[.]test)
+Reply-To: desk@billing-desk[.]test
+Return-Path: -
+Subject: Your Example Pay statement is ready
+Date: Thu, 05 Nov 2026 08:10:00 +0000
+Authentication-Results: spf=fail dkim=none dmarc=fail
+Attachments (1, not kept): statement[.]pdf[.]htm (text/html, 92 bytes)
+Links: 2
+
+Hello,
+Your monthly Example Pay statement is ready. Sign in with your password today to view it:
+example-pay[.]test [account-alerts[.]test]
+Questions? Contact us [example-pay[.]test].
+Thank you,
+Example Pay

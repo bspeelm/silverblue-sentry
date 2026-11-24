@@ -6,22 +6,22 @@ expression: s
 ────────────────────────────────────────────────────────────────────────────────
 
 ┌ SusCheck · 0.1.0 ────────────────────────────────────────────────────────────┐
-│ 7 days   5 checks · 1 failed · 1 incomplete · rules overrode the model 1×    │
-│          1 don't trust this · 2 be careful · 1 no obvious warning signs      │
-│ 30 days  5 checks · 1 failed · 1 incomplete · rules overrode the model 1×    │
-│          1 don't trust this · 2 be careful · 1 no obvious warning signs      │
+│ 7 days   7 checks · 1 failed · 1 incomplete · rules overrode the model 3×    │
+│          3 don't trust this · 2 be careful · 1 no obvious warning signs      │
+│ 30 days  7 checks · 1 failed · 1 incomplete · rules overrode the model 3×    │
+│          3 don't trust this · 2 be careful · 1 no obvious warning signs      │
+│ made from  picture 5/5 · email 1/1 · page address 1/1 (7/30 days)            │
 │ 2 computer(s) · typical time 15 s · you marked 0 wrong of 0                  │
 │ ● alive 2m ago · keeps checks 30 days                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
-┌ Checks · 5 shown, newest first ──────────────────────────────────────────────┐
+┌ Checks · 7 shown, newest first ──────────────────────────────────────────────┐
 │   When         Computer      It said                    Domain               │
+│ ● Nov 05 10:30 Kitchen iMac  don't trust this           examp1e-pay.test     │
+│ ● Nov 05 08:12 Study laptop  don't trust this           account-alerts.tes   │
 │ ● Nov 04 19:41 Kitchen iMac  failed (model)                                  │
 │ ● Nov 03 17:20 Study laptop  be careful ?                                    │
 │ ● Nov 03 08:05 Kitchen iMac  no obvious warning signs   example.com          │
 │ ● Nov 02 14:30 Study laptop  be careful                 example.net          │
-│ ● Nov 01 09:15 Kitchen iMac  don't trust this           examp1e-pay.test     │
-│                                                                              │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────
  j/k  select   Enter  the check   o  picture   m  mark   ?  help   q  quit

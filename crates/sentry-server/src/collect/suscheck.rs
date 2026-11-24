@@ -12,6 +12,12 @@
 //! sentry doesn't know is said and nothing of that file is shown; nothing found in a record
 //! is ever run, opened, fetched or looked up; and none of it goes to Claude, into a stored
 //! report, a log entry or a prompt. What leaves this module for those is [`Counts`]: numbers.
+//!
+//! A check can be made from a screenshot, from the email itself as a file, from the page's
+//! address as SusCheck's desktop app reads it out of the window, or from several of these.
+//! The record then has the email's headers, the links (text and where each leads, stored
+//! defanged) and the page; and the folder may hold `message.txt`, a quarantined copy of
+//! the message's text. **That file is never read here**: [`path_of`] has no name for it.
 
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -298,6 +304,40 @@ pub struct Check {
     pub duration_ms: u64,
     /// Why it failed (`model`, `server`, `cancelled`, …); None for a completed check.
     pub error: Option<String>,
+    /// What the person sent, as the index says it (`image`, `email`, `image+page`, …; a
+    /// value this sentry doesn't know is kept as text). A line from before the field was
+    /// there is `image`: a picture was all there was. None: nothing usable was recorded.
+    pub input: Option<String>,
+}
+
+/// The inputs a check can be made from, in the format's order, each in plain words.
+pub const INPUTS: [(&str, &str); 3] = [
+    ("image", "picture"),
+    ("email", "email"),
+    ("page", "page address"),
+];
+
+/// The parts of an index line's `input` when every one of them is known (`image+page` →
+/// `["image", "page"]`); None for anything else.
+pub fn input_parts(input: &str) -> Option<Vec<&'static str>> {
+    let parts: Option<Vec<&'static str>> = input
+        .split('+')
+        .map(|p| INPUTS.iter().find(|(w, _)| *w == p).map(|(w, _)| *w))
+        .collect();
+    parts.filter(|p| !p.is_empty())
+}
+
+/// `input` in plain words: `picture`, `email`, `picture + page address`. A value this
+/// sentry doesn't know is shown as it is (already cleaned).
+pub fn input_said(input: &str) -> String {
+    match input_parts(input) {
+        Some(parts) => parts
+            .iter()
+            .filter_map(|p| INPUTS.iter().find(|(w, _)| w == p).map(|(_, said)| *said))
+            .collect::<Vec<_>>()
+            .join(" + "),
+        None => input.to_string(),
+    }
 }
 
 impl Check {
@@ -311,6 +351,27 @@ impl Check {
             (Some(e), _) => format!("failed ({e})"),
             (None, Some(v)) => said(v).to_string(),
             (None, None) => "no verdict".into(),
+        }
+    }
+
+    /// What was sent, in plain words; None when nothing usable was recorded.
+    pub fn sent(&self) -> Option<String> {
+        self.input.as_deref().map(input_said)
+    }
+
+    /// The check was made without a picture, as far as the index says: what it was made
+    /// from instead, in words. None when a picture was sent, or the value isn't known.
+    pub fn pictureless(&self) -> Option<&'static str> {
+        let parts = input_parts(self.input.as_deref()?)?;
+        match (
+            parts.contains(&"image"),
+            parts.contains(&"email"),
+            parts.contains(&"page"),
+        ) {
+            (true, _, _) => None,
+            (false, true, false) => Some("the email itself"),
+            (false, false, _) => Some("the page's address alone"),
+            (false, true, true) => Some("the email and the page's address"),
         }
     }
 }
@@ -690,6 +751,12 @@ pub fn parse_line(line: &str) -> Result<Check, Option<i64>> {
         floors_changed: v["floors_changed_verdict"].as_bool(),
         duration_ms: v["duration_ms"].as_u64().unwrap_or(0).min(86_400_000),
         error: text(&v["error"], 120),
+        // The last key, added later: a line without it is from when a picture was all a
+        // check could be made from. There and null: nothing usable was recorded.
+        input: match v.get("input") {
+            None => Some("image".into()),
+            Some(x) => text(x, 24),
+        },
     })
 }
 
@@ -839,7 +906,9 @@ pub enum Fetched<T> {
 }
 
 /// A file of one incident, on the server. The id is checked against its grammar again
-/// here, where the path is made: nothing else can become part of a path.
+/// here, where the path is made: nothing else can become part of a path. Two names and
+/// no other: **never `message.txt`**, the quarantined text of a household member's mail,
+/// which sentry has no way to read.
 pub fn path_of(dir: &str, id: &Id, file: &str) -> Option<String> {
     let id = Id::parse(id.as_str())?;
     let file = ["incident.json", "screenshot.png"]
@@ -999,7 +1068,8 @@ pub fn picture(r: &Remote, id: Id, into: &Path) -> Result<Fetched<PathBuf>, SrvE
     out
 }
 
-/// What the model copied from the picture: its reading of attacker content.
+/// What the model copied from the picture or noted from the message's text: its reading
+/// of attacker content.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     pub kind: Option<String>,
@@ -1019,6 +1089,17 @@ pub struct Facts {
 pub struct Domain {
     pub first_reading: Option<String>,
     pub second_reading: Option<String>,
+    /// What a plain text recogniser (not the model) read in the same place, when it found
+    /// an address close to the model's.
+    pub ocr_reading: Option<String>,
+    /// Whether the text recogniser was run. None: a record from before there was one.
+    pub ocr_available: Option<bool>,
+    /// Where the address the verdict rests on came from: `email_header`, `window`,
+    /// `screenshot`, or a value this sentry doesn't know. None: an older record (a picture).
+    pub source: Option<String>,
+    /// The full host taken as exact text (an email's From header, the window's address).
+    /// Text: never resolved, looked up or opened.
+    pub exact: Option<String>,
     pub result: Option<String>,
     pub shown: Option<String>,
     pub real: Option<String>,
@@ -1071,6 +1152,66 @@ pub struct Final {
     pub floors_changed: Option<bool>,
 }
 
+/// One attachment as the message declared it. Nothing else of it exists anywhere: SusCheck
+/// never decodes or stores one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attachment {
+    /// The declared file name: attacker text.
+    pub name: Option<String>,
+    /// The declared media type.
+    pub kind: Option<String>,
+    /// Bytes as encoded inside the message.
+    pub size: Option<u64>,
+}
+
+/// What SusCheck's code read from an email file's headers. The name and the subject are
+/// attacker text; the addresses are real and not defanged: text, never resolved or opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Email {
+    pub from_name: Option<String>,
+    pub from_address: Option<String>,
+    pub reply_to: Option<String>,
+    pub return_path: Option<String>,
+    pub subject: Option<String>,
+    pub date: Option<String>,
+    /// `spf`, `dkim`, `dmarc` as the message's topmost header reports them (None: not
+    /// stated).
+    pub auth: [Option<String>; 3],
+    /// At most [`ATTACHMENTS_MAX`].
+    pub attachments: Vec<Attachment>,
+    /// How many the message had (never less than those listed).
+    pub attachments_total: u64,
+    pub links_total: Option<u64>,
+    pub aimed_at_ai: Option<bool>,
+}
+
+/// One link of the email or of the page's list, as SusCheck's code analysed it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Link {
+    /// Its visible text: attacker text, defanged by SusCheck.
+    pub text: Option<String>,
+    pub scheme: Option<String>,
+    /// Where it leads: a registrable domain or an IP address, stored defanged
+    /// (`examp1epay[.]test`). Shown as it is: never resolved, opened or copied anywhere.
+    pub target: Option<String>,
+    pub flags: Vec<String>,
+}
+
+/// What the desktop app reported about the window.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Page {
+    pub source: Option<String>,
+    /// The window's address as a registrable domain or IP, stored defanged.
+    pub url_domain: Option<String>,
+    /// The window's title: attacker text.
+    pub title: Option<String>,
+    pub links_total: Option<u64>,
+}
+
+/// The most attachments and links of one record that are kept (the format's own limits).
+pub const ATTACHMENTS_MAX: usize = 20;
+pub const LINKS_MAX: usize = 50;
+
 /// One check in full: enough to judge how SusCheck behaved. Every part may be missing (a
 /// check that failed stopped somewhere).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1090,8 +1231,48 @@ pub struct Incident {
     pub search: Option<Search>,
     pub judgement: Option<Judgement>,
     pub last: Option<Final>,
+    /// Which inputs were sent (`image`, `email`, `page`). Empty: an older record, made
+    /// from a picture.
+    pub input: Vec<String>,
+    /// Read from an email file's headers by SusCheck's code. None: no email file was sent.
+    pub email: Option<Email>,
+    /// The links of the email and of the page's list. None: there was no link list.
+    pub links: Option<Vec<Link>>,
+    pub page: Option<Page>,
     /// Whether a picture was kept.
     pub screenshot: bool,
+    /// Whether the folder holds `message.txt`, the quarantined text of the email. Only
+    /// that it is there: **sentry never reads it** (see [`path_of`]).
+    pub message: bool,
+}
+
+impl Incident {
+    /// How many links there were beyond the ones listed: the email's and the page's
+    /// counts together, less the list.
+    pub fn links_more(&self) -> u64 {
+        let listed = self.links.as_ref().map_or(0, Vec::len) as u64;
+        let email = self.email.as_ref().and_then(|e| e.links_total);
+        let page = self.page.as_ref().and_then(|p| p.links_total);
+        email
+            .unwrap_or(0)
+            .saturating_add(page.unwrap_or(0))
+            .saturating_sub(listed)
+    }
+
+    /// Whether `what` was among the inputs sent. None: the record doesn't say.
+    fn sent(&self, what: &str) -> Option<bool> {
+        (!self.input.is_empty()).then(|| self.input.iter().any(|i| i == what))
+    }
+
+    /// A picture was among what was sent. None: the record doesn't say (an older one,
+    /// where a picture was all there was).
+    pub fn sent_picture(&self) -> Option<bool> {
+        self.sent("image")
+    }
+
+    pub fn sent_email(&self) -> bool {
+        self.sent("email") == Some(true) || self.email.is_some()
+    }
 }
 
 /// `<id>/incident.json`, read defensively: every string cleaned and cut, every list
@@ -1138,6 +1319,10 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         Domain {
             first_reading: t(&d["first_reading"]),
             second_reading: t(&d["second_reading"]),
+            ocr_reading: t(&d["ocr_reading"]),
+            ocr_available: d["ocr_available"].as_bool(),
+            source: text(&d["source"], 30),
+            exact: text(&d["exact"], 260),
             result: t(&d["check"]["result"]),
             shown: t(&d["check"]["shown"]),
             real: t(&d["check"]["real"]),
@@ -1200,6 +1385,58 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
             floors_changed: f["floors_changed_verdict"].as_bool(),
         }
     });
+    let count = |x: &Value| x.as_u64().map(|n| n.min(1_000_000));
+    let email = obj(&v["email"]).then(|| {
+        let e = &v["email"];
+        let attachments: Vec<Attachment> = e["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|a| a.is_object())
+            .take(ATTACHMENTS_MAX)
+            .map(|a| Attachment {
+                name: text(&a["name"], 130),
+                kind: text(&a["type"], 90),
+                size: a["size"].as_u64(),
+            })
+            .collect();
+        Email {
+            from_name: text(&e["from_name"], 210),
+            from_address: text(&e["from_address"], 260),
+            reply_to: text(&e["reply_to"], 260),
+            return_path: text(&e["return_path"], 260),
+            subject: text(&e["subject"], 310),
+            date: text(&e["date"], 64),
+            auth: ["spf", "dkim", "dmarc"].map(|k| text(&e["auth"][k], 20)),
+            attachments_total: count(&e["attachments_total"])
+                .unwrap_or(0)
+                .max(attachments.len() as u64),
+            attachments,
+            links_total: count(&e["links_total"]),
+            aimed_at_ai: e["aimed_at_ai"].as_bool(),
+        }
+    });
+    let links = v["links"].as_array().map(|list| {
+        list.iter()
+            .filter(|l| l.is_object())
+            .take(LINKS_MAX)
+            .map(|l| Link {
+                text: text(&l["text"], 220),
+                scheme: text(&l["scheme"], 20),
+                target: text(&l["target_domain"], 140),
+                flags: texts(&l["flags"], 30, 12),
+            })
+            .collect()
+    });
+    let page = obj(&v["page"]).then(|| {
+        let p = &v["page"];
+        Page {
+            source: text(&p["source"], 24),
+            url_domain: text(&p["url_domain"], 140),
+            title: text(&p["title"], 210),
+            links_total: count(&p["links_total"]),
+        }
+    });
     Ok(Incident {
         id,
         device: text(&v["device"], 40),
@@ -1209,7 +1446,7 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         error: text(&v["error"], 120),
         model: text(&v["model"], 120),
         prompt_version: text(&v["prompt_version"], 40),
-        stages: ["extract", "reread", "search", "judge"]
+        stages: ["extract", "reread", "ocr", "search", "judge"]
             .into_iter()
             .filter_map(|s| Some((s, v["stages_ms"][s].as_u64()?)))
             .collect(),
@@ -1218,7 +1455,12 @@ pub fn parse_incident(record: &str, id: Id) -> Result<Incident, String> {
         search,
         judgement,
         last,
+        input: texts(&v["input"], 16, 6),
+        email,
+        links,
+        page,
         screenshot: v["screenshot"].as_bool().unwrap_or(false),
+        message: v["message"].as_bool().unwrap_or(false),
     })
 }
 
@@ -1307,6 +1549,10 @@ pub(crate) mod tests {
         );
         assert_eq!(path_of("/srv/x", &id, "../status.json"), None);
         assert_eq!(path_of("/srv/x", &id, "index.jsonl"), None);
+        // The quarantined text of an email is a name of the folder's, and never one a
+        // path is made to: sentry has no way to read it.
+        assert_eq!(path_of("/srv/x", &id, "message.txt"), None);
+        assert!(path_of("/srv/x", &id, "screenshot.png").is_some());
     }
 
     #[test]
@@ -1351,7 +1597,7 @@ pub(crate) mod tests {
     #[test]
     fn the_samples_parse_to_what_the_format_says() {
         let s = sample();
-        assert_eq!(s.checks.len(), 5);
+        assert_eq!(s.checks.len(), 7);
         assert_eq!((s.skipped, s.index_newer, s.newer()), (0, None, None));
         let first = &s.checks[0];
         assert_eq!(first.id.as_str(), "20261101T091500Z-a1b2");
@@ -1370,6 +1616,26 @@ pub(crate) mod tests {
         assert_eq!(failed.outcome(), "failed (model)");
         // Never "safe".
         assert_eq!(s.checks[2].outcome(), "no obvious warning signs");
+        // What each was made from: the index's word, and plain words for it. The check
+        // that failed recorded nothing usable.
+        let sent: Vec<Option<String>> = s.checks.iter().map(Check::sent).collect();
+        let said = |w: &str| Some(w.to_string());
+        assert_eq!(
+            sent,
+            [
+                said("picture"),
+                said("picture"),
+                said("picture"),
+                said("picture"),
+                None,
+                said("email"),
+                said("picture + page address"),
+            ]
+        );
+        assert_eq!(s.checks[5].input.as_deref(), Some("email"));
+        assert_eq!(s.checks[5].pictureless(), Some("the email itself"));
+        assert_eq!(s.checks[6].pictureless(), None);
+        assert_eq!(s.checks[4].pictureless(), None);
         let st = s.status.ok().unwrap();
         assert_eq!(st.version.as_deref(), Some("0.1.0"));
         assert_eq!(st.retention_days, Some(30));
@@ -1380,27 +1646,29 @@ pub(crate) mod tests {
             (d[1].name.as_str(), d[1].app_version.as_deref()),
             ("Study laptop", None)
         );
-        // Counts: by the server's clock, the last day has only the failed check.
+        // Counts: by the server's clock, the last day has the failed check and the two
+        // of that morning.
         let c = s.counts();
         assert_eq!(
             c.week,
             Tally {
-                total: 5,
-                malicious: 1,
+                total: 7,
+                malicious: 3,
                 suspicious: 2,
                 safe: 1,
                 other: 0,
                 errors: 1,
                 incomplete: 1,
-                floors: 1,
+                floors: 3,
             }
         );
-        assert_eq!((c.day.total, c.day.errors, c.computers), (1, 1, 2));
+        assert_eq!((c.day.total, c.day.errors, c.computers), (3, 1, 2));
         assert!(!c.down());
-        // Since the first check was looked at: nothing more said "don't trust this", one failed.
-        assert_eq!(s.unseen(None), (1, 1));
-        assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (0, 1));
-        assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (0, 0));
+        // Since the first check was looked at: two more said "don't trust this", one failed.
+        assert_eq!(s.unseen(None), (3, 1));
+        assert_eq!(s.unseen(Some("20261101T091500Z-a1b2")), (2, 1));
+        assert_eq!(s.unseen(Some("20261104T194103Z-j9k0")), (2, 0));
+        assert_eq!(s.unseen(Some("20261105T103045Z-p6q8")), (0, 0));
     }
 
     #[test]
@@ -1616,6 +1884,325 @@ pub(crate) mod tests {
         assert_eq!(f.urgency, None);
         // The model's raw replies are never kept.
         assert!(!format!("{:?}", sample_incident("20261101T091500Z-a1b2")).contains("model_raw"));
+    }
+
+    /// An index line and a record as they were before a check could be made from an
+    /// email file or a page's address: no `input`, no `message`, no `source`.
+    fn older(text: &str) -> String {
+        let mut v: Value = serde_json::from_str(text).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in ["input", "email", "links", "page", "message"] {
+            o.remove(k);
+        }
+        if let Some(d) = o.get_mut("domain").and_then(Value::as_object_mut) {
+            for k in ["source", "exact", "ocr_reading", "ocr_available"] {
+                d.remove(k);
+            }
+        }
+        v.to_string()
+    }
+
+    #[test]
+    fn what_a_check_was_made_from_in_both_generations() {
+        let index = fixture("suscheck/index.jsonl");
+        let lines: Vec<&str> = index.lines().collect();
+        // An older line has no `input`: a picture was all there was. Nothing else of it
+        // reads differently.
+        let now = parse_line(lines[0]).unwrap();
+        assert!(!older(lines[0]).contains("input"));
+        let then = parse_line(&older(lines[0])).unwrap();
+        assert_eq!(then, now);
+        assert_eq!(then.input.as_deref(), Some("image"));
+        // There and null (a check that failed before anything usable): none, not a picture.
+        assert!(lines[4].contains("\"input\":null"));
+        assert_eq!(parse_line(lines[4]).unwrap().input, None);
+        assert_eq!(
+            parse_line(&older(lines[4])).unwrap().input.as_deref(),
+            Some("image")
+        );
+        // Every combination the format names, in plain words; one it doesn't is shown as
+        // it is, cleaned and cut, and is no known kind.
+        for (word, said, without) in [
+            ("image", "picture", None),
+            ("email", "email", Some("the email itself")),
+            ("image+email", "picture + email", None),
+            ("image+page", "picture + page address", None),
+            (
+                "email+page",
+                "email + page address",
+                Some("the email and the page's address"),
+            ),
+            ("page", "page address", Some("the page's address alone")),
+            ("image+email+page", "picture + email + page address", None),
+            ("fax", "fax", None),
+            ("image+fax", "image+fax", None),
+            ("", "", None),
+        ] {
+            let line =
+                lines[0].replacen("\"input\":\"image\"", &format!("\"input\":\"{word}\""), 1);
+            let c = parse_line(&line).unwrap();
+            match word {
+                "" => assert_eq!(c.input, None),
+                _ => assert_eq!(c.sent().as_deref(), Some(said), "{word}"),
+            }
+            assert_eq!(c.pictureless(), without, "{word}");
+        }
+        let odd = lines[0].replacen(
+            "\"input\":\"image\"",
+            "\"input\":\"im\\u001b[2Jage\\u202e+\\nscan of a very long kind of thing\"",
+            1,
+        );
+        assert_eq!(
+            parse_line(&odd).unwrap().input.as_deref(),
+            Some("image+ scan of a very lo…")
+        );
+        let wrong = lines[0].replacen("\"input\":\"image\"", "\"input\":[\"image\"]", 1);
+        assert_eq!(parse_line(&wrong).unwrap().input, None);
+
+        // The records. An older one (none of the later fields) reads as it always did.
+        for id in [
+            "20261101T091500Z-a1b2",
+            "20261102T143027Z-c3d4",
+            "20261103T080542Z-e5f6",
+            "20261103T172009Z-g7h8",
+            "20261104T194103Z-j9k0",
+        ] {
+            let text = fixture(&format!("suscheck/{id}/incident.json"));
+            let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
+            assert_eq!(then, sample_incident(id), "{id}");
+            assert!(then.input.is_empty() && then.email.is_none() && then.links.is_none());
+            assert!(then.page.is_none() && !then.message);
+            assert_eq!(then.sent_picture(), None);
+            assert!(
+                then.domain
+                    .is_none_or(|d| d.source.is_none() && d.exact.is_none())
+            );
+        }
+        // A newer one cut back to an older one's fields still reads.
+        for id in ["20261105T081233Z-k2m4", "20261105T103045Z-p6q8"] {
+            let text = fixture(&format!("suscheck/{id}/incident.json"));
+            let then = parse_incident(&older(&text), Id::parse(id).unwrap()).unwrap();
+            assert!(then.email.is_none() && then.links.is_none() && !then.message);
+            assert_eq!(then.last, sample_incident(id).last);
+        }
+    }
+
+    #[test]
+    fn an_email_its_links_and_the_page_are_read_defensively() {
+        // The email file: its headers, its links, no picture, the message's text kept.
+        let i = sample_incident("20261105T081233Z-k2m4");
+        assert_eq!(i.input, ["email"]);
+        assert_eq!((i.screenshot, i.message), (false, true));
+        assert_eq!((i.sent_picture(), i.sent_email()), (Some(false), true));
+        let d = i.domain.as_ref().unwrap();
+        assert_eq!(
+            (d.source.as_deref(), d.exact.as_deref(), d.ocr_available),
+            (
+                Some("email_header"),
+                Some("account-alerts.test"),
+                Some(false)
+            )
+        );
+        assert_eq!(
+            (d.first_reading.as_deref(), d.ocr_reading.as_deref()),
+            (None, None)
+        );
+        let e = i.email.as_ref().unwrap();
+        assert_eq!(e.from_name.as_deref(), Some("service@example-pay.test"));
+        assert_eq!(
+            e.from_address.as_deref(),
+            Some("notice@account-alerts.test")
+        );
+        assert_eq!(
+            (e.reply_to.as_deref(), e.return_path.as_deref()),
+            (Some("desk@billing-desk.test"), None)
+        );
+        assert_eq!(
+            e.subject.as_deref(),
+            Some("Your Example Pay statement is ready")
+        );
+        assert_eq!(e.date.as_deref(), Some("Thu, 05 Nov 2026 08:10:00 +0000"));
+        let auth: Vec<&str> = e.auth.iter().map(|a| a.as_deref().unwrap()).collect();
+        assert_eq!(auth, ["fail", "none", "fail"]);
+        assert_eq!(
+            e.attachments,
+            [Attachment {
+                name: Some("statement.pdf.htm".into()),
+                kind: Some("text/html".into()),
+                size: Some(92),
+            }]
+        );
+        assert_eq!((e.attachments_total, e.links_total), (1, Some(2)));
+        assert_eq!(e.aimed_at_ai, Some(false));
+        let links = i.links.as_ref().unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            links[0],
+            Link {
+                text: Some("example-pay[.]test".into()),
+                scheme: Some("https".into()),
+                // As stored: defanged, and never made anything else of.
+                target: Some("account-alerts[.]test".into()),
+                flags: vec!["text_mismatch".into()],
+            }
+        );
+        assert_eq!(i.links_more(), 0);
+        assert!(i.page.is_none());
+        assert_eq!(
+            i.stages.iter().map(|s| s.0).collect::<Vec<_>>(),
+            ["extract", "reread", "ocr", "search", "judge"]
+        );
+        assert!(
+            i.last
+                .as_ref()
+                .unwrap()
+                .floors
+                .contains(&"link_text_mismatch".to_string())
+        );
+        // The picture beside the window's exact address.
+        let p = sample_incident("20261105T103045Z-p6q8");
+        assert_eq!(p.input, ["image", "page"]);
+        assert_eq!(
+            (p.screenshot, p.message, p.sent_picture()),
+            (true, false, Some(true))
+        );
+        let d = p.domain.as_ref().unwrap();
+        assert_eq!(
+            (
+                d.source.as_deref(),
+                d.exact.as_deref(),
+                d.first_reading.as_deref()
+            ),
+            (
+                Some("window"),
+                Some("examp1e-pay.test"),
+                Some("example-pay.test")
+            )
+        );
+        assert_eq!(
+            p.page,
+            Some(Page {
+                source: Some("accessibility".into()),
+                url_domain: Some("examp1e-pay[.]test".into()),
+                title: Some("Example Pay - Sign in".into()),
+                links_total: Some(2),
+            })
+        );
+        assert!(p.email.is_none() && p.links.as_ref().unwrap().len() == 2);
+
+        // Hostile and broken: every string cleaned and cut at sentry's own cap, lists cut
+        // at theirs with the rest counted from the totals, wrong types left out. Never a
+        // failure.
+        let id = Id::parse("20261105T081233Z-k2m4").unwrap();
+        let text = fixture("suscheck/20261105T081233Z-k2m4/incident.json");
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        let long = "x".repeat(5000);
+        v["email"]["subject"] = format!("Sub\u{1b}[2Jject\u{202e}\n{long}").into();
+        v["email"]["from_name"] = format!("Na\u{1b}]0;t\u{7}me\u{200b} {long}").into();
+        v["email"]["from_address"] = format!("a@{long}").into();
+        v["email"]["reply_to"] = 7.into();
+        v["email"]["return_path"] = serde_json::json!({"a": 1});
+        v["email"]["date"] = long.clone().into();
+        v["email"]["auth"] = serde_json::json!({"spf": "pa\u{7}ss", "dkim": 3, "dmarc": long});
+        v["email"]["attachments"] = Value::Array(
+            (0..30)
+                .map(|n| serde_json::json!({"name": format!("f{n}\u{202e}.{long}"), "type": long, "size": "big"}))
+                .chain([Value::Null, 4.into()])
+                .collect(),
+        );
+        v["email"]["attachments_total"] = 45.into();
+        v["email"]["links_total"] = 300.into();
+        v["email"]["aimed_at_ai"] = "yes".into();
+        v["links"] = Value::Array(
+            (0..80)
+                .map(|n| {
+                    serde_json::json!({
+                        "text": format!("t{n}\u{1b}[31m {long}"),
+                        "scheme": "java\nscript",
+                        "target_domain": format!("d{n}[.]{long}"),
+                        "flags": ["text_mismatch", 9, "new\u{7}_flag", null],
+                    })
+                })
+                .chain(["not a link".into()])
+                .collect(),
+        );
+        v["page"] = serde_json::json!({"title": format!("Ti\u{9b}31mtle {long}"), "url_domain": 5, "links_total": -3});
+        v["domain"]["exact"] = long.clone().into();
+        v["domain"]["source"] = "carrier\u{7}_pigeon".into();
+        v["domain"]["ocr_available"] = "no".into();
+        v["input"] = serde_json::json!(["email", 3, "sm\u{1b}[2Joke signal that is long", null]);
+        v["message"] = "true".into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        let len = |s: &Option<String>| s.as_ref().unwrap().chars().count();
+        let e = i.email.as_ref().unwrap();
+        assert!(e.subject.as_ref().unwrap().starts_with("Subject xxx"));
+        assert_eq!(len(&e.subject), 311);
+        assert!(e.from_name.as_ref().unwrap().starts_with("Name xxx"));
+        assert_eq!(
+            (len(&e.from_name), len(&e.from_address), len(&e.date)),
+            (211, 261, 65)
+        );
+        assert_eq!((&e.reply_to, &e.return_path), (&None, &None));
+        assert_eq!(e.auth[0].as_deref(), Some("pass"));
+        assert_eq!((e.auth[1].as_deref(), len(&e.auth[2])), (None, 21));
+        assert_eq!(
+            (e.attachments.len(), e.attachments_total),
+            (ATTACHMENTS_MAX, 45)
+        );
+        let a = &e.attachments[0];
+        assert!(a.name.as_ref().unwrap().starts_with("f0.xxx"));
+        assert_eq!((len(&a.name), len(&a.kind), a.size), (131, 91, None));
+        assert_eq!((e.links_total, e.aimed_at_ai), (Some(300), None));
+        let links = i.links.as_ref().unwrap();
+        assert_eq!((links.len(), i.links_more()), (LINKS_MAX, 250));
+        assert!(links[0].text.as_ref().unwrap().starts_with("t0 xxx"));
+        assert_eq!((len(&links[0].text), len(&links[0].target)), (221, 141));
+        assert_eq!(links[0].scheme.as_deref(), Some("java script"));
+        assert_eq!(links[0].flags, ["text_mismatch", "new_flag"]);
+        let p = i.page.as_ref().unwrap();
+        assert!(p.title.as_ref().unwrap().starts_with("Title xxx"));
+        assert_eq!(
+            (len(&p.title), &p.url_domain, p.links_total),
+            (211, &None, None)
+        );
+        let d = i.domain.as_ref().unwrap();
+        assert_eq!(
+            (len(&d.exact), d.source.as_deref(), d.ocr_available),
+            (261, Some("carrier_pigeon"), None)
+        );
+        assert_eq!(i.input, ["email", "smoke signal tha…"]);
+        assert!(!i.message, "only `true` says the text is there");
+        let all = format!("{i:?}");
+        assert!(
+            !all.chars()
+                .any(|c| c == '\u{1b}' || c == '\u{7}' || invisible(c)),
+            "{all}"
+        );
+        // A total that says fewer than are listed is not believed below the list.
+        v["email"]["attachments_total"] = 2.into();
+        let i = parse_incident(&v.to_string(), id).unwrap();
+        assert_eq!(i.email.unwrap().attachments_total, ATTACHMENTS_MAX as u64);
+        // Each block null, or not an object: left out, the rest read.
+        for block in ["email", "links", "page", "domain", "input"] {
+            for bad in [Value::Null, "text".into(), 3.into()] {
+                let mut w: Value = serde_json::from_str(&text).unwrap();
+                w[block] = bad;
+                let i = parse_incident(&w.to_string(), id).unwrap();
+                assert!(i.last.is_some(), "{block}");
+                match block {
+                    "email" => assert!(i.email.is_none()),
+                    "links" => assert!(i.links.is_none()),
+                    "page" => assert!(i.page.is_none()),
+                    "domain" => assert!(i.domain.is_none()),
+                    _ => assert!(i.input.is_empty()),
+                }
+            }
+        }
+        // An email block with nothing in it.
+        let mut w: Value = serde_json::from_str(&text).unwrap();
+        w["email"] = serde_json::json!({});
+        let e = parse_incident(&w.to_string(), id).unwrap().email.unwrap();
+        assert_eq!(e, Email::default());
     }
 
     #[test]
